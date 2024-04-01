@@ -131,6 +131,8 @@ def main():
     tree.print()
     print("---")
 
+    increase_list = []
+
     # traversal
     for n in tree.iterator(method=nutree.IterMethod.POST_ORDER):
         x = n.data
@@ -146,7 +148,7 @@ def main():
             with open(path, 'wb') as f:
                 x.write(f)
             print(f"commit {h} {x.path}")
-            # TODO create increase list
+            increase_list.append(f"{h} {x.path}")
         else:
             print(f"exist {h} {x.path}")
 
@@ -170,7 +172,8 @@ def main():
 parent {HEAD}
 date {d} 
 tree {root_tree_sha}
-'''
+---
+''' + '\n'.join(increase_list) + '\n'
     sha256 = hashlib.sha256()
     sha256.update(commit_content.encode('utf-8'))
     commit_sha256 = sha256.hexdigest()
