@@ -42,3 +42,7 @@ Git-like based Backup Tool with Blu-Ray
 - linux
 	- https://wiki.gentoo.org/wiki/CD/DVD/BD_writing
 	- `growisofs -speed=X -Z /dev/sr0=test.udf`
+
+- dump.py
+	- need to write to objects and save which disc
+	- need to write some metadata with disc name and the content of the disc (from start to end)

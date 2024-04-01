@@ -146,6 +146,7 @@ def main():
             with open(path, 'wb') as f:
                 x.write(f)
             print(f"commit {h} {x.path}")
+            # TODO create increase list
         else:
             print(f"exist {h} {x.path}")
 
@@ -175,11 +176,11 @@ tree {root_tree_sha}
     commit_sha256 = sha256.hexdigest()
 
     # write commit to objects
-    print("write to commit {commit_sha256}")
+    print(f"write to commit {commit_sha256}")
     commit_dir = os.path.join(noahsark_dir, 'objects', commit_sha256[:2])
-    if not os.path.exists(path):
-        os.makedirs(path)
-    commit_path = os.path.join(commit_dir, commit_sha256[:2])
+    if not os.path.exists(commit_dir):
+        os.makedirs(commit_dir)
+    commit_path = os.path.join(commit_dir, commit_sha256[2:])
     with open(commit_path, 'wb') as f:
         f.write(commit_content.encode('utf-8'))
     
@@ -187,7 +188,7 @@ tree {root_tree_sha}
     print("write to HEAD")
     with open(head_path, 'wb') as f:
         f.write(commit_sha256.encode('utf-8'))
-        f.write('\n')
+        f.write('\n'.encode('utf-8'))
 
 
     pass
