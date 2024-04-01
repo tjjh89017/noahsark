@@ -46,3 +46,8 @@ Git-like based Backup Tool with Blu-Ray
 - dump.py
 	- need to write to objects and save which disc
 	- need to write some metadata with disc name and the content of the disc (from start to end)
+
+- .noahsark/storage/xx
+	- put the all disc file
+	- if need, we could use this and burn again.
+	- deleted files will be gone forever if your disc is missing.
