@@ -3,6 +3,7 @@
 
 import os
 import sys
+import datetime
 import hashlib
 import nutree
 
@@ -28,12 +29,14 @@ class NoahTree(NoahObject):
         self.content.append(o)
 
     def format(self):
-        pass
+        s = "tree\n".encode('utf-8')
+        for x in self.content:
+            s += f"{x['h']} {x['name']}\n".encode('utf-8')
+        return s
 
     def sha(self):
-        # TODO implement it
         sha256 = hashlib.sha256()
-        sha256.update(self.path.encode('utf-8'))
+        sha256.update(self.format())
         return sha256.hexdigest()
 
     def write(self, f):
@@ -109,7 +112,7 @@ def main():
         relpath = os.path.normpath(os.path.relpath(dirpath, cwd))
         if not relpath.startswith('.'):
             relpath = os.path.join('.', relpath)
-        print(relpath)
+        #print(relpath)
         n = tree
         n = tree.find(NoahObject("", relpath))
         #if relpath != '':
@@ -140,7 +143,7 @@ def main():
 
         path = os.path.join(path, h[2:])
         if not os.path.exists(path):
-            with open(os.path.join(path, h[2:]), 'wb') as f:
+            with open(path, 'wb') as f:
                 x.write(f)
             print(f"commit {h} {x.path}")
         else:
@@ -149,6 +152,43 @@ def main():
         parents = n.get_parent_list()
         if len(parents) > 0:
             parents[-1].data.put({'h': h, 'name': x.name})
+
+    # save the root to commit
+
+    # if HEAD exists, load it
+    HEAD = '0' * 64
+    head_path = os.path.join(noahsark_dir, 'HEAD')
+    if os.path.exists(head_path):
+        with open(path, 'r') as f:
+            HEAD = f.read(64)
+
+    root_tree_sha = root.sha()
+    d = datetime.datetime.now()
+
+    commit_content = f'''commit
+parent {HEAD}
+date {d} 
+tree {root_tree_sha}
+'''
+    sha256 = hashlib.sha256()
+    sha256.update(commit_content.encode('utf-8'))
+    commit_sha256 = sha256.hexdigest()
+
+    # write commit to objects
+    print("write to commit {commit_sha256}")
+    commit_dir = os.path.join(noahsark_dir, 'objects', commit_sha256[:2])
+    if not os.path.exists(path):
+        os.makedirs(path)
+    commit_path = os.path.join(commit_dir, commit_sha256[:2])
+    with open(commit_path, 'wb') as f:
+        f.write(commit_content.encode('utf-8'))
+    
+    # write to HEAD
+    print("write to HEAD")
+    with open(head_path, 'wb') as f:
+        f.write(commit_sha256.encode('utf-8'))
+        f.write('\n')
+
 
     pass
 
