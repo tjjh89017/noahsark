@@ -113,6 +113,18 @@ Store the dumped commit info here. Every commit file will contain the disc ID th
 <DISC ID 4>
 ```
 
+### In Disc
+
+In Disc, we will only have blob with SHA256 name and the content range.
+
+If Disc should contain the data below.
+```
+f27e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8 0 1023
+71d8cfc933ea2b4a724869320f469909bd5ef1e3d2d1f3e2ec0bb17fb8c7234d 1024 255734908
+```
+
+You need to create `f2` and `71` folder, and have filename `7e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8` in f2 and so on.
+
 ## Old design
 
 - git object like blob/tree/commit/HEAD
