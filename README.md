@@ -125,6 +125,8 @@ f27e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8 0 1023
 
 You need to create `f2` and `71` folder, and have filename `7e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8` in f2 and so on.
 
+NOTE: If you need, you could copy the whole `.noahsark` folder into this disc to store the latest index folder
+
 ## Old design
 
 - git object like blob/tree/commit/HEAD
