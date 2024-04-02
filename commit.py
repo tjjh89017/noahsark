@@ -33,7 +33,7 @@ class NoahTree(NoahObject):
     def format(self):
         s = "tree\n".encode('utf-8')
         for x in self.content:
-            s += f"{x['h']} {x['name']}\n".encode('utf-8')
+            s += f"{x['type'] x['h']} {x['name']}\n".encode('utf-8')
         return s
 
     def sha(self):
@@ -44,7 +44,7 @@ class NoahTree(NoahObject):
     def write(self, f):
         f.write("tree\n".encode('utf-8'))
         for x in self.content:
-            f.write(f"{x['h']} {x['name']}\n".encode('utf-8'))
+            f.write(f"{x[type'] x['h']} {x['name']}\n".encode('utf-8'))
 
 
 # TODO need a module
@@ -144,6 +144,10 @@ def main():
         print(f"sha256 {x.path}")
         h = x.sha()
 
+        t = 'blob'
+        if isinstance(x, NoahTree):
+            t = 'tree'
+
         path = os.path.join(noahsark_dir, 'objects', h[:2])
         if not os.path.exists(path):
             os.makedirs(path)
@@ -159,7 +163,7 @@ def main():
 
         parents = n.get_parent_list()
         if len(parents) > 0:
-            parents[-1].data.put({'h': h, 'name': x.name})
+            parents[-1].data.put({'h': h, 'name': x.name, 'type': t})
 
     # save the root to commit
 
