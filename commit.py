@@ -9,6 +9,7 @@ import nutree
 
 import pprint as pp
 
+# TODO need a module
 class NoahObject:
     def __init__(self, name, p):
         self.name = name
@@ -17,6 +18,7 @@ class NoahObject:
     def _hash(self):
         return self.path
 
+# TODO need a module
 class NoahTree(NoahObject):
     def __init__(self, name, p):
         super().__init__(name, p)
@@ -45,6 +47,7 @@ class NoahTree(NoahObject):
             f.write(f"{x['h']} {x['name']}\n".encode('utf-8'))
 
 
+# TODO need a module
 class NoahBlob(NoahObject):
     def __init__(self, name, p):
         super().__init__(name, p)
@@ -73,6 +76,7 @@ def _calc_id(tree, data):
         return data._hash()
     return hash(data)
 
+# TODO need a module
 def get_noahsark_dir():
     cwd = os.getcwd()
     while True:
@@ -90,6 +94,7 @@ def get_noahsark_dir():
 
 def main():
     cwd = get_noahsark_dir()
+    os.chdir(cwd)
     noahsark_dir = os.path.join(cwd, '.noahsark')
     if not cwd:
         print(".noahsark not found")
@@ -162,7 +167,7 @@ def main():
     HEAD = '0' * 64
     head_path = os.path.join(noahsark_dir, 'HEAD')
     if os.path.exists(head_path):
-        with open(path, 'r') as f:
+        with open(head_path, 'r') as f:
             HEAD = f.read(64)
 
     root_tree_sha = root.sha()
@@ -192,10 +197,6 @@ tree {root_tree_sha}
     with open(head_path, 'wb') as f:
         f.write(commit_sha256.encode('utf-8'))
         f.write('\n'.encode('utf-8'))
-
-
-    pass
-
 
 if __name__ == '__main__':
     main()
