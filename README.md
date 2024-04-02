@@ -104,7 +104,7 @@ Store each disc ID and content that store in this disc. Name is disc ID. Content
 
 ### .noahsark/dump/*
 
-Store the dumped commit info here. Every commit file will contain the disc ID that stored the new files. (Only new files in this commit). Name is commit id. Content is the disc ID.
+Store the dumped commit info here. Every commit file will contain the disc ID that stored the new files. (Only new files in this commit). Name is commit id\[2:\] in commit id\[:2\]. (Same as `.noahsark/objects/*`) Content is the disc ID.
 
 ```
 <DISC ID 1>
