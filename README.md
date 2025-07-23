@@ -1,182 +1,320 @@
-# Noah's Ark
-Git-like based Backup Tool with Blu-Ray
+# Noah's Ark Backup System - Design Document
 
-## Design
+## Overview
 
-### .noahsark folder
+Noah's Ark is a Git-like backup system specifically designed for Blu-ray optical media with Forward Error Correction (FEC) capabilities. The system provides distributed backup across multiple discs with content-addressable storage, automatic deduplication, and robust error recovery mechanisms.
 
-As git project, you will have a `.git` folder to store all git related info. Noahsark will have `.noahsark` in your folder.
+## Core Features
 
-### .noahsark/objects/*
+### 1. Multi-Disc Support
+- **Flexible Disc Sizes**: Support for BD25 (25GB), BD50 (50GB), and BD100 (100GB) discs
+- **Dynamic Capacity Management**: Automatically transitions between different disc sizes based on availability
+- **Smart Space Allocation**: Reserves 5% of disc capacity for metadata and filesystem overhead
 
-`objects` folder will store all objects here. If SHA256's hex digest is `f5a7d6ac938ff6f5704e1e4abb4dd25f70086143c38bb17d59badec7f57b579c`, it will store in folder `f5` with the name `a7d6ac938ff6f5704e1e4abb4dd25f70086143c38bb17d59badec7f57b579c`
+### 2. Content-Addressable Storage
+- **SHA512 Hashing**: Uses 512-bit SHA for better collision resistance than SHA256
+- **Object Model**: Git-like blob, tree, and commit objects
+- **Deduplication**: Identical files stored only once across all backups
 
-Content of the objects will be `blob`, `tree`, `commit`
+### 3. Forward Error Correction (FEC)
+- **Reed-Solomon Erasure Coding**: Primary FEC method for data protection
+- **Configurable Redundancy**: Support for 5%, 15%, and 30% redundancy levels
+- **Cross-Disc Protection**: FEC stripes can span multiple discs
+- **Automatic Recovery**: Can recover data from missing or corrupted discs
 
-- blob name will be the SHA256 hex digest in lowercase of the file.
-- tree name will be the SHA256 hex digest in lowercase of the content of tree.
-- commit name will be the SHA256 hex digest in lowercase of the content of commit.
+## Architecture
 
-#### Blob format
-
-Considering file will larger than the remain space of the disc, this blob will be splitted into several pieces. Concatenate all file with the same SHA256 filename to get the full file. 
-
+### Directory Structure
 ```
-blob<LF>
-<disc 1 ID><LF>
-<disc 2 ID><LF>
-```
-
-#### Tree format
-
-Tree is folder.
-
-```
-tree<LF>
-<type><SP><SHA256 of tree or blob><SP><FILENAME><LF>
-<type><SP><SHA256 of tree or blob><SP><FILENAME><LF>
-<type><SP><SHA256 of tree or blob><SP><FILENAME><LF>
-<type><SP><SHA256 of tree or blob><SP><FILENAME><LF>
-```
-
-Example:
-```
-tree
-tree 6c3b21ffd100bcbad48b8f5fb93e5fad056308bd75f23fd837661c94e7b7de05 b
-blob 6c3b21ffd100bcbad48b8f5fb93e5fad056308bd75f23fd837661c94e7b7de05 a
-tree 71d8cfc933ea2b4a724869320f469909bd5ef1e3d2d1f3e2ec0bb17fb8c7234d aaa
-blob f27e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8 pic
+.noahsark/
+├── objects/          # Content-addressable object storage (metadata)
+│   └── xx/           # First 2 hex chars of SHA512
+│       └── ...       # Remaining hash chars
+├── storage/          # Actual disc content organized by disc ID
+│   └── [DISC_ID]/    # Per-disc storage
+│       ├── xx/       # Hash-based directory structure
+│       └── parity/   # FEC parity data
+├── commits/          # Commit metadata and history
+├── discs/           # Disc usage and capacity tracking
+├── fec/             # FEC stripe metadata
+├── config           # System configuration
+└── HEAD             # Current commit reference
 ```
 
-#### Commit format
+### Core Components
 
-Commit will contain parent commit and timestamp. If this is first commit, parent's SHA256 will be all zero.
+#### 1. BackupSystem
+Main orchestrator handling:
+- Disc management and capacity tracking
+- File chunking and distribution
+- FEC stripe creation and management
+- Commit and versioning operations
 
-```
-commit<LF>
-parent<SP><64bytes SHA256 HEX><LF>
-date<SP>2024-04-02 21:59:15.219620
-tree<SP><tree sha256 64bytes hex>
----<LF>
-<increase file A SHA256><SP><relpath of the file>
-<increase file A SHA256><SP><relpath of the file>
-<increase file A SHA256><SP><relpath of the file>
-<increase file A SHA256><SP><relpath of the file>
-<increase file A SHA256><SP><relpath of the file>
-```
+#### 2. FEC Engine Interface
+Pluggable error correction system supporting:
+- Reed-Solomon erasure coding
+- PAR2-style recovery blocks
+- Hamming codes for small errors
+- Custom FEC implementations
 
-Example:
-```
-commit
-parent 0000000000000000000000000000000000000000000000000000000000000000
-date 2024-04-02 21:59:15.219620
-tree b9bd46afd1c07773b861ab6e61c43acb3577e92f0ec4a568ac70fe92fa15510d
----
-f27e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8 ./b/a/a
-70552fdbcb7e1fadb6f32a0324f265f8d592c5468c110b256ad86ca271a79bdf ./b/a
-6c3b21ffd100bcbad48b8f5fb93e5fad056308bd75f23fd837661c94e7b7de05 ./b
-1ca3609dada191e5244111e8a98de736d80e6a77586a23708ab0c59b0e9d3161 ./aaa/bbb/ccc/ddd/eee
-97ee958e3c8827ad143fee6b307170b31b4568a4194b8073c47bb1227534a274 ./aaa/bbb/ccc/ddd
-ed62f8e2d9a445a343eacf9f93c6ba3976db5c2dbb49215ca65422c616a065bc ./aaa/bbb/ccc
-e9cf9990e2028d340ee0135bf385be011e181153293120ec55c806118d38646a ./aaa/bbb
-71d8cfc933ea2b4a724869320f469909bd5ef1e3d2d1f3e2ec0bb17fb8c7234d ./aaa
-3c1ace9dd406c4505a1507b27d50b348a62b852c9157c8bc07541a7a3cdebd3b ./btraw/a1/b1
-6735fe9df35fb09ccc32cd472fc5a89bb49109e999c66f8679b2a9df15932d0e ./btraw/a1
-3042ddc0f9ff5dedc0b5bd8ceecb7385c2b829b8d6b60eea03446c1981d263cd ./btraw/00-pseudo-img-note.txt
-13010a37a251b615e15439bf6a4df2e2509ec2db2fcf479d634c91f76429548d ./btraw/sda3.torrent
-b5c51fd8f88fe65dd9823c1d105112cdae34de83c7dcff0a08b480a9adf89caf ./btraw/sda1.torrent.info
-e2875c467853d556d43f087a267fa4d30ee7c9903402332385fc803c27542d37 ./btraw/sda1.torrent
-83fa3dc00e56a98a760cfc21ae9d37dc1a93d686fb8bb4ec35d60a22472cbc85 ./btraw/sda2.torrent
-57ef94eee8d0373a4a37e8e2dd8c115acfc154d87bbb93a519a89e093d43d9e9 ./btraw/sda2.torrent.info
-0eb3c868c5aa70858d018900a2b3f094ebe45d4c46a0a8a2be9d995535310a38 ./btraw/sda3.torrent.info
+#### 3. Storage Management
+- **Blob Storage**: Files split into chunks across discs
+- **Tree Storage**: Directory structure representation
+- **Commit Storage**: Snapshot metadata and history
+- **Parity Storage**: FEC redundancy data
+
+## Data Structures
+
+### Blob Object
+```go
+type Blob struct {
+    Hash         string        // SHA512 of file content
+    Size         int64         // Original file size
+    Chunks       []BlobChunk   // Data chunks across discs
+    FilePath     string        // Original file path
+    FECProtected bool          // Whether FEC is enabled
+    FECMethod    FECMethod     // Type of error correction
+    ParityChunks []ParityChunk // Associated parity data
+}
 ```
 
-### .noahsark/disc/*
-
-Store each disc ID and content that store in this disc. Name is disc ID. Content is the Blob and range.
-
-```
-<SHA256 of blob><SP><START offset><SP><END offset in bytes>
-<SHA256 of blob><SP><START offset><SP><END offset in bytes>
-<SHA256 of blob><SP><START offset><SP><END offset in bytes>
-<SHA256 of blob><SP><START offset><SP><END offset in bytes>
-```
-
-### .noahsark/dump/*
-
-Store the dumped commit info here. Every commit file will contain the disc ID that stored the new files. (Only new files in this commit). Name is commit id\[2:\] in commit id\[:2\]. (Same as `.noahsark/objects/*`) Content is the disc ID.
-
-```
-<DISC ID 1>
-<DISC ID 2>
-<DISC ID 3>
-<DISC ID 4>
+### BlobChunk
+```go
+type BlobChunk struct {
+    DiscID      string  // Which disc contains this chunk
+    StartByte   int64   // Start position in original file
+    EndByte     int64   // End position in original file
+    ChunkIndex  int     // Sequential chunk number
+    Hash        string  // SHA512 of chunk data
+    Compressed  bool    // Whether chunk is compressed
+    FECStripeID string  // Associated FEC stripe
+}
 ```
 
-### In Disc
-
-In Disc, we will only have blob with SHA256 name and the content range.
-
-If Disc should contain the data below.
+### FEC Stripe
+```go
+type FECStripe struct {
+    ID           string        // Unique stripe identifier
+    DataChunks   []BlobChunk   // Data chunks in stripe
+    ParityChunks []ParityChunk // Parity chunks for recovery
+    Method       FECMethod     // Error correction method
+    CanRecover   func(int) bool // Recovery capability check
+}
 ```
-f27e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8 0 1023
-71d8cfc933ea2b4a724869320f469909bd5ef1e3d2d1f3e2ec0bb17fb8c7234d 1024 255734908
+
+## Error Correction Strategy
+
+### Reed-Solomon Implementation
+- **Data Shards**: 10 data blocks per stripe (configurable)
+- **Parity Shards**: 4 parity blocks per stripe (can lose up to 4 discs)
+- **Shard Size**: 64MB per shard (configurable)
+- **Recovery**: Can reconstruct any missing data from available shards
+
+### Redundancy Levels
+- **None (0%)**: No redundancy, maximum storage efficiency
+- **Low (5%)**: Basic protection against single disc failure
+- **Medium (15%)**: Protection against multiple disc failures
+- **High (30%)**: Maximum protection for critical data
+
+### Cross-Disc Protection
+- Data and parity chunks distributed across different discs
+- Ensures recovery even with complete disc loss
+- Parity data preferentially stored on different disc types
+
+## Backup Process Flow
+
+### 1. File Analysis
+```
+File Input → SHA512 Calculation → Deduplication Check → Chunking Decision
 ```
 
-You need to create `f2` and `71` folder, and have filename `7e01fe7624cca3e69811a0bf9a4efd9dca9fd39f7a3a8f939cae0cfe8cdfb8` in f2 and so on.
+### 2. Chunking Strategy
+```
+Large File → Fixed-Size Chunks → Hash Calculation → Disc Assignment
+```
 
-NOTE: If you need, you could copy the whole `.noahsark` folder into this disc to store the latest index folder
+### 3. FEC Creation
+```
+Data Chunks → Stripe Formation → Parity Generation → Cross-Disc Distribution
+```
 
-## Old design
+### 4. Commit Creation
+```
+Tree Building → Commit Object → Metadata Storage → HEAD Update
+```
 
-- git object like blob/tree/commit/HEAD
-- target storage is blu-ray
-- need to split the file if the blu-ray is full
-- consider to use sha256 as blob filename
-- commit and tree file need a copy in index folder
-- need to support symlink (otherwise it will loop forever)
+## Recovery Process
 
-- index folder
-	- should store all blob/tree/commit
-	- blob should store the blu-ray id and user-defined name (optional)
-	- blu-ray label or id should be the id
+### 1. Damage Assessment
+- Scan available discs for readable chunks
+- Identify missing or corrupted data
+- Determine recovery feasibility using FEC metadata
 
-- blob
-	- no compress
-	- no blob header
-- tree
-	- no compress
-	- no permission field
-	- only in index folder
-- commit
-	- no compress
-	- only in index folder
-- link
-	- no compress
-	- point to the blu-ray
-	- only in index folder
+### 2. FEC Recovery
+- Group chunks by FEC stripe
+- Apply Reed-Solomon decoding for missing chunks
+- Verify recovered data using SHA512 hashes
 
-- blu-ray
-	- UDF 2.50
-	- save sha256 name file
-	- use first byte to be the folder (first 2 hex)
+### 3. File Reconstruction
+- Reassemble chunks in correct order
+- Verify complete file integrity
+- Report any unrecoverable data
 
-- format UDF
-	- in windows
-	- `format /fs:UDF /V:<label> /Q /R:2.50 G:`
+## Configuration Options
 
-- linux
-	- https://wiki.gentoo.org/wiki/CD/DVD/BD_writing
-	- `growisofs -speed=X -Z /dev/sr0=test.udf`
+### BackupConfig Structure
+```go
+type BackupConfig struct {
+    RootPath         string    // Backup source directory
+    DiscPreferences  []string  // Preferred disc types in order
+    FECMethod        FECMethod // Error correction method
+    RedundancyLevel  float64   // 0.0 to 1.0 redundancy ratio
+    VerifyWrites     bool      // Verify data after writing
+    CompressionLevel int       // 0-9 compression level
+    EncryptionKey    []byte    // Optional encryption key
+    MaxChunkSize     int64     // Maximum chunk size
+    CrossDiscFEC     bool      // Enable cross-disc FEC
+}
+```
 
-- dump.py
-	- need to write to objects and save which disc
-	- need to write some metadata with disc name and the content of the disc (from start to end)
+### Disc Configuration
+```go
+type DiscConfig struct {
+    Type     string  // "BD25", "BD50", "BD100"
+    Capacity int64   // Bytes capacity
+    Label    string  // Human-readable label
+}
+```
 
-- .noahsark/storage/xx
-	- put the all disc file
-	- if need, we could use this and burn again.
-	- deleted files will be gone forever if your disc is missing.
+## Disaster Recovery Scenarios
 
-- we don't consider if there is some gap between commit.py and dump.py
-	- if you modify it, we don't care about it.
+### Scenario 1: Single Disc Loss
+- **Impact**: Loss of chunks stored on failed disc
+- **Recovery**: Use FEC parity data from other discs
+- **Time**: Fast recovery using Reed-Solomon decoding
+
+### Scenario 2: Multiple Disc Loss
+- **Impact**: Loss of multiple chunks from same FEC stripe
+- **Recovery**: Possible if lost discs ≤ parity shards count
+- **Time**: Moderate recovery time depending on data distribution
+
+### Scenario 3: Metadata Loss
+- **Impact**: Loss of .noahsark directory
+- **Recovery**: Reconstruct from metadata copies on discs
+- **Time**: Extended recovery requiring disc scanning
+
+### Scenario 4: Catastrophic Loss
+- **Impact**: Loss of majority of discs
+- **Recovery**: Partial recovery of surviving complete stripes
+- **Time**: Manual recovery process required
+
+## Performance Considerations
+
+### Write Performance
+- **Parallel Processing**: Concurrent chunk processing and hashing
+- **Streaming**: Large file streaming to avoid memory exhaustion
+- **Batch Operations**: Group disc operations for efficiency
+
+### Read Performance
+- **Cache Strategy**: Keep frequently accessed metadata in memory
+- **Predictive Loading**: Pre-load likely needed chunks
+- **Parallel Recovery**: Concurrent FEC decoding across stripes
+
+### Storage Efficiency
+- **Compression**: Optional per-chunk compression
+- **Deduplication**: Content-addressable storage eliminates duplicates
+- **Smart Allocation**: Optimal chunk distribution across discs
+
+## Security Features
+
+### Data Integrity
+- **SHA512 Verification**: End-to-end data integrity checking
+- **Chunk-Level Hashing**: Individual chunk verification
+- **Commit Signing**: Optional cryptographic commit signatures
+
+### Encryption Support
+- **Transparent Encryption**: Optional AES encryption before storage
+- **Key Management**: Secure key derivation and storage
+- **Per-File Encryption**: Different keys for different files
+
+## Implementation Phases
+
+### Phase 1: Core System
+- [ ] Basic blob, tree, commit objects
+- [ ] Simple disc management
+- [ ] SHA512 hashing and deduplication
+- [ ] Basic chunking without FEC
+
+### Phase 2: FEC Integration
+- [ ] Reed-Solomon implementation
+- [ ] FEC stripe management
+- [ ] Cross-disc parity distribution
+- [ ] Recovery algorithms
+
+### Phase 3: Advanced Features
+- [ ] Compression support
+- [ ] Encryption integration
+- [ ] Performance optimization
+- [ ] Concurrent operations
+
+### Phase 4: Production Features
+- [ ] CLI interface
+- [ ] Disc burning integration
+- [ ] Progress reporting
+- [ ] Verification tools
+
+## Testing Strategy
+
+### Unit Tests
+- Hash calculation verification
+- FEC encoding/decoding correctness
+- Chunk splitting and reconstruction
+- Object serialization/deserialization
+
+### Integration Tests
+- Multi-disc backup scenarios
+- Recovery from various failure modes
+- Performance benchmarking
+- Stress testing with large datasets
+
+### Disaster Recovery Tests
+- Simulated disc failures
+- Metadata corruption scenarios
+- Partial recovery validation
+- Cross-platform compatibility
+
+## Dependencies
+
+### Core Dependencies
+- **Go Standard Library**: File I/O, cryptography, compression
+- **Reed-Solomon Library**: `github.com/klauspost/reedsolomon`
+- **Command Line Interface**: `github.com/spf13/cobra`
+- **Progress Bars**: `github.com/schollz/progressbar/v3`
+
+### Platform-Specific Dependencies
+- **Windows**: UDF formatting via `format` command
+- **Linux**: Disc burning via `growisofs` and `cdrecord`
+- **macOS**: Disc Utility integration
+
+## Future Enhancements
+
+### Advanced FEC Methods
+- **LDPC Codes**: Low-Density Parity-Check codes for better efficiency
+- **Raptor Codes**: Fountain codes for streaming applications
+- **Adaptive FEC**: Dynamic redundancy based on disc reliability
+
+### Cloud Integration
+- **Hybrid Storage**: Combine optical and cloud storage
+- **Remote Parity**: Store parity data in cloud for local data
+- **Synchronization**: Sync metadata across multiple locations
+
+### Performance Improvements
+- **GPU Acceleration**: Hardware-accelerated FEC calculations
+- **Network Distribution**: Distribute computation across multiple machines
+- **Advanced Compression**: Context-aware compression algorithms
+
+## Conclusion
+
+The Noah's Ark backup system provides a robust, scalable solution for long-term data archival using optical media. The combination of Git-like versioning, content-addressable storage, and advanced error correction creates a reliable backup system capable of surviving multiple disc failures while maintaining data integrity over extended periods.
+
+The modular design allows for future enhancements and adaptations to different storage media while maintaining backward compatibility with existing backups.
