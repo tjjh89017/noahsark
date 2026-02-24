@@ -1341,8 +1341,8 @@ noahsark commit -m "Backup 2026-02-24"
 
 # Stage for disc
 noahsark stage --size=BD-50
-# → 50 GB copied to .noahsark/staged/20260224-001-BD50-s1/
-# → Still 50 GB in .noahsark/objects/ (100 GB total used)
+# → 50 GB moved to .noahsark/staged/20260224-001-BD50-s1/
+# → 0 GB remains in .noahsark/objects/ (chunks relocated, not copied)
 
 # Burn to disc
 noahsark burn 20260224-001-BD50-s1 /dev/sr0
@@ -1352,16 +1352,12 @@ noahsark burn 20260224-001-BD50-s1 /dev/sr0
 # Mark session as archived (explicit step after verifying burn)
 noahsark disc mark-archived 20260224-001-BD50-s1
 # → All objects in session s1 marked as archived
-# → Enables safe garbage collection
+# → Enables safe garbage collection of staged directory
 
-# Reclaim space
-noahsark gc
-# → Deletes 50 GB from .noahsark/objects/ (safe: on disc)
-# → 50 GB remains in .noahsark/staged/ (can be deleted with --aggressive)
-
-noahsark gc --aggressive
-# → Also deletes .noahsark/staged/20260224-001-BD50-s1/ (50 GB freed)
-# → Total: 100 GB reclaimed, only disc copy remains
+# Reclaim local space
+noahsark stage gc
+# → Deletes .noahsark/staged/20260224-001-BD50-s1/ (50 GB freed)
+# → Only disc copy remains, local space fully reclaimed
 ```
 
 #### Recovery Safety
