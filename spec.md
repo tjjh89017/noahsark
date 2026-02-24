@@ -523,6 +523,10 @@ Multiple index files may exist. `noahsark index consolidate` merges them.
 NOAHSARK/
 ├── disc.json                   # this disc's metadata: disc_id, label, session info
 ├── manifest.json               # snapshot of global index (disaster recovery)
+├── index/                      # optional index snapshot files (JSON per-index)
+│   ├── <hash>.idx
+│   └── bloom.bin
+├── index.db                    # optional SQLite snapshot of the global index (for fast lookup)
 ├── objects/                    # content-addressed object files stored by hash prefix
 │   └── XX/YYYY...
 └── fec/                        # Phase 2 only
@@ -543,6 +547,9 @@ NOAHSARK/
 
 **manifest.json:** A copy of the global index at the time of burning, allowing the
 repository to be reconstructed by scanning a single disc if the local `.noahsark/` is lost.
+When present, `index/` contains the latest JSON index snapshots and `index.db` is a
+SQLite copy of the index for fast local lookups; both are optional but recommended
+to simplify import and recovery.
 
 ### Object lifecycle and allocation
 
