@@ -1377,12 +1377,13 @@ This lifecycle management ensures:
 
 ---
 
-## 8. fsnotify / inotify Watcher
+## 8. fsnotify / inotify Watcher (Phase 2)
 
-`noahsark watch` runs as a daemon to monitor file changes and track them for periodic commits.
+`noahsark watch` runs as a daemon to log file changes. The `commit` command reads this
+log to optimize incremental scanning.
 
 ```
-noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--disc=BD-25]
+noahsark watch [source-dir] [--debounce=30s]
 ```
 
 ### Behavior
@@ -1390,14 +1391,20 @@ noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--disc=BD-25]
 1. Register fsnotify watcher on source dir; recursively add all subdirectories
 2. Handle `Create`, `Write`, `Remove`, `Rename` events
 3. New subdirectories: automatically add to watcher
-4. **Debounce**: collect events for `--debounce` duration (default: 30s) before processing
-5. On trigger: track changed paths internally, **do NOT auto-commit**
-6. Commit on schedule (e.g., hourly, daily) or manually via `noahsark commit`
-7. If `--auto-stage`: automatically run `noahsark stage` when unstaged objects reach threshold
-8. Log all events to `.noahsark/watch.log`
+4. **Debounce**: collect events for `--debounce` duration (default: 30s) before logging
+5. Write changed file paths to `.noahsark/watch.log` (one path per line)
+6. **Does NOT auto-commit** - just logs events
 
-**Rationale**: Auto-committing on every file change creates too many commits. Instead,
-watch mode tracks changes continuously but only commits on a reasonable schedule.
+### Integration with commit
+
+When `noahsark commit` runs:
+1. Reads `.noahsark/watch.log` if it exists → get known changed files
+2. Also scans for mtime > last_commit_time → catch changes when watch wasn't running
+3. Combines both sources → complete list of changed files
+4. Clears `.noahsark/watch.log` after successful commit
+
+**Benefit**: If watch daemon is running, commit knows exactly which files changed (100% accurate).
+If watch is not running, mtime fallback still works (99% accurate).
 
 ### Limitations
 
@@ -1439,21 +1446,31 @@ noahsark status
 
 noahsark commit [dir]
     Chunk files in dir, dedup against index, write objects, create commit, update HEAD.
-    -m, --message   optional commit message
+    -m, --message     optional commit message
+    --full-scan       scan all files (ignore mtime optimization)
+
+    ⚠️  **IMPORTANT**: Do not modify files while commit is running. The filesystem
+    must remain stable during the commit operation to ensure a consistent snapshot.
 
     Process:
-      1. Scan directory and compute file hashes
-      2. Chunk changed files (16 MiB fixed-size)
-      3. Dedup: bloom filter check → index check → skip if exists
-      4. Write new chunks/blobs/trees to .noahsark/objects/
-      5. Read HEAD → get parent commit SHA-256
-      6. Create commit object with parent pointer
-      7. Calculate commit SHA-256 (content-addressed)
-      8. Write commit to .noahsark/objects/XX/YY...
-      9. Update HEAD with new commit SHA-256
+      1. Read .noahsark/watch.log if exists (Phase 2: changed files from watch daemon)
+      2. Scan directory for files with mtime > last_commit_time (incremental)
+         - Or full scan if --full-scan flag used
+      3. Compute file hashes for changed/new files
+      4. Chunk changed files (16 MiB fixed-size)
+      5. Dedup: bloom filter check → index check → skip if exists
+      6. Write new chunks/blobs/trees to .noahsark/objects/
+      7. Read HEAD → get parent commit SHA-256
+      8. Create commit object with parent pointer
+      9. Calculate commit SHA-256 (content-addressed)
+      10. Write commit to .noahsark/metadata/XX/YY...
+      11. Update HEAD with new commit SHA-256
+      12. Store current timestamp as last_commit_time
+      13. Clear .noahsark/watch.log if exists (Phase 2)
 
     The commit creates a snapshot of the entire directory tree, with parent
-    pointer forming a linear history chain.
+    pointer forming a linear history chain. Incremental scanning (mtime-based)
+    makes subsequent commits much faster by only processing changed files.
 
 noahsark stage [output-dir] [flags]
     Generate a disc image directory from unstaged objects (ready for growisofs).
@@ -1819,7 +1836,8 @@ optional Phase 2 extension, but they are out of scope for the current design.
 
 - [ ] `noahsark init` — create `.noahsark/` structure, generate config
 - [ ] `noahsark status` — show unstaged objects, staged sessions, and current commit
-- [ ] `noahsark commit` — fixed-size chunking, CAS dedup (bloom + index), write objects, build tree, write commit (SHA-256 named), update HEAD
+- [ ] `noahsark commit` — mtime-based incremental scan, fixed-size chunking, CAS dedup (bloom + index), write objects, build tree, write commit (SHA-256 named), update HEAD
+  - **Warning**: Filesystem must be stable (no modifications) during commit for consistent snapshots
 - [ ] `noahsark stage` — select objects for disc, move chunks and copy metadata to staged directory, disc session tracking
 - [ ] `noahsark burn` — wrapper around growisofs with multi-session support
 - [ ] `noahsark test-burn` — generate ISO from staged dir using genisoimage (for testing)
@@ -1838,10 +1856,10 @@ optional Phase 2 extension, but they are out of scope for the current design.
 - [ ] `noahsark verify` — full verification with quick/full modes (ISO or mounted disc)
 - [ ] `noahsark disc import` — scan mounted disc, register into index
 - [ ] Disc piece layer (stored in disc metadata for per-disc verification, optional)
+- [ ] `noahsark watch` — fsnotify daemon that logs changed files to `.noahsark/watch.log` (commit reads this for faster incremental scanning)
 
-### Phase 3 — Watch & Optimization
+### Phase 3 — Optimization
 
-- [ ] `noahsark watch` — fsnotify daemon with debounce and `--auto-stage`
 - [ ] `noahsark index consolidate` — rebuild/optimize `index.db` (VACUUM, reindex, defrag)
 - [ ] Zstd compression for chunks (optional per-chunk compression)
 
