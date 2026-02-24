@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Key Characteristics:**
 - Content-addressable storage inspired by Git (blob/tree/commit objects)
 - Fixed-size 16 MiB chunking for sub-file deduplication
+- Zero-block elimination for sparse files (all-zero chunks take zero space)
 - Multi-session disc support (incremental burning)
 - Disc-spanning for large files
 - SHA-256 content addressing for all objects including commits
@@ -126,6 +127,18 @@ NoahsArk supports incremental disc burning where a partially-filled disc can hav
 - Simple, predictable, optimal for large files and slow optical media
 - Trade-off: Lower dedup ratio vs content-defined chunking, but much simpler
 
+### Zero-Block Elimination (Sparse File Optimization)
+- **Magic hash constant:** `080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e`
+- This is the SHA-256 hash of exactly 16 MiB (16777216 bytes) of zeros
+- **Behavior:**
+  - During commit: All-zero 16 MiB chunks are detected but NOT written to `objects/`
+  - During restore: When magic hash is encountered, 16 MiB of zeros are generated directly
+  - During staging: Magic hash is skipped (doesn't exist on disc)
+  - During verify: Zeros are generated and hashed to verify
+- **Benefit:** Sparse files (VM images, database files) with zero-filled regions take zero disc space
+- **Example:** VM image with 300 zero-filled chunks = 0 GB storage (vs 4.8 GB with dedup only)
+- **Scope:** Applies only to full 16 MiB zero chunks; partial chunks stored normally
+
 ### Merkle Tree Integrity
 - Per-file Merkle tree (BitTorrent v2 BEP 52 style)
 - 16 KiB leaves (1024 leaves per 16 MiB chunk)
@@ -193,6 +206,7 @@ This enables:
   - Raw chunk data → `.noahsark/objects/XX/YY...`
   - Metadata objects (blobs/trees/commits) → `.noahsark/metadata/XX/YY...`
 - Chunker (fixed 16 MiB with simultaneous Merkle tree computation)
+  - Zero-block elimination: detect magic hash `080acf35...` and skip writing to objects/
 - SQLite index management with bloom filter
 - Commit chain traversal (parent pointer walking)
 - Disc session state machine (open → full/closed)
@@ -204,6 +218,7 @@ This enables:
 - Unit test object serialization/deserialization
 - Test multi-session scenarios and capacity management
 - Test cross-disc scenarios (files spanning multiple discs)
+- Test sparse file handling (zero-block elimination, restore generates zeros correctly)
 
 **Critical Safety Rules:**
 - Never duplicate objects within the same disc across sessions
