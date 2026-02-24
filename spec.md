@@ -51,7 +51,7 @@ Source files
                 ├─ Read current HEAD → get parent commit SHA-256
                 ├─ Create commit content with parent pointer
                 ├─ Calculate commit SHA-256 = SHA-256("commit " + size + "\0" + content)
-                ├─ Write commit to .noahsark/objects/XX/YY... (content-addressed)
+                ├─ Write commit to .noahsark/metadata/XX/YY... (content-addressed)
                 └─ Update .noahsark/HEAD with new commit SHA-256
 
   noahsark stage [--size=BD-25|BD-50|BD-100|BD-128|<size>] [--disc=<disc_id>] [output-dir]
@@ -63,11 +63,14 @@ Source files
      │  --disc       resume a partially-filled disc session (optional)
      │               if omitted, a new disc_id is allocated
      │
-     ├─ Load disc session state (remaining capacity, already-staged objects)
-     ├─ Select unstaged objects up to remaining capacity
-     ├─ Copy selected objects to staging directory
-     ├─ Update global index with disc locations
-     ├─ Write disc.json + manifest
+     ├─ Load disc session state (remaining capacity, previous sessions)
+     ├─ Query index.db: SELECT chunks WHERE not on any disc
+     ├─ Select chunks up to remaining capacity
+     ├─ Copy selected chunks → staged/<disc_id>-s<N>/objects/
+     ├─ Copy ALL metadata → staged/<disc_id>-s<N>/metadata/
+     ├─ Update global index.db with new chunk → disc mappings
+     ├─ Copy updated index.db → staged/<disc_id>-s<N>/s<N>/index.db
+     ├─ Write session.json → staged/<disc_id>-s<N>/s<N>/session.json
      ├─ Output: output-dir/  (UDF-compatible directory layout, ready for growisofs)
      └─ Report:
           Packed:    12.4 GiB
@@ -261,10 +264,6 @@ committer <NAME> <EMAIL> <RFC3339_TIMESTAMP>
 hostname <HOSTNAME>
 
 <COMMIT_MESSAGE>
----
-<blob_sha256> <relative_path>
-<blob_sha256> <relative_path>
-...
 ```
 
 **Format (Git-inspired, content-addressed):**
@@ -275,19 +274,9 @@ hostname <HOSTNAME>
 - `hostname`: machine hostname for tracking backup source
 - `<COMMIT_MESSAGE>`: optional multi-line commit message (UTF-8, after blank line)
 
-The section after `---` lists **only new or changed blobs** in this commit (incremental).
-Unchanged files are implicit via the tree structure.
-
-**Blob list format:**
-```
-<blob_sha256> <relative_path>
-```
-- `blob_sha256`: 64-char hex SHA-256 hash
-- `relative_path`: UTF-8 path, everything after the first space (may contain spaces)
-
-**Parsing rule:** Split each blob list line on the first space to extract the hash (64 chars). Everything after the first space is the relative path, which may contain spaces and UTF-8 characters.
-
-**Path restrictions:** Paths cannot contain newline (`\n`) or null bytes.
+**Note:** Unlike an earlier design, commits do NOT include a blob list. To determine which
+chunks need staging, query `index.db` for chunks not yet on any disc. To see what changed
+in a commit, compare its tree with the parent commit's tree (like Git).
 
 **Naming (content-addressed):**
 - Commit SHA-256 = `SHA-256("commit " + size + "\0" + commit_content)`
@@ -309,17 +298,10 @@ committer John Doe <john@example.com> 2026-02-24T12:00:00+08:00
 hostname laptop-2024
 
 Backup after system upgrade
----
-d4e5f6a7b8c9012... /home/user/documents/file.txt
-c3d4e5f6a7b8901... /home/user/photos/img.jpg
-a1b2c3d4e5f6789... /home/user/documents/my report.pdf
-e5f6a7b8c9d0123... /home/user/文档/照片.jpg
 ```
 
-Note: Paths with spaces (`my report.pdf`) and UTF-8 characters (`文档/照片.jpg`) are fully supported.
-
 This commit would be named by its SHA-256 hash, e.g.:
-`.noahsark/objects/a1/b2c3d4e5f6789...`
+`.noahsark/metadata/a1/b2c3d4e5f6789...`
 
 **HEAD reference:**
 `.noahsark/HEAD` contains the current commit's SHA-256 hash (64-char hex + newline).
@@ -520,21 +502,20 @@ Each session is tracked in two places:
 }
 ```
 
-**2. On-disc session metadata** (`NOAHSARK/disc.json` on each session):
+**2. On-disc session metadata** (`NOAHSARK/sN/session.json` for each session):
 ```json
 {
-  "disc_id": "20260224-001-BD25",
-  "label": "Project Backup Q1",
-  "type": "BD-25",
   "session_id": 2,
-  "created": "2026-03-01T09:00:00+08:00",
+  "disc_id": "20260224-001-BD25",
   "commit": "f6e5d4c3b2a1...",
+  "created": "2026-03-01T09:00:00+08:00",
   "object_count": 2345,
-  "session_bytes": 6442450944,
-  "cumulative_bytes": 19327352832,
-  "previous_sessions": [1]
+  "session_bytes": 6442450944
 }
 ```
+
+**Note:** The UDF volume label is set to `disc_id` when burning session 1 and cannot be changed
+in subsequent sessions. Each session has its own `sN/session.json` file to avoid conflicts.
 
 #### Session Status States
 
@@ -886,20 +867,27 @@ blocks up to full files.
 │   ├── 20260224-002-BD50.json
 │   └── 20260310-001-BD25.json
 └── staged/                     # staged disc image directories (ready to burn)
-    ├── 20260224-001-BD25-s1/
-    │   └── NOAHSARK/           # UDF directory tree
-    │       ├── disc.json
-    │       ├── manifest.json
-    │       └── objects/
-    └── 20260224-001-BD25-s2/
-        └── NOAHSARK/
+    ├── 20260224-001-BD25-s1/   # Session 1 disc image (UDF root)
+    │   ├── objects/            # new chunks for session 1
+    │   ├── metadata/           # all metadata (commits, trees, blobs)
+    │   └── s1/
+    │       ├── session.json
+    │       └── index.db
+    └── 20260224-001-BD25-s2/   # Session 2 disc image (UDF root)
+        ├── objects/            # new chunks for session 2
+        ├── metadata/           # all metadata (updated)
+        └── s2/
+            ├── session.json
+            └── index.db
 ```
 
-**Key changes from timestamp-based design:**
-- ❌ Removed `commits/` directory — commits are now stored in `objects/` like all other objects
-- ✅ `HEAD` now contains commit SHA-256 instead of timestamp
-- ✅ All objects (including commits) are content-addressed and stored uniformly
-- ✅ Commit history is traversed via parent pointers, not directory listings
+**Key design decisions:**
+- ✅ Commits are stored in `metadata/` (content-addressed, no blob list)
+- ✅ `HEAD` contains commit SHA-256 for current state
+- ✅ Staging uses `index.db` to track which chunks need burning (not blob list in commits)
+- ✅ Multi-session uses per-session directories (s1/, s2/, s3/) to avoid file conflicts
+- ✅ objects/ and metadata/ are shared across sessions (content-addressed, no duplication)
+- ✅ Latest session contains most complete index.db
 
 The `staged/` directories remain until manually cleaned with `noahsark stage gc`
 (recommended after successful burn + verify).
@@ -1018,46 +1006,45 @@ before touching `index.db`.
 ### 7.5 On-Disc Layout (UDF 2.50)
 
 ```
-NOAHSARK/
-├── disc.json                   # this disc's metadata: disc_id, label, session info
-├── manifest.json               # snapshot of global index (disaster recovery)
-├── index.db                    # SQLite global index (fast local lookup)
-├── bloom.bin                   # optional bloom filter for fast negative lookups
-├── objects/                    # content-addressed object files stored by hash prefix
-│   └── XX/YYYY...
-└── (no FEC files)              # FEC not used; duplicate discs recommended
+├── objects/XX/YY...            # content-addressed chunks (shared across sessions)
+├── metadata/XX/YY...           # content-addressed metadata (shared across sessions)
+├── s1/                         # Session 1
+│   ├── session.json           # session metadata
+│   └── index.db               # index snapshot (up to session 1)
+├── s2/                         # Session 2
+│   ├── session.json           # session metadata
+│   └── index.db               # index snapshot (up to session 1+2)
+└── s3/                         # Session 3
+    ├── session.json           # session metadata
+    └── index.db               # index snapshot (up to session 1+2+3)
 ```
 
-**disc.json** example:
+**Key design points:**
+- **objects/** and **metadata/** are shared across all sessions (content-addressed, no conflicts)
+- Each session has its own **sN/** directory containing session metadata and index snapshot
+- **UDF volume label** = disc_id (set once in session 1, immutable)
+- Latest session contains the most complete index.db
+
+**session.json** example:
 ```json
 {
-  "disc_id": "20260224-001-BD25",
-  "label": "Project Backup - 2026 Q1",
-  "type": "BD-25",
   "session_id": 1,
-  "created": "2026-02-24T12:00:00+08:00",
+  "disc_id": "20260224-001-BD25",
   "commit": "a1b2c3d4e5f6789...",
+  "created": "2026-02-24T12:00:00+08:00",
   "object_count": 12345
 }
 ```
 
 **Key fields:**
-- `commit`: SHA-256 of the latest commit included on this disc
-  - Used for tracking which snapshot this disc represents
-  - Enables partial restore from a single disc
-  - Replaces timestamp-based commit tracking
+- `session_id`: Session number on this disc (1, 2, 3, ...)
+- `disc_id`: Unique identifier for this disc (also used as UDF volume label)
+- `commit`: SHA-256 of the commit included in this session
+- `object_count`: Number of new objects (chunks) added in this session
 
-**Phase 2+ optional field:**
-- `piece_layer`: (Optional) Disc-level verification hashes for per-disc integrity checking
-  - Not stored in blob objects (blobs are content-addressed and disc-independent)
-  - Computed at staging/burn time when disc capacity and contents are known
-  - Example: `{"capacity_bytes": 25025314816, "pieces": [{"sha256": "...", "objects": ["hash1", "hash2"]}, ...]}`
-  - Enables verification of a single disc without needing other discs or full files
-
-**manifest.json:** A copy of the global index at the time of burning, allowing the
-repository to be reconstructed by scanning a single disc if the local `.noahsark/` is lost.
-When present, `index.db` is a SQLite copy of the index for fast local lookups; `bloom.bin`
-is optional but recommended to simplify import and recovery.
+**index.db**: SQLite database snapshot containing the global index state at the time of this
+session. The latest session's index.db is the most complete, showing which chunks are on which
+discs. This enables disaster recovery by mounting just the latest disc.
 
 ### Object lifecycle and allocation
 
@@ -1319,8 +1306,7 @@ noahsark burn [staged-dir|disc_id] [device] [--mark-archived]
           -allow-limited-size \
           -input-charset utf8 \
           -V '20260224-001-BD25' \
-          .noahsark/staged/20260224-001-BD25-s1/NOAHSARK/
-
+          .noahsark/staged/20260224-001-BD25-s1/
       -Z: Create new UDF filesystem (session 1 only)
       Note: -allow-limited-size is required for BD-50/BD-100/BD-128 (bypasses ISO 9660 size limits)
 
@@ -1339,8 +1325,7 @@ noahsark burn [staged-dir|disc_id] [device] [--mark-archived]
           -udf \
           -allow-limited-size \
           -input-charset utf8 \
-          .noahsark/staged/20260224-001-BD25-s2/NOAHSARK/
-
+          .noahsark/staged/20260224-001-BD25-s2/
     Options explained:
       -udf                  UDF 2.50 filesystem (Blu-ray standard, all modern OS support)
       -allow-limited-size   Allow BD-50/BD-100 sized images (bypass ISO 9660 limits)
@@ -1364,8 +1349,7 @@ noahsark test-burn [staged-dir] [output.iso]
           -input-charset utf8 \
           -V '20260224-001-BD25' \
           -o test.iso \
-          .noahsark/staged/20260224-001-BD25-s1/NOAHSARK/
-
+          .noahsark/staged/20260224-001-BD25-s1/
     Options explained:
       -udf                  UDF 2.50 filesystem (Blu-ray standard, 255-char filenames)
       -allow-limited-size   Allow large images (BD-50/BD-100/BD-128 up to 128GB)
@@ -1395,8 +1379,7 @@ noahsark test-burn [staged-dir] [output.iso]
          → ISO mounted at /mnt/test-disc/
 
       4. Verify disc contents:
-         ls -lh /mnt/test-disc/NOAHSARK/
-         cat /mnt/test-disc/NOAHSARK/disc.json
+         ls -lh /mnt/test-disc/         cat /mnt/test-disc/NOAHSARK/disc.json
          → Check disc.json, objects/, index.db, etc.
 
       5. Test restore from ISO:
