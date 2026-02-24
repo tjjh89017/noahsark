@@ -64,10 +64,12 @@ Source files
      │               if omitted, a new disc_id is allocated
      │
      ├─ Load disc session state (remaining capacity, previous sessions)
-     ├─ Query index.db: SELECT chunks WHERE not on any disc
-     ├─ Select chunks up to remaining capacity
-     ├─ Move selected chunks → staged/<disc_id>-s<N>/objects/
      ├─ Copy ALL metadata → staged/<disc_id>-s<N>/metadata/
+     ├─ Calculate metadata size + reserve space for session overhead (~10-50 MB)
+     ├─ Calculate available space: remaining_capacity - metadata_size - session_overhead
+     ├─ Query index.db: SELECT chunks WHERE not on any disc
+     ├─ Select chunks up to available space
+     ├─ Move selected chunks → staged/<disc_id>-s<N>/objects/
      ├─ Update global index.db with new chunk → disc mappings
      ├─ Copy updated index.db → staged/<disc_id>-s<N>/s<N>/index.db
      ├─ Write session.json → staged/<disc_id>-s<N>/s<N>/session.json
@@ -375,14 +377,17 @@ This eliminates complexity and ensures all NoahsArk repositories are compatible.
 When staging objects for disc burning, NoahsArk selects unstaged objects and organizes
 them into disc sessions using the following approach:
 
-1. Collect all objects not yet allocated to a disc from `.noahsark/objects/`
-2. Sort by type and blob order:
-   - Commits and trees first (small, needed for restore)
-   - Then blobs (sorted by hash)
-   - Then chunks, sorted by: (a) source blob hash, (b) chunk position within blob
-3. Select objects greedily until the disc's remaining capacity is reached
-4. Move selected objects to `.noahsark/staged/<disc_id>-s<session>/objects/` preserving the hash-based directory structure
-5. Update the global index to record which objects are on which disc session
+1. Collect all metadata objects (blobs, trees, commits) from `.noahsark/metadata/`
+2. Copy ALL metadata to `.noahsark/staged/<disc_id>-s<session>/metadata/`
+3. Calculate metadata size and reserve space for session overhead:
+   - Metadata size: sum of all blobs, trees, commits
+   - Session overhead: session.json + index.db (~10-50 MB typically)
+   - Available capacity = disc_capacity - metadata_size - session_overhead
+4. Collect unstaged chunks from `.noahsark/objects/`
+5. Sort chunks by blob order: (a) source blob hash, (b) chunk position within blob
+6. Select chunks greedily until available capacity is reached
+7. Move selected chunks to `.noahsark/staged/<disc_id>-s<session>/objects/` preserving the hash-based directory structure
+8. Update the global index to record which objects are on which disc session
 
 **Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25) or larger,
 individual chunks will never exceed disc capacity. Files larger than one disc are
@@ -394,6 +399,16 @@ that large files spanning multiple discs will have their chunks stored on consec
 scattered across many non-consecutive discs (1, 5, 8, 12, 23...), making restore operations
 impractical. Blob-order sorting guarantees that all chunks for file A appear before all chunks
 for file B, maintaining file locality across disc boundaries.
+
+**Metadata overhead:** Metadata objects (blobs, trees, commits) are typically small:
+- Blob: ~100-500 bytes per file (chunk list + Merkle root)
+- Tree: ~50-100 bytes per directory entry
+- Commit: ~500-1000 bytes per commit
+- Session overhead: session.json + index.db (~10-50 MB)
+
+For a typical backup with 10,000 files, metadata totals ~5-10 MB, negligible compared to
+23 GiB disc capacity. However, the staging algorithm must account for this overhead to
+avoid exceeding disc capacity.
 
 ### 5.2 Multi-Session Support (Incremental Disc Burning)
 
@@ -786,12 +801,15 @@ SELECT disc_id, COUNT(*) FROM index_entries GROUP BY disc_id;
 
 When staging a large commit across multiple discs:
 
-1. **Collect unstaged objects** from `.noahsark/objects/`
-2. **Sort by type and blob order**: commits/trees first, then blobs, then chunks (by source blob + position)
-3. **Greedy bin-packing**: fill current disc until capacity reached
-4. **Allocate next disc**: if objects remain, allocate new disc_id
-5. **Repeat**: until all objects staged
-6. **Update index**: record `(object_hash, disc_id, session)` for each object
+1. **Copy all metadata** to staged directory (blobs, trees, commits)
+2. **Reserve space** for metadata + session overhead (~10-50 MB)
+3. **Calculate available capacity** = disc_capacity - metadata_size - session_overhead
+4. **Collect unstaged chunks** from `.noahsark/objects/`
+5. **Sort chunks by blob order** (source blob + position within blob)
+6. **Greedy bin-packing**: fill current disc until available capacity reached
+7. **Allocate next disc**: if chunks remain, allocate new disc_id
+8. **Repeat**: until all chunks staged
+9. **Update index**: record `(object_hash, disc_id, session)` for each object
 
 **Result**: Commit objects naturally distributed across discs based on capacity.
 
