@@ -371,6 +371,39 @@ File: 42 MiB (44040192 bytes)
 **Design decision:** Chunk size is **fixed at 16 MiB and not configurable**.
 This eliminates complexity and ensures all NoahsArk repositories are compatible.
 
+### 2.4 Sparse File Handling
+
+**Sparse files** (VM images, database files, disk images) often contain large regions of zeros or repeated patterns. NoahsArk handles these efficiently through **automatic content-addressed deduplication**:
+
+**How it works:**
+```
+File 1: large-vm-1.qcow2 (100 GB virtual, 60 GB actual)
+  chunk_001: <16 MiB of data>     → SHA-256: abc123...
+  chunk_002: <16 MiB all zeros>   → SHA-256: def456...
+  chunk_003: <16 MiB all zeros>   → SHA-256: def456... (same hash!)
+  chunk_004: <16 MiB of data>     → SHA-256: 789abc...
+  ...
+  chunk_100: <16 MiB all zeros>   → SHA-256: def456... (same hash!)
+
+File 2: large-vm-2.qcow2 (100 GB virtual, 50 GB actual)
+  chunk_001: <16 MiB all zeros>   → SHA-256: def456... (same hash!)
+  chunk_002: <16 MiB all zeros>   → SHA-256: def456... (same hash!)
+  chunk_003: <16 MiB of data>     → SHA-256: xyz999...
+```
+
+**Storage result:**
+- Only **one copy** of the all-zero 16 MiB chunk is stored in `objects/de/f456...`
+- All blobs referencing it simply point to the same hash
+- 100 identical zero-filled chunks = 16 MiB storage (not 1.6 TB!)
+
+**Key insight:** Because chunks are content-addressed by SHA-256, identical chunks (regardless of position or file) are automatically deduplicated. This makes sparse files extremely space-efficient even without compression.
+
+**Compression trade-off (Phase 2+):**
+- **Without compression:** 1 unique all-zero chunk = 16 MiB storage (but shared across all files)
+- **With zstd compression:** 1 unique all-zero chunk = ~1-2 KB storage (1000x smaller)
+
+Compression is still beneficial for reducing disc space usage, but content-addressed deduplication already solves the "many identical sparse regions" problem efficiently.
+
 
 ## 5. Staging Strategy and Multi-Session Support
 
