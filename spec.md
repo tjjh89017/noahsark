@@ -214,8 +214,8 @@ tree
 **Filename restrictions:** Filenames cannot contain newline (`\n`) or null bytes. All other UTF-8 characters (including spaces, Chinese, Japanese, emoji, etc.) are supported.
 
 Tree entries include POSIX-like mode bits (Git-style) so permissions are
-tracked as part of the tree object. Changing mode/ownership/ACLs will change
-the tree SHA, just like changing file contents or renaming entries.
+tracked as part of the tree object. Changing permissions will change the
+tree SHA, just like changing file contents or renaming entries.
 
 `mode` field (decimal ASCII) semantics:
 - `040000` — tree (directory)
@@ -236,37 +236,14 @@ tree
 
 Note: `my document.txt` (with space) and `文档.pdf` (UTF-8 Chinese) are fully supported.
 
-Optional ownership and extended attributes:
-- `uid`/`gid`: optional integer owner/group stored as a separate `attrs` block
-  inside the same tree object. This keeps the line-oriented tree compact while
-  allowing ownership metadata to be recorded when required.
-- `xattrs`/`acl`: optional JSON blob (UTF-8) stored in an `attrs` section for
-  each entry when needed (base64-encoded or raw JSON; implementations may
-  choose a canonical serialization).
+Named by: SHA-256 of this tree metadata text.
 
-`attrs` block format (optional, follows the tree entries):
-```
-attrs
-<name> uid <UID>
-<name> gid <GID>
-<name> acl <BASE64_JSON>
-...
-```
-
-Notes:
-- If no `attrs` block is present, the repository is treated as permission-agnostic
-  (only mode bits recorded). This preserves small tree sizes for common cases.
-- Converters/importers should populate `mode` at commit time; `uid`/`gid` and
-  ACLs are optional and primarily useful for POSIX-preserving archives.
-- Any change to `mode`, `attrs` or the entry target (`object_sha256`) changes
-  the tree content and therefore its SHA-256 name.
+**Symlinks:**
 
 Symlinks are stored as:
 ```
 link <sha256_of_link_target_string> <name>
 ```
-
-Named by: SHA-256 of the tree content.
 
 ### 3.4 Commit
 
