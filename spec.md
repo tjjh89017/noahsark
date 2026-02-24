@@ -1030,8 +1030,10 @@ blocks up to full files.
 .noahsark/
 ├── config                      # JSON repository configuration
 ├── HEAD                        # current commit SHA-256 (64-char hex + newline)
-├── objects/                    # content-addressed objects (blobs, trees, commits, chunks)
-│   └── XX/YYYY...              # 2-char prefix / remainder (all objects, including commits)
+├── objects/                    # raw chunk data only (16 MiB blocks)
+│   └── XX/YYYY...              # 2-char prefix / remainder (excludes ZERO_CHUNK_HASH)
+├── metadata/                   # structural metadata (blobs, trees, commits)
+│   └── XX/YYYY...              # 2-char prefix / remainder (all metadata objects)
 ├── index.db                    # SQLite global index (hash → disc_id + object_path + length, ...)
 ├── bloom.bin                   # optional bloom filter for fast dedup check
 ├── discs/                      # disc session registry
@@ -1040,13 +1042,13 @@ blocks up to full files.
 │   └── 20260310-001-BD25.json
 └── staged/                     # staged disc image directories (ready to burn)
     ├── 20260224-001-BD25-s1/   # Session 1 disc image (UDF root)
-    │   ├── objects/            # new chunks for session 1
+    │   ├── objects/            # new chunks for session 1 (excludes ZERO_CHUNK_HASH)
     │   ├── metadata/           # all metadata (commits, trees, blobs)
     │   └── s1/
     │       ├── session.json
     │       └── index.db
     └── 20260224-001-BD25-s2/   # Session 2 disc image (UDF root)
-        ├── objects/            # new chunks for session 2
+        ├── objects/            # new chunks for session 2 (excludes ZERO_CHUNK_HASH)
         ├── metadata/           # all metadata (updated)
         └── s2/
             ├── session.json
