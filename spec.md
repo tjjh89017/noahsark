@@ -173,6 +173,8 @@ merkle_root <SHA256_HEX>
   (16 KiB) and chunk hashes (16 MiB) in the same single-file scan to avoid
   extra I/O: as the file is streamed, hash each 16 KiB block for the Merkle
   layer and concurrently accumulate bytes to compute each 16 MiB chunk hash.
+- **Last leaf**: If the last block is less than 16 KiB (e.g., 10 KiB), hash only
+  those bytes as-is. Do NOT pad to 16 KiB before hashing.
 - Mapping: leaf index = floor(byte_offset / 16384). Blob `chunk` entries map
   to byte ranges; this mapping enables verifying any chunk either by direct
   chunk hash or by reconstructing the corresponding leaves and verifying the
