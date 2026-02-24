@@ -365,7 +365,9 @@ File: 42 MiB (44040192 bytes)
 This eliminates complexity and ensures all NoahsArk repositories are compatible.
 
 
-## 5. Staging Strategy
+## 5. Staging Strategy and Multi-Session Support
+
+### 5.1 Basic Staging
 
 When staging objects for disc burning, NoahsArk selects unstaged objects and organizes
 them into disc sessions using the following approach:
@@ -379,6 +381,438 @@ them into disc sessions using the following approach:
 **Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25) or larger,
 individual chunks will never exceed disc capacity. Files larger than one disc are
 handled by spreading their chunks across multiple disc sessions.
+
+### 5.2 Multi-Session Support (Incremental Disc Burning)
+
+**Goal**: Fill a disc gradually over multiple burn operations (sessions) until capacity is reached.
+
+#### Session Lifecycle
+
+```
+Session 1: New disc (growisofs -Z)
+  → Disc status: open, used: 12 GB / 23 GB
+  → Can add more sessions
+
+Session 2: Continue disc (growisofs -M)
+  → Disc status: open, used: 18 GB / 23 GB
+  → Can add more sessions
+
+Session 3: Continue disc (growisofs -M)
+  → Disc status: full, used: 23 GB / 23 GB
+  → No more sessions possible
+
+(Optional) Manual close:
+  noahsark disc close <disc_id>
+  → Disc status: closed (even if space remains)
+```
+
+#### Multi-Session Workflow
+
+```bash
+# Session 1: First burn (new disc)
+noahsark stage --size=BD-25
+# → Allocates new disc: 20260224-001-BD25
+# → Creates: .noahsark/staged/20260224-001-BD25-s1/
+# → Packed: 12 GB, Remaining: 11 GB
+
+noahsark burn 20260224-001-BD25-s1 /dev/sr0
+# → Burns session 1 with: growisofs -Z /dev/sr0 ...
+# → Updates discs/20260224-001-BD25.json: session 1 burned
+
+# Session 2: Continue same disc (weeks later)
+noahsark commit -m "More backups"
+noahsark stage --disc=20260224-001-BD25
+# → Reuses disc: 20260224-001-BD25
+# → Creates: .noahsark/staged/20260224-001-BD25-s2/
+# → Packed: 6 GB, Remaining: 5 GB
+
+noahsark burn 20260224-001-BD25-s2 /dev/sr0
+# → Burns session 2 with: growisofs -M /dev/sr0 ...
+# → Updates discs/20260224-001-BD25.json: session 2 burned
+
+# Session 3: Final session (disc nearly full)
+noahsark commit -m "Final batch"
+noahsark stage --disc=20260224-001-BD25
+# → Creates: .noahsark/staged/20260224-001-BD25-s3/
+# → Packed: 5 GB, Remaining: 0 GB
+# → Disc marked as "full"
+
+noahsark burn 20260224-001-BD25-s3 /dev/sr0 --mark-archived
+# → Burns final session
+# → Disc status: full (automatically closed)
+```
+
+#### No-Overwrite Guarantee
+
+**Critical safety rule**: Objects are **never duplicated** within the same disc.
+
+When staging for an existing disc (`--disc=<disc_id>`):
+1. Load disc metadata: `.noahsark/discs/<disc_id>.json`
+2. Read all previous sessions: which objects are already on this disc
+3. **Filter out** objects already on disc from selection
+4. Only stage objects **not yet on this disc**
+5. This prevents:
+   - ❌ Same object in multiple sessions on one disc
+   - ❌ Wasted disc space
+   - ❌ Index conflicts
+
+**Implementation note**: The global index tracks `(object_hash, disc_id, session)` tuples.
+Before staging, query: `SELECT session FROM index WHERE hash=? AND disc_id=?`
+If result exists → skip this object for this disc.
+
+#### Session Metadata Tracking
+
+Each session is tracked in two places:
+
+**1. Disc metadata** (`.noahsark/discs/<disc_id>.json`):
+```json
+{
+  "disc_id": "20260224-001-BD25",
+  "label": "Project Backup Q1",
+  "type": "BD-25",
+  "capacity": 25025314816,
+  "status": "open",
+  "sessions": [
+    {
+      "session": 1,
+      "created": "2026-02-24T12:00:00+08:00",
+      "commit": "a1b2c3d4e5f6...",
+      "objects": 5432,
+      "bytes": 12884901888,
+      "burned": true,
+      "burned_at": "2026-02-24T12:30:00+08:00"
+    },
+    {
+      "session": 2,
+      "created": "2026-03-01T09:00:00+08:00",
+      "commit": "f6e5d4c3b2a1...",
+      "objects": 2345,
+      "bytes": 6442450944,
+      "burned": true,
+      "burned_at": "2026-03-01T09:15:00+08:00"
+    },
+    {
+      "session": 3,
+      "created": "2026-03-10T14:00:00+08:00",
+      "commit": "b2c3d4e5f6a7...",
+      "objects": 1890,
+      "bytes": 5368709120,
+      "burned": false,
+      "burned_at": null
+    }
+  ],
+  "total_objects": 9667,
+  "total_bytes": 24696061952,
+  "remaining_bytes": 329252864
+}
+```
+
+**2. On-disc session metadata** (`NOAHSARK/disc.json` on each session):
+```json
+{
+  "disc_id": "20260224-001-BD25",
+  "label": "Project Backup Q1",
+  "type": "BD-25",
+  "session_id": 2,
+  "created": "2026-03-01T09:00:00+08:00",
+  "commit": "f6e5d4c3b2a1...",
+  "object_count": 2345,
+  "session_bytes": 6442450944,
+  "cumulative_bytes": 19327352832,
+  "previous_sessions": [1]
+}
+```
+
+#### Session Status States
+
+| Status | Meaning | Can Stage? | Can Burn? | Can GC? |
+|--------|---------|------------|-----------|---------|
+| **open** | Has remaining capacity | ✅ Yes | ✅ Yes | ❌ No |
+| **full** | Reached capacity limit | ❌ No | ❌ No | ✅ Yes |
+| **closed** | Manually closed by user | ❌ No | ❌ No | ✅ Yes |
+| **error** | Burn failed, needs retry | ✅ Yes (same session) | ✅ Yes | ❌ No |
+
+#### UDF Multi-Session Technical Details
+
+**growisofs behavior**:
+- `-Z device`: Create new filesystem (session 1)
+  - Writes UDF anchor at beginning
+  - Creates new volume descriptor sequence
+  - First session is always -Z
+
+- `-M device`: Append to existing filesystem (session 2+)
+  - Reads existing UDF metadata
+  - Appends new files/directories
+  - Updates anchor and file set descriptors
+  - **Does NOT overwrite existing data**
+  - Each session is write-once, append-only
+
+**Important**: UDF multi-session is append-only. Once session N is burned,
+its data is immutable. Session N+1 adds new data without touching session N.
+
+#### Capacity Management
+
+Remaining capacity calculation:
+```
+remaining = disc_capacity - sum(session.bytes for session in sessions) - safety_margin
+```
+
+Safety margin accounts for:
+- UDF session linking overhead (~10-50 MB per session)
+- File descriptor overhead
+- Anchor volume descriptor updates
+- Conservative: reserve 100 MB for sessions 2+
+
+**Example (BD-25, 23.28 GiB usable)**:
+```
+Session 1: 12.0 GB → Remaining: 11.28 GB
+Session 2:  6.0 GB → Remaining:  5.28 GB (minus 100 MB overhead = 5.18 GB)
+Session 3:  5.0 GB → Remaining:  0.18 GB (too small, disc marked "full")
+```
+
+#### Multi-Session Best Practices
+
+1. **Plan session sizes**: Aim for 2-4 sessions per disc (not 20+ tiny sessions)
+2. **Session overhead**: Each session adds ~10-50 MB UDF overhead
+3. **Burn verification**: Verify each session before adding next
+4. **Keep discs accessible**: Need physical disc to add more sessions
+5. **Close when done**: Manually close disc if you won't add more sessions
+
+### 5.3 Cross-Disc Scenarios
+
+NoahsArk handles three common cross-disc scenarios:
+
+#### Scenario 1: Multiple Commits per Disc (Multi-Session)
+
+**Situation**: A disc with multiple sessions, each containing objects from different commits.
+
+```
+Disc: 20260224-001-BD25
+├─ Session 1 (12 GB): commit a1b2c3d4 (2026-02-24)
+├─ Session 2 (6 GB):  commit f6e5d4c3 (2026-03-01)
+└─ Session 3 (5 GB):  commit b2c3d4e5 (2026-03-10)
+```
+
+**How it works**:
+- Each session references its commit SHA-256 in `disc.json`
+- Global index tracks: `(object_hash, disc_id, session, commit)`
+- Restoring commit a1b2c3d4 reads only from session 1
+- Restoring commit b2c3d4e5 may need sessions 1+2+3 (parent chain)
+
+**Example workflow**:
+```bash
+# Week 1: First backup
+noahsark commit -m "Week 1 backup"
+noahsark stage --size=BD-25
+noahsark burn 20260224-001-BD25-s1 /dev/sr0
+# → Disc has 11 GB remaining
+
+# Week 2: Add more to same disc
+noahsark commit -m "Week 2 backup"
+noahsark stage --disc=20260224-001-BD25
+noahsark burn 20260224-001-BD25-s2 /dev/sr0
+# → Disc has 5 GB remaining
+
+# Week 3: Final session
+noahsark commit -m "Week 3 backup"
+noahsark stage --disc=20260224-001-BD25
+noahsark burn 20260224-001-BD25-s3 /dev/sr0
+# → Disc full
+```
+
+#### Scenario 2: One Commit Spanning Multiple Discs
+
+**Situation**: A single commit has too many objects to fit on one disc.
+
+```
+Commit: a1b2c3d4 (50 GB of new data)
+├─ Disc 1: 23 GB of chunks/blobs
+├─ Disc 2: 23 GB of chunks/blobs
+└─ Disc 3: 4 GB of chunks/blobs
+```
+
+**How it works**:
+- All objects reference the same commit SHA-256
+- Global index distributes objects across discs:
+  ```
+  chunk_001 → disc-001, session 1, commit a1b2c3d4
+  chunk_002 → disc-001, session 1, commit a1b2c3d4
+  chunk_003 → disc-002, session 1, commit a1b2c3d4
+  ...
+  ```
+- Restoring requires: "Insert disc 1, then disc 2, then disc 3"
+
+**Example workflow**:
+```bash
+# Large backup (50 GB)
+noahsark commit -m "Huge backup"
+
+# Stage for disc 1
+noahsark stage --size=BD-25
+# → Packed: 23 GB, Pending: 27 GB, Disc: 20260224-001-BD25
+
+noahsark burn 20260224-001-BD25-s1 /dev/sr0 --mark-archived
+
+# Stage for disc 2 (automatically allocates new disc)
+noahsark stage --size=BD-25
+# → Packed: 23 GB, Pending: 4 GB, Disc: 20260224-002-BD25
+
+noahsark burn 20260224-002-BD25-s1 /dev/sr0 --mark-archived
+
+# Stage for disc 3
+noahsark stage --size=BD-25
+# → Packed: 4 GB, Pending: 0 GB, Disc: 20260224-003-BD25
+
+noahsark burn 20260224-003-BD25-s1 /dev/sr0 --mark-archived
+
+# All objects for commit a1b2c3d4 now on discs 1-3
+```
+
+**Restore workflow**:
+```bash
+noahsark restore a1b2c3d4 /restore/path
+
+# NoahsArk will prompt:
+# "Insert disc: 20260224-001-BD25"
+# (user inserts disc 1)
+# "Reading 23 GB from disc 1..."
+#
+# "Insert disc: 20260224-002-BD25"
+# (user inserts disc 2)
+# "Reading 23 GB from disc 2..."
+#
+# "Insert disc: 20260224-003-BD25"
+# (user inserts disc 3)
+# "Reading 4 GB from disc 3..."
+#
+# "Restore complete: 50 GB"
+```
+
+#### Scenario 3: Single File Exceeding Disc Capacity
+
+**Situation**: A single file (e.g., 50 GB video or VM image) larger than BD-25 (23 GB).
+
+```
+File: /data/large-vm.qcow2 (50 GB)
+├─ Chunk 0-1399 (22.4 GB) → Disc 1
+├─ Chunk 1400-2799 (22.4 GB) → Disc 2
+└─ Chunk 2800-3124 (5.2 GB) → Disc 3
+```
+
+**How it works**:
+- File is chunked into 16 MiB pieces (50 GB ≈ 3,125 chunks)
+- Blob object lists all 3,125 chunk hashes
+- Chunks distributed across multiple discs by staging algorithm
+- Index tracks each chunk location:
+  ```
+  chunk_hash_0000 → disc-001
+  chunk_hash_0001 → disc-001
+  ...
+  chunk_hash_1400 → disc-002
+  ...
+  chunk_hash_2800 → disc-003
+  ```
+
+**Example workflow**:
+```bash
+# Add 50 GB file
+noahsark commit -m "Add large VM image"
+
+# Stage automatically splits across discs
+noahsark stage --size=BD-25
+# → Disc 1: chunks 0-1399
+
+noahsark stage --size=BD-25
+# → Disc 2: chunks 1400-2799
+
+noahsark stage --size=BD-25
+# → Disc 3: chunks 2800-3124
+
+# Burn all three discs
+noahsark burn <disc-1> /dev/sr0 --mark-archived
+noahsark burn <disc-2> /dev/sr0 --mark-archived
+noahsark burn <disc-3> /dev/sr0 --mark-archived
+```
+
+**Restore workflow**:
+```bash
+noahsark restore <commit> /data/large-vm.qcow2 /restore/
+
+# NoahsArk reassembles file:
+# 1. Load blob object: 3,125 chunks listed
+# 2. Query index for each chunk location
+# 3. Group by disc: chunks 0-1399 (disc 1), 1400-2799 (disc 2), etc.
+# 4. Prompt for discs in order
+# 5. Stream chunks from disc → reassemble file
+# 6. Verify Merkle root after complete
+```
+
+**Important notes**:
+- **No file size limit**: Files can be arbitrarily large
+- **Chunk-level deduplication**: Identical 16 MiB chunks stored once
+- **Merkle verification**: Entire file verified after reassembly
+- **Disc order**: Chunks requested in optimal disc order (minimize disc swaps)
+
+#### Cross-Disc Index Queries
+
+Global index schema supports cross-disc queries:
+
+```sql
+-- Find all discs needed for a commit
+SELECT DISTINCT disc_id FROM index_entries
+WHERE hash IN (SELECT blob_hash FROM commit WHERE commit_hash = ?);
+
+-- Find all discs needed for a file
+SELECT DISTINCT disc_id FROM index_entries
+WHERE hash IN (SELECT chunk_hash FROM blob WHERE blob_hash = ?);
+
+-- Count objects per disc
+SELECT disc_id, COUNT(*) FROM index_entries GROUP BY disc_id;
+```
+
+#### Staging Algorithm for Cross-Disc Commits
+
+When staging a large commit across multiple discs:
+
+1. **Collect unstaged objects** from `.noahsark/objects/`
+2. **Sort by priority**: commits/trees first, then blobs, then chunks
+3. **Greedy bin-packing**: fill current disc until capacity reached
+4. **Allocate next disc**: if objects remain, allocate new disc_id
+5. **Repeat**: until all objects staged
+6. **Update index**: record `(object_hash, disc_id, session)` for each object
+
+**Result**: Commit objects naturally distributed across discs based on capacity.
+
+#### Restore Prompts and Disc Swapping
+
+When restoring data spanning multiple discs, NoahsArk provides clear prompts:
+
+```
+Restoring commit: a1b2c3d4e5f6...
+Date: 2026-02-24 12:00:00
+Files: 1,234 files, 50 GB
+
+Required discs:
+  1. 20260224-001-BD25 (23 GB, 1,432 chunks)
+  2. 20260224-002-BD25 (23 GB, 1,432 chunks)
+  3. 20260224-003-BD25 (4 GB, 261 chunks)
+
+Insert disc 1/3: 20260224-001-BD25
+Press Enter when ready...
+
+[User inserts disc]
+
+Reading from disc 1... [████████████████] 23 GB / 23 GB
+
+Insert disc 2/3: 20260224-002-BD25
+Press Enter when ready...
+
+[continues...]
+```
+
+**Optimization**: NoahsArk orders chunk requests to minimize disc swaps:
+- Read all needed chunks from disc 1 before requesting disc 2
+- Never asks for same disc twice (reads everything needed in one pass)
 
 **Disc capacity considerations:**
 - Nominal capacities assume perfect media, but real-world discs vary
@@ -857,7 +1291,7 @@ noahsark burn [staged-dir|disc_id] [device] [--mark-archived]
   --mark-archived    After successful burn and verify, mark disc as closed
                      and update index so objects can be GC'd
 
-    Session 1 (new disc):
+    Session 1 (new disc, fresh burn):
       noahsark burn .noahsark/staged/20260224-001-BD25-s1/ /dev/sr0
 
       Executes:
@@ -868,10 +1302,13 @@ noahsark burn [staged-dir|disc_id] [device] [--mark-archived]
           -V '20260224-001-BD25' \
           .noahsark/staged/20260224-001-BD25-s1/NOAHSARK/
 
+      -Z: Create new UDF filesystem (session 1 only)
       Note: -allow-limited-size is required for BD-50/BD-100/BD-128 (bypasses ISO 9660 size limits)
 
-    Session 2+ (continue disc):
+    Session 2+ (append to existing disc):
       noahsark burn .noahsark/staged/20260224-001-BD25-s2/ /dev/sr0
+
+      Detects session number from directory name (s2, s3, etc.)
 
     You may also pass a `disc_id` instead of the staged-dir; the CLI will
     locate the matching staged session directory (most-recent open session)
