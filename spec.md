@@ -299,15 +299,20 @@ File: 42 MiB (44040192 bytes)
 This eliminates complexity and ensures all NoahsArk repositories are compatible.
 
 
-### 5.6 Bin-Packing Strategy
+## 5. Staging Strategy
 
-When staging, chunks are sorted by commit order and packed using a First Fit Decreasing
-bin-packing approach:
+When staging objects for disc burning, NoahsArk selects unstaged objects and organizes
+them into disc sessions using the following approach:
 
-1. Collect all chunks not yet allocated to a disc from `.noahsark/objects/`
-2. Sort by type priority: commits and trees first (small, needed for restore), then blobs by file
-3. Fill packs greedily until `pack_target_size` is reached
-4. If a single chunk exceeds the pack size, it is split across consecutive packs (rare with 4 MiB max chunk)
+1. Collect all objects not yet allocated to a disc from `.noahsark/objects/`
+2. Sort by type priority: commits and trees first (small, needed for restore), then blobs and chunks
+3. Select objects greedily until the disc's remaining capacity is reached
+4. Copy selected objects to `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/` preserving the hash-based directory structure
+5. Update the global index to record which objects are on which disc session
+
+**Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25),
+individual chunks will never exceed disc capacity. Files larger than one disc are
+handled by spreading their chunks across multiple disc sessions.
 
 ---
 
@@ -697,9 +702,9 @@ noahsark disc label <disc_id> <new_label>
 noahsark disc import [mount-point]
     Scan a mounted disc's manifest and pack headers; register into local index.
 
-noahsark watch [source-dir] [--debounce=30s] [--auto-iso=false] [--size=BD-25]
+noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--size=BD-25]
     Start fsnotify daemon (see §8).
-    --auto-iso: when pending objects exceed disc capacity, auto-run noahsark iso.
+    --auto-stage: when pending objects exceed disc capacity, auto-run noahsark stage.
 
 noahsark cat-object [hash]
     Print the decoded content of any object (debug).
