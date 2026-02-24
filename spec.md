@@ -19,7 +19,7 @@ media. It provides:
 - **Disc-spanning** — files larger than one disc split across multiple discs automatically
 - **Point-in-time restore** — full commit chain (Git-like) enables any snapshot retrieval
 - **Real-time change detection** — fsnotify (inotify on Linux) watches source directories
-- **Hierarchical integrity** — per-file Merkle trees (BitTorrent v2 style) + CRC32 per entry
+- **Hierarchical integrity** — per-file Merkle trees (BitTorrent v2 style)
 - **Duplicate discs for redundancy** — no FEC; burn two identical copies of each disc for simple redundancy
 - **Pure file operations** — no filesystem-specific features required
 
@@ -33,7 +33,7 @@ Source files
      ▼  fsnotify (real-time) OR manual invocation
   noahsark commit
      │
-    ├─ Fixed-size 16 MiB chunking  →  bloom filter check  →  global index check
+     ├─ Fixed-size 16 MiB chunking  → global index check
      │                              │ new chunk?
      │                            yes → write loose object to .noahsark/objects/
      │                             no → skip (dedup)
@@ -55,8 +55,8 @@ Source files
      │  --disc       resume a partially-filled disc session (optional)
      │               if omitted, a new disc_id is allocated
      │
-    ├─ Load disc session state (remaining capacity, already-staged objects)
-    ├─ Select unstaged objects up to remaining capacity
+     ├─ Load disc session state (remaining capacity, already-staged objects)
+     ├─ Select unstaged objects up to remaining capacity
      ├─ Compute per-file Merkle trees → embed in blob objects
      ├─ Update global index with disc locations
      ├─ Write disc.json + manifest
@@ -107,6 +107,15 @@ SHA-256 provides 256-bit collision resistance (~2^128 security level after birth
 - ✅ New: Commits named by SHA-256, parent = SHA-256 hash
 - **Why**: Content-addressing enables verification of entire history chain and
   ensures commits are truly immutable (changing any field changes the hash)
+
+**Encoding specification:**
+
+All metadata objects (blobs, trees, commits) are stored as UTF-8 encoded text files:
+- **Character encoding**: UTF-8 (no BOM)
+- **Line endings**: Unix-style LF (`\n`)
+- **Chunk objects**: Raw binary data (no text encoding)
+
+This ensures full Unicode support for filenames, paths, and commit messages across all platforms.
 
 ### 3.1 Chunk
 
@@ -197,9 +206,15 @@ tree
 ...
 ```
 
+**Entry format (space-separated):**
+- `mode`: POSIX permission bits (decimal ASCII, e.g., 100644)
 - `type`: one of `blob`, `tree`, `link`
 - `object_sha256`: SHA-256 hash of the referenced object (hex, 64 chars)
-- `name`: filename or subdirectory name
+- `name`: filename or subdirectory name (UTF-8, everything after the 3rd space)
+
+**Parsing rule:** Split each line on space to extract the first 3 fields (mode, type, hash). Everything after the 3rd space is the filename, which may contain spaces and UTF-8 characters.
+
+**Filename restrictions:** Filenames cannot contain newline (`\n`) or null bytes. All other UTF-8 characters (including spaces, Chinese, Japanese, emoji, etc.) are supported.
 
 Tree entries include POSIX-like mode bits (Git-style) so permissions are
 tracked as part of the tree object. Changing mode/ownership/ACLs will change
@@ -216,9 +231,13 @@ Examples:
 tree
 100644 blob a1b2c3d4... README.md
 100755 blob f6e7d8c9... install.sh
+100644 blob 1a2b3c4d... my document.txt
+100644 blob 2b3c4d5e... 文档.pdf
 040000 tree 9f8e7d6c... src
 120000 link 5a4b3c2d... link-to-config
 ```
+
+Note: `my document.txt` (with space) and `文档.pdf` (UTF-8 Chinese) are fully supported.
 
 Optional ownership and extended attributes:
 - `uid`/`gid`: optional integer owner/group stored as a separate `attrs` block
@@ -275,10 +294,21 @@ hostname <HOSTNAME>
 - `author`: who created the backup + when
 - `committer`: who committed it + when (usually same as author)
 - `hostname`: machine hostname for tracking backup source
-- `<COMMIT_MESSAGE>`: optional multi-line commit message (after blank line)
+- `<COMMIT_MESSAGE>`: optional multi-line commit message (UTF-8, after blank line)
 
 The section after `---` lists **only new or changed blobs** in this commit (incremental).
 Unchanged files are implicit via the tree structure.
+
+**Blob list format:**
+```
+<blob_sha256> <relative_path>
+```
+- `blob_sha256`: 64-char hex SHA-256 hash
+- `relative_path`: UTF-8 path, everything after the first space (may contain spaces)
+
+**Parsing rule:** Split each blob list line on the first space to extract the hash (64 chars). Everything after the first space is the relative path, which may contain spaces and UTF-8 characters.
+
+**Path restrictions:** Paths cannot contain newline (`\n`) or null bytes.
 
 **Naming (content-addressed):**
 - Commit SHA-256 = `SHA-256("commit " + size + "\0" + commit_content)`
@@ -303,7 +333,11 @@ Backup after system upgrade
 ---
 d4e5f6a7b8c9012... /home/user/documents/file.txt
 c3d4e5f6a7b8901... /home/user/photos/img.jpg
+a1b2c3d4e5f6789... /home/user/documents/my report.pdf
+e5f6a7b8c9d0123... /home/user/文档/照片.jpg
 ```
+
+Note: Paths with spaces (`my report.pdf`) and UTF-8 characters (`文档/照片.jpg`) are fully supported.
 
 This commit would be named by its SHA-256 hash, e.g.:
 `.noahsark/objects/a1/b2c3d4e5f6789...`

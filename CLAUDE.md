@@ -20,18 +20,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NoahsArk uses a four-tier object model where all objects are content-addressed by SHA-256:
 
-1. **Chunk** (16 MiB fixed-size): Raw bytes of file segments
-2. **Blob**: File metadata listing constituent chunks with Merkle root
-3. **Tree**: Directory structure with mode/type/hash/name entries
-4. **Commit**: Snapshot with tree hash, parent commit hash, metadata, and changed blob list
+1. **Chunk** (16 MiB fixed-size): Raw data bytes stored in `objects/`, named by chunk hash
+2. **Blob**: File metadata stored in `metadata/`, contains chunk list, chunk hashes, Merkle root, size, and other file info
+3. **Tree**: Directory structure with mode/type/hash/name entries, stored in `metadata/`
+4. **Commit**: Snapshot with tree hash, parent commit hash, metadata, and changed blob list, stored in `metadata/`
 
 **Critical Design Principle:** All objects including commits are named by their SHA-256 hash, forming immutable content-addressed storage. Commits point to parent commits via SHA-256 hash (not timestamp), creating a verifiable history chain.
+
+**Storage Separation:** Raw chunk data is stored separately from structural metadata:
+- **Rationale**: Chunks are large (16 MiB each) and can be GC'd after disc archival, while metadata (blobs, trees, commits) is small and kept permanently for history
+- **Benefit**: Simpler garbage collection logic and clearer separation of concerns
+- **Location**: `objects/` for raw chunk data, `metadata/` for blobs/trees/commits
 
 ### Repository Structure
 
 ```
 .noahsark/
-├── objects/XX/YY...        # Content-addressed storage (all object types)
+├── objects/XX/YY...        # Raw chunk data only (16 MiB blocks, named by hash)
+├── metadata/XX/YY...       # Structural metadata (blobs, trees, commits)
 ├── staged/                 # Staged disc sessions awaiting burn
 │   └── <disc_id>-s<N>/    # Per-session staging directories
 ├── discs/                  # Disc metadata JSON files
@@ -45,7 +51,8 @@ NOAHSARK/
 ├── disc.json              # Session metadata
 ├── manifest.json          # Object listing for this session
 ├── index.db              # Index snapshot for this disc
-└── objects/XX/YY...      # Objects stored directly (no pack files)
+├── objects/XX/YY...       # Raw chunk data only (16 MiB blocks, named by hash)
+└── metadata/XX/YY...      # Structural metadata (blobs, trees, commits)
 ```
 
 ### Multi-Session Workflow
@@ -114,6 +121,30 @@ NoahsArk supports incremental disc burning where a partially-filled disc can hav
 - SHA-256 throughout
 - Single-pass implementation: compute Merkle leaves (16 KiB) and chunk hashes (16 MiB) simultaneously
 
+### Object Encoding
+**Metadata objects (blobs, trees, commits):**
+- Encoding: UTF-8 text files (no BOM)
+- Line endings: Unix-style LF (`\n`)
+- Full Unicode support for filenames, paths, and commit messages
+
+**Chunk objects:**
+- Raw binary data (no text encoding)
+
+**Tree entry format:**
+```
+<mode> <type> <hash> <filename>
+```
+- Parsing: Split on space for first 3 fields, everything after 3rd space is filename
+- Filenames: UTF-8, may contain spaces (cannot contain `\n` or null bytes)
+- Examples: `my file.txt`, `文档.pdf` fully supported
+
+**Commit blob list format:**
+```
+<blob_sha256> <relative_path>
+```
+- Parsing: Split on first space for hash (64 chars), everything after is path
+- Paths: UTF-8, may contain spaces (cannot contain `\n` or null bytes)
+
 ### Disc Capacity Presets
 - BD-25: 23.28 GiB usable (after UDF overhead + 5% safety margin)
 - BD-50: 46.55 GiB
@@ -147,7 +178,9 @@ This enables:
 - Follow Go project layout conventions
 
 **Core Components to Implement:**
-- Object storage engine (read/write blobs, trees, commits, chunks)
+- Object storage engine with separated storage:
+  - Raw chunk data → `.noahsark/objects/XX/YY...`
+  - Metadata objects (blobs/trees/commits) → `.noahsark/metadata/XX/YY...`
 - Chunker (fixed 16 MiB with simultaneous Merkle tree computation)
 - SQLite index management with bloom filter
 - Commit chain traversal (parent pointer walking)
@@ -163,20 +196,37 @@ This enables:
 
 **Critical Safety Rules:**
 - Never duplicate objects within the same disc across sessions
-- Never delete objects from `.noahsark/objects/` unless verified on burned disc
+- Never delete chunks from `.noahsark/objects/` unless verified on burned disc
+- Metadata objects in `.noahsark/metadata/` should persist (blobs/trees/commits are small)
 - Always verify disc capacity before staging
 - Preserve content-addressing integrity (hash must match content)
 - Commit SHA-256 must be computed from full commit content
 
+**Storage Organization:**
+- **objects/**: Raw chunk data only (16 MiB blocks) — can be GC'd after archival
+- **metadata/**: Structural metadata (blobs listing chunks, trees, commits) — typically kept permanently for history
+
+**Git Workflow:**
+- Always use `git commit -s` to sign-off commits (adds Signed-off-by line)
+- When completing a batch of changes, commit with sign-off
+- Example: `git commit -s -m "spec: add UTF-8 encoding specification"`
+- Sign-off certifies the Developer Certificate of Origin (DCO)
+
 ### Specification Reference
 
-The `spec.md` file is the **authoritative source** for all design decisions. When implementing:
+The `spec.md` file is the **primary reference** for design decisions. When implementing:
 
 1. Read relevant sections of spec.md thoroughly before coding
 2. Follow the exact object formats specified (blob, tree, commit)
 3. Implement the SHA-256 naming scheme precisely
 4. Honor the fixed 16 MiB chunk size (not configurable)
 5. Follow the multi-session workflow exactly as specified
+
+**Note on Storage Layout:** This CLAUDE.md reflects an updated design decision:
+- **spec.md**: Stores all objects in `objects/` directory
+- **Updated design**: Separates `objects/` (raw chunks only) from `metadata/` (blobs/trees/commits)
+- When implementing, use the separated storage layout documented in this file
+- The spec.md should be updated to reflect this change
 
 ### Common Operations
 
