@@ -66,7 +66,7 @@ Source files
      ├─ Load disc session state (remaining capacity, previous sessions)
      ├─ Query index.db: SELECT chunks WHERE not on any disc
      ├─ Select chunks up to remaining capacity
-     ├─ Copy selected chunks → staged/<disc_id>-s<N>/objects/
+     ├─ Move selected chunks → staged/<disc_id>-s<N>/objects/
      ├─ Copy ALL metadata → staged/<disc_id>-s<N>/metadata/
      ├─ Update global index.db with new chunk → disc mappings
      ├─ Copy updated index.db → staged/<disc_id>-s<N>/s<N>/index.db
@@ -1053,45 +1053,47 @@ NoahsArk manages object lifecycle in three states: **loose** → **staged** → 
 #### Object States
 
 1. **Loose** (`.noahsark/objects/`):
-   - Newly created objects from `noahsark commit`
+   - Newly created chunks from `noahsark commit`
    - Not yet allocated to any disc
    - Available for deduplication
    - Taking up local disk space
 
-2. **Staged** (`.noahsark/staged/<disc_id>-s<N>/NOAHSARK/objects/`):
-   - Copied from loose objects during `noahsark stage`
+2. **Staged** (`.noahsark/staged/<disc_id>-s<N>/objects/`):
+   - Moved from loose during `noahsark stage` (instant, no copying)
    - Ready for burning but not yet on physical media
-   - Still consuming local disk space (loose + staged copy)
+   - Same disk space usage (chunks moved, not duplicated)
 
 3. **Archived** (on physical disc):
    - Successfully burned and verified on optical media
    - Tracked in global index with `disc_id` location
-   - **Loose objects can now be safely deleted**
+   - **Staged chunks can be deleted after successful burn**
+
+**Note:** Metadata (blobs, trees, commits) is copied to every disc, not moved, since it's
+small and needed for disaster recovery.
 
 #### Lifecycle Workflow
 
 ```
 noahsark commit
-  → Creates loose objects in .noahsark/objects/
+  → Creates loose chunks in .noahsark/objects/
+  → Creates metadata in .noahsark/metadata/
 
 noahsark stage --disc=<disc_id>
-  → Copies objects to .noahsark/staged/<disc_id>-s<N>/
-  → Loose objects remain (not deleted yet)
+  → Moves chunks to .noahsark/staged/<disc_id>-s<N>/objects/ (instant)
+  → Copies metadata to .noahsark/staged/<disc_id>-s<N>/metadata/
+  → Chunks no longer in loose objects
 
 noahsark burn <staged-dir> /dev/sr0
   → Burns staged directory to physical disc
   → Verifies written data
 
 noahsark burn --mark-archived <staged-dir>
-  → Updates index: marks objects as archived on disc
-  → Enables GC to delete loose objects
+  → Updates index: marks chunks as archived on disc
+  → Enables deletion of staged/ directory
 
-noahsark gc
-  → Scans .noahsark/objects/
-  → For each object: check if archived on any disc
-  → If archived: mark for deletion
-  → If not archived: keep (needed for recovery)
-  → Optionally: delete staged/ directories for burned discs
+noahsark stage gc
+  → Deletes staged/ directories for successfully burned discs
+  → Frees up disk space
 ```
 
 #### Safe Deletion Rules
