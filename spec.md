@@ -177,11 +177,12 @@ merkle_root <SHA256_HEX>
   to byte ranges; this mapping enables verifying any chunk either by direct
   chunk hash or by reconstructing the corresponding leaves and verifying the
   Merkle root.
-- **Complete binary tree** (BitTorrent v2 BEP 52): Pad file to the next power-of-two
-  number of 16 KiB leaves using pre-computed zero-padding hashes. Implementations can
-  pre-compute hashes for all tree levels (level 0 = leaf, level N = 2^N leaves of zeros),
-  enabling instant padding. Base: `SHA-256(0x00 * 16384) = 0x6a2e93d9...`.
-  No padding data needs to be stored.
+- **Complete binary tree** (BitTorrent v2 BEP 52): The last block is hashed as-is
+  (no data padding). The tree is padded to the next power-of-two number of leaves using
+  pre-computed zero-block hashes. The blob's `size` field determines the exact file size,
+  allowing implementations to distinguish between actual file data and tree padding.
+  Implementations can pre-compute hashes for all tree levels (level 0 = leaf, level N = 2^N
+  zero leaves). Base: `SHA-256(0x00 * 16384) = 0x6a2e93d9...`. No padding data stored.
 
 **Example (42 MiB file):**
 ```
@@ -828,17 +829,17 @@ Each file gets a Merkle tree for hierarchical integrity verification.
 ### Construction
 
 - **Leaf size**: 16 KiB blocks, SHA-256 of each block
+- **Last block**: If the last block is less than 16 KiB, hash it as-is (no padding)
 - **Tree structure**: Complete binary tree (all levels fully filled)
-- **Padding** (BitTorrent v2 BEP 52): Files are padded to the next power-of-two number
-  of leaves using 16 KiB zero blocks. Zero-padding hashes can be pre-computed for all
-  levels:
+- **Tree padding** (BitTorrent v2 BEP 52): Pad the tree (not the data) to the next
+  power-of-two number of leaves using pre-computed zero-block hashes:
   ```
   Level 0 (leaf):  SHA-256(0x00 * 16384) = 0x6a2e93d95edbeb477f304c2c70c9bb951affd714b8e358c2d59845c8c2d4e0ee
   Level 1:         SHA-256(H0 || H0)      = (pre-computable)
   Level 2:         SHA-256(H1 || H1)      = (pre-computable)
   ...and so on for higher levels
   ```
-  These pre-computed hashes enable instant padding without computation or storage.
+  These pre-computed hashes enable instant tree padding without storing data.
 - **Internal nodes**: `internal_hash = SHA-256(left || right)`
 - **Root**: stored as `merkle_root` in the blob object (hex, 64 chars)
 
