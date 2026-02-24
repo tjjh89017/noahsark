@@ -241,12 +241,33 @@ The `spec.md` file is the **primary reference** for design decisions. When imple
 
 ### Common Operations
 
-**Creating a backup:**
+**Creating a backup (single disc):**
 ```bash
 noahsark commit -m "Initial backup"
 noahsark stage --size=BD-25 --label="Backup Q1 2026"
 noahsark test-burn .noahsark/staged/<disc_id>-s1/ test.iso  # Optional: test first
 noahsark burn <disc_id> /dev/sr0 --mark-archived
+```
+
+**Creating a backup (multi-disc, stage-all-first recommended):**
+```bash
+noahsark commit -m "Large backup"
+
+# Stage all discs first (discover total count upfront)
+noahsark stage --size=BD-25  # Disc 1
+noahsark stage --size=BD-25  # Disc 2
+noahsark stage --size=BD-25  # Disc 3
+# → Now you know you need 3 blank BD-25s
+
+# Burn all discs
+noahsark burn <disc_id_1> /dev/sr0
+noahsark burn <disc_id_2> /dev/sr0
+noahsark burn <disc_id_3> /dev/sr0
+
+# Mark all as archived
+noahsark disc mark-archived <disc_id_1>-s1
+noahsark disc mark-archived <disc_id_2>-s1
+noahsark disc mark-archived <disc_id_3>-s1
 ```
 
 **Multi-session continuation:**
