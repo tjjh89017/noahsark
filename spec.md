@@ -451,6 +451,9 @@ noahsark burn 20260224-001-BD25-s1 /dev/sr0
 # → Burns session 1 with: growisofs -Z /dev/sr0 ...
 # → Updates discs/20260224-001-BD25.json: session 1 burned
 
+# After verifying, mark session 1 as archived
+noahsark disc mark-archived 20260224-001-BD25-s1
+
 # Session 2: Continue same disc (weeks later)
 noahsark commit -m "More backups"
 noahsark stage --disc=20260224-001-BD25
@@ -462,6 +465,9 @@ noahsark burn 20260224-001-BD25-s2 /dev/sr0
 # → Burns session 2 with: growisofs -M /dev/sr0 ...
 # → Updates discs/20260224-001-BD25.json: session 2 burned
 
+# After verifying, mark session 2 as archived
+noahsark disc mark-archived 20260224-001-BD25-s2
+
 # Session 3: Final session (disc nearly full)
 noahsark commit -m "Final batch"
 noahsark stage --disc=20260224-001-BD25
@@ -469,9 +475,12 @@ noahsark stage --disc=20260224-001-BD25
 # → Packed: 5 GB, Remaining: 0 GB
 # → Disc marked as "full"
 
-noahsark burn 20260224-001-BD25-s3 /dev/sr0 --mark-archived
+noahsark burn 20260224-001-BD25-s3 /dev/sr0
 # → Burns final session
 # → Disc status: full (automatically closed)
+
+# After verifying, mark session 3 as archived
+noahsark disc mark-archived 20260224-001-BD25-s3
 ```
 
 #### No-Overwrite Guarantee
@@ -642,18 +651,21 @@ Disc: 20260224-001-BD25
 noahsark commit -m "Week 1 backup"
 noahsark stage --size=BD-25
 noahsark burn 20260224-001-BD25-s1 /dev/sr0
+noahsark disc mark-archived 20260224-001-BD25-s1
 # → Disc has 11 GB remaining
 
 # Week 2: Add more to same disc
 noahsark commit -m "Week 2 backup"
 noahsark stage --disc=20260224-001-BD25
 noahsark burn 20260224-001-BD25-s2 /dev/sr0
+noahsark disc mark-archived 20260224-001-BD25-s2
 # → Disc has 5 GB remaining
 
 # Week 3: Final session
 noahsark commit -m "Week 3 backup"
 noahsark stage --disc=20260224-001-BD25
 noahsark burn 20260224-001-BD25-s3 /dev/sr0
+noahsark disc mark-archived 20260224-001-BD25-s3
 # → Disc full
 ```
 
@@ -688,21 +700,25 @@ noahsark commit -m "Huge backup"
 noahsark stage --size=BD-25
 # → Packed: 23 GB, Pending: 27 GB, Disc: 20260224-001-BD25
 
-noahsark burn 20260224-001-BD25-s1 /dev/sr0 --mark-archived
+noahsark burn 20260224-001-BD25-s1 /dev/sr0
 
 # Stage for disc 2 (automatically allocates new disc)
 noahsark stage --size=BD-25
 # → Packed: 23 GB, Pending: 4 GB, Disc: 20260224-002-BD25
 
-noahsark burn 20260224-002-BD25-s1 /dev/sr0 --mark-archived
+noahsark burn 20260224-002-BD25-s1 /dev/sr0
 
 # Stage for disc 3
 noahsark stage --size=BD-25
 # → Packed: 4 GB, Pending: 0 GB, Disc: 20260224-003-BD25
 
-noahsark burn 20260224-003-BD25-s1 /dev/sr0 --mark-archived
+noahsark burn 20260224-003-BD25-s1 /dev/sr0
 
 # All objects for commit a1b2c3d4 now on discs 1-3
+# After verifying all sessions, mark as archived
+noahsark disc mark-archived 20260224-001-BD25-s1
+noahsark disc mark-archived 20260224-002-BD25-s1
+noahsark disc mark-archived 20260224-003-BD25-s1
 ```
 
 **Restore workflow**:
@@ -766,9 +782,14 @@ noahsark stage --size=BD-25
 # → Disc 3: chunks 2800-3124
 
 # Burn all three discs
-noahsark burn <disc-1> /dev/sr0 --mark-archived
-noahsark burn <disc-2> /dev/sr0 --mark-archived
-noahsark burn <disc-3> /dev/sr0 --mark-archived
+noahsark burn <disc-1>-s1 /dev/sr0
+noahsark burn <disc-2>-s1 /dev/sr0
+noahsark burn <disc-3>-s1 /dev/sr0
+
+# After verifying, mark sessions as archived
+noahsark disc mark-archived <disc-1>-s1
+noahsark disc mark-archived <disc-2>-s1
+noahsark disc mark-archived <disc-3>-s1
 ```
 
 **Restore workflow**:
@@ -1140,9 +1161,9 @@ noahsark burn <staged-dir> /dev/sr0
   → Burns staged directory to physical disc
   → Verifies written data
 
-noahsark burn --mark-archived <staged-dir>
-  → Updates index: marks chunks as archived on disc
-  → Enables deletion of staged/ directory
+noahsark disc mark-archived <disc_id>-s<N>
+  → Updates index: marks all objects in session as archived
+  → Enables safe garbage collection of local copies
 
 noahsark stage gc
   → Deletes staged/ directories for successfully burned discs
@@ -1203,9 +1224,10 @@ noahsark burn 20260224-001-BD50-s1 /dev/sr0
 # → Disc successfully burned and verified
 # → Index updated: objects now on disc-001
 
-# Mark as archived (optional explicit step)
-noahsark burn --mark-archived 20260224-001-BD50-s1
-# → Disc marked as closed in discs/20260224-001-BD50.json
+# Mark session as archived (explicit step after verifying burn)
+noahsark disc mark-archived 20260224-001-BD50-s1
+# → All objects in session s1 marked as archived
+# → Enables safe garbage collection
 
 # Reclaim space
 noahsark gc
@@ -1266,6 +1288,30 @@ noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--disc=BD-25]
 ```
 noahsark init [dir]
     Create .noahsark/ in dir (default: cwd). Generate repo UUID and gear seed.
+
+noahsark status
+    Show repository status including unstaged objects, staged sessions, and current commit.
+
+    Output:
+      Current commit: a1b2c3d4... "Weekly backup 2026-02-24"
+
+      Unstaged objects (waiting for stage):
+        Chunks:    142 objects  (2.21 GiB)
+        Blobs:      87 objects  (43.5 KB)
+        Trees:      12 objects  (6.1 KB)
+        Commits:     1 object   (892 B)
+        Total:     242 objects  (2.21 GiB)
+
+      Staged sessions (waiting for burn):
+        20260224-001-BD25-s1    12.4 GiB
+        20260224-001-BD25-s2     6.0 GiB
+        Total:                  18.4 GiB
+
+      Archived on discs:
+        5 discs, 127.3 GiB total
+
+    Use this command after `noahsark commit` to see how much data is waiting
+    to be staged, and after `noahsark stage` to see what's waiting for burn.
 
 noahsark commit [dir]
     Chunk files in dir, dedup against index, write objects, create commit, update HEAD.
@@ -1346,11 +1392,20 @@ noahsark stage [output-dir] [flags]
           noahsark stage --size=BD-128              # start a new BD-128 disc
           noahsark stage --size=100G                # start a custom-sized disc
 
-noahsark burn [staged-dir|disc_id] [device] [--mark-archived]
-  Wrapper around growisofs for easier burning with multi-session support.
+noahsark stage list
+    List all staged sessions waiting for burn.
 
-  --mark-archived    After successful burn and verify, mark disc as closed
-                     and update index so objects can be GC'd
+    Output:
+      STAGED SESSION                    DISC ID              SIZE     STATUS
+      20260224-001-BD25-s1              20260224-001-BD25    12.4 GiB waiting
+      20260224-001-BD25-s2              20260224-001-BD25     6.0 GiB waiting
+      20260310-002-BD50-s1              20260310-002-BD50    23.0 GiB waiting
+
+    Shows all directories in .noahsark/staged/ that have not been burned yet.
+    After burning with `noahsark burn`, the staged directory can be removed.
+
+noahsark burn [staged-dir|disc_id] [device]
+  Wrapper around growisofs for easier burning with multi-session support.
 
     Session 1 (new disc, fresh burn):
       noahsark burn .noahsark/staged/20260224-001-BD25-s1/ /dev/sr0
@@ -1570,6 +1625,29 @@ noahsark disc close <disc_id>
     Mark an open disc as closed (will not be used for future iso runs).
     Updates status to "closed" even if space remains.
 
+noahsark disc mark-archived <disc_id>-s<N>
+    Mark all objects in a specific session as safely archived, enabling garbage collection.
+
+    After burning and verifying a session, use this command to mark that session's objects
+    as archived. This allows `noahsark gc` to safely delete local copies of chunks
+    that exist on the burned session.
+
+    Example workflow:
+      noahsark burn 20260224-001-BD25-s1 /dev/sr0
+      noahsark verify --disc=20260224-001-BD25 --level=full
+      noahsark disc mark-archived 20260224-001-BD25-s1
+      noahsark gc  # Can now safely delete chunks on session s1
+
+      # Later, burn session 2 and mark it separately
+      noahsark burn 20260224-001-BD25-s2 /dev/sr0
+      noahsark disc mark-archived 20260224-001-BD25-s2
+
+    You can also pass the staged directory path directly:
+      noahsark disc mark-archived .noahsark/staged/20260224-001-BD25-s1/
+
+    WARNING: Only mark a session as archived after verifying the burn succeeded.
+    Marking before verification could result in data loss if the disc is unreadable.
+
 noahsark disc label <disc_id> <new_label>
     Update the label for an existing disc.
 
@@ -1616,14 +1694,16 @@ optional Phase 2 extension, but they are out of scope for the current design.
 ### Phase 1 — Core (MVP)
 
 - [ ] `noahsark init` — create `.noahsark/` structure, generate config
+- [ ] `noahsark status` — show unstaged objects, staged sessions, and current commit
 - [ ] `noahsark commit` — fixed-size chunking, CAS dedup (bloom + index), write objects, build tree, write commit (SHA-256 named), update HEAD
 - [ ] `noahsark stage` — select objects for disc, move chunks and copy metadata to staged directory, disc session tracking
-- [ ] `noahsark burn` — wrapper around growisofs with multi-session support + --mark-archived
+- [ ] `noahsark burn` — wrapper around growisofs with multi-session support
 - [ ] `noahsark test-burn` — generate ISO from staged dir using genisoimage (for testing)
 - [ ] `noahsark restore` — lookup via global index, reassemble from chunks, support SHA-256 commit refs
 - [ ] `noahsark log` — walk commit chain from HEAD via parent pointers
 - [ ] `noahsark gc` — garbage collect loose objects safely archived on discs
-- [ ] `noahsark disc list` / `noahsark disc close` / `noahsark disc label` — disc session management
+- [ ] `noahsark stage list` — list staged sessions waiting for burn
+- [ ] `noahsark disc list` / `noahsark disc close` / `noahsark disc label` / `noahsark disc mark-archived` — disc session management
 - [ ] `noahsark cat-object` — debug tool (works with all object types including commits)
 - [ ] Global index (SQLite) + bloom filter
 - [ ] Content-addressed commits (SHA-256 naming, parent pointers)
