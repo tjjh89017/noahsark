@@ -1379,7 +1379,7 @@ This lifecycle management ensures:
 
 ## 8. fsnotify / inotify Watcher
 
-`noahsark watch` runs as a daemon to auto-commit changes.
+`noahsark watch` runs as a daemon to monitor file changes and track them for periodic commits.
 
 ```
 noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--disc=BD-25]
@@ -1390,10 +1390,14 @@ noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--disc=BD-25]
 1. Register fsnotify watcher on source dir; recursively add all subdirectories
 2. Handle `Create`, `Write`, `Remove`, `Rename` events
 3. New subdirectories: automatically add to watcher
-4. **Debounce**: collect events for `--debounce` duration before triggering commit
-5. On trigger: run incremental `noahsark commit` for changed paths
-6. If `--auto-stage` and staging area reaches disc capacity: automatically run `noahsark stage`
-7. Log all events and commits to `.noahsark/watch.log`
+4. **Debounce**: collect events for `--debounce` duration (default: 30s) before processing
+5. On trigger: track changed paths internally, **do NOT auto-commit**
+6. Commit on schedule (e.g., hourly, daily) or manually via `noahsark commit`
+7. If `--auto-stage`: automatically run `noahsark stage` when unstaged objects reach threshold
+8. Log all events to `.noahsark/watch.log`
+
+**Rationale**: Auto-committing on every file change creates too many commits. Instead,
+watch mode tracks changes continuously but only commits on a reasonable schedule.
 
 ### Limitations
 
