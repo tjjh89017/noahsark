@@ -489,17 +489,20 @@ noahsark disc mark-archived 20260224-001-BD25-s3
 
 When staging for an existing disc (`--disc=<disc_id>`):
 1. Load disc metadata: `.noahsark/discs/<disc_id>.json`
-2. Read all previous sessions: which objects are already on this disc
-3. **Filter out** objects already on disc from selection
-4. Only stage objects **not yet on this disc**
-5. This prevents:
-   - ❌ Same object in multiple sessions on one disc
-   - ❌ Wasted disc space
-   - ❌ Index conflicts
+   - Check disc status (open/full/closed)
+   - Get remaining capacity
+   - Determine next session number
+2. Query `index.db` to find unstaged objects:
+   ```sql
+   SELECT hash FROM objects
+   WHERE hash NOT IN (SELECT hash FROM index_entries WHERE disc_id IS NOT NULL)
+   ```
+3. Select objects up to remaining capacity
+4. Stage selected objects to new session
 
-**Implementation note**: The global index tracks `(object_hash, disc_id, session)` tuples.
-Before staging, query: `SELECT session FROM index WHERE hash=? AND disc_id=?`
-If result exists → skip this object for this disc.
+**Implementation note**: The global `index.db` is the single source of truth for
+which objects are on which discs. Disc metadata JSON files only store capacity,
+status, and session metadata - NOT object lists.
 
 #### Session Metadata Tracking
 
@@ -559,6 +562,13 @@ Each session is tracked in two places:
   "session_bytes": 6442450944
 }
 ```
+
+**Data store roles:**
+- **`index.db`**: Source of truth for object → disc mappings. Query this to find which objects are unstaged.
+- **`discs/<disc_id>.json`**: Disc-level metadata (capacity, status, session stats). Used for capacity management, session numbering, and `disc list` command. Does NOT contain object lists.
+- **`sN/session.json` on disc**: Immutable session metadata burned onto the disc.
+
+When staging, always query `index.db` to determine which objects to stage. The disc JSON file is only loaded to check capacity, status, and determine the next session number.
 
 **Note:** The UDF volume label is set to `disc_id` when burning session 1 and cannot be changed
 in subsequent sessions. Each session has its own `sN/session.json` file to avoid conflicts.
