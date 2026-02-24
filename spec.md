@@ -704,27 +704,24 @@ Commit: a1b2c3d4 (50 GB of new data)
   ```
 - Restoring requires: "Insert disc 1, then disc 2, then disc 3"
 
-**Example workflow**:
+**Example workflow** (best practice: stage all discs first):
 ```bash
 # Large backup (50 GB)
 noahsark commit -m "Huge backup"
 
-# Stage for disc 1
+# Stage all discs first (discover total disc count upfront)
 noahsark stage --size=BD-25
 # → Packed: 23 GB, Pending: 27 GB, Disc: 20260224-001-BD25
 
-noahsark burn 20260224-001-BD25-s1 /dev/sr0
-
-# Stage for disc 2 (automatically allocates new disc)
 noahsark stage --size=BD-25
 # → Packed: 23 GB, Pending: 4 GB, Disc: 20260224-002-BD25
 
-noahsark burn 20260224-002-BD25-s1 /dev/sr0
-
-# Stage for disc 3
 noahsark stage --size=BD-25
 # → Packed: 4 GB, Pending: 0 GB, Disc: 20260224-003-BD25
 
+# Now burn all discs (you know you need 3 blank BD-25s)
+noahsark burn 20260224-001-BD25-s1 /dev/sr0
+noahsark burn 20260224-002-BD25-s1 /dev/sr0
 noahsark burn 20260224-003-BD25-s1 /dev/sr0
 
 # All objects for commit a1b2c3d4 now on discs 1-3
@@ -733,6 +730,8 @@ noahsark disc mark-archived 20260224-001-BD25-s1
 noahsark disc mark-archived 20260224-002-BD25-s1
 noahsark disc mark-archived 20260224-003-BD25-s1
 ```
+
+**Note**: You can also interleave staging and burning (stage disc 1, burn disc 1, stage disc 2, burn disc 2, etc.) to reduce local disk space usage, but staging all discs first is recommended as it provides full visibility before committing to optical media.
 
 **Restore workflow**:
 ```bash
