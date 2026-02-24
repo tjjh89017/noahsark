@@ -83,7 +83,9 @@ NoahsArk supports incremental disc burning where a partially-filled disc can hav
 ### Essential Commands
 
 - `noahsark init` — Create `.noahsark/` structure
-- `noahsark commit` — Chunk files, deduplicate, write objects, create commit
+- `noahsark commit` — mtime-based incremental scan, chunk files, deduplicate, write objects, create commit
+  - ⚠️ **Important**: Filesystem must be stable (no modifications) during commit
+  - `--full-scan` flag for complete scan (ignores mtime optimization)
 - `noahsark stage` — Select unstaged objects and prepare disc image directory
   - `--size=BD-25|BD-50|BD-100|BD-128|<custom>` — Disc capacity
   - `--disc=<disc_id>` — Continue filling existing disc (multi-session)
@@ -98,24 +100,28 @@ NoahsArk supports incremental disc burning where a partially-filled disc can hav
   - `--level=quick|full` — Verification thoroughness
 - `noahsark disc list|close|label|import` — Disc management
 
-### Watch Mode (Phase 3)
-- `noahsark watch` — fsnotify daemon with auto-commit/auto-stage
+### Watch Mode (Phase 2)
+- `noahsark watch` — fsnotify daemon that logs changed files to `.noahsark/watch.log`
+  - Commit reads this log for faster incremental scanning (100% accurate)
+  - Does NOT auto-commit (just logs events)
 
 ## Implementation Phases
 
 ### Phase 1 — Core (MVP)
 - All basic commands: init, commit, stage, burn, test-burn, restore, log, gc
+- mtime-based incremental commits (fast, 99% accurate)
 - SQLite global index + bloom filter
 - Content-addressed commits with parent pointers
 - Multi-session support
+- **Important**: Filesystem stability requirement during commit
 
 ### Phase 2 — Integrity & Recovery
 - Full verification support (quick/full modes)
 - Disc import from mounted media
 - Optional disc piece layer (BitTorrent v2-inspired)
+- `noahsark watch` daemon - logs file changes to watch.log for 100% accurate incremental commits
 
-### Phase 3 — Watch & Optimization
-- fsnotify daemon with auto-stage
+### Phase 3 — Optimization
 - Index consolidation and optimization
 - Optional zstd chunk compression
 
@@ -220,6 +226,12 @@ This enables:
 - Object storage engine with separated storage:
   - Raw chunk data → `.noahsark/objects/XX/YY...`
   - Metadata objects (blobs/trees/commits) → `.noahsark/metadata/XX/YY...`
+- Incremental commit engine:
+  - Phase 1: mtime-based scanning (only process files with mtime > last_commit_time)
+  - Phase 2: Read `.noahsark/watch.log` if exists, combine with mtime scan
+  - Store last_commit_time for incremental detection
+  - `--full-scan` flag bypasses mtime optimization
+  - **Critical**: Warn users filesystem must be stable during commit
 - Chunker (fixed 16 MiB with simultaneous Merkle tree computation)
   - Zero-block elimination: detect magic hash `080acf35...` and skip writing to objects/
 - SQLite index management (hash → disc location mapping)
