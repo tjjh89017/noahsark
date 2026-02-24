@@ -65,8 +65,10 @@ Source files
      │
      ├─ Load disc session state (remaining capacity, previous sessions)
      ├─ Copy ALL metadata → staged/<disc_id>-s<N>/metadata/
-     ├─ Calculate metadata size + reserve space for session overhead (~10-50 MB)
-     ├─ Calculate available space: remaining_capacity - metadata_size - session_overhead
+     ├─ Calculate metadata size + reserve space for overhead
+     │   - Session overhead: ~10-50 MB (session.json + index.db)
+     │   - Final session reserve: 1 GiB (UDF closing + safety margin)
+     ├─ Calculate available space: remaining_capacity - metadata_size - session_overhead - 1GiB_reserve
      ├─ Query index.db: SELECT chunks WHERE not on any disc
      ├─ Select chunks up to available space
      ├─ Move selected chunks → staged/<disc_id>-s<N>/objects/
@@ -379,10 +381,11 @@ them into disc sessions using the following approach:
 
 1. Collect all metadata objects (blobs, trees, commits) from `.noahsark/metadata/`
 2. Copy ALL metadata to `.noahsark/staged/<disc_id>-s<session>/metadata/`
-3. Calculate metadata size and reserve space for session overhead:
+3. Calculate metadata size and reserve space for overhead:
    - Metadata size: sum of all blobs, trees, commits
-   - Session overhead: session.json + index.db (~10-50 MB typically)
-   - Available capacity = disc_capacity - metadata_size - session_overhead
+   - Session overhead: session.json + index.db (~10-50 MB per session)
+   - Final session reserve: 1 GiB (for UDF closing structures and safety margin)
+   - Available capacity = disc_capacity - used_space - metadata_size - session_overhead - 1GiB_reserve
 4. Collect unstaged chunks from `.noahsark/objects/`
 5. Sort chunks by blob order: (a) source blob hash, (b) chunk position within blob
 6. Select chunks greedily until available capacity is reached
@@ -404,11 +407,12 @@ for file B, maintaining file locality across disc boundaries.
 - Blob: ~100-500 bytes per file (chunk list + Merkle root)
 - Tree: ~50-100 bytes per directory entry
 - Commit: ~500-1000 bytes per commit
-- Session overhead: session.json + index.db (~10-50 MB)
+- Session overhead: session.json + index.db (~10-50 MB per session)
+- **Final session reserve: 1 GiB** (UDF closing structures + safety margin)
 
 For a typical backup with 10,000 files, metadata totals ~5-10 MB, negligible compared to
-23 GiB disc capacity. However, the staging algorithm must account for this overhead to
-avoid exceeding disc capacity.
+23 GiB disc capacity. However, the staging algorithm must account for all overhead including
+the 1 GiB final session reserve to avoid exceeding disc capacity.
 
 ### 5.2 Multi-Session Support (Incremental Disc Burning)
 
@@ -581,20 +585,26 @@ its data is immutable. Session N+1 adds new data without touching session N.
 
 Remaining capacity calculation:
 ```
-remaining = disc_capacity - sum(session.bytes for session in sessions) - safety_margin
+remaining = disc_capacity - sum(session.bytes for session in sessions) - final_session_reserve
 ```
 
-Safety margin accounts for:
+**Final session reserve: 1 GiB (1024 MiB)**
+
+This reserve accounts for:
 - UDF session linking overhead (~10-50 MB per session)
-- File descriptor overhead
-- Anchor volume descriptor updates
-- Conservative: reserve 100 MB for sessions 2+
+- Final session closing structures and volume descriptors
+- Filesystem metadata growth (filenames, directory structures)
+- Safety buffer to prevent disc overflow during final burn
+- Conservative margin for UDF filesystem overhead
+
+When `remaining < 1 GiB`, the disc transitions to **full** status and cannot accept more sessions
 
 **Example (BD-25, 23.28 GiB usable)**:
 ```
-Session 1: 12.0 GB → Remaining: 11.28 GB
-Session 2:  6.0 GB → Remaining:  5.28 GB (minus 100 MB overhead = 5.18 GB)
-Session 3:  5.0 GB → Remaining:  0.18 GB (too small, disc marked "full")
+Session 1: 12.0 GB → Remaining: 11.28 GB (11.28 - 1 GiB reserve = 10.28 GB available)
+Session 2:  8.0 GB → Remaining:  3.28 GB (3.28 - 1 GiB reserve = 2.28 GB available)
+Session 3:  2.0 GB → Remaining:  1.28 GB (1.28 - 1 GiB reserve = 0.28 GB available)
+Session 4:  0.2 GB → Remaining:  1.08 GB (< 1 GiB reserve, disc marked "full")
 ```
 
 #### Multi-Session Best Practices
@@ -802,8 +812,10 @@ SELECT disc_id, COUNT(*) FROM index_entries GROUP BY disc_id;
 When staging a large commit across multiple discs:
 
 1. **Copy all metadata** to staged directory (blobs, trees, commits)
-2. **Reserve space** for metadata + session overhead (~10-50 MB)
-3. **Calculate available capacity** = disc_capacity - metadata_size - session_overhead
+2. **Reserve space** for overhead:
+   - Session overhead: ~10-50 MB (session.json + index.db)
+   - Final session reserve: 1 GiB (UDF closing + safety margin)
+3. **Calculate available capacity** = disc_capacity - used_space - metadata_size - session_overhead - 1GiB_reserve
 4. **Collect unstaged chunks** from `.noahsark/objects/`
 5. **Sort chunks by blob order** (source blob + position within blob)
 6. **Greedy bin-packing**: fill current disc until available capacity reached
