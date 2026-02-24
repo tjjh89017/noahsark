@@ -240,10 +240,15 @@ Named by: SHA-256 of this tree metadata text.
 
 **Symlinks:**
 
-Symlinks are stored as:
+Symlink objects are stored as separate objects containing the link target:
 ```
-link <sha256_of_link_target_string> <name>
+link
+<target_string>
 ```
+
+Where `<target_string>` is the literal symlink target path (UTF-8, e.g., `../config/app.conf`).
+
+The link object is named by SHA-256 of this content and referenced in tree entries with mode `120000`.
 
 ### 3.4 Commit
 
