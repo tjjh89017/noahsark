@@ -48,8 +48,8 @@ Source files
      │  --disc       resume a partially-filled disc session (optional)
      │               if omitted, a new disc_id is allocated
      │
-     ├─ Load disc session state (remaining capacity, already-packed objects)
-     ├─ Bin-pack unstaged chunks up to remaining capacity
+    ├─ Load disc session state (remaining capacity, already-packed objects)
+    ├─ Bin-pack unstaged chunks up to remaining capacity
      ├─ Compute per-file Merkle trees → embed in blob objects
      ├─ Generate pack index (fanout table + sorted hash entries)
      ├─ Write manifest + global index snapshot
@@ -60,8 +60,14 @@ Source files
           Pending:    3.2 GiB  (unstaged objects waiting for next stage)
 
        → "Burn: growisofs -Z /dev/sr0 -udf -V '20260224-001-BD25' output-dir/"
-       → "Or:   noahsark stage --disc=<disc_id>  to continue this disc"
-       → "Or:   noahsark stage --size=BD-25      to start a new disc"
+       → "Or:   noahsark stage --disc=<disc_id>  to continue filling this disc (session N)"
+       → "Or:   noahsark stage --size=BD-25      to allocate and start a new disc"
+       
+     `noahsark stage` may be run repeatedly: each invocation will continue
+     assigning objects into the active disc session (or allocate the next
+     disc if the previous one is full). All staged sessions are written to
+     `.noahsark/staged/<disc_id>-s<session>/` and remain there until burned
+     with `noahsark burn` or removed with `noahsark stage gc`.
 
   noahsark restore [commit] [src-path] [dest-path]
      └─ Global index lookup → locate chunks across discs → reassemble → verify Merkle
@@ -547,6 +553,13 @@ noahsark stage [output-dir] [flags]
                             (omit to allocate a new disc_id: YYYYMMDD-NNN-TYPE)
     --label=<text>          optional label for new discs (for disc list display)
 
+    Behavior:
+      `noahsark stage` can be executed multiple times. Each run will continue
+      packing unstaged objects into the specified `--disc` session (or create
+      a new disc if none specified). Staged output directories accumulate on
+      disk and wait for an explicit burn. Use `noahsark burn <staged-dir>` to
+      burn a specific staged session to physical media.
+
     Auto-generated output dir: .noahsark/staged/<disc_id>-s<session>/
     Example: .noahsark/staged/20260224-001-BD25-s1/
 
@@ -577,8 +590,8 @@ noahsark stage [output-dir] [flags]
           noahsark stage --disc=20260224-001-BD25   # continue this disc (session 2)
           noahsark stage --size=BD-25               # start a new disc
 
-noahsark burn [staged-dir] [device]
-    Wrapper around growisofs for easier burning with multi-session support.
+noahsark burn [staged-dir|disc_id] [device]
+  Wrapper around growisofs for easier burning with multi-session support.
 
     Session 1 (new disc):
       noahsark burn .noahsark/staged/20260224-001-BD25-s1/ /dev/sr0
@@ -593,6 +606,11 @@ noahsark burn [staged-dir] [device]
 
     Session 2+ (continue disc):
       noahsark burn .noahsark/staged/20260224-001-BD25-s2/ /dev/sr0
+
+    You may also pass a `disc_id` instead of the staged-dir; the CLI will
+    locate the matching staged session directory (most-recent open session)
+    and burn that session. This makes it easy to invoke `noahsark burn <disc_id>`
+    when you prefer identifying discs by ID instead of path.
 
       Executes:
         growisofs -M /dev/sr0 \
