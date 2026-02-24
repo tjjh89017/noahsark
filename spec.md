@@ -215,7 +215,7 @@ tree
 ```
 
 **Entry format (space-separated):**
-- `mode`: POSIX permission bits (decimal ASCII, e.g., 100644)
+- `mode`: POSIX permission bits (octal, without leading 0, e.g., 100644)
 - `type`: one of `blob`, `tree`, `link`
 - `object_sha256`: SHA-256 hash of the referenced object (hex, 64 chars)
 - `name`: filename or subdirectory name (UTF-8, everything after the 3rd space)
@@ -228,7 +228,7 @@ Tree entries include POSIX-like mode bits (Git-style) so permissions are
 tracked as part of the tree object. Changing permissions will change the
 tree SHA, just like changing file contents or renaming entries.
 
-`mode` field (decimal ASCII) semantics:
+`mode` field (octal, without leading 0) semantics:
 - `040000` — tree (directory)
 - `100644` — regular non-executable file
 - `100755` — regular executable file
