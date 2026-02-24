@@ -11,7 +11,7 @@ NoahsArk is a content-addressable backup system designed for write-once Blu-ray 
 media. It provides:
 
 - **Incremental backup** — unchanged data is never re-written (content-addressed dedup)
-- **Sub-file deduplication** — FastCDC content-defined chunking detects unchanged regions even in modified files
+- **Sub-file deduplication** — fixed-size chunking (16 MiB) with blob-level indexing
 - **Pack files** — chunks bundled into single files sized to match disc capacity
 - **Disc image generation** — outputs a directory ready for burning (UDF-compatible layout)
 - **Multi-session support** — partially-filled discs can be continued in future burn sessions
@@ -32,7 +32,7 @@ Source files
      ▼  fsnotify (real-time) OR manual invocation
   noahsark commit
      │
-     ├─ FastCDC chunking  →  bloom filter check  →  global index check
+    ├─ Fixed-size 16 MiB chunking  →  bloom filter check  →  global index check
      │                              │ new chunk?
      │                            yes → write loose object to .noahsark/objects/
      │                             no → skip (dedup)
@@ -920,7 +920,7 @@ Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
 | blob / tree / commit object model | Git |
 | Pack file with trailing header | Restic |
 | Global index (hash → pack + offset) | Restic |
-| FastCDC rolling-hash chunking | Casync / Restic / FastCDC paper |
+| (removed) | |
 | Chunk store as CAS directory | Casync |
 | Write-directly-to-pack (no loose repack) | Bup |
 | Per-file Merkle tree | BitTorrent v2 (BEP 52) |
