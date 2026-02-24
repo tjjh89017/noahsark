@@ -1279,15 +1279,25 @@ noahsark stage gc
 
 #### Safe Deletion Rules
 
-An object in `.noahsark/objects/` can be deleted if:
+**Raw chunk data** in `.noahsark/objects/` can be deleted if:
 1. ✅ It exists on at least one burned and verified disc
 2. ✅ The disc is marked as `status: closed` (will not be re-burned)
 3. ✅ The global index records the disc location
 
-An object MUST NOT be deleted if:
+A raw chunk MUST NOT be deleted if:
 - ❌ It's only in `staged/` (not yet burned)
 - ❌ The disc is marked as `status: open` (may be re-staged)
 - ❌ Verification failed (data may be corrupt)
+
+**Metadata objects** in `.noahsark/metadata/` (blobs, trees, commits):
+- ✅ **Should be kept permanently** for history and commit chain integrity
+- Metadata is small (~KB per object) and preserves full repository history
+- Deleting metadata breaks commit chains and prevents future restores
+- GC commands should **NOT** delete metadata objects by default
+
+**Special case - Zero-block chunks:**
+- The magic hash `080acf35...` is never written to `objects/` (see §2.4)
+- No GC needed since these chunks don't exist on disk
 
 #### GC Command
 
@@ -1299,14 +1309,16 @@ Options:
   --aggressive    Also delete staged/ directories for closed discs
 
 Behavior:
-  1. Scan all loose objects in .noahsark/objects/
-  2. For each object:
-     a. Query index: is this object on any disc?
+  1. Scan raw chunk data in .noahsark/objects/ (NOT metadata/)
+  2. For each chunk:
+     a. Query index: is this chunk on any disc?
      b. Check disc status: is the disc closed?
      c. If yes to both: safe to delete
   3. Report space to be reclaimed
-  4. Delete loose objects (unless --dry-run)
+  4. Delete loose chunks (unless --dry-run)
   5. If --aggressive: delete staged/ dirs for closed discs
+
+Note: GC never deletes metadata objects (.noahsark/metadata/) as they're kept for history
 
 Safety:
   - Never deletes objects needed for open discs
