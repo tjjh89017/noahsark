@@ -919,10 +919,49 @@ noahsark test-burn [staged-dir] [output.iso]
 
     Use cases:
       - CI/CD testing without physical media
-        - Verify objects and manifest before burning
-      - Mount ISO locally to test restore:
-          mount -o loop test.iso /mnt/test
-          noahsark restore HEAD /path /mnt/test/NOAHSARK/objects/
+      - Verify objects and manifest before burning
+      - Test restore workflow without wasting a disc
+      - Validate disc image size fits target media
+
+    Complete testing workflow:
+
+      1. Stage objects for disc:
+         noahsark stage --size=BD-25
+         → Creates .noahsark/staged/20260224-001-BD25-s1/
+
+      2. Generate test ISO:
+         noahsark test-burn .noahsark/staged/20260224-001-BD25-s1/ test.iso
+         → Creates test.iso (can be large, e.g., 23 GB for BD-25)
+
+      3. Mount ISO for testing:
+         sudo mkdir -p /mnt/test-disc
+         sudo mount -o loop,ro test.iso /mnt/test-disc
+         → ISO mounted at /mnt/test-disc/
+
+      4. Verify disc contents:
+         ls -lh /mnt/test-disc/NOAHSARK/
+         cat /mnt/test-disc/NOAHSARK/disc.json
+         → Check disc.json, objects/, index.db, etc.
+
+      5. Test restore from ISO:
+         noahsark restore <commit-sha> /path/to/restore
+         → NoahsArk will read objects from mounted ISO via index
+
+      6. Verify restored files:
+         diff -r /original/path /path/to/restore
+         → Should be identical
+
+      7. Unmount ISO:
+         sudo umount /mnt/test-disc
+
+      8. If all tests pass, burn to real disc:
+         noahsark burn 20260224-001-BD25-s1 /dev/sr0 --mark-archived
+
+    Notes:
+      - ISO size matches staged directory size
+      - Mount as read-only (-o ro) to simulate real optical disc
+      - NoahsArk can read directly from mounted ISO via index
+      - Testing with ISO is much faster than burning and reading real disc
 
 noahsark gc [--dry-run] [--aggressive]
     Garbage collect loose objects that are safely archived on discs.
@@ -956,9 +995,67 @@ noahsark log [--count=20] [--oneline]
       f6e5d4c3  John Doe  2026-02-23 18:30:00  Daily backup
       ...
 
-noahsark verify [--disc=<disc_id>|--all]
-    Verify CRC32 of all entries, chunk SHA-256 hashes, and Merkle roots.
-    Can verify against a mounted disc or against the local staged ISO.
+noahsark verify [--disc=<disc_id>|--iso=<path>|--all] [--level=quick|full]
+    Hierarchical verification of disc contents or ISO images.
+
+    Options:
+      --disc=<disc_id>    Verify specific disc (must be mounted or in staged/)
+      --iso=<path>        Verify specific ISO file (will mount temporarily)
+      --all               Verify all available discs
+      --level=quick       Quick: verify index + disc.json only (default)
+      --level=full        Full: verify all object SHA-256 hashes + Merkle roots
+
+    Verification levels:
+
+      Quick verification (fast, ~seconds):
+        1. Check disc.json format and integrity
+        2. Check index.db/manifest.json format
+        3. Verify object count matches disc.json
+        4. Spot-check: random sample of 10 objects
+
+      Full verification (slow, ~minutes for BD-25):
+        1. All quick verification steps
+        2. Verify SHA-256 of every object against filename
+        3. For each blob: verify all chunk hashes
+        4. For each blob: recompute and verify Merkle root
+        5. For each commit: verify parent pointer chain
+        6. Report any corruption or mismatches
+
+    Examples:
+
+      # Quick verify staged ISO before burning
+      noahsark verify --iso=test.iso --level=quick
+
+      # Full verify after burning to ensure disc is good
+      sudo mount /dev/sr0 /mnt/disc
+      noahsark verify --disc=20260224-001-BD25 --level=full
+      sudo umount /mnt/disc
+
+      # Verify ISO file thoroughly before burning
+      noahsark verify --iso=test.iso --level=full
+
+      # Quick check all mounted discs
+      noahsark verify --all --level=quick
+
+    Output format:
+      Verifying disc: 20260224-001-BD25
+      ✓ disc.json: valid
+      ✓ index.db: 12,345 objects
+      ✓ Object count: matches
+      ✓ Sample verification: 10/10 objects OK
+
+      [Full mode only:]
+      ✓ Chunks: 11,645/11,645 verified
+      ✓ Blobs: 456/456 verified
+      ✓ Merkle roots: 456/456 verified
+      ✓ Commits: 10/10 verified
+
+      Result: PASS (no errors)
+
+    Exit codes:
+      0  - All checks passed
+      1  - Verification failed (corruption detected)
+      2  - Disc/ISO not found or not readable
 
 noahsark index consolidate
   Rebuild or optimize the repository `index.db` (import any ephemeral snapshots
@@ -1067,7 +1164,198 @@ optional Phase 2 extension, but they are out of scope for the current design.
 
 ---
 
-## 14. Design Inspirations
+## 14. Testing and Verification Workflow
+
+NoahsArk provides comprehensive testing capabilities to validate disc images
+before burning expensive optical media.
+
+### 14.1 Complete Test Workflow
+
+```bash
+# 1. Create a backup commit
+noahsark commit -m "Test backup"
+
+# 2. Stage objects for a test disc
+noahsark stage --size=BD-25
+# → Output: .noahsark/staged/20260224-001-BD25-s1/
+
+# 3. Generate test ISO (no physical drive needed)
+noahsark test-burn .noahsark/staged/20260224-001-BD25-s1/ test.iso
+# → Creates test.iso (~23 GB for BD-25)
+
+# 4. Quick verification of ISO
+noahsark verify --iso=test.iso --level=quick
+# → Verifies disc.json, index, spot-checks objects
+
+# 5. Optional: Full verification (thorough but slow)
+noahsark verify --iso=test.iso --level=full
+# → Verifies all SHA-256 hashes and Merkle roots
+
+# 6. Mount ISO for restore testing
+sudo mkdir -p /mnt/test-disc
+sudo mount -o loop,ro test.iso /mnt/test-disc
+
+# 7. Test restore from ISO
+noahsark restore HEAD /tmp/restore-test
+# → NoahsArk reads objects from /mnt/test-disc/NOAHSARK/objects/
+
+# 8. Verify restored data
+diff -r /original/data /tmp/restore-test
+# → Should be identical
+
+# 9. Unmount ISO
+sudo umount /mnt/test-disc
+
+# 10. If all tests pass, burn to real disc
+noahsark burn 20260224-001-BD25-s1 /dev/sr0 --mark-archived
+
+# 11. Verify physical disc after burning
+sudo mount /dev/sr0 /mnt/disc
+noahsark verify --disc=20260224-001-BD25 --level=full
+sudo umount /mnt/disc
+
+# 12. Clean up local storage after successful burn
+noahsark gc --aggressive
+# → Deletes loose objects and staged/ directory
+```
+
+### 14.2 CI/CD Integration
+
+For automated testing in continuous integration:
+
+```yaml
+# Example: GitHub Actions workflow
+name: NoahsArk Backup Test
+
+on: [push]
+
+jobs:
+  test-backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install NoahsArk
+        run: |
+          go install github.com/user/noahsark@latest
+          sudo apt-get install -y genisoimage
+
+      - name: Initialize repository
+        run: noahsark init
+
+      - name: Create test backup
+        run: noahsark commit -m "CI test backup"
+
+      - name: Stage for disc
+        run: noahsark stage --size=BD-25
+
+      - name: Generate test ISO
+        run: |
+          noahsark test-burn \
+            .noahsark/staged/*/  \
+            test.iso
+
+      - name: Verify ISO
+        run: noahsark verify --iso=test.iso --level=full
+
+      - name: Mount and test restore
+        run: |
+          sudo mkdir -p /mnt/test
+          sudo mount -o loop,ro test.iso /mnt/test
+          noahsark restore HEAD /tmp/restore
+          sudo umount /mnt/test
+
+      - name: Compare data
+        run: diff -r original/ /tmp/restore
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: backup-iso
+          path: test.iso
+```
+
+### 14.3 Verification Scenarios
+
+#### Scenario 1: Pre-burn Validation
+**Goal**: Ensure staged data is correct before wasting a disc.
+
+```bash
+noahsark stage --size=BD-25
+noahsark test-burn .noahsark/staged/*/  test.iso
+noahsark verify --iso=test.iso --level=full
+# If PASS → safe to burn
+# If FAIL → fix issues and re-stage
+```
+
+#### Scenario 2: Post-burn Verification
+**Goal**: Confirm physical disc was burned correctly.
+
+```bash
+noahsark burn 20260224-001-BD25-s1 /dev/sr0
+sudo mount /dev/sr0 /mnt/disc
+noahsark verify --disc=20260224-001-BD25 --level=full
+sudo umount /mnt/disc
+# If PASS → disc is good, can GC local objects
+# If FAIL → re-burn on new disc
+```
+
+#### Scenario 3: Periodic Disc Health Check
+**Goal**: Detect bit rot or disc degradation over time.
+
+```bash
+# Mount old disc
+sudo mount /dev/sr0 /mnt/disc
+
+# Verify integrity
+noahsark verify --disc=20260310-001-BD25 --level=full
+
+# Check specific files
+noahsark restore <commit> /tmp/restore
+diff -r /mnt/disc/NOAHSARK/objects/ /tmp/restore/
+
+sudo umount /mnt/disc
+```
+
+#### Scenario 4: Restore Rehearsal
+**Goal**: Practice restore procedure before actual disaster.
+
+```bash
+# Simulate disaster: delete local .noahsark/
+rm -rf .noahsark/
+
+# Reinitialize
+noahsark init
+
+# Import from disc
+sudo mount /dev/sr0 /mnt/disc
+noahsark import /mnt/disc
+
+# Restore data
+noahsark restore <commit> /restore/path
+
+# Verify
+diff -r /original/data /restore/path
+```
+
+### 14.4 Performance Benchmarks
+
+Typical verification times (BD-25 ~23 GB):
+
+| Operation | Mode | Time | Notes |
+|-----------|------|------|-------|
+| test-burn | - | ~2-3 min | Generate ISO from staged/ |
+| verify | quick | ~5-10 sec | Check metadata + spot-check 10 objects |
+| verify | full | ~5-10 min | Verify all SHA-256 + Merkle roots |
+| mount ISO | - | <1 sec | Mount as loop device |
+| restore | single file | ~10-30 sec | Depends on file size |
+| restore | full commit | ~10-30 min | Depends on data size |
+
+**Note**: ISO operations are much faster than real optical drives:
+- ISO read: ~500 MB/s (disk speed)
+- BD read: ~10-30 MB/s (optical speed, 50x slower)
+
+Testing with ISO before burning saves significant time.
+
+## 15. Design Inspirations
 
 | Feature | Inspired By |
 |---------|------------|
