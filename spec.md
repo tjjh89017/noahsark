@@ -293,66 +293,6 @@ File: 42 MiB (44040192 bytes)
 This eliminates complexity and ensures all NoahsArk repositories are compatible.
 
 
-## 5. On-disc object storage
-
-NoahsArk stores the selected content-addressed objects directly on the disc
-under `NOAHSARK/objects/<hash[:2]>/<hash[2:]>`. There are no `.pack` bundle
-files written to disc; the manifest and pack-index style metadata are replaced
-by a `manifest.json` that lists the objects and their byte lengths. This keeps
-disc contents simple and recoverable by scanning `NOAHSARK/objects/` and
-`manifest.json`.
-
-### 5.1 Disc object layout
-
-```
-NOAHSARK/
-├── objects/
-│   └── XX/YYYY...    # content-addressed object files (same layout as local .noahsark/objects/)
-├── manifest.json     # snapshot of index: list of object hashes, types, lengths
-└── fec/              # Phase 2 only
-    └── fec-<stripe_id>.par
-```
-
-**manifest.json** (example):
-
-```json
-{
-  "created": "<RFC3339>",
-  "objects": [
-    {"hash":"<sha256>", "type":"chunk|blob|tree|commit", "length":16777216},
-    {"hash":"<sha256>", "type":"chunk", "length":10485760}
-  ]
-}
-```
-
-### 5.2 Disc session state
-
-The `.noahsark/discs/<disc_id>.json` format is similar but records object counts
-instead of pack IDs. Example `sessions` entry:
-
-```json
-{
-  "session_id": 1,
-  "iso_file": "20260224-001-BD25-s1.iso",
-  "created": "2026-02-24T12:00:00+08:00",
-  "packed_bytes": 13320000000,
-  "object_count": 12345
-}
-```
-
-When `noahsark iso --disc=<disc_id>` is run:
-1. Load session state → `remaining_bytes` is the budget for this ISO
-2. Copy objects (by hash) into `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/`
-   until `remaining_bytes` is exhausted
-3. Update `used_bytes`, append new session entry
-4. If `remaining_bytes < 10 MiB` after copying, set `status = full`
-5. Generate ISO filename: `<disc_id>-s<session_id>.iso`
-
-When allocating a new disc (no `--disc` flag):
-1. Generate disc_id from current date + next sequence number for today
-2. Prompt user for optional label
-3. Create new session state file
-
 ### 5.6 Bin-Packing Strategy
 
 When staging, chunks are sorted by commit order and packed using a First Fit Decreasing
@@ -410,9 +350,8 @@ all other discs to be present.
 ├── commits/                    # linear commit history: <RFC3339>.json (one file per commit)
 ├── objects/                    # loose objects (blobs, trees, commits, chunks) — only unallocated objects
 │   └── XX/YYYY...              # 2-char prefix / remainder
-├── index/                      # global index files
-│   ├── <hash>.idx              # JSON: hash → disc_id + pack_id + offset + length
-│   └── bloom.bin               # bloom filter for fast dedup check
+├── index.db                    # SQLite global index (hash → disc_id + object_path + length, ...)
+├── bloom.bin                   # optional bloom filter for fast dedup check
 ├── discs/                      # disc session registry
 │   ├── 20260224-001-BD25.json  # disc metadata: label, sessions, capacity, status
 │   ├── 20260224-002-BD50.json
@@ -469,53 +408,46 @@ If chunk size or hash algorithm must change (e.g., SHA-256 is compromised):
 3. Burn new optical discs with the migrated repository
 4. Old repository remains readable by older NoahsArk versions
 
-### 7.3 Global Index (`.noahsark/index/<hash>.idx`)
+### 7.3 Global Index (`.noahsark/index.db`)
 
-```json
-{
-  "version": 1,
-  "created": "<RFC3339>",
-  "merkle_padding": "bep52",    
-  "supersedes": ["<old_index_sha256>"],
-  "entries": [
-    {
-      "hash":    "<sha256_hex>",
-      "type":    "chunk|blob|tree|commit",
-      "disc_id": "<disc_id>",
-      "pack_id": "<pack_sha256>",
-      "offset":  1234,
-      "length":  5678
-    }
-  ]
-}
+The global index is stored as a single SQLite database `index.db` (in the
+local repository `.noahsark/index.db` or on-disc as `NOAHSARK/index.db`). This
+file provides fast, ACID-backed lookups for object locations.
+
+Example SQLite schema (DDL):
+
+```sql
+-- index.db schema: user_version = 1
+CREATE TABLE index_entries (
+  hash TEXT PRIMARY KEY,       -- SHA-256 hex (64 chars)
+  type TEXT NOT NULL,         -- chunk|blob|tree|commit
+  disc_id TEXT,               -- which disc contains the object
+  object_path TEXT,           -- path on disc (e.g. NOAHSARK/objects/XX/YYYY...)
+  offset INTEGER,             -- reserved (NULL for direct-object storage)
+  length INTEGER NOT NULL,    -- byte length of stored object
+  created TEXT,               -- RFC3339 when this index entry was recorded
+  merkle_padding TEXT         -- merkle rule used when applicable (e.g. 'bep52')
+);
+CREATE INDEX IF NOT EXISTS idx_type ON index_entries(type);
+CREATE INDEX IF NOT EXISTS idx_disc ON index_entries(disc_id);
+PRAGMA user_version = 1;
 ```
 
-Note: `merkle_padding` records the Merkle padding rule used when constructing
-per-file Merkle trees. Valid values:
-- `bep52` — BitTorrent v2-style implicit zero-hash padding (canonical power-of-two layout, recommended)
-- `duplicate-last` — promote the unpaired node by computing `parent = SHA-256(left||left)` (alternative)
+Notes:
+- `object_path` is used for direct-object storage on discs (preferred). For
+  historical compatibility `offset`/`pack_id` may exist but are unused for
+  direct-object layout and SHOULD be NULL.
+- `merkle_padding` records the per-repository Merkle padding rule (see config).
+- `index.db` replaces per-hash JSON index snapshots; keep `bloom.bin` for a
+  compact probabilistic negative lookup if desired.
 
-If `bep52` is selected, implementations MAY treat the zero-hash nodes as
-implicit — i.e., the zero-hash value is a predetermined constant derived from
-SHA-256 (per BEP52). Implementations do NOT need to write implicit zero nodes
-to disc; verifiers must reconstruct their contribution when computing the root
-or validating proofs. Always record `merkle_padding` in `config` and in
-`manifest.json` so readers use the same rule.
+Operations:
+- `noahsark index consolidate` now updates or rebuilds `index.db` (importing
+  any ephemeral snapshots or disc-imported index data) and performs optional
+  optimizations (VACUUM, reindex) for fast lookups.
 
-**Index entry fields:**
-- `hash`: SHA-256 hex (64 chars) of the object
-- `type`: object type (chunk, blob, tree, commit)
-- `disc_id`: which disc contains this object
-- `pack_id`: (deprecated) previously referenced a pack file within the disc; when storing
-  objects directly on disc this field is unused.
-- `offset`: byte offset within the pack file (unused for direct-object storage)
-- `length`: byte length of the object data
-
-**Note:** All chunks are 16 MiB except the last chunk of a file (indicated by `length < 16777216`).
-
-Multiple index files may exist. `noahsark index consolidate` merges them.
-
-**Bloom filter** (`.noahsark/index/bloom.bin`): probabilistic set for fast negative lookups.
+Bloom filter (`bloom.bin`): optional file used for very-fast negative lookups
+before touching `index.db`.
 
 ### 7.4 On-Disc Layout (UDF 2.50)
 
@@ -523,10 +455,8 @@ Multiple index files may exist. `noahsark index consolidate` merges them.
 NOAHSARK/
 ├── disc.json                   # this disc's metadata: disc_id, label, session info
 ├── manifest.json               # snapshot of global index (disaster recovery)
-├── index/                      # optional index snapshot files (JSON per-index)
-│   ├── <hash>.idx
-│   └── bloom.bin
-├── index.db                    # optional SQLite snapshot of the global index (for fast lookup)
+├── index.db                    # SQLite global index (fast local lookup)
+├── bloom.bin                   # optional bloom filter for fast negative lookups
 ├── objects/                    # content-addressed object files stored by hash prefix
 │   └── XX/YYYY...
 └── fec/                        # Phase 2 only
@@ -731,7 +661,8 @@ noahsark verify [--disc=<disc_id>|--all]
     Can verify against a mounted disc or against the local staged ISO.
 
 noahsark index consolidate
-    Merge all .noahsark/index/*.idx into one file.
+  Rebuild or optimize the repository `index.db` (import any ephemeral snapshots
+  or disc-imported index data) and perform optional maintenance (VACUUM, reindex).
 
 noahsark disc list [--status=open|full|closed|all]
     List all disc sessions with human-readable formatting:
@@ -833,7 +764,7 @@ Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
 ### Phase 3 — Watch & Optimization
 
 - [ ] `noahsark watch` — fsnotify daemon with debounce and `--auto-iso`
-- [ ] `noahsark index consolidate` — merge index files
+- [ ] `noahsark index consolidate` — rebuild/optimize `index.db` (import snapshots, VACUUM/reindex)
 - [ ] Multi-disc index (`.midx`-style) for fast cross-disc lookup
 - [ ] Zstd compression for chunks
 
