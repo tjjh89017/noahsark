@@ -55,11 +55,11 @@ Source files
      │  --disc       resume a partially-filled disc session (optional)
      │               if omitted, a new disc_id is allocated
      │
-    ├─ Load disc session state (remaining capacity, already-packed objects)
-    ├─ Bin-pack unstaged chunks up to remaining capacity
+    ├─ Load disc session state (remaining capacity, already-staged objects)
+    ├─ Select unstaged objects up to remaining capacity
      ├─ Compute per-file Merkle trees → embed in blob objects
-     ├─ Generate pack index (fanout table + sorted hash entries)
-     ├─ Write manifest + global index snapshot
+     ├─ Update global index with disc locations
+     ├─ Write disc.json + manifest
      ├─ Output: output-dir/  (UDF-compatible directory layout, ready for growisofs)
      └─ Report:
           Packed:    12.4 GiB
@@ -336,7 +336,7 @@ File (42 MiB):
 - Last chunk stores **only actual file bytes** (e.g., 10 MiB for a 42 MiB file)
 - Hash computed on actual data (no zero padding or artificial fill)
 - Blob object records actual chunk length in the `length` field
-- Saves storage space (no wasted bytes in packs)
+- Saves storage space (no padding, no wasted bytes)
 
 **Example:**
 ```
@@ -848,7 +848,7 @@ Implementation note:
 ### Verification Levels
 
 1. **Full file**: verify all leaves → root matches blob's `merkle_root`
-2. **Single disc**: verify the "piece layer" hashes (one hash per pack-worth of data)
+2. **Single disc**: verify the disc_layer hashes (one hash per disc's worth of data, Phase 2+)
 3. **Single block**: verify any 16 KiB block without reading the entire file
 
 This enables restoring and verifying a single disc independently without needing
@@ -988,9 +988,8 @@ PRAGMA user_version = 1;
 ```
 
 Notes:
-- `object_path` is used for direct-object storage on discs (preferred). For
-  historical compatibility `offset`/`pack_id` may exist but are unused for
-  direct-object layout and SHOULD be NULL.
+- `object_path` points to the object file on disc: `NOAHSARK/objects/XX/YYYY...`
+- `offset` field is reserved (NULL) for direct-object storage.
 - `merkle_padding` records the per-repository Merkle padding rule (see config).
 - `index.db` replaces per-hash JSON index snapshots; keep `bloom.bin` for a
   compact probabilistic negative lookup if desired.
@@ -1257,7 +1256,7 @@ noahsark stage [output-dir] [flags]
     Example: .noahsark/staged/20260224-001-BD25-s1/
 
     Output:
-      Writes a directory tree (UDF-compatible layout) with packs, indices, manifest.
+      Writes a directory tree (UDF-compatible layout) with objects, disc.json, manifest.
       Prints a summary:
 
         Created disc: 20260224-001-BD25
@@ -1517,7 +1516,7 @@ noahsark disc label <disc_id> <new_label>
     Update the label for an existing disc.
 
 noahsark disc import [mount-point]
-    Scan a mounted disc's manifest and pack headers; register into local index.
+    Scan a mounted disc's manifest and objects; register into local index.
 
 noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--size=BD-25]
     Start fsnotify daemon (see §8).
@@ -1550,7 +1549,7 @@ optional Phase 2 extension, but they are out of scope for the current design.
 | `github.com/klauspost/compress/zstd` | Phase 2+: Per-chunk zstd compression |
 | `github.com/spf13/cobra` | CLI argument parsing and subcommand routing |
 | `github.com/schollz/progressbar/v3` | Progress display for long-running operations |
-| Standard library | SHA-256, CRC32, JSON, file I/O, UUID generation |
+| Standard library | SHA-256, JSON, file I/O, UUID generation, SQLite |
 
 ---
 
@@ -1574,18 +1573,15 @@ optional Phase 2 extension, but they are out of scope for the current design.
 
 ### Phase 2 — Integrity & Recovery
 
-- [ ] `noahsark verify` — CRC32 + SHA-256 + Merkle verification (against local ISO or mounted disc)
+- [ ] `noahsark verify` — full verification with quick/full modes (ISO or mounted disc)
 - [ ] `noahsark disc import` — scan mounted disc, register into index
-- [ ] Per-file Merkle tree embedded in blob objects
-- [ ] On-disc manifest copy (for disaster recovery without local index)
-- [ ] On-disc manifest copy (for disaster recovery without local index)
+- [ ] Disc piece layer (disc_layer in blob objects, optional)
 
 ### Phase 3 — Watch & Optimization
 
-- [ ] `noahsark watch` — fsnotify daemon with debounce and `--auto-iso`
-- [ ] `noahsark index consolidate` — rebuild/optimize `index.db` (import snapshots, VACUUM/reindex)
-- [ ] Multi-disc index (`.midx`-style) for fast cross-disc lookup
-- [ ] Zstd compression for chunks
+- [ ] `noahsark watch` — fsnotify daemon with debounce and `--auto-stage`
+- [ ] `noahsark index consolidate` — rebuild/optimize `index.db` (VACUUM, reindex, defrag)
+- [ ] Zstd compression for chunks (optional per-chunk compression)
 
 ---
 
@@ -1593,10 +1589,10 @@ optional Phase 2 extension, but they are out of scope for the current design.
 
 | Layer | Mechanism |
 |-------|-----------|
-| Entry level | CRC32 per pack entry |
+| Object level | SHA-256 filename matches content hash |
 | Chunk level | SHA-256 of chunk content verified on read |
 | File level | Merkle root verified after reassembly |
-| Disc level | Pack SHA-256 in index verified on disc scan |
+| Disc level | All object hashes verified during disc import |
 | Cross-disc | Duplicate discs (multiple copies) |
 
 ---
@@ -1796,14 +1792,14 @@ Testing with ISO before burning saves significant time.
 
 | Feature | Inspired By |
 |---------|------------|
-| blob / tree / commit object model | Git |
-| Pack file with trailing header | Restic |
-| Global index (hash → pack + offset) | Restic |
-| (removed) | |
+| Content-addressed object model (blob/tree/commit) | Git |
+| SHA-256 commit naming with parent pointers | Git |
+| Direct object storage (no pack files) | Git (loose objects) |
+| Global index (hash → disc location) | Restic, Git |
 | Chunk store as CAS directory | Casync |
-| Write-directly-to-pack (no loose repack) | Bup |
-| Per-file Merkle tree | BitTorrent v2 (BEP 52) |
+| Per-file Merkle tree (16 KiB leaves) | BitTorrent v2 (BEP 52) |
+| Disc piece layer concept | BitTorrent v2 (piece layers) |
 | Manifest copy on every disc | Borg |
-| Append-only segment files | Borg |
+| Append-only multi-session | Borg, UDF |
 | fsnotify inotify watcher | fsnotify library |
-| (none) | |
+| Fixed-size chunking | Simple and predictable |
