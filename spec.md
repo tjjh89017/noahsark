@@ -20,7 +20,7 @@ media. It provides:
 - **Point-in-time restore** — full commit chain (Git-like) enables any snapshot retrieval
 - **Real-time change detection** — fsnotify (inotify on Linux) watches source directories
 - **Hierarchical integrity** — per-file Merkle trees (BitTorrent v2 style) + CRC32 per entry
-- **Forward Error Correction** — pluggable FEC interface; Reed-Solomon in Phase 2
+- **Duplicate discs for redundancy** — no FEC; burn two identical copies of each disc for simple redundancy
 - **Pure file operations** — no filesystem-specific features required
 
 ---
@@ -378,10 +378,7 @@ The `staged/` directories remain until manually cleaned with `noahsark stage gc`
   "chunk_size":        16777216,
   "hash_algo":         "sha256",
   "merkle_padding":   "bep52",    
-  "compression":       "none",
-  "fec_enabled":       false,
-  "fec_data_shards":   10,
-  "fec_parity_shards": 4
+  "compression":       "none"
 }
 ```
 
@@ -389,7 +386,7 @@ The `staged/` directories remain until manually cleaned with `noahsark stage gc`
 - `chunk_size`: **fixed at 16777216 (16 MiB)** — recorded but not configurable
 - `hash_algo`: **fixed at "sha256"** — recorded but not configurable
 - `compression`: "none" (Phase 1), "zstd" (Phase 2+)
-- `fec_*`: reserved for Phase 2 Reed-Solomon implementation
+-- `fec_*`: removed — NoahsArk does not use FEC by default. Prefer duplicating discs for redundancy.
 
 **Design rationale:**
 Both `chunk_size` and `hash_algo` are **immutable** after repository initialization.
@@ -459,8 +456,7 @@ NOAHSARK/
 ├── bloom.bin                   # optional bloom filter for fast negative lookups
 ├── objects/                    # content-addressed object files stored by hash prefix
 │   └── XX/YYYY...
-└── fec/                        # Phase 2 only
-  └── fec-<stripe_id>.par
+└── (no FEC files)              # FEC not used; duplicate discs recommended
 ```
 
 **disc.json** example:
@@ -477,9 +473,8 @@ NOAHSARK/
 
 **manifest.json:** A copy of the global index at the time of burning, allowing the
 repository to be reconstructed by scanning a single disc if the local `.noahsark/` is lost.
-When present, `index/` contains the latest JSON index snapshots and `index.db` is a
-SQLite copy of the index for fast local lookups; both are optional but recommended
-to simplify import and recovery.
+When present, `index.db` is a SQLite copy of the index for fast local lookups; `bloom.bin`
+is optional but recommended to simplify import and recovery.
 
 ### Object lifecycle and allocation
 
@@ -694,32 +689,15 @@ noahsark cat-object [hash]
 
 ---
 
-## 10. FEC Interface
+## 10. Redundancy Strategy
 
-Phase 1 provides a no-op stub. Phase 2 implements Reed-Solomon.
+NoahsArk does not use Forward Error Correction (FEC) by default. Instead, for
+cross-disc redundancy and simple recovery, the recommended operational practice
+is to burn two identical copies of each disc. This keeps the on-disc layout and
+indexing simple and avoids introducing FEC complexity in Phase 1.
 
-```go
-// FECEngine is a pluggable Forward Error Correction interface.
-type FECEngine interface {
-    // Encode takes dataShards data slices and returns parityShards parity slices.
-    Encode(data [][]byte) (parity [][]byte, err error)
-
-    // Reconstruct fills in nil shards from available shards.
-    // len(shards) must equal DataShards() + ParityShards().
-    Reconstruct(shards [][]byte) error
-
-    DataShards() int
-    ParityShards() int
-}
-
-// NopFEC is a no-op implementation for Phase 1.
-type NopFEC struct{}
-```
-
-Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
-- Default: 10 data shards + 4 parity shards (can recover any 4 missing shards)
-- Shard size: 64 MiB
-- Cross-disc parity: parity shards preferentially stored on different discs
+If you later decide to explore FEC-based strategies, they can be added as an
+optional Phase 2 extension, but they are out of scope for the current design.
 
 ---
 
@@ -729,7 +707,6 @@ Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
 |--------|---------|
 | `github.com/fsnotify/fsnotify` | Cross-platform file system watching (inotify/kqueue) |
 | `github.com/klauspost/compress/zstd` | Phase 2+: Per-chunk zstd compression |
-| `github.com/klauspost/reedsolomon` | Phase 2+: Reed-Solomon FEC |
 | `github.com/spf13/cobra` | CLI argument parsing and subcommand routing |
 | `github.com/schollz/progressbar/v3` | Progress display for long-running operations |
 | Standard library | SHA-256, CRC32, JSON, file I/O, UUID generation |
@@ -751,14 +728,14 @@ Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
 - [ ] `noahsark stage gc` — clean up old staged directories
 - [ ] `noahsark cat-object` — debug tool
 - [ ] Global index (JSON) + bloom filter
-- [ ] `NopFEC` stub
+-- [ ] (no FEC in Phase 1)
 
 ### Phase 2 — Integrity & Recovery
 
 - [ ] `noahsark verify` — CRC32 + SHA-256 + Merkle verification (against local ISO or mounted disc)
 - [ ] `noahsark disc import` — scan mounted disc, register into index
 - [ ] Per-file Merkle tree embedded in blob objects
-- [ ] `ReedSolomonFEC` implementation
+- [ ] On-disc manifest copy (for disaster recovery without local index)
 - [ ] On-disc manifest copy (for disaster recovery without local index)
 
 ### Phase 3 — Watch & Optimization
@@ -778,7 +755,7 @@ Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
 | Chunk level | SHA-256 of chunk content verified on read |
 | File level | Merkle root verified after reassembly |
 | Disc level | Pack SHA-256 in index verified on disc scan |
-| Cross-disc | Reed-Solomon FEC (Phase 2) |
+| Cross-disc | Duplicate discs (multiple copies) |
 
 ---
 
@@ -796,4 +773,4 @@ Phase 2: `ReedSolomonFEC` wrapping `github.com/klauspost/reedsolomon`.
 | Manifest copy on every disc | Borg |
 | Append-only segment files | Borg |
 | fsnotify inotify watcher | fsnotify library |
-| Reed-Solomon FEC | klauspost/reedsolomon |
+| (none) | |
