@@ -69,6 +69,12 @@ NoahsArk supports incremental disc burning where a partially-filled disc can hav
 - Each session adds new objects without duplicating existing ones
 - Sessions tracked in disc metadata with status: open/full/closed/error
 
+**Capacity Management:**
+- Remaining capacity: `remaining = disc_capacity - sum(session.bytes) - final_session_reserve`
+- Final session reserve: **1 GiB** (for UDF closing structures + safety margin)
+- Disc transitions to "full" status when `remaining <= 0`
+- This prevents overfilling and ensures space for UDF filesystem finalization
+
 ## Core Commands (from spec.md)
 
 **Note:** These commands are defined in the specification but not yet implemented.

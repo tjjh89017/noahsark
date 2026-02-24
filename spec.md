@@ -616,15 +616,18 @@ This reserve accounts for:
 - Safety buffer to prevent disc overflow during final burn
 - Conservative margin for UDF filesystem overhead
 
-When `remaining < 1 GiB`, the disc transitions to **full** status and cannot accept more sessions
+When `remaining <= 0`, the disc transitions to **full** status and cannot accept more sessions.
 
 **Example (BD-25, 23.28 GiB usable)**:
 ```
-Session 1: 12.0 GB → Remaining: 11.28 GB (11.28 - 1 GiB reserve = 10.28 GB available)
-Session 2:  8.0 GB → Remaining:  3.28 GB (3.28 - 1 GiB reserve = 2.28 GB available)
-Session 3:  2.0 GB → Remaining:  1.28 GB (1.28 - 1 GiB reserve = 0.28 GB available)
-Session 4:  0.2 GB → Remaining:  1.08 GB (< 1 GiB reserve, disc marked "full")
+Initial:             → remaining = 23.28 - 0 - 1.0 = 22.28 GiB (available for staging)
+After session 1 (12.0 GB): remaining = 23.28 - 12.0 - 1.0 = 10.28 GiB
+After session 2 (8.0 GB):  remaining = 23.28 - 20.0 - 1.0 = 2.28 GiB
+After session 3 (2.0 GB):  remaining = 23.28 - 22.0 - 1.0 = 0.28 GiB
+After session 4 (0.3 GB):  remaining = 23.28 - 22.3 - 1.0 = -0.02 GiB (disc marked "full")
 ```
+
+Note: Session 4 would actually be limited to 0.28 GB during staging to keep `remaining >= 0`.
 
 #### Multi-Session Best Practices
 
