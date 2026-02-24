@@ -33,12 +33,20 @@ Source files
      ▼  fsnotify (real-time) OR manual invocation
   noahsark commit
      │
-     ├─ Fixed-size 16 MiB chunking  → global index check
-     │                              │ new chunk?
-     │                            yes → write loose object to .noahsark/objects/
-     │                             no → skip (dedup)
-     ├─ Build tree objects   (directory hierarchy)
-     └─ Write commit object  (tree, parent, author, committer, hostname, message)
+     ├─ For each file:
+     │   ├─ Fixed-size 16 MiB chunking (single-pass with Merkle tree computation)
+     │   │   ├─ Simultaneously compute: 16 KiB Merkle leaves + 16 MiB chunk hashes
+     │   │   ├─ Global index check: chunk already exists?
+     │   │   │   yes → skip (dedup)
+     │   │   │    no → write loose chunk to .noahsark/objects/XX/YY...
+     │   │   └─ Compute Merkle root from leaves
+     │   └─ Create blob object (size, chunks list, merkle_root)
+     │       └─ Write to .noahsark/metadata/XX/YY... (named by blob content hash)
+     │
+     ├─ Build tree objects (directory hierarchy)
+     │   └─ Write to .noahsark/metadata/XX/YY...
+     │
+     └─ Write commit object (tree, parent, author, committer, hostname, message)
                 │
                 ├─ Read current HEAD → get parent commit SHA-256
                 ├─ Create commit content with parent pointer
@@ -57,7 +65,7 @@ Source files
      │
      ├─ Load disc session state (remaining capacity, already-staged objects)
      ├─ Select unstaged objects up to remaining capacity
-     ├─ Compute per-file Merkle trees → embed in blob objects
+     ├─ Copy selected objects to staging directory
      ├─ Update global index with disc locations
      ├─ Write disc.json + manifest
      ├─ Output: output-dir/  (UDF-compatible directory layout, ready for growisofs)
@@ -147,10 +155,6 @@ chunks <COUNT>
 <chunk_sha256> <offset> <length>
 ...
 merkle_root <SHA256_HEX>
-disc_layer <DISC_CAPACITY_BYTES>
-<disc_piece_hash_0>
-<disc_piece_hash_1>
-...
 ```
 
 **Fields:**
@@ -161,14 +165,7 @@ disc_layer <DISC_CAPACITY_BYTES>
 - `length`: actual byte length of this chunk (16777216 for full chunks, less for last chunk)
 - `merkle_root`: SHA-256 root of the per-file Merkle tree (see §6)
 
-**Disc piece layer (optional, BitTorrent v2-inspired):**
-- `disc_layer`: capacity in bytes (e.g., 25025314816 for BD-25)
-- `<disc_piece_hash_N>`: SHA-256 hash covering one disc's worth of chunk data
-- Enables verification of data on a single disc without needing other discs
-- Similar to BitTorrent v2's piece layer, but aligned to disc boundaries
-- **Phase 2+ feature**: May be omitted in Phase 1 implementations
-
-Implementation note:
+**Implementation note:**
 - Merkle trees are retained. Implementations SHOULD compute Merkle leaves
   (16 KiB) and chunk hashes (16 MiB) in the same single-file scan to avoid
   extra I/O: as the file is streamed, hash each 16 KiB block for the Merkle
@@ -882,11 +879,11 @@ Implementation note:
 ### Verification Levels
 
 1. **Full file**: verify all leaves → root matches blob's `merkle_root`
-2. **Single disc**: verify the disc_layer hashes (one hash per disc's worth of data, Phase 2+)
-3. **Single block**: verify any 16 KiB block without reading the entire file
+2. **Single block**: verify any 16 KiB block without reading the entire file
+3. **Disc-level verification** (Phase 2+): verify hashes stored in disc metadata without needing other discs
 
-This enables restoring and verifying a single disc independently without needing
-all other discs to be present.
+This enables restoring and verifying files at multiple granularities, from individual
+blocks up to full files.
 
 ---
 
@@ -1067,6 +1064,13 @@ NOAHSARK/
   - Used for tracking which snapshot this disc represents
   - Enables partial restore from a single disc
   - Replaces timestamp-based commit tracking
+
+**Phase 2+ optional field:**
+- `piece_layer`: (Optional) Disc-level verification hashes for per-disc integrity checking
+  - Not stored in blob objects (blobs are content-addressed and disc-independent)
+  - Computed at staging/burn time when disc capacity and contents are known
+  - Example: `{"capacity_bytes": 25025314816, "pieces": [{"sha256": "...", "objects": ["hash1", "hash2"]}, ...]}`
+  - Enables verification of a single disc without needing other discs or full files
 
 **manifest.json:** A copy of the global index at the time of burning, allowing the
 repository to be reconstructed by scanning a single disc if the local `.noahsark/` is lost.
@@ -1609,7 +1613,7 @@ optional Phase 2 extension, but they are out of scope for the current design.
 
 - [ ] `noahsark verify` — full verification with quick/full modes (ISO or mounted disc)
 - [ ] `noahsark disc import` — scan mounted disc, register into index
-- [ ] Disc piece layer (disc_layer in blob objects, optional)
+- [ ] Disc piece layer (stored in disc metadata for per-disc verification, optional)
 
 ### Phase 3 — Watch & Optimization
 
