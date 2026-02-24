@@ -147,6 +147,14 @@ The leaf-level dedup unit. Raw bytes of a file segment.
 **Naming:**
 - SHA-256 hash of the **actual uncompressed bytes** (no padding added before hashing)
 
+**Special case - Zero-block elimination:**
+Full 16 MiB all-zero chunks have a magic hash and are NOT stored on disc:
+```
+ZERO_CHUNK_HASH = "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e"
+```
+When this hash is encountered during commit, the chunk is not written to `objects/`.
+During restore, 16 MiB of zeros are generated directly. See §2.4 for details.
+
 **Important:** Chunks themselves do NOT store metadata (size, hash algorithm).
 All metadata is stored in the blob object that references them (see §3.2).
 
@@ -403,6 +411,51 @@ File 2: large-vm-2.qcow2 (100 GB virtual, 50 GB actual)
 - **With zstd compression:** 1 unique all-zero chunk = ~1-2 KB storage (1000x smaller)
 
 Compression is still beneficial for reducing disc space usage, but content-addressed deduplication already solves the "many identical sparse regions" problem efficiently.
+
+#### Zero-Block Elimination (Phase 1 Optimization)
+
+For the specific case of **all-zero chunks** (16 MiB of `\x00` bytes), NoahsArk uses a special optimization that eliminates storage entirely:
+
+**Magic hash constant:**
+```
+ZERO_CHUNK_HASH = "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e"
+```
+This is the SHA-256 hash of exactly 16777216 (16 MiB) zero bytes.
+
+**Implementation:**
+
+1. **During commit**: When chunking detects a full 16 MiB all-zero chunk:
+   - Compute SHA-256 hash and detect it matches `ZERO_CHUNK_HASH`
+   - Do NOT write the chunk to `objects/` directory
+   - Record the hash in the blob's chunk list normally
+
+2. **During restore**: When restoring a chunk:
+   - If chunk hash == `ZERO_CHUNK_HASH`, generate 16 MiB of zeros directly
+   - Otherwise, read chunk data from disc or local objects
+
+3. **During staging**: When staging chunks for disc burning:
+   - Skip `ZERO_CHUNK_HASH` (it doesn't exist in `objects/`)
+   - Do NOT count it toward disc capacity
+
+4. **During verification**: When verifying disc contents:
+   - If blob references `ZERO_CHUNK_HASH`, verify by generating zeros and hashing
+   - Do NOT expect the chunk to exist on disc
+
+**Benefits:**
+- Sparse files with all-zero regions take **zero disc space** (not even 16 MiB)
+- Simple implementation (one constant check)
+- Deterministic and verifiable (hash is always the same)
+- Works without compression
+
+**Example:**
+```
+VM image: 500 GB virtual size, 300 zero-filled chunks
+
+Without zero-block elimination: 300 × 16 MiB = 4.8 GB (1 chunk stored, referenced 300 times)
+With zero-block elimination:    300 × 0 MiB   = 0 GB (no chunk stored, magic hash used)
+```
+
+**Scope:** This optimization applies only to **full 16 MiB zero-filled chunks**. Partial zero chunks (last chunk of file < 16 MiB) are stored normally, as special-casing every possible size would add excessive complexity for minimal benefit.
 
 
 ## 5. Staging Strategy and Multi-Session Support
