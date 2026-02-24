@@ -1279,15 +1279,21 @@ noahsark stage gc
 
 #### Safe Deletion Rules
 
-**Raw chunk data** in `.noahsark/objects/` can be deleted if:
-1. ✅ It exists on at least one burned and verified disc
-2. ✅ The disc is marked as `status: closed` (will not be re-burned)
-3. ✅ The global index records the disc location
+**Staged chunks** in `.noahsark/staged/<disc_id>-s<N>/objects/` can be deleted if:
+1. ✅ Successfully burned to disc (via `noahsark burn`)
+2. ✅ Burn was verified (checksum validation passed)
+3. ✅ Disc is marked as `status: closed` (will not be re-burned)
+4. ✅ Use `noahsark stage gc` to clean up staged directories
 
-A raw chunk MUST NOT be deleted if:
-- ❌ It's only in `staged/` (not yet burned)
-- ❌ The disc is marked as `status: open` (may be re-staged)
+Staged chunks MUST NOT be deleted if:
+- ❌ Burn failed or was interrupted
 - ❌ Verification failed (data may be corrupt)
+- ❌ Disc status is `open` (may be re-burned in multi-session)
+
+**Loose chunks** in `.noahsark/objects/`:
+- ✅ **Should NOT be deleted** - they haven't been archived yet
+- ❌ These are newly committed chunks awaiting staging
+- Exception: `noahsark gc` can delete loose chunks IF they're duplicates already on closed discs (rare edge case)
 
 **Metadata objects** in `.noahsark/metadata/` (blobs, trees, commits):
 - ✅ **Should be kept permanently** for history and commit chain integrity
