@@ -176,6 +176,21 @@ NoahsArk supports incremental disc burning where a partially-filled disc can hav
 - BD-128: 118.86 GiB
 - Custom: `<number><unit>` (e.g., 20G, 500M, 1T)
 
+### Bloom Filter (Optional Deduplication Optimization)
+- **Location:** `.noahsark/bloom.bin` (optional file)
+- **Purpose:** Ultra-fast deduplication checks before querying the index database
+- **How it works:**
+  - Space-efficient probabilistic data structure (~2 MB for 100K chunks)
+  - Uses multiple hash functions to set bits in a bit array
+  - Guarantees **zero false negatives**: if bloom says "not present", it's definitely new
+  - Allows ~1-5% false positives: if bloom says "maybe present", must check index.db
+- **Dedup workflow:**
+  1. Bloom filter check (~microseconds): if "definitely not present" → skip to step 3
+  2. Index check (~milliseconds): if present → deduplicate, else continue
+  3. Write new chunk to objects/
+- **Benefit:** Speeds up commit by avoiding 90%+ of index queries for new chunks
+- **Trade-off:** Small false positive rate requires index fallback, but never misses actual duplicates
+
 ### Content-Addressed Commits (Critical Design Change)
 **Old design:** Commits named by RFC3339 timestamp
 **New design:** Commits named by SHA-256 hash of commit content
@@ -207,7 +222,10 @@ This enables:
   - Metadata objects (blobs/trees/commits) → `.noahsark/metadata/XX/YY...`
 - Chunker (fixed 16 MiB with simultaneous Merkle tree computation)
   - Zero-block elimination: detect magic hash `080acf35...` and skip writing to objects/
-- SQLite index management with bloom filter
+- SQLite index management (hash → disc location mapping)
+- Bloom filter (optional): probabilistic dedup check before index query
+  - Zero false negatives guaranteed (never misses existing chunks)
+  - ~1-5% false positive rate (must check index for confirmation)
 - Commit chain traversal (parent pointer walking)
 - Disc session state machine (open → full/closed)
 - growisofs wrapper with multi-session detection (-Z vs -M)
