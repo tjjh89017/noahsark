@@ -1308,11 +1308,10 @@ Staged chunks MUST NOT be deleted if:
 #### GC Command
 
 ```bash
-noahsark gc [--dry-run] [--aggressive]
+noahsark gc [--dry-run]
 
 Options:
   --dry-run       Show what would be deleted without deleting
-  --aggressive    Also delete staged/ directories for closed discs
 
 Behavior:
   1. Scan raw chunk data in .noahsark/objects/ (NOT metadata/)
@@ -1322,9 +1321,9 @@ Behavior:
      c. If yes to both: safe to delete
   3. Report space to be reclaimed
   4. Delete loose chunks (unless --dry-run)
-  5. If --aggressive: delete staged/ dirs for closed discs
 
 Note: GC never deletes metadata objects (.noahsark/metadata/) as they're kept for history
+Note: To clean up staged directories, use 'noahsark stage gc' instead
 
 Safety:
   - Never deletes objects needed for open discs
@@ -1633,10 +1632,9 @@ noahsark test-burn [staged-dir] [output.iso]
       - NoahsArk can read directly from mounted ISO via index
       - Testing with ISO is much faster than burning and reading real disc
 
-noahsark gc [--dry-run] [--aggressive]
+noahsark gc [--dry-run]
     Garbage collect loose objects that are safely archived on discs.
     --dry-run       Show what would be deleted without actually deleting
-    --aggressive    Also delete staged/ directories for closed/full discs
 
     Safety rules:
       - Only deletes objects that exist on burned & verified discs
@@ -1644,7 +1642,8 @@ noahsark gc [--dry-run] [--aggressive]
       - Never deletes objects still needed for open discs
       - Always checks index before deletion
 
-    Use this after burning discs to reclaim local disk space.
+    Use this to clean loose objects (rare edge case where duplicates exist).
+    For staged directories, use 'noahsark stage gc' instead.
 
 noahsark restore [commit] [src-path] [dest-path]
     Restore src-path as it existed at commit to dest-path.
@@ -1907,8 +1906,8 @@ noahsark verify --disc=20260224-001-BD25 --level=full
 sudo umount /mnt/disc
 
 # 12. Clean up local storage after successful burn
-noahsark gc --aggressive
-# → Deletes loose objects and staged/ directory
+noahsark stage gc
+# → Deletes staged/ directory, frees local space
 ```
 
 ### 14.2 CI/CD Integration
