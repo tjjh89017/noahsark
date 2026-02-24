@@ -228,6 +228,9 @@ This enables:
   - ~1-5% false positive rate (must check index for confirmation)
 - Commit chain traversal (parent pointer walking)
 - Disc session state machine (open → full/closed)
+  - **Important**: Session directories (s1/, s2/, s10/) must be sorted by integer not string
+  - Parse session number as int: s1 < s2 < s9 < s10 (correct)
+  - NOT lexicographic: s1 < s10 < s2 < s9 (wrong)
 - growisofs wrapper with multi-session detection (-Z vs -M)
 
 **Testing Strategy:**
