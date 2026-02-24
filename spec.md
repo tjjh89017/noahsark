@@ -38,13 +38,20 @@ Source files
      │                            yes → write loose object to .noahsark/objects/
      │                             no → skip (dedup)
      ├─ Build tree objects   (directory hierarchy)
-     └─ Write commit object  (parent, date, root tree, new blobs list)
-                                        │
-                               .noahsark/HEAD updated
+     └─ Write commit object  (tree, parent, author, committer, hostname, message)
+                │
+                ├─ Read current HEAD → get parent commit SHA-256
+                ├─ Create commit content with parent pointer
+                ├─ Calculate commit SHA-256 = SHA-256("commit " + size + "\0" + content)
+                ├─ Write commit to .noahsark/objects/XX/YY... (content-addressed)
+                └─ Update .noahsark/HEAD with new commit SHA-256
 
-  noahsark stage [--size=BD-25|BD-50|BD-100|DVD|CD|<bytes>] [--disc=<disc_id>] [output-dir]
+  noahsark stage [--size=BD-25|BD-50|BD-100|BD-128|<size>] [--disc=<disc_id>] [output-dir]
      │
      │  --size       target disc capacity (default: BD-25)
+     │              presets: BD-25, BD-50, BD-100, BD-128
+     │              custom: <number><unit> (e.g., 20G, 500M, 1T)
+     │              units: K, M, G, T (base-2: KiB, MiB, GiB, TiB)
      │  --disc       resume a partially-filled disc session (optional)
      │               if omitted, a new disc_id is allocated
      │
@@ -60,8 +67,9 @@ Source files
           Pending:    3.2 GiB  (unstaged objects waiting for next stage)
 
        → "Burn: growisofs -Z /dev/sr0 -udf -V '20260224-001-BD25' output-dir/"
-       → "Or:   noahsark stage --disc=<disc_id>  to continue filling this disc (session N)"
+       → "Or:   noahsark stage --disc=<disc_id>     to continue filling this disc (session N)"
        → "Or:   noahsark stage --size=BD-25      to allocate and start a new disc"
+       → "Or:   noahsark stage --size=50G        to allocate custom-sized disc"
        
      `noahsark stage` may be run repeatedly: each invocation will continue
      assigning objects into the active disc session (or allocate the next
@@ -77,13 +85,28 @@ Source files
 
 ## 3. Object Model
 
-All objects are stored content-addressably by SHA-256 under:
+**Design principle: Complete content-addressing (Git-inspired)**
 
+All objects — including commits — are stored content-addressably by SHA-256.
+This provides:
+- **Automatic deduplication**: identical content → same hash → stored once
+- **Integrity verification**: any corruption changes the hash
+- **Distributed trust**: no central authority needed
+- **Immutability**: objects never change after creation
+
+Object storage layout:
 ```
 .noahsark/objects/<hash[:2]>/<hash[2:]>
 ```
 
-(identical to the existing Python prototype, and to Git's layout)
+All objects (chunks, blobs, trees, commits) use the same storage structure.
+SHA-256 provides 256-bit collision resistance (~2^128 security level after birthday paradox).
+
+**Key difference from timestamp-based design:**
+- ❌ Old: Commits named by RFC3339 timestamp, parent = timestamp
+- ✅ New: Commits named by SHA-256, parent = SHA-256 hash
+- **Why**: Content-addressing enables verification of entire history chain and
+  ensures commits are truly immutable (changing any field changes the hash)
 
 ### 3.1 Chunk
 
@@ -115,6 +138,10 @@ chunks <COUNT>
 <chunk_sha256> <offset> <length>
 ...
 merkle_root <SHA256_HEX>
+disc_layer <DISC_CAPACITY_BYTES>
+<disc_piece_hash_0>
+<disc_piece_hash_1>
+...
 ```
 
 **Fields:**
@@ -124,6 +151,13 @@ merkle_root <SHA256_HEX>
 - `offset`: byte position in the original file (always `chunk_index × 16777216`)
 - `length`: actual byte length of this chunk (16777216 for full chunks, less for last chunk)
 - `merkle_root`: SHA-256 root of the per-file Merkle tree (see §6)
+
+**Disc piece layer (optional, BitTorrent v2-inspired):**
+- `disc_layer`: capacity in bytes (e.g., 25025314816 for BD-25)
+- `<disc_piece_hash_N>`: SHA-256 hash covering one disc's worth of chunk data
+- Enables verification of data on a single disc without needing other discs
+- Similar to BitTorrent v2's piece layer, but aligned to disc boundaries
+- **Phase 2+ feature**: May be omitted in Phase 1 implementations
 
 Implementation note:
 - Merkle trees are retained. Implementations SHOULD compute Merkle leaves
@@ -222,28 +256,60 @@ Named by: SHA-256 of the tree content.
 
 ```
 commit
-parent <PARENT_SHA256_OR_ZEROS>
-date <RFC3339>
 tree <ROOT_TREE_SHA256>
+parent <PARENT_COMMIT_SHA256>
+author <NAME> <EMAIL> <RFC3339_TIMESTAMP>
+committer <NAME> <EMAIL> <RFC3339_TIMESTAMP>
 hostname <HOSTNAME>
-message <OPTIONAL_ONE_LINE_MESSAGE>
+
+<COMMIT_MESSAGE>
 ---
 <blob_sha256> <relative_path>
 <blob_sha256> <relative_path>
 ...
 ```
 
+**Format (Git-inspired, content-addressed):**
+- `tree`: SHA-256 hash of root tree object (required)
+- `parent`: SHA-256 hash of parent commit (empty if first commit)
+- `author`: who created the backup + when
+- `committer`: who committed it + when (usually same as author)
+- `hostname`: machine hostname for tracking backup source
+- `<COMMIT_MESSAGE>`: optional multi-line commit message (after blank line)
+
 The section after `---` lists **only new or changed blobs** in this commit (incremental).
 Unchanged files are implicit via the tree structure.
 
-- **Metadata fields:**
-- `parent`: RFC3339 timestamp of parent commit (empty or null if first commit)
-- `tree`: SHA-256 hash of root tree object
-- `blob_sha256`: SHA-256 hash of each blob in the incremental list
+**Naming (content-addressed):**
+- Commit SHA-256 = `SHA-256("commit " + size + "\0" + commit_content)`
+- This is the **fundamental change**: commits are named by their content hash, not timestamp
+- Stored at: `.noahsark/objects/XX/YYYY...` (same as all other objects)
 
-Named by: RFC3339 timestamp of the commit (filename-safe, e.g. 2026-02-24T12:00:00+08:00.json).
+**Parent pointer:**
+- Always contains parent commit's **SHA-256 hash** (64-char hex)
+- Empty or `0000...` for the initial commit
+- Forms a linear chain: commit → parent → grandparent → ...
 
-`HEAD` file: `.noahsark/HEAD` contains the current commit timestamp (RFC3339 + newline).
+**Example:**
+```
+commit
+tree a1b2c3d4e5f6789...
+parent f6e5d4c3b2a1098...
+author John Doe <john@example.com> 2026-02-24T12:00:00+08:00
+committer John Doe <john@example.com> 2026-02-24T12:00:00+08:00
+hostname laptop-2024
+
+Backup after system upgrade
+---
+d4e5f6a7b8c9012... /home/user/documents/file.txt
+c3d4e5f6a7b8901... /home/user/photos/img.jpg
+```
+
+This commit would be named by its SHA-256 hash, e.g.:
+`.noahsark/objects/a1/b2c3d4e5f6789...`
+
+**HEAD reference:**
+`.noahsark/HEAD` contains the current commit's SHA-256 hash (64-char hex + newline).
 
 ---
 
@@ -310,9 +376,15 @@ them into disc sessions using the following approach:
 4. Copy selected objects to `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/` preserving the hash-based directory structure
 5. Update the global index to record which objects are on which disc session
 
-**Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25),
+**Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25) or larger,
 individual chunks will never exceed disc capacity. Files larger than one disc are
 handled by spreading their chunks across multiple disc sessions.
+
+**Disc capacity considerations:**
+- Nominal capacities assume perfect media, but real-world discs vary
+- UDF filesystem overhead: ~1-2% for metadata (anchor descriptors, file sets, ICBs)
+- Safety margin: 3-5% reserved to avoid write errors near disc edge
+- NoahsArk uses conservative targets accounting for both factors
 
 ---
 
@@ -357,10 +429,9 @@ all other discs to be present.
 ```
 .noahsark/
 ├── config                      # JSON repository configuration
-├── HEAD                        # current commit timestamp (RFC3339 + newline)
-├── commits/                    # linear commit history: <RFC3339>.json (one file per commit)
-├── objects/                    # loose objects (blobs, trees, commits, chunks) — only unallocated objects
-│   └── XX/YYYY...              # 2-char prefix / remainder
+├── HEAD                        # current commit SHA-256 (64-char hex + newline)
+├── objects/                    # content-addressed objects (blobs, trees, commits, chunks)
+│   └── XX/YYYY...              # 2-char prefix / remainder (all objects, including commits)
 ├── index.db                    # SQLite global index (hash → disc_id + object_path + length, ...)
 ├── bloom.bin                   # optional bloom filter for fast dedup check
 ├── discs/                      # disc session registry
@@ -377,10 +448,51 @@ all other discs to be present.
         └── NOAHSARK/
 ```
 
+**Key changes from timestamp-based design:**
+- ❌ Removed `commits/` directory — commits are now stored in `objects/` like all other objects
+- ✅ `HEAD` now contains commit SHA-256 instead of timestamp
+- ✅ All objects (including commits) are content-addressed and stored uniformly
+- ✅ Commit history is traversed via parent pointers, not directory listings
+
 The `staged/` directories remain until manually cleaned with `noahsark stage gc`
 (recommended after successful burn + verify).
 
-### 7.2 Config (`config`)
+### 7.2 Disc Capacity Calculation
+
+NoahsArk uses conservative disc capacity targets to account for real-world variability
+and filesystem overhead.
+
+#### Nominal vs Usable Capacity
+
+| Media Type | Nominal | Actual Bytes | UDF Overhead | Safety Margin | Usable Target |
+|------------|---------|--------------|--------------|---------------|---------------|
+| **BD-25**  | 25 GB   | 25,025,314,816 | ~1.5% (375 MB) | 5% (1.25 GB) | **23.28 GiB** |
+| **BD-50**  | 50 GB   | 50,050,629,632 | ~1.5% (750 MB) | 5% (2.50 GB) | **46.55 GiB** |
+| **BD-100** | 100 GB  | 100,103,356,416 | ~1.5% (1.5 GB) | 5% (5.00 GB) | **93.11 GiB** |
+| **BD-128** | 128 GB  | 128,000,000,000 | ~1.5% (1.9 GB) | 5% (6.40 GB) | **118.86 GiB** |
+
+**Why conservative targets?**
+1. **UDF filesystem overhead** (~1-2%):
+   - Anchor volume descriptor (multiple sectors)
+   - File set descriptors and ICBs (Information Control Blocks)
+   - Directory structures and file entries
+   - Metadata partition and allocation tables
+
+2. **Safety margin** (3-5%):
+   - Manufacturing tolerances: actual disc capacity varies ±2%
+   - Write strategy overhead: some drives reserve space for calibration
+   - Edge effects: outer tracks may be less reliable on cheap media
+   - Multi-session overhead: session linking requires additional descriptors
+
+3. **Real-world experience**:
+   - Burning to 100% capacity often fails on cheaper media
+   - 95% capacity is a safer target across drive/media combinations
+   - Better to underestimate than fail a 2-hour BD-100 burn
+
+**Custom sizes**: When using `--size=<N>G`, the specified size is used as-is
+(user is responsible for safety margin).
+
+### 7.3 Config (`config`)
 
 ```json
 {
@@ -416,7 +528,7 @@ If chunk size or hash algorithm must change (e.g., SHA-256 is compromised):
 3. Burn new optical discs with the migrated repository
 4. Old repository remains readable by older NoahsArk versions
 
-### 7.3 Global Index (`.noahsark/index.db`)
+### 7.4 Global Index (`.noahsark/index.db`)
 
 The global index is stored as a single SQLite database `index.db` (in the
 local repository `.noahsark/index.db` or on-disc as `NOAHSARK/index.db`). This
@@ -457,7 +569,7 @@ Operations:
 Bloom filter (`bloom.bin`): optional file used for very-fast negative lookups
 before touching `index.db`.
 
-### 7.4 On-Disc Layout (UDF 2.50)
+### 7.5 On-Disc Layout (UDF 2.50)
 
 ```
 NOAHSARK/
@@ -478,9 +590,16 @@ NOAHSARK/
   "type": "BD-25",
   "session_id": 1,
   "created": "2026-02-24T12:00:00+08:00",
+  "commit": "a1b2c3d4e5f6789...",
   "object_count": 12345
 }
 ```
+
+**Key fields:**
+- `commit`: SHA-256 of the latest commit included on this disc
+  - Used for tracking which snapshot this disc represents
+  - Enables partial restore from a single disc
+  - Replaces timestamp-based commit tracking
 
 **manifest.json:** A copy of the global index at the time of burning, allowing the
 repository to be reconstructed by scanning a single disc if the local `.noahsark/` is lost.
@@ -489,28 +608,135 @@ is optional but recommended to simplify import and recovery.
 
 ### Object lifecycle and allocation
 
-NoahsArk treats `objects/` as the pool of unallocated, loose objects. When an object
-is selected for inclusion on a disc session (during `noahsark stage`),
-implementations MAY copy the object's file out of `.noahsark/objects/` into the
-staged output under `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/`.
+NoahsArk manages object lifecycle in three states: **loose** → **staged** → **archived**.
 
-Rules:
-- Allocation: once an object is recorded in the global index as stored on a disc,
-  its local loose copy MAY be removed to avoid duplication; the authoritative
-  location becomes the disc's `manifest.json` entry and the physical object file
-  stored under `NOAHSARK/objects/` on that disc.
-- Atomicity: copies and removals MUST be atomic where possible. Update the index
-  to refer to the disc location only after the object file and the disc `manifest.json`
-  are durably written.
-- Burn completion: after a disc session is successfully burned and verified, the
-  corresponding objects that were staged for that session SHOULD be removed from
-  the local `.noahsark/objects/` pool. In steady-state (all data archived),
-  `.noahsark/objects/` will be empty.
-- Unallocated objects: any object not assigned to a disc remains in `.noahsark/objects/`.
+#### Object States
 
-This behavior keeps local storage minimal: objects that have been committed and
-allocated for archival are represented by their pack entries on staged discs and in
-the global index; the loose-object pool contains only items awaiting allocation.
+1. **Loose** (`.noahsark/objects/`):
+   - Newly created objects from `noahsark commit`
+   - Not yet allocated to any disc
+   - Available for deduplication
+   - Taking up local disk space
+
+2. **Staged** (`.noahsark/staged/<disc_id>-s<N>/NOAHSARK/objects/`):
+   - Copied from loose objects during `noahsark stage`
+   - Ready for burning but not yet on physical media
+   - Still consuming local disk space (loose + staged copy)
+
+3. **Archived** (on physical disc):
+   - Successfully burned and verified on optical media
+   - Tracked in global index with `disc_id` location
+   - **Loose objects can now be safely deleted**
+
+#### Lifecycle Workflow
+
+```
+noahsark commit
+  → Creates loose objects in .noahsark/objects/
+
+noahsark stage --disc=<disc_id>
+  → Copies objects to .noahsark/staged/<disc_id>-s<N>/
+  → Loose objects remain (not deleted yet)
+
+noahsark burn <staged-dir> /dev/sr0
+  → Burns staged directory to physical disc
+  → Verifies written data
+
+noahsark burn --mark-archived <staged-dir>
+  → Updates index: marks objects as archived on disc
+  → Enables GC to delete loose objects
+
+noahsark gc
+  → Scans .noahsark/objects/
+  → For each object: check if archived on any disc
+  → If archived: mark for deletion
+  → If not archived: keep (needed for recovery)
+  → Optionally: delete staged/ directories for burned discs
+```
+
+#### Safe Deletion Rules
+
+An object in `.noahsark/objects/` can be deleted if:
+1. ✅ It exists on at least one burned and verified disc
+2. ✅ The disc is marked as `status: closed` (will not be re-burned)
+3. ✅ The global index records the disc location
+
+An object MUST NOT be deleted if:
+- ❌ It's only in `staged/` (not yet burned)
+- ❌ The disc is marked as `status: open` (may be re-staged)
+- ❌ Verification failed (data may be corrupt)
+
+#### GC Command
+
+```bash
+noahsark gc [--dry-run] [--aggressive]
+
+Options:
+  --dry-run       Show what would be deleted without deleting
+  --aggressive    Also delete staged/ directories for closed discs
+
+Behavior:
+  1. Scan all loose objects in .noahsark/objects/
+  2. For each object:
+     a. Query index: is this object on any disc?
+     b. Check disc status: is the disc closed?
+     c. If yes to both: safe to delete
+  3. Report space to be reclaimed
+  4. Delete loose objects (unless --dry-run)
+  5. If --aggressive: delete staged/ dirs for closed discs
+
+Safety:
+  - Never deletes objects needed for open discs
+  - Never deletes objects not yet on any disc
+  - Always checks index before deletion
+```
+
+#### Example Workflow
+
+```bash
+# Create backup
+noahsark commit -m "Backup 2026-02-24"
+# → 50 GB of new objects in .noahsark/objects/
+
+# Stage for disc
+noahsark stage --size=BD-50
+# → 50 GB copied to .noahsark/staged/20260224-001-BD50-s1/
+# → Still 50 GB in .noahsark/objects/ (100 GB total used)
+
+# Burn to disc
+noahsark burn 20260224-001-BD50-s1 /dev/sr0
+# → Disc successfully burned and verified
+# → Index updated: objects now on disc-001
+
+# Mark as archived (optional explicit step)
+noahsark burn --mark-archived 20260224-001-BD50-s1
+# → Disc marked as closed in discs/20260224-001-BD50.json
+
+# Reclaim space
+noahsark gc
+# → Deletes 50 GB from .noahsark/objects/ (safe: on disc)
+# → 50 GB remains in .noahsark/staged/ (can be deleted with --aggressive)
+
+noahsark gc --aggressive
+# → Also deletes .noahsark/staged/20260224-001-BD50-s1/ (50 GB freed)
+# → Total: 100 GB reclaimed, only disc copy remains
+```
+
+#### Recovery Safety
+
+Even after GC, objects can be recovered:
+```bash
+noahsark import /mnt/disc-001
+# → Scans NOAHSARK/objects/ on mounted disc
+# → Updates index with object locations
+# → Objects can now be restored from disc
+```
+
+This lifecycle management ensures:
+- ✅ Local disk usage is minimized after burning
+- ✅ Objects are never deleted until safely on disc
+- ✅ Recovery is always possible from discs alone
+- ✅ User controls when to reclaim space (explicit GC)
 
 ---
 
@@ -550,10 +776,38 @@ noahsark commit [dir]
     Chunk files in dir, dedup against index, write objects, create commit, update HEAD.
     -m, --message   optional commit message
 
+    Process:
+      1. Scan directory and compute file hashes
+      2. Chunk changed files (16 MiB fixed-size)
+      3. Dedup: bloom filter check → index check → skip if exists
+      4. Write new chunks/blobs/trees to .noahsark/objects/
+      5. Read HEAD → get parent commit SHA-256
+      6. Create commit object with parent pointer
+      7. Calculate commit SHA-256 (content-addressed)
+      8. Write commit to .noahsark/objects/XX/YY...
+      9. Update HEAD with new commit SHA-256
+
+    The commit creates a snapshot of the entire directory tree, with parent
+    pointer forming a linear history chain.
+
 noahsark stage [output-dir] [flags]
     Generate a disc image directory from unstaged objects (ready for growisofs).
-    --size=<preset|bytes>   disc capacity: BD-25, BD-50, BD-100, DVD, CD, or raw bytes
-                            default: BD-25
+    --size=<preset|size>    disc capacity presets or custom size
+                            presets: BD-25, BD-50, BD-100, BD-128 (default: BD-25)
+                            custom: <number><unit> (e.g., 20G, 500M, 1T)
+                            units: K, M, G, T (base-2: KiB, MiB, GiB, TiB)
+
+    Preset capacities (usable space after UDF overhead + 5% safety margin):
+      BD-25:  23.28 GiB  (25 GB nominal, single-layer)
+      BD-50:  46.55 GiB  (50 GB nominal, dual-layer)
+      BD-100: 93.11 GiB  (100 GB nominal, triple-layer BDXL)
+      BD-128: 118.86 GiB (128 GB nominal, quad-layer BDXL)
+
+    Examples:
+      noahsark stage --size=BD-25        # Use BD-25 preset (23.28 GiB)
+      noahsark stage --size=20G          # Custom 20 GiB
+      noahsark stage --size=500M         # Custom 500 MiB (testing)
+      noahsark stage --size=1T           # Custom 1 TiB (future large media)
     --disc=<disc_id>        continue filling an existing open disc session
                             (omit to allocate a new disc_id: YYYYMMDD-NNN-TYPE)
     --label=<text>          optional label for new discs (for disc list display)
@@ -593,10 +847,15 @@ noahsark stage [output-dir] [flags]
 
         Next steps:
           noahsark stage --disc=20260224-001-BD25   # continue this disc (session 2)
-          noahsark stage --size=BD-25               # start a new disc
+          noahsark stage --size=BD-25               # start a new BD-25 disc
+          noahsark stage --size=BD-128              # start a new BD-128 disc
+          noahsark stage --size=100G                # start a custom-sized disc
 
-noahsark burn [staged-dir|disc_id] [device]
+noahsark burn [staged-dir|disc_id] [device] [--mark-archived]
   Wrapper around growisofs for easier burning with multi-session support.
+
+  --mark-archived    After successful burn and verify, mark disc as closed
+                     and update index so objects can be GC'd
 
     Session 1 (new disc):
       noahsark burn .noahsark/staged/20260224-001-BD25-s1/ /dev/sr0
@@ -608,6 +867,8 @@ noahsark burn [staged-dir|disc_id] [device]
           -input-charset utf8 \
           -V '20260224-001-BD25' \
           .noahsark/staged/20260224-001-BD25-s1/NOAHSARK/
+
+      Note: -allow-limited-size is required for BD-50/BD-100/BD-128 (bypasses ISO 9660 size limits)
 
     Session 2+ (continue disc):
       noahsark burn .noahsark/staged/20260224-001-BD25-s2/ /dev/sr0
@@ -651,7 +912,7 @@ noahsark test-burn [staged-dir] [output.iso]
 
     Options explained:
       -udf                  UDF 2.50 filesystem (Blu-ray standard, 255-char filenames)
-      -allow-limited-size   Allow large images (BD-50/BD-100 = 46GB/93GB)
+      -allow-limited-size   Allow large images (BD-50/BD-100/BD-128 up to 128GB)
       -input-charset utf8   Preserve Unicode filenames (UTF-8 support)
       -V                    Volume label (shown when mounted)
       -o                    Output ISO file path
@@ -663,16 +924,37 @@ noahsark test-burn [staged-dir] [output.iso]
           mount -o loop test.iso /mnt/test
           noahsark restore HEAD /path /mnt/test/NOAHSARK/objects/
 
-noahsark stage gc [--keep-days=7]
-    Clean up staged directories older than N days (default: 7).
-    Only removes directories for discs with status=closed or status=full.
+noahsark gc [--dry-run] [--aggressive]
+    Garbage collect loose objects that are safely archived on discs.
+    --dry-run       Show what would be deleted without actually deleting
+    --aggressive    Also delete staged/ directories for closed/full discs
+
+    Safety rules:
+      - Only deletes objects that exist on burned & verified discs
+      - Only deletes from discs with status=closed or status=full
+      - Never deletes objects still needed for open discs
+      - Always checks index before deletion
+
+    Use this after burning discs to reclaim local disk space.
 
 noahsark restore [commit] [src-path] [dest-path]
     Restore src-path as it existed at commit to dest-path.
-    commit may be an RFC3339 timestamp (filename), a short prefix, or HEAD~N notation.
+    commit may be:
+      - Full SHA-256 hash (64 chars)
+      - Short prefix (min 8 chars, must be unique)
+      - HEAD~N notation (N commits back from HEAD)
 
 noahsark log [--count=20] [--oneline]
     Show commit history from HEAD.
+    Traverses parent pointers backwards: HEAD → parent → grandparent → ...
+
+    Output format:
+      <commit_sha256_short> <author> <date> <message>
+
+    Example:
+      a1b2c3d4  John Doe  2026-02-24 12:00:00  Backup after upgrade
+      f6e5d4c3  John Doe  2026-02-23 18:30:00  Daily backup
+      ...
 
 noahsark verify [--disc=<disc_id>|--all]
     Verify CRC32 of all entries, chunk SHA-256 hashes, and Merkle roots.
@@ -685,10 +967,11 @@ noahsark index consolidate
 noahsark disc list [--status=open|full|closed|all]
     List all disc sessions with human-readable formatting:
 
-    DISC ID              LABEL                    TYPE    USED / TOTAL      STATUS  SESSIONS
-    20260224-001-BD25    Project Backup Q1        BD-25   12.4 / 23.3 GiB   open    1
-    20260224-002-BD50    VM Images                BD-50   46.1 / 46.6 GiB   full    3
-    20260310-001-BD25    Documents Archive        BD-25   23.3 / 23.3 GiB   closed  2
+    DISC ID              LABEL                    TYPE     USED / TOTAL       STATUS  SESSIONS
+    20260224-001-BD25    Project Backup Q1        BD-25    12.4 / 23.3 GiB    open    1
+    20260224-002-BD50    VM Images                BD-50    46.1 / 46.6 GiB    full    3
+    20260310-001-BD100   Large Dataset            BD-100   85.2 / 93.1 GiB    open    2
+    20260315-001-BD128   Archive 2026 Q1          BD-128  110.5 / 118.9 GiB   closed  4
 
     --status filter (default: all)
 
@@ -704,6 +987,7 @@ noahsark disc import [mount-point]
 
 noahsark watch [source-dir] [--debounce=30s] [--auto-stage=false] [--size=BD-25]
     Start fsnotify daemon (see §8).
+    --size: disc capacity for auto-stage (presets: BD-25, BD-50, BD-100, BD-128, or custom: 20G)
     --auto-stage: when pending objects exceed disc capacity, auto-run noahsark stage.
 
 noahsark cat-object [hash]
@@ -741,17 +1025,18 @@ optional Phase 2 extension, but they are out of scope for the current design.
 ### Phase 1 — Core (MVP)
 
 - [ ] `noahsark init` — create `.noahsark/` structure, generate config
-- [ ] `noahsark commit` — fixed-size chunking, CAS dedup (bloom + index), write objects, build tree, write commit, update HEAD
-- [ ] `noahsark stage` — bin-pack chunks into pack files, generate disc image directory, disc session tracking
-- [ ] `noahsark burn` — wrapper around growisofs with multi-session support (session detection)
+- [ ] `noahsark commit` — fixed-size chunking, CAS dedup (bloom + index), write objects, build tree, write commit (SHA-256 named), update HEAD
+- [ ] `noahsark stage` — select objects for disc, copy to staged directory, disc session tracking
+- [ ] `noahsark burn` — wrapper around growisofs with multi-session support + --mark-archived
 - [ ] `noahsark test-burn` — generate ISO from staged dir using genisoimage (for testing)
-- [ ] `noahsark restore` — lookup via global index, reassemble from chunks
-- [ ] `noahsark log` — walk commit chain from HEAD
+- [ ] `noahsark restore` — lookup via global index, reassemble from chunks, support SHA-256 commit refs
+- [ ] `noahsark log` — walk commit chain from HEAD via parent pointers
+- [ ] `noahsark gc` — garbage collect loose objects safely archived on discs
 - [ ] `noahsark disc list` / `noahsark disc close` / `noahsark disc label` — disc session management
-- [ ] `noahsark stage gc` — clean up old staged directories
-- [ ] `noahsark cat-object` — debug tool
-- [ ] Global index (JSON) + bloom filter
--- [ ] (no FEC in Phase 1)
+- [ ] `noahsark cat-object` — debug tool (works with all object types including commits)
+- [ ] Global index (SQLite) + bloom filter
+- [ ] Content-addressed commits (SHA-256 naming, parent pointers)
+- [ ] (no FEC in Phase 1)
 
 ### Phase 2 — Integrity & Recovery
 
