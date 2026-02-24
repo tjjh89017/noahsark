@@ -376,7 +376,10 @@ When staging objects for disc burning, NoahsArk selects unstaged objects and org
 them into disc sessions using the following approach:
 
 1. Collect all objects not yet allocated to a disc from `.noahsark/objects/`
-2. Sort by type priority: commits and trees first (small, needed for restore), then blobs and chunks
+2. Sort by type and blob order:
+   - Commits and trees first (small, needed for restore)
+   - Then blobs (sorted by hash)
+   - Then chunks, sorted by: (a) source blob hash, (b) chunk position within blob
 3. Select objects greedily until the disc's remaining capacity is reached
 4. Move selected objects to `.noahsark/staged/<disc_id>-s<session>/objects/` preserving the hash-based directory structure
 5. Update the global index to record which objects are on which disc session
@@ -384,6 +387,13 @@ them into disc sessions using the following approach:
 **Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25) or larger,
 individual chunks will never exceed disc capacity. Files larger than one disc are
 handled by spreading their chunks across multiple disc sessions.
+
+**Rationale for blob-order sorting:** Sorting chunks by their source blob and position ensures
+that large files spanning multiple discs will have their chunks stored on consecutive discs
+(N, N+1, N+2...). If chunks were sorted by hash instead, a single 50 GB file's chunks could be
+scattered across many non-consecutive discs (1, 5, 8, 12, 23...), making restore operations
+impractical. Blob-order sorting guarantees that all chunks for file A appear before all chunks
+for file B, maintaining file locality across disc boundaries.
 
 ### 5.2 Multi-Session Support (Incremental Disc Burning)
 
@@ -777,7 +787,7 @@ SELECT disc_id, COUNT(*) FROM index_entries GROUP BY disc_id;
 When staging a large commit across multiple discs:
 
 1. **Collect unstaged objects** from `.noahsark/objects/`
-2. **Sort by priority**: commits/trees first, then blobs, then chunks
+2. **Sort by type and blob order**: commits/trees first, then blobs, then chunks (by source blob + position)
 3. **Greedy bin-packing**: fill current disc until capacity reached
 4. **Allocate next disc**: if objects remain, allocate new disc_id
 5. **Repeat**: until all objects staged
