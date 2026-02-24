@@ -12,7 +12,8 @@ media. It provides:
 
 - **Incremental backup** — unchanged data is never re-written (content-addressed dedup)
 - **Sub-file deduplication** — fixed-size chunking (16 MiB) with blob-level indexing
-- **Pack files** — chunks bundled into single files sized to match disc capacity
+- **Pack files (removed)** — NoahsArk no longer stores `.pack` bundle files on disc; instead
+  each disc stores the selected content-addressed objects directly under `NOAHSARK/objects/`.
 - **Disc image generation** — outputs a directory ready for burning (UDF-compatible layout)
 - **Multi-session support** — partially-filled discs can be continued in future burn sessions
 - **Disc-spanning** — files larger than one disc split across multiple discs automatically
@@ -229,14 +230,14 @@ message <OPTIONAL_ONE_LINE_MESSAGE>
 The section after `---` lists **only new or changed blobs** in this commit (incremental).
 Unchanged files are implicit via the tree structure.
 
-**Metadata fields:**
-- `parent`: SHA-256 hash of parent commit (64 zeros if first commit)
+- **Metadata fields:**
+- `parent`: RFC3339 timestamp of parent commit (empty or null if first commit)
 - `tree`: SHA-256 hash of root tree object
 - `blob_sha256`: SHA-256 hash of each blob in the incremental list
 
-Named by: SHA-256 of the commit content.
+Named by: RFC3339 timestamp of the commit (filename-safe, e.g. 2026-02-24T12:00:00+08:00.json).
 
-`HEAD` file: `.noahsark/HEAD` contains the current commit SHA-256 (64 hex chars + newline).
+`HEAD` file: `.noahsark/HEAD` contains the current commit timestamp (RFC3339 + newline).
 
 ---
 
@@ -292,153 +293,59 @@ File: 42 MiB (44040192 bytes)
 This eliminates complexity and ensures all NoahsArk repositories are compatible.
 
 
-## 5. Pack File Format
+## 5. On-disc object storage
 
-A pack file bundles many chunks/objects into one file sized to fill a Blu-ray disc.
-Design inspired by Restic's trailing-header pack format and Git's packfile.
+NoahsArk stores the selected content-addressed objects directly on the disc
+under `NOAHSARK/objects/<hash[:2]>/<hash[2:]>`. There are no `.pack` bundle
+files written to disc; the manifest and pack-index style metadata are replaced
+by a `manifest.json` that lists the objects and their byte lengths. This keeps
+disc contents simple and recoverable by scanning `NOAHSARK/objects/` and
+`manifest.json`.
 
-### 5.1 Pack File Layout
-
-```
-┌──────────────────────────────────────┐
-│  MAGIC      "NARK"  (4 bytes)         │
-│  VERSION    uint32 LE  = 1            │
-│  RESERVED   (8 bytes, zero)           │
-├──────────────────────────────────────┤
-│  Entry 0                              │
-│  Entry 1                              │
-│  ...                                  │
-├──────────────────────────────────────┤
-│  HEADER     JSON (zstd compressed)    │
-│  HEADER_LEN uint64 LE  (8 bytes)      │
-└──────────────────────────────────────┘
-```
-
-**Entry format** (each chunk or metadata object stored in the pack):
+### 5.1 Disc object layout
 
 ```
-CRC32      uint32 LE   CRC32 of DATA bytes
-TYPE       uint8       0=chunk  1=blob  2=tree  3=commit  4=fec_parity
-DATA_LEN   uint32 LE
-DATA       []byte      raw (or zstd-compressed for chunks)
+NOAHSARK/
+├── objects/
+│   └── XX/YYYY...    # content-addressed object files (same layout as local .noahsark/objects/)
+├── manifest.json     # snapshot of index: list of object hashes, types, lengths
+└── fec/              # Phase 2 only
+    └── fec-<stripe_id>.par
 ```
 
-**Pack header JSON** (end of file, before the 8-byte length field):
+**manifest.json** (example):
 
 ```json
 {
-  "id": "<pack_sha256>",
-  "disc_id": "<disc_id>",
   "created": "<RFC3339>",
-  "entries": [
-    {
-      "hash":   "<sha256>",
-      "type":   "chunk|blob|tree|commit",
-      "offset": 1234,
-      "length": 5678,
-      "crc32":  987654321
-    }
+  "objects": [
+    {"hash":"<sha256>", "type":"chunk|blob|tree|commit", "length":16777216},
+    {"hash":"<sha256>", "type":"chunk", "length":10485760}
   ]
 }
 ```
 
-The trailing header makes packs **self-describing**: the global index can be fully
-rebuilt by scanning pack headers across all discs — no external metadata required.
+### 5.2 Disc session state
 
-### 5.2 Pack Index File (`pack-<hash>.idx`)
-
-Binary file accompanying each pack:
-
-```
-MAGIC        "NIDX"         (4 bytes)
-VERSION      uint32 LE = 1
-ENTRY_COUNT  uint32 LE
-FANOUT       [256]uint32    fanout[i] = count of entries where hash[0] <= i
-ENTRIES      sorted by hash:
-  hash       [32]byte       SHA-256
-  offset     uint64 LE
-  length     uint32 LE
-  crc32      uint32 LE
-PACK_HASH    [32]byte       SHA-256 of the .pack file
-INDEX_HASH   [32]byte       SHA-256 of everything above
-```
-
-Binary search with fanout table: O(log N) lookup by hash.
-
-### 5.3 Target Pack Sizes by Disc Type
-
-| Disc     | Raw Capacity | Usable (95%) | Pack Target |
-|----------|-------------|--------------|-------------|
-| BD-100   | 100 GiB     | 95 GiB       | 93.2 GiB    |
-| BD-50    | 50 GiB      | 47.5 GiB     | 46.6 GiB    |
-| BD-25    | 25 GiB      | 23.75 GiB    | 23.3 GiB    |
-| DVD-4.7  | 4.7 GiB     | 4.47 GiB     | 4.37 GiB    |
-| CD-700   | 700 MiB     | 665 MiB      | 650 MiB     |
-
-5% reserved for UDF overhead, manifest copy, pack index, and FEC metadata.
-
-Custom size via `--size=<bytes>` overrides the presets for non-standard media.
-
-### 5.4 Disc ID Format
-
-Disc IDs are **human-readable, sequential, and sortable** for easy physical labeling and archival.
-
-Format: `YYYYMMDD-NNN-TYPE`
-
-Examples:
-- `20260224-001-BD25` — first BD-25 disc created on 2026-02-24
-- `20260224-002-BD50` — second disc (BD-50) on the same day
-- `20260310-001-BD25` — first disc on 2026-03-10
-
-Components:
-- `YYYYMMDD` — creation date (sorts chronologically)
-- `NNN` — zero-padded sequence number (001-999) per day
-- `TYPE` — disc type: `BD25`, `BD50`, `BD100`, `DVD`, `CD`, or `CUSTOM`
-
-The sequence counter resets daily, ensuring disc labels remain readable even in
-multi-year archives. Users write this exact string on the disc label.
-
-### 5.5 Disc Session State
-
-A **disc session** tracks how much of a physical disc has been used, allowing multiple
-`noahsark iso` runs to fill the same disc over time.
-
-Stored at `.noahsark/discs/<disc_id>.json`:
+The `.noahsark/discs/<disc_id>.json` format is similar but records object counts
+instead of pack IDs. Example `sessions` entry:
 
 ```json
 {
-  "disc_id":       "20260224-001-BD25",
-  "label":         "Project Backup - 2026 Q1",
-  "type":          "BD-25",
-  "total_bytes":   26843545600,
-  "used_bytes":    13320000000,
-  "remaining_bytes": 13523545600,
-  "created":       "2026-02-24T12:00:00+08:00",
-  "sessions": [
-    {
-      "session_id":  1,
-      "iso_file":    "20260224-001-BD25-s1.iso",
-      "created":     "2026-02-24T12:00:00+08:00",
-      "packed_bytes": 13320000000,
-      "pack_ids":    ["<pack_sha256>", "..."]
-    }
-  ],
-  "status":  "open"
+  "session_id": 1,
+  "iso_file": "20260224-001-BD25-s1.iso",
+  "created": "2026-02-24T12:00:00+08:00",
+  "packed_bytes": 13320000000,
+  "object_count": 12345
 }
 ```
 
-`status` values:
-- `open` — disc has remaining space; can be continued
-- `full` — less than 10 MiB remaining; treated as closed
-- `closed` — manually closed by user (`noahsark disc close <disc_id>`)
-
-Optional `label` field: user-provided description shown on `noahsark disc list`
-
 When `noahsark iso --disc=<disc_id>` is run:
 1. Load session state → `remaining_bytes` is the budget for this ISO
-2. Pack objects up to `remaining_bytes`
+2. Copy objects (by hash) into `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/`
+   until `remaining_bytes` is exhausted
 3. Update `used_bytes`, append new session entry
-4. If `remaining_bytes < 10 MiB` after packing, set `status = full`
+4. If `remaining_bytes < 10 MiB` after copying, set `status = full`
 5. Generate ISO filename: `<disc_id>-s<session_id>.iso`
 
 When allocating a new disc (no `--disc` flag):
@@ -451,7 +358,7 @@ When allocating a new disc (no `--disc` flag):
 When staging, chunks are sorted by commit order and packed using a First Fit Decreasing
 bin-packing approach:
 
-1. Collect all unstaged chunks from `.noahsark/objects/`
+1. Collect all chunks not yet allocated to a disc from `.noahsark/objects/`
 2. Sort by type priority: commits and trees first (small, needed for restore), then blobs by file
 3. Fill packs greedily until `pack_target_size` is reached
 4. If a single chunk exceeds the pack size, it is split across consecutive packs (rare with 4 MiB max chunk)
@@ -499,10 +406,9 @@ all other discs to be present.
 ```
 .noahsark/
 ├── config                      # JSON repository configuration
-├── HEAD                        # current commit SHA-256 (64 hex + newline)
-├── refs/
-│   └── tags/                   # named tags
-├── objects/                    # loose objects (blobs, trees, commits, chunks)
+├── HEAD                        # current commit timestamp (RFC3339 + newline)
+├── commits/                    # linear commit history: <RFC3339>.json (one file per commit)
+├── objects/                    # loose objects (blobs, trees, commits, chunks) — only unallocated objects
 │   └── XX/YYYY...              # 2-char prefix / remainder
 ├── index/                      # global index files
 │   ├── <hash>.idx              # JSON: hash → disc_id + pack_id + offset + length
@@ -516,7 +422,7 @@ all other discs to be present.
     │   └── NOAHSARK/           # UDF directory tree
     │       ├── disc.json
     │       ├── manifest.json
-    │       └── packs/
+    │       └── objects/
     └── 20260224-001-BD25-s2/
         └── NOAHSARK/
 ```
@@ -600,8 +506,9 @@ or validating proofs. Always record `merkle_padding` in `config` and in
 - `hash`: SHA-256 hex (64 chars) of the object
 - `type`: object type (chunk, blob, tree, commit)
 - `disc_id`: which disc contains this object
-- `pack_id`: which pack file within the disc
-- `offset`: byte offset within the pack file
+- `pack_id`: (deprecated) previously referenced a pack file within the disc; when storing
+  objects directly on disc this field is unused.
+- `offset`: byte offset within the pack file (unused for direct-object storage)
 - `length`: byte length of the object data
 
 **Note:** All chunks are 16 MiB except the last chunk of a file (indicated by `length < 16777216`).
@@ -616,11 +523,10 @@ Multiple index files may exist. `noahsark index consolidate` merges them.
 NOAHSARK/
 ├── disc.json                   # this disc's metadata: disc_id, label, session info
 ├── manifest.json               # snapshot of global index (disaster recovery)
-├── packs/
-│   ├── pack-<hash>.pack
-│   └── pack-<hash>.idx
+├── objects/                    # content-addressed object files stored by hash prefix
+│   └── XX/YYYY...
 └── fec/                        # Phase 2 only
-    └── fec-<stripe_id>.par
+  └── fec-<stripe_id>.par
 ```
 
 **disc.json** example:
@@ -631,12 +537,37 @@ NOAHSARK/
   "type": "BD-25",
   "session_id": 1,
   "created": "2026-02-24T12:00:00+08:00",
-  "pack_ids": ["<pack_sha256>", "..."]
+  "object_count": 12345
 }
 ```
 
 **manifest.json:** A copy of the global index at the time of burning, allowing the
 repository to be reconstructed by scanning a single disc if the local `.noahsark/` is lost.
+
+### Object lifecycle and allocation
+
+NoahsArk treats `objects/` as the pool of unallocated, loose objects. When an object
+is selected for inclusion on a disc session (during `noahsark stage`),
+implementations MAY copy the object's file out of `.noahsark/objects/` into the
+staged output under `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/`.
+
+Rules:
+- Allocation: once an object is recorded in the global index as stored on a disc,
+  its local loose copy MAY be removed to avoid duplication; the authoritative
+  location becomes the disc's `manifest.json` entry and the physical object file
+  stored under `NOAHSARK/objects/` on that disc.
+- Atomicity: copies and removals MUST be atomic where possible. Update the index
+  to refer to the disc location only after the object file and the disc `manifest.json`
+  are durably written.
+- Burn completion: after a disc session is successfully burned and verified, the
+  corresponding objects that were staged for that session SHOULD be removed from
+  the local `.noahsark/objects/` pool. In steady-state (all data archived),
+  `.noahsark/objects/` will be empty.
+- Unallocated objects: any object not assigned to a disc remains in `.noahsark/objects/`.
+
+This behavior keeps local storage minimal: objects that have been committed and
+allocated for archival are represented by their pack entries on staged discs and in
+the global index; the loose-object pool contains only items awaiting allocation.
 
 ---
 
@@ -772,10 +703,10 @@ noahsark test-burn [staged-dir] [output.iso]
 
     Use cases:
       - CI/CD testing without physical media
-      - Verify pack files and indices before burning
+        - Verify objects and manifest before burning
       - Mount ISO locally to test restore:
           mount -o loop test.iso /mnt/test
-          noahsark restore HEAD /path /mnt/test/NOAHSARK/packs/
+          noahsark restore HEAD /path /mnt/test/NOAHSARK/objects/
 
 noahsark stage gc [--keep-days=7]
     Clean up staged directories older than N days (default: 7).
@@ -783,7 +714,7 @@ noahsark stage gc [--keep-days=7]
 
 noahsark restore [commit] [src-path] [dest-path]
     Restore src-path as it existed at commit to dest-path.
-    commit may be a full SHA-256, a short prefix, or HEAD~N notation.
+    commit may be an RFC3339 timestamp (filename), a short prefix, or HEAD~N notation.
 
 noahsark log [--count=20] [--oneline]
     Show commit history from HEAD.
