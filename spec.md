@@ -577,7 +577,7 @@ When staging for an existing disc (`--disc=<disc_id>`):
 1. Load disc metadata: `.noahsark/discs/<disc_id>.json`
    - Check disc status (open/full/closed)
    - Get remaining capacity
-   - Determine next session number
+   - Determine next session number (max existing session number + 1)
 2. Query `index.db` to find unstaged objects:
    ```sql
    SELECT hash FROM objects
@@ -1063,6 +1063,13 @@ blocks up to full files.
 - ✅ objects/ and metadata/ are shared across sessions (content-addressed, no duplication)
 - ✅ Latest session contains most complete index.db
 
+**Important: Session directory sorting**
+Session directories are named `s1/`, `s2/`, `s3/`, etc. When finding the latest (highest) session:
+- ✅ Parse session number as **integer** (s1 < s2 < s9 < s10 < s11)
+- ❌ Do NOT use lexicographic string sort (would give: s1 < s10 < s11 < s2 < s9)
+
+The latest session is the one with the **numerically highest** session number, not the last in alphabetical order.
+
 The `staged/` directories remain until manually cleaned with `noahsark stage gc`
 (recommended after successful burn + verify).
 
@@ -1197,7 +1204,7 @@ before touching `index.db`.
 - **objects/** and **metadata/** are shared across all sessions (content-addressed, no conflicts)
 - Each session has its own **sN/** directory containing session metadata and index snapshot
 - **UDF volume label** = disc_id (set once in session 1, immutable)
-- Latest session contains the most complete index.db
+- Latest session contains the most complete index.db (highest session number numerically, not lexicographically)
 
 **session.json** example:
 ```json
