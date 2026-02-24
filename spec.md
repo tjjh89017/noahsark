@@ -13,7 +13,7 @@ media. It provides:
 - **Incremental backup** — unchanged data is never re-written (content-addressed dedup)
 - **Sub-file deduplication** — fixed-size chunking (16 MiB) with blob-level indexing
 - **Pack files (removed)** — NoahsArk no longer stores `.pack` bundle files on disc; instead
-  each disc stores the selected content-addressed objects directly under `NOAHSARK/objects/`.
+  each disc stores the selected content-addressed objects directly under `objects/`.
 - **Disc image generation** — outputs a directory ready for burning (UDF-compatible layout)
 - **Multi-session support** — partially-filled discs can be continued in future burn sessions
 - **Disc-spanning** — files larger than one disc split across multiple discs automatically
@@ -378,7 +378,7 @@ them into disc sessions using the following approach:
 1. Collect all objects not yet allocated to a disc from `.noahsark/objects/`
 2. Sort by type priority: commits and trees first (small, needed for restore), then blobs and chunks
 3. Select objects greedily until the disc's remaining capacity is reached
-4. Copy selected objects to `.noahsark/staged/<disc_id>-s<session>/NOAHSARK/objects/` preserving the hash-based directory structure
+4. Move selected objects to `.noahsark/staged/<disc_id>-s<session>/objects/` preserving the hash-based directory structure
 5. Update the global index to record which objects are on which disc session
 
 **Note:** Since chunks are fixed at 16 MiB and discs are typically 23+ GiB (BD-25) or larger,
@@ -510,7 +510,7 @@ Each session is tracked in two places:
 }
 ```
 
-**2. On-disc session metadata** (`NOAHSARK/sN/session.json` for each session):
+**2. On-disc session metadata** (`sN/session.json` for each session):
 ```json
 {
   "session_id": 2,
@@ -979,7 +979,7 @@ If chunk size or hash algorithm must change (e.g., SHA-256 is compromised):
 ### 7.4 Global Index (`.noahsark/index.db`)
 
 The global index is stored as a single SQLite database `index.db` (in the
-local repository `.noahsark/index.db` or on-disc as `NOAHSARK/index.db`). This
+local repository `.noahsark/index.db` or on-disc as `sN/index.db` for each session). This
 file provides fast, ACID-backed lookups for object locations.
 
 Example SQLite schema (DDL):
@@ -990,7 +990,7 @@ CREATE TABLE index_entries (
   hash TEXT PRIMARY KEY,       -- SHA-256 hex (64 chars)
   type TEXT NOT NULL,         -- chunk|blob|tree|commit
   disc_id TEXT,               -- which disc contains the object
-  object_path TEXT,           -- path on disc (e.g. NOAHSARK/objects/XX/YYYY...)
+  object_path TEXT,           -- path on disc (e.g. objects/XX/YYYY...)
   offset INTEGER,             -- reserved (NULL for direct-object storage)
   length INTEGER NOT NULL,    -- byte length of stored object
   created TEXT,               -- RFC3339 when this index entry was recorded
@@ -1002,7 +1002,7 @@ PRAGMA user_version = 1;
 ```
 
 Notes:
-- `object_path` points to the object file on disc: `NOAHSARK/objects/XX/YYYY...`
+- `object_path` points to the object file on disc: `objects/XX/YYYY...`
 - `offset` field is reserved (NULL) for direct-object storage.
 - `merkle_padding` records the per-repository Merkle padding rule (see config).
 - `index.db` replaces per-hash JSON index snapshots; keep `bloom.bin` for a
@@ -1182,7 +1182,7 @@ noahsark gc --aggressive
 Even after GC, objects can be recovered:
 ```bash
 noahsark import /mnt/disc-001
-# → Scans NOAHSARK/objects/ on mounted disc
+# → Scans objects/ on mounted disc
 # → Updates index with object locations
 # → Objects can now be restored from disc
 ```
@@ -1394,8 +1394,8 @@ noahsark test-burn [staged-dir] [output.iso]
          → ISO mounted at /mnt/test-disc/
 
       4. Verify disc contents:
-         ls -lh /mnt/test-disc/         cat /mnt/test-disc/NOAHSARK/disc.json
-         → Check disc.json, objects/, index.db, etc.
+         ls -lh /mnt/test-disc/         cat /mnt/test-disc/s1/session.json
+         → Check session.json, objects/, index.db, etc.
 
       5. Test restore from ISO:
          noahsark restore <commit-sha> /path/to/restore
@@ -1577,7 +1577,7 @@ optional Phase 2 extension, but they are out of scope for the current design.
 
 - [ ] `noahsark init` — create `.noahsark/` structure, generate config
 - [ ] `noahsark commit` — fixed-size chunking, CAS dedup (bloom + index), write objects, build tree, write commit (SHA-256 named), update HEAD
-- [ ] `noahsark stage` — select objects for disc, copy to staged directory, disc session tracking
+- [ ] `noahsark stage` — select objects for disc, move chunks and copy metadata to staged directory, disc session tracking
 - [ ] `noahsark burn` — wrapper around growisofs with multi-session support + --mark-archived
 - [ ] `noahsark test-burn` — generate ISO from staged dir using genisoimage (for testing)
 - [ ] `noahsark restore` — lookup via global index, reassemble from chunks, support SHA-256 commit refs
@@ -1648,7 +1648,7 @@ sudo mount -o loop,ro test.iso /mnt/test-disc
 
 # 7. Test restore from ISO
 noahsark restore HEAD /tmp/restore-test
-# → NoahsArk reads objects from /mnt/test-disc/NOAHSARK/objects/
+# → NoahsArk reads objects from /mnt/test-disc/objects/
 
 # 8. Verify restored data
 diff -r /original/data /tmp/restore-test
@@ -1761,7 +1761,7 @@ noahsark verify --disc=20260310-001-BD25 --level=full
 
 # Check specific files
 noahsark restore <commit> /tmp/restore
-diff -r /mnt/disc/NOAHSARK/objects/ /tmp/restore/
+diff -r /mnt/disc/objects/ /tmp/restore/
 
 sudo umount /mnt/disc
 ```

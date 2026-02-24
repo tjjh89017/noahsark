@@ -47,12 +47,17 @@ NoahsArk uses a four-tier object model where all objects are content-addressed b
 └── HEAD                   # Current commit SHA-256 hash
 
 On-Disc Layout (UDF 2.50):
-NOAHSARK/
-├── disc.json              # Session metadata
-├── manifest.json          # Object listing for this session
-├── index.db              # Index snapshot for this disc
 ├── objects/XX/YY...       # Raw chunk data only (16 MiB blocks, named by hash)
-└── metadata/XX/YY...      # Structural metadata (blobs, trees, commits)
+├── metadata/XX/YY...      # Structural metadata (blobs, trees, commits)
+├── s1/                    # Session 1 directory
+│   ├── session.json       # Session 1 metadata
+│   └── index.db           # Index snapshot (up to session 1)
+├── s2/                    # Session 2 directory
+│   ├── session.json       # Session 2 metadata
+│   └── index.db           # Index snapshot (up to session 1+2)
+└── s3/                    # Session 3 directory (if present)
+    ├── session.json       # Session 3 metadata
+    └── index.db           # Index snapshot (up to session 1+2+3)
 ```
 
 ### Multi-Session Workflow
