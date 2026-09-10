@@ -1,8 +1,8 @@
 # NoahsArk Specification
 
-Version: 2.0 (format major 1)
+Version: 2.1 (format major 1)
 Status: design specification. No implementation exists yet.
-Language of implementation: Go.
+Reference implementation language: Go (informative, section 24).
 
 ---
 
@@ -35,6 +35,7 @@ Language of implementation: Go.
   - 4.6 Registries
   - 4.7 Version policy
   - 4.8 Endianness and alignment test
+  - 4.9 Hash coverage per structure
 - 5. Identity and hashing
   - 5.1 The content id rule
   - 5.2 Hash algorithms
@@ -114,7 +115,7 @@ Language of implementation: Go.
   - 12.2 Run filter
   - 12.3 Run manifest
   - 12.4 Prerequisite list
-  - 12.5 Snapshot objects, snapshot table and ref table
+  - 12.5 Snapshot objects, snapshot table, ref table and run table
   - 12.6 Disc directory
   - 12.7 Catalog contents per run
   - 12.8 Dedup rule
@@ -218,6 +219,7 @@ Language of implementation: Go.
   - 21.3 Rules for a writer
   - 21.4 Rules for a reader
   - 21.5 What a Phase 1 reader does with a Phase 3 disc
+  - 21.6 Reader and writer conformance
 - 22. Failure modes and recovery matrix
 - 23. Testing and CI
   - 23.1 Image-first principle
@@ -231,6 +233,7 @@ Language of implementation: Go.
 - 24. Implementation notes
 - 25. Design changes from the previous specification
 - 26. Glossary
+- 27. Document change log
 - Appendix A. Gear table
   - A.1 Status
   - A.2 Generation rule
@@ -400,9 +403,8 @@ Phase 1 does not implement (section 21.5).
 | Phase | Content |
 |---:|---|
 | **1** | Disc filesystem profile 0 only, as section 10.1 defines it. Sealing with `pack --close`. FastCDC chunking. Dedup with filters and manifests. Cache-less restore. Per-run Reed-Solomon parity and `verify --heal`. All media sizes. Forced capacity and forced reserve. The staging state machine and GC, with a mandatory `verify` before an object becomes CLEAN. Manual `commit` only, with no watcher. The disc-major restore plan. The Phase 1 metadata set: type, mode, uid, gid, names, mtime, symlink target and hardlink group. |
-| **2** | The `sync` mirror wrapper over rsync. Extended metadata: extended attributes, POSIX ACLs, the remaining timestamps, Windows attributes. Disc filesystem profile 1: POW append on UDF with the image mirror and the block diff. The LBA stability check after every append. The `close` and `append` commands, and the `when_full` close policy. The raw append degraded mode. Spare area monitoring. |
+| **2** | The `sync` mirror wrapper over rsync. Extended metadata: extended attributes, POSIX ACLs, the remaining timestamps, Windows attributes. Disc filesystem profile 1: POW append on UDF with the image mirror and the block diff. The LBA stability check after every append. The `close` and `append` commands, and the `when_full` close policy. Repair runs. The raw append degraded mode. Spare area monitoring. |
 | **3** | Watch mode, the change-recording daemon. Disc-close parity. The cross-disc parity disc. Mirror bookkeeping. `consolidate`. Multi-drive restore. `reindex`. Disc filesystem profile 2, ISO 9660:1999 level 4 with `growisofs -M`. Burning on tier-2 operating systems. |
-
 | **Backlog** | Commit bundles: the binary on the data host, `catalog export`, `commit --out`, `import`, and deployment mode C. Specified in full and reserved in the format, but not scheduled for any phase. |
 
 **Backlog** means specified, reserved in the on-disc format, and not scheduled.
@@ -539,9 +541,10 @@ GC never deletes an object that is not CLEAN.
    -> if still missing: cross-disc parity group
    -> if still missing: mirror disc
    -> if still missing: original source path, if it exists
-   -> write recovered objects into staging/heal/
+   -> write recovered objects into staging/heal/, state STAGED
    -> mark the damaged run degraded, list the lost ids
-   -> next pack writes a repair run
+   -> next pack writes them again: into the next data run in Phase 1,
+      or into a repair run on the damaged disc from Phase 2
 ```
 
 ### 3.5 Component list
@@ -591,6 +594,7 @@ disc and not in the cache:
 | `<repo>/config` | The configuration file of section 20. It holds `repo.uuid`. | Yes. |
 | `<repo>/lock` | The repository lock file of section 14.5. | Yes. |
 | `<repo>/staging/` | The staging store of section 14, unless `staging.dir` moves it. | Yes, the role. The name is the default. |
+| `<repo>/notes` | Operator notes per disc: shelf location and a local display label, keyed by `disc_uuid` (section 19.22). Convenience data. Losing it loses no archive data. | Yes, the role. The name is the default. |
 | `<repo>/probes/` | Results of the manual probes of section 23.6, one text file each. | Informative. |
 
 `init` creates the directory, `config` with a fresh `repo.uuid`, an empty
@@ -715,6 +719,30 @@ Bits are assigned once and never reused.
 
 Bits 7 to 63 of each half are reserved. A writer must set them to zero.
 
+**Bits set by a version 1 writer.** A feature bit belongs to the structure
+that carries it. A reader checks the bits of the structure it reads and no
+other. The table lists every bit that a version 1 writer may set, the
+structure that carries it, and the condition. A structure that the table does
+not name, and a condition that does not hold, give a zero field.
+
+| Structure | Bit | Set when |
+|---|---|---|
+| Common object header (section 4.3) | `FEAT_COMPRESSION` | `compression` is not 0. |
+| Tree header (section 8.5) | `FEAT_CHUNKLIST` | Any entry sets `CONTENT_IS_CHUNKLIST`, or any TLV sets `SPILL_IS_CHUNKLIST`. |
+| Tree header (section 8.5) | `FEAT_TLV_SPILL` | Any TLV sets `SPILLED`. |
+| Run header (section 9.6) | `FEAT_FEC_RS8` | Always. Every version 1 run carries parity. |
+| Run layout table (section 9.7) | `FEAT_FEC_RS8` | Always. |
+| Manifest container (section 12.3) | `FEAT_BUNDLES` | The `"BNDL"` chunk holds at least one bundle id. |
+| Manifest container (section 12.3) | `FEAT_FAN16` | `fanout_bits` is 16. |
+| Manifest container (section 12.3) | `OPT_BITMAPS` | A `"BMAP"` chunk is present. |
+| Manifest container (section 12.3) | `OPT_REVIDX` | A `"RIDX"` chunk is present. |
+| Catalog container (section 12.7.2) | `OPT_XLATE` | A cross-algorithm side table (section 5.7) was copied into the catalog. Phase 3. |
+| Run header (section 9.6) | `OPT_DISC_PARITY` | `run_kind` is 3, a disc-close parity run. Phase 3. |
+
+`FEAT_CRYPTO` is never set by a version 1 writer. The golden files of test 1
+(section 23.2) carry these values, and a reader refuses a structure whose
+`required_feat` holds any other bit.
+
 ### 4.5 Strings
 
 | Offset | Size | Type | Name | Meaning |
@@ -822,9 +850,17 @@ use a hardcoded number for a burn. The table is for planning and for labels.
 ### 4.7 Version policy
 
 - `version_major` changes when an old reader would misread the structure.
-- `version_minor` changes when fields are appended and `header_len` grows.
-- A reader computes the end of a fixed header from `header_len`, not from its
-  own compiled size. It skips `header_len - known_len` bytes.
+- Exactly three structures carry a `header_len` field: the common object
+  header (section 4.3), the tree header (section 8.5) and the tree entry
+  (section 8.5.1). For those, `version_minor` changes when fields are
+  appended and `header_len` grows. A reader computes the end of such a header
+  from `header_len`, not from its own compiled size. It skips
+  `header_len - known_len` bytes.
+- Every other structure has a fixed size under its `version_major`. It grows
+  only by a `version_major` bump. A `version_minor` bump on such a structure
+  may only give meaning to a field that was reserved, and the new meaning must
+  be one that a reader of the older minor may ignore, as rule 3 of section 4.1
+  already requires for a reserved field.
 - A feature that an old reader can ignore gets an `optional_feat` bit, not a
   version bump.
 - A feature that an old reader must not ignore gets a `required_feat` bit.
@@ -836,6 +872,34 @@ Every implementation must ship a golden-file test per structure. The test
 writes a structure with known values and compares the bytes to a checked-in
 file. The test also reads the checked-in file and compares the fields. This
 catches an accidental change of layout, of padding, or of endianness.
+
+### 4.9 Hash coverage per structure
+
+Every hash field that names another structure covers **all the bytes of that
+structure as they lie on the medium**, with every CRC field already filled in.
+No hash is computed over a structure with its CRC zeroed. The table lists
+every such field.
+
+| Field | In | Covers | Algorithm |
+|---|---|---|---|
+| `manifest_hash` | Run header (section 9.6) | Every byte of `manifest.bin`. | Run header `hash_algo`. |
+| `filter_hash` | Run header | Every byte of `filter.bin`. | Run header `hash_algo`. |
+| `layout_hash` | Run header | Every byte of `layout.bin`, after the records and both CRCs are final. | Run header `hash_algo`. |
+| `catalog_hash` | Run header | Every byte of `catalog/CATALOG.bin`. | Run header `hash_algo`. |
+| `prev_run_header_hash` | Run header | The 512 bytes of the previous run header, CRC included. | Run header `hash_algo`. |
+| `prev_disc_super_hash` | Disc superblock (section 9.5) | The 2048 bytes of the previous disc's superblock, CRC included. | Superblock `hash_algo`. |
+| `super_hash` | Disc directory record (section 12.6) | The 2048 bytes of that disc's superblock, CRC included. | Container `hash_algo`. |
+| `run_header_hash` | Run table record (section 12.5.2) | The 512 bytes of that run's header, CRC included. | Container `hash_algo`. |
+| `file_hash` | Catalog entry (section 12.7.2) | Every byte of the named catalog file. | Container `hash_algo`. |
+| `content_id` | Extent record (section 9.7), fixed-name file | Every byte of the file. Zero for the roles that section 9.7 lists. | Layout `hash_algo`. |
+| `payload_hash` | Burn step (section 10.7.1) | Every byte of the image file, or the sorted tree listing. | `hash.current`. |
+| `catalog_hash` | Commit bundle header (section 16.11.1) | Every byte of the exported `CATALOG.bin`. | Bundle `hash_algo`. |
+| Content id | Object file name | The uncompressed payload only (section 5.1). Never the object header. | Run header `hash_algo`. |
+| Sector digest | Checksum sector (section 11.4) | The 2048 bytes of one data sector as they lie on the medium. | BLAKE3, truncated to 8 bytes. |
+
+A reader verifies a hash before it uses any field of the hashed structure,
+and it verifies the CRC of that structure as well. The CRC catches a torn
+write. The hash catches a substituted file.
 
 ---
 
@@ -895,7 +959,8 @@ The algorithm of a digest is stated by exactly one of two places:
 
 A structure never holds a digest whose algorithm neither place states. Section
 5.6 lists the cross-epoch references, which are the only places that need rule
-2.
+2. The reindex container of section 5.7 is the one structure whose header
+names two algorithms; its record table says which field uses which.
 
 ### 5.4 Text form
 
@@ -971,7 +1036,9 @@ An **epoch** is a maximal run of runs that share one hash algorithm.
 
 - The repository config holds `hash.current`. New objects use it.
 - Every run header records the algorithm of the objects in that run.
-- Every disc superblock records the algorithm of its newest run.
+- Every disc superblock records the algorithm of its first run. The
+  superblock is written once and never updated (section 9.5); the newest run
+  header names the current algorithm of the disc.
 - Old discs keep their algorithm forever. Nothing rewrites them.
 
 At an epoch boundary, dedup drops to zero by default. The same bytes hash to a
@@ -986,7 +1053,7 @@ and names its own algorithm.
 
 **Cross-epoch references.** The tree graph below one snapshot is single
 algorithm: the root tree, every tree, every chunklist and every chunk id under
-it use the `hash_algo` of the snapshot header. Only five fields may name an
+it use the `hash_algo` of the snapshot header. Only six fields may name an
 object under another algorithm, and each one states its algorithm:
 
 | Field | Where | Algorithm stated by |
@@ -1003,16 +1070,35 @@ Every other digest uses the algorithm of its containing structure.
 
 `noahsark reindex --to <algo>` reads old runs once and writes a side table.
 
-Table record, 72 bytes, sorted ascending by `old_id`:
+Container header, 64 bytes:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 0 | 32 | u8[32] | `old_id` | Digest under the old algorithm. |
-| 32 | 32 | u8[32] | `new_id` | Digest under the new algorithm. |
+| 0 | 4 | u32 | `magic` | `"NAXL"`. |
+| 4 | 2 | u16 | `version_major` | 1. |
+| 6 | 2 | u16 | `version_minor` | 0. |
+| 8 | 8 | u64 | `required_feat` | Refuse on an unknown bit. |
+| 16 | 8 | u64 | `optional_feat` | Ignore an unknown bit. |
+| 24 | 16 | u8[16] | `repo_uuid` | The repository. |
+| 40 | 8 | u64 | `record_count` | Records that follow. |
+| 48 | 2 | u16 | `record_size` | 72. |
+| 50 | 1 | u8 | `old_hash_algo` | Multicodec code of `old_id` in every record. |
+| 51 | 1 | u8 | `new_hash_algo` | Multicodec code of `new_id` in every record. |
+| 52 | 1 | u8 | `digest_len` | 32. |
+| 53 | 3 | u8[3] | `reserved` | Zero. |
+| 56 | 4 | u32 | `body_crc32c` | CRC-32C over the records. |
+| 60 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 59. |
+| 64 | `record_count * 72` | | `records` | Sorted ascending by `old_id`. |
+
+Table record, 72 bytes:
+
+| Offset | Size | Type | Name | Meaning |
+|---:|---:|---|---|---|
+| 0 | 32 | u8[32] | `old_id` | Digest under `old_hash_algo`. |
+| 32 | 32 | u8[32] | `new_id` | Digest under `new_hash_algo`. |
 | 64 | 8 | u64 | `run_seq` | Run that holds the bytes. |
 
-The container has the standard header with magic `"NAXL"` and a CRC-32C at the
-end. The header also states the record size.
+The container is a cache file (section 13.1) and is Phase 3.
 
 Rules:
 
@@ -1047,6 +1133,10 @@ The five techniques of FastCDC, in the order that matters:
    NC level 2 adds 2 bits to `mask_s` and removes 2 bits from `mask_l`.
 5. Two-byte rolling: the 2020 variant processes two bytes per step at identical
    cut points.
+
+The pseudocode of section 6.2 is the normative definition of the cut points.
+Two-byte rolling, and any other speed technique, is an optimization that must
+give exactly the cut points of section 6.2; test 3 of section 23.2 proves it.
 
 The Gear table and the mask constants are frozen. They are part of the on-disc
 format. Appendix A holds them. A changed table gives different cut points and
@@ -1142,7 +1232,8 @@ There is no extent table in the format for sparse regions.
   dedup to one object in the repository.
 - On restore, the restorer detects an all-zero chunk by scanning its bytes,
   never by comparing its id to a constant. It skips the write, or it punches a
-  hole with `fallocate(FALLOC_FL_PUNCH_HOLE)`. The file becomes sparse again.
+  hole. The file becomes sparse again. Informative: on Linux the hole is
+  punched with `fallocate(FALLOC_FL_PUNCH_HOLE)`.
 - The backup may use `SEEK_HOLE` and `SEEK_DATA` to skip holes quickly. This is
   a speed optimization only. It must not change the object stream. A file read
   with and without the optimization must produce the same chunk ids.
@@ -1220,6 +1311,9 @@ mixture of compressed and uncompressed objects with the same ids as another run.
 - The manifest container.
 - The filter.
 - `README.txt`.
+- The payload of a bundle object as a whole. Its common object header carries
+  `compression` 0; the chunks inside it are compressed one by one
+  (section 8.3).
 
 These structures must be readable by a forensic tool with no library. The bytes
 they cost are negligible.
@@ -1285,12 +1379,20 @@ contiguous bundles.
 Bundle payload layout:
 
 ```
- [ common object header, kind = 2 ]
+ [ common object header, kind = 2, compression = 0 ]
  [ bundle header, 64 bytes                    ]
- [ chunk payload 0 ][ chunk payload 1 ] ...    each with its own compression
+ [ chunk payload 0 ][ chunk payload 1 ] ...    stored bytes only, no header
  [ index table: entry_count * 64 bytes         ]
  [ bundle trailer, 32 bytes                    ]
 ```
+
+A chunk payload inside a bundle carries **no common object header**. The
+index entry is its header: it holds the id, the offset, the stored and
+uncompressed lengths and the compression id of that chunk. Each chunk is
+compressed on its own, with the heuristic of section 7.4, so one bundle may
+mix compressed and uncompressed chunks. The bundle's own common object header
+carries `compression` 0, and its `payload_len` and `stored_len` are both the
+length of the bundle payload from the bundle header to the end of the trailer.
 
 Bundle header:
 
@@ -1344,8 +1446,10 @@ requires.
 A bundle is itself an object. Its name is the hash of its own payload. A tree
 entry references the **chunk id**, never the bundle id. The manifest maps the
 chunk id to `(bundle, offset)` through the bundle table of section 12.3. A
-reader that has the manifest does a ranged read. A reader with no manifest
-reads the bundle and uses its index.
+reader that has the manifest locates the bundle file, reads its index once,
+and then does one ranged read per chunk it needs; the manifest record holds no
+stored length, so the index supplies it. A reader with no manifest reads the
+bundle and uses its index in the same way.
 
 A bundle must not hold a delta. A delta chain on write-once media is a
 durability hazard: one bad bundle breaks the chain.
@@ -1510,7 +1614,7 @@ and a u64 uncompressed length. The id names a chunk, or a chunklist when
 | 0x0002 | `USER_NAME` | no | UTF-8 bytes. |
 | 0x0003 | `GROUP_NAME` | no | UTF-8 bytes. |
 | 0x0004 | `ROOT_PATH` | no | Raw bytes of a source root's absolute path. Only on an entry of the root tree (section 16.5). |
-| 0x0010 | `XATTR` | no | `u32 count`, then `count` of `{u32 name_len, u32 value_len, name, value}`, each item padded to 4. Sorted by name bytes. |
+| 0x0010 | `XATTR` | no | `u32 count`, then `count` items of `{u32 name_len, u32 value_len, name, value}`. Each item as a whole is zero-padded to a multiple of 4 bytes after `value`; `name` and `value` are not padded separately. Sorted by name bytes. |
 | 0x0011 | `ACL_ACCESS` | no | `u32 count`, then `{u16 tag, u16 perm, u32 id}`. `tag`: 1 user_obj, 2 user, 3 group_obj, 4 group, 5 mask, 6 other. |
 | 0x0012 | `ACL_DEFAULT` | no | Same shape. Directories only. |
 | 0x0013 | `ACL_NFS4` | no | `u32 count`, then `{u16 type, u16 who_kind, u32 flags, u32 mask, u32 who_id}`. |
@@ -1620,8 +1724,11 @@ Consequences:
 4. Dedup makes the repeated content reference free at the chunk level.
 
 The restorer keeps a map from `hardlink_group` to the first restored
-`(dirfd, name)`. On a second member it calls `linkat`. On failure it writes the
-content again and records a `hardlink_degraded` event.
+`(directory, name)`. On a second member it creates a hard link to that first
+member, by directory descriptor and name and never by a path string
+(section 18.8). On failure it writes the content again and records a
+`hardlink_degraded` event. Informative: on Linux the link is made with
+`linkat`.
 
 Directories never have a hardlink group.
 
@@ -1645,7 +1752,7 @@ Snapshot payload header, 136 bytes:
 | 104 | 4 | u32 | `time_nsec` | Nanoseconds. |
 | 108 | 4 | i32 | `tz_offset_sec` | Local zone offset at snapshot time. |
 | 112 | 8 | u64 | `total_size` | Sum of uncompressed bytes reachable. For planning. |
-| 120 | 8 | u64 | `object_count` | Objects reachable from this snapshot. |
+| 120 | 8 | u64 | `object_count` | Distinct content ids reachable from `root_tree`: chunks, chunklists and trees, the root tree included. Bundles are not counted, and the snapshot itself is not counted. |
 | 128 | 1 | u8 | `hash_algo` | Multicodec code of `root_tree` and of every id below it. |
 | 129 | 1 | u8 | `chunker_profile` | Chunker profile id used to produce it. |
 | 130 | 2 | u16 | `meta_count` | Number of TLV records that follow. |
@@ -1758,7 +1865,11 @@ A physical disc has these properties:
 
 - a `disc_uuid`, 16 bytes, generated once and never reused;
 - a human label, printed on the disc;
-- a `disc_seq`, u64, monotonic inside the repository;
+- a `disc_seq`, u64, monotonic inside the repository. It is **0-based**: the
+  first disc of a repository is disc 0. A run is numbered by `run_seq`, u64,
+  monotonic inside the repository and **1-based**: the first run is run 1, so
+  that a `run_seq` of 0 can mean "no run" in every structure that needs that
+  sentinel;
 - a media type from the registry of section 4.6;
 - a capacity in sectors, taken from the drive;
 - a disc filesystem profile id;
@@ -1836,7 +1947,7 @@ full:
 
 | Term | Meaning |
 |---|---|
-| `lba_base` | The first sector of the run, which is the first sector of `RUN.bin`. |
+| `lba_base` | The first sector of the run's parity domain. For the first run of a disc it is **LBA 0**, so that the filesystem descriptors, the anchor at LBA 256 and every directory block below `RUN.bin` are protected. For every later run it is the first sector of that run's `RUN.bin`. |
 | `L`, column length | The number of sectors in one column. `L = ceil(data_span / k)`, where `data_span` is the number of sectors from `lba_base` to the last sector of the last data file, inclusive. |
 | Column | A range of `L` sectors. The `k` data columns are the LBA ranges `[lba_base + c*L, lba_base + (c+1)*L)` for `c = 0 .. k-1`. The checksum column and the `m` parity columns are the sector ranges of the files `checksum.bin` and `parity/pNNNN.bin`. |
 | Parity domain | The `k` data columns together: the contiguous range `[lba_base, lba_base + k*L)`. Every sector in it is protected, whatever file or filesystem structure it belongs to. |
@@ -1853,10 +1964,10 @@ is what makes macOS read every appended object.
 ```
  LBA 0                                                       capacity-1
  |                                                                    |
- +--- filesystem structures (profile dependent) ----------------------+
+ +--- filesystem structures: inside run 1's parity domain ------------+
  |                                                                    |
  |  RUN 1                        RUN 2                  RUN 3         |
- |  [base=B1, len=L1]            [base=B2, len=L2]      [base=B3,..]  |
+ |  [base=0, len=L1]             [base=B2, len=L2]      [base=B3,..]  |
  |                                                                    |
  |  +----------------------------------------------------------+      |
  |  | RUN.bin        run header, first file copied              |     |
@@ -1873,16 +1984,22 @@ is what makes macOS read every appended object.
  |  +----------------------------------------------------------+      |
  +--------------------------------------------------------------------+
 
- Example, BD-R SL 25 GB, capacity 12,219,392 sectors, fill ratio 0.95:
-   usable   = 11,608,422 sectors
-   run 1    = LBA        512 .. 4,096,511      (4,096,000 sectors, 8.39 GB)
+ Example, BD-R SL 25 GB, capacity 12,219,392 sectors, fill ratio 0.95,
+ spare:min (section 10.11.1 gives the arithmetic):
+   fill limit = 11,346,278 sectors
+   run 1    = LBA          0 .. 4,096,511      (4,096,512 sectors, 8.39 GB)
    run 2    = LBA  4,096,512 .. 8,192,511      (4,096,000 sectors)
-   run 3    = LBA  8,192,512 .. 11,608,421     (3,415,910 sectors)
-   reserve  = LBA 11,608,422 .. 12,219,391     (610,970 sectors, POW spare)
+   run 3    = LBA  8,192,512 .. 11,346,277     (3,153,766 sectors)
+   reserve  = LBA 11,346,278 .. 12,219,391     (873,114 sectors: the safety
+                                               margin and the POW spare)
 ```
 
 The example is illustrative. Real run boundaries follow from the packer and
-from the next writable address that the drive reports.
+from the next writable address that the drive reports. The first run's
+parity domain starts at LBA 0, so the anchor at LBA 256, the volume
+descriptors, the integrity descriptor, the space bitmap and every directory
+block that lies below `RUN.bin` are inside it. A later run's domain starts at
+its own `RUN.bin`.
 
 Under profile 2 the filesystem directory records of every earlier run are
 rewritten inside the newest run, past the next writable address. Those bytes
@@ -1915,7 +2032,7 @@ append-only.
 | 40 | 16 | u8[16] | `repo_uuid` | The repository this disc belongs to. |
 | 56 | 8 | u64 | `disc_seq` | Monotonic position in the repository. |
 | 64 | 8 | u64 | `capacity_sectors` | As reported by the drive at first write. |
-| 72 | 8 | u64 | `fill_limit_sectors` | Number of sectors, counted from LBA 0, that the writer may use. Section 9.12 gives the formula. |
+| 72 | 8 | u64 | `fill_limit_sectors` | Number of sectors, counted from LBA 0, that the writer may use. No run, parity included, ends at or above this LBA. Section 10.11 gives the formula. |
 | 80 | 8 | u64 | `capacity_forced_sectors` | Forced capacity, section 9.12. Equals `capacity_sectors` when no override was given. |
 | 88 | 8 | u64 | `first_run_lba` | LBA of the first run header. Immutable: the first run never moves. |
 | 96 | 8 | u64 | `reserved_u64a` | Zero. |
@@ -1937,8 +2054,8 @@ append-only.
 | 215 | 1 | u8 | `crypto` | 0 plaintext. |
 | 216 | 2 | u16 | `sector_size` | 2048. |
 | 218 | 2 | u16 | `fs_revision` | 0x0201 for UDF 2.01. 0x0004 for ISO 9660:1999 level 4. |
-| 220 | 2 | u16 | `fec_k` | Data columns. |
-| 222 | 2 | u16 | `fec_m` | Parity columns. |
+| 220 | 2 | u16 | `fec_k` | Data columns. 231 in version 1. |
+| 222 | 2 | u16 | `fec_m` | Parity columns. 23 in version 1. |
 | 224 | 1 | u8 | `fanout_levels` | 1 by default. 2 is allowed under profile 1 and profile 0 only. |
 | 225 | 1 | u8 | `append_variant` | Profile 1 only. 1 = variant 1a, kernel direct write. 2 = variant 1b, image mirror and block diff. 0 elsewhere. |
 | 226 | 1 | u8 | `capacity_is_forced` | 1 when `capacity_forced_sectors` is below `capacity_sectors`. |
@@ -1988,13 +2105,13 @@ zero. `layout.bin` records the LBA of every copy. A recovery tool reads
 | 16 | 8 | u64 | `optional_feat` | Ignore an unknown bit. |
 | 24 | 16 | u8[16] | `disc_uuid` | The disc this run sits on. |
 | 40 | 16 | u8[16] | `repo_uuid` | The repository. |
-| 56 | 8 | u64 | `run_seq` | Monotonic run number in the repository. |
-| 64 | 8 | u64 | `disc_seq` | Disc sequence number. |
-| 72 | 8 | u64 | `lba_base` | First LBA of the run. |
-| 80 | 8 | u64 | `run_sectors` | Length of the run in sectors. |
+| 56 | 8 | u64 | `run_seq` | Monotonic run number in the repository, 1-based. |
+| 64 | 8 | u64 | `disc_seq` | Disc sequence number, 0-based. |
+| 72 | 8 | u64 | `lba_base` | First LBA of the run's parity domain. 0 for the first run of a disc. The LBA of `RUN.bin` for every later run (section 9.3). |
+| 80 | 8 | u64 | `run_sectors` | Length of the run in sectors, from `lba_base` to the last sector of `RUN2.bin`, inclusive. |
 | 88 | 8 | u64 | `column_sectors` | `L`, the length of one column. |
-| 96 | 2 | u16 | `fec_k` | Data columns. |
-| 98 | 2 | u16 | `fec_m` | Parity columns. |
+| 96 | 2 | u16 | `fec_k` | Data columns. 231 in version 1. |
+| 98 | 2 | u16 | `fec_m` | Parity columns. 23 in version 1. |
 | 100 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
 | 101 | 1 | u8 | `checksum_column` | Column index of the checksum column. Equals `fec_k`. |
 | 102 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. |
@@ -2009,7 +2126,7 @@ zero. `layout.bin` records the LBA of every copy. A recovery tool reads
 | 120 | 4 | u32 | `gear_table_id` | Gear table version. 1 in this specification. |
 | 124 | 4 | u32 | `bundle_threshold` | Bytes. |
 | 128 | 8 | u64 | `bundle_target` | Bytes. |
-| 136 | 8 | u64 | `object_count` | Objects in this run. |
+| 136 | 8 | u64 | `object_count` | Objects in this run. Equals `record_count` of the manifest. |
 | 144 | 8 | u64 | `payload_bytes` | Stored object bytes in this run. |
 | 152 | 8 | u64 | `duplicate_bytes` | Bytes written again for locality. |
 | 160 | 8 | u64 | `manifest_lba` | LBA of the manifest container. |
@@ -2058,8 +2175,10 @@ its first sector.
 #### 9.6.1 The run chain
 
 Every run header points to the previous run header on the same disc, by hash and
-by LBA. The chain is the mutable state of the disc: the run table, the object
-count, the used sectors, the health, and the close state all come from it.
+by LBA. The chain is the mutable state of the disc: the list of its runs, the
+object count, the used sectors, and the close state all come from it. Health
+is not in the chain; it lives in the disc directory of the newest catalog
+(section 12.6) and in the local health log.
 
 A reader finds the newest run by listing the directory `/NOAHSARK/runs/` and
 taking the highest `<seq>`. That is the only normal path. There is no scanning
@@ -2142,7 +2261,7 @@ Container header:
 | 46 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
 | 47 | 1 | u8 | `reserved_u8` | Zero. |
 | 48 | 8 | u64 | `payload_len` | Total container length, for validation. |
-| 56 | 8 | u64 | `lba_base` | First sector of the run. First sector of the parity domain. |
+| 56 | 8 | u64 | `lba_base` | First sector of the parity domain, as in the run header. |
 | 64 | 8 | u64 | `column_sectors` | `L`. |
 | 72 | 8 | u64 | `data_span` | As in the run header. |
 | 80 | 8 | u64 | `checksum_lba` | First sector of the checksum column. |
@@ -2162,7 +2281,7 @@ Extent record, 64 bytes:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 0 | 32 | u8[32] | `content_id` | Object id, or bundle id for a bundle extent. For a fixed-name file, the hash of the file bytes under `hash_algo`. All zero for `layout.bin` itself. |
+| 0 | 32 | u8[32] | `content_id` | Object id, or bundle id for a bundle extent. For a fixed-name file, the hash of the file bytes under `hash_algo`. All zero for file roles 1, 5, 10, 11 and 12: the header copies, `layout.bin` itself, `checksum.bin` and the parity files. Their bytes become final only after this table is written (section 10.5); each has its own CRC, and the parity covers them. |
 | 32 | 8 | u64 | `start_lba` | Absolute LBA of the first sector. |
 | 40 | 8 | u64 | `byte_len` | Bytes of the object header plus stored payload. |
 | 48 | 4 | u32 | `sector_count` | Sectors this extent covers. |
@@ -2222,7 +2341,7 @@ the LBA re-verification after every append. Profile 0 never appends.
 |---|---|
 | `never` | **Default. Phase 1.** No command closes the disc unless the user runs `close` explicitly. |
 | `always` | Phase 1. A disc is sealed at its first and only burn: `spare:none`, `-dvd-compat`, no POW. Equivalent to `pack --close` on every new disc. |
-| `when_full` | Phase 2. Profile 1 and 2 only. The run that fills the disc past the fill limit also closes it. |
+| `when_full` | Phase 2. Profile 1 and 2 only. The run after which the free sectors below `fill_limit_sectors` (section 10.11) cannot hold another run, that is fewer than one catalog copy plus two header sectors plus one stripe of 255 sectors, also closes the disc. |
 
 The `noahsark close` command exists from Phase 2 (section 19.10). It writes a
 closing run, which is an append. Under `never` it is never automatic.
@@ -2246,22 +2365,28 @@ command lines and the trade-off table.
 #### 9.9.1 Tail anchors
 
 `mkudffs` places UDF anchors at LBA 256, at `N - 256` and at `N` in the
-full-size image. The first run therefore writes:
+full-size image. The **used prefix** of the image is LBA 0 up to and including
+the last sector of `RUN2.bin`, rounded up to a multiple of 16 sectors.
 
-1. the **used prefix** of the image, which is LBA 0 up to and including the
-   last sector of `RUN2.bin`, rounded up to a multiple of 16 sectors; and
-2. the last 512 sectors of the image,
+**Open disc, the default.** The first run writes the used prefix and nothing
+else, with one growisofs call (section 10.1.5). The tail anchors are not on
+the disc yet. A disc with only the LBA 256 anchor still mounts, because that
+anchor is mandatory in the standard, but three anchors are what every reader
+expects on a premastered disc. The tail anchors reach the disc when an append
+or `close` writes them (Phase 2). Whether a first burn may also write the tail
+region early, with `growisofs -use-the-force-luke=seek:` before the middle is
+written, is probe 6 of section 23.6, not a fact. If that probe passes on a
+drive, the first burn plan may carry a second write step for the last 512
+sectors of the image.
 
-so that the tail anchors exist even on an open disc. The used prefix is the
-first burn step of every profile 0 and profile 1 disc. A disc with only the
-LBA 256 anchor still mounts, because that anchor is mandatory in the standard,
-but three anchors are what every reader expects on a premastered disc.
-
-Whether `growisofs -use-the-force-luke=seek:` accepts a write to the tail region
-of a POW disc before the middle is written is **a probe**, not a fact. Section
-23.6 defines it. If the drive refuses, the tail anchors wait for the first
-append or for `close`, and the disc mounts on the LBA 256 anchor in the
-meantime.
+**Sealed disc, `pack --close`.** A sealed disc can never be appended, so its
+tail anchors must be written at its only burn. `pack --close` therefore burns
+the **full-size image** in one growisofs call: the used prefix, the unused
+middle as zero sectors, and the last 512 sectors with the tail anchors. The
+zero region costs burn time and nothing else; `pack` runs only when the disc
+is at least `disc.min_fill` full, so that time is bounded. Test 34 of
+section 23.2 checks that the plan's single write step covers the full image
+and that the image holds three anchors.
 
 #### 9.9.2 What close does
 
@@ -2395,9 +2520,9 @@ Rules:
    - the image size under profile 1. That is the length passed to `truncate`
      before `mkudffs`;
    - the FEC layout. `L = ceil(data_span / k)` (section 11.2), and the whole
-     run, parity included, must lie inside the forced capacity;
-   - the fill ratio. `fill_limit_sectors = floor(capacity_forced_sectors *
-     disc.fill_ratio)` minus the spare reserve.
+     run, parity included, must lie below `fill_limit_sectors`;
+   - the reserve and the fill limit. Section 10.11 computes
+     `data_budget` and `fill_limit_sectors` from `capacity_forced_sectors`.
 5. `noahsark disc list` shows both the reported and the forced capacity.
 6. The health report flags any disc whose forced capacity is below the reported
    capacity, so that the operator can see how much medium is deliberately
@@ -2433,9 +2558,10 @@ Profile 0 writes **one large run per disc**. There is no append, no
 next-writable-address handling, and no block diff. This is the whole Phase 1
 disc model, and it is the default.
 
-The filesystem is pure UDF 2.01, built exactly as in section 10.1.2. Phase 1
-builds UDF 2.01 and nothing else. The superblock records the filesystem, so a
-later phase may write a profile 0 disc with ISO 9660:1999 level 4 instead.
+The filesystem is pure UDF 2.01, built exactly as in section 10.1.2. A
+profile 0 disc is always UDF; a profile names exactly one filesystem
+(section 9.2), and ISO 9660 belongs to profile 2 only. The superblock records
+the revision in `fs_revision`.
 
 #### 10.1.1 Revision
 
@@ -2496,6 +2622,9 @@ mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 \
         --bootarea=erase "$IMG"
 ```
 
+Informative: the label `NOAHSARK-0001` is an example. `label.template`
+(section 20.8) produces the real one.
+
 Rules that the command line encodes:
 
 - `--media-type=hd`, never `bdr` and never `dvdr`. A `bdr` build makes a
@@ -2550,9 +2679,11 @@ second level, because a UDF append rewrites only the directories that changed.
 
 #### 10.1.5 Burn
 
-The burn writes the used prefix of the image (section 9.9.1) with one
-growisofs call. Two variants exist, and this subsection is their normative
-home. Section 9.9 states the close policy that selects between them.
+The burn is one growisofs call. Two variants exist, and this subsection is
+their normative home. Section 9.9 states the close policy that selects between
+them, and section 9.9.1 states what each one writes. Informative: `-speed=4`
+in the command lines below is an example; `burner.speed` and
+`burner.speed_mdisc` (section 20.5) set the real value.
 
 **Default: POW-formatted and left open.**
 
@@ -2565,15 +2696,15 @@ growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.bin
   allows.
 - `-dvd-compat` is **not** passed. The disc stays open.
 - The run holds the whole payload up to the data budget.
-- The burn covers the used prefix of the image, as section 9.9.1 defines it:
+- `run.bin` is the used prefix of the image, as section 9.9.1 defines it:
   LBA 0 up to the last sector of `RUN2.bin`, rounded up to a multiple of 16
   sectors. The UDF tail anchors at `N - 256` and `N` are part of the full-size
-  image that `mkudffs` built, so they reach the disc only when the burn covers
-  them. On an open disc they may
-  therefore be absent until an append or `close` writes them. The disc still
-  mounts, because the anchor at LBA 256 is mandatory in the standard and is
-  always present. NoahsArk never writes an anchor itself; anchors are
-  `mkudffs`'s business.
+  image that `mkudffs` built, so they reach the disc only when a write covers
+  them. On an open disc they are absent until an append or `close` writes
+  them, or until a second write step that probe 6 of section 23.6 permits.
+  The disc still mounts, because the anchor at LBA 256 is mandatory in the
+  standard and is always present. NoahsArk never writes an anchor itself;
+  anchors are `mkudffs`'s business.
 - A Phase 2 append can later add a repair run, extra parity, or the leftover
   space, with no format change.
 
@@ -2588,6 +2719,10 @@ growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty \
   management, and full capacity.
 - LBAs are stable forever. No block can ever be reallocated.
 - `-dvd-compat` closes the disc.
+- `run.bin` is the **full-size image**, not the used prefix, so the same call
+  writes the used prefix, the zero middle and the tail anchors (section
+  9.9.1). Nothing can be written to a sealed disc later, so nothing is left
+  for later.
 - The choice is permanent. The superblock records it in `sealed`, and the disc
   directory records it in `state_flags` bit 0.
 - `disc.close_policy = always` selects this path for every new disc.
@@ -3016,6 +3151,7 @@ under every profile.
 | `/NOAHSARK/runs/<seq>/catalog/snapshots.bin` | The full snapshot table. | With its run. |
 | `/NOAHSARK/runs/<seq>/catalog/refs.bin` | The ref table. | With its run. |
 | `/NOAHSARK/runs/<seq>/catalog/discs.bin` | The disc directory. | With its run. |
+| `/NOAHSARK/runs/<seq>/catalog/runs.bin` | The run table (section 12.5.2). | With its run. |
 | `/NOAHSARK/runs/<seq>/pad.bin` | Zero bytes that fill the data columns to `lba_base + k*L`. Absent when no fill is needed. | Last data file of its run. |
 | `/NOAHSARK/runs/<seq>/checksum.bin` | The checksum column, `L` sectors. | After `pad.bin`. |
 | `/NOAHSARK/runs/<seq>/parity/pNNNN.bin` | One file per parity column, `L + 1` sectors. Sector 0 is a run header copy; sectors 1 to `L` are the column. | After `checksum.bin`, in column order. |
@@ -3085,7 +3221,8 @@ code. It holds, in this order:
    table header and extent record, manifest header, TOC entry and record,
    prerequisite record, bundle table entry, split record, filter container,
    catalog container header and entry, simple table container, snapshot
-   table record, disc directory record, checksum sector header.
+   table record, run table record, disc directory record, checksum sector
+   header.
 4. The magic values of Appendix B.1, with their file bytes.
 5. The Gear table rule of Appendix A.2, the mask rule of Appendix A.3, and
    the six mask values.
@@ -3117,23 +3254,52 @@ every filesystem block and free sector between them. Steps 8 and 9 cover it.
 Step 10 sits outside the domain, at the highest LBA of the run, so that a copy
 of the header survives damage at either end.
 
-The writer builds the run in these passes:
+The writer builds the run in these passes. A file whose content depends on an
+LBA, a hash or a size that is known only after layout is a **placeholder** in
+the pass that places it: a file of its final size, filled with zero bytes,
+and rewritten in place later. Every placeholder has a known final size,
+because every such file is fixed-width and its record count is known before
+layout.
 
-1. Lay out steps 1 to 6 with placeholder bytes for `layout.bin`, `RUN.bin`
-   and `RUN2.bin` of their final sizes. Read the extents back.
+1. Lay out steps 1 to 6. These files are placeholders: `RUN.bin`;
+   `DISC.bin` in the first run; `layout.bin`; `manifest.bin`;
+   `catalog/CATALOG.bin`; `catalog/runs.bin`; `catalog/discs.bin`. Every
+   other file of steps 1 to 6 is written with its final bytes: `README.txt`,
+   `FORMAT.txt`, `filter.bin`, every other catalog file, and every object.
+   Read the extents back. `layout.bin` is sized for one extent record per
+   file; if the read-back shows a fragmented file, repeat this pass with the
+   larger record count.
 2. Compute `data_span` from the last sector of the last file of step 6, and
    `L = ceil(data_span / k)`.
 3. Write `pad.bin` with `lba_base + k*L - (last data sector + 1)` sectors of
    zero bytes. Omit it when that count is 0.
-4. Lay out `checksum.bin` (`L` sectors), the parity files (`L + 1` sectors
-   each), and `RUN2.bin`, with placeholder bytes. Read the extents back.
+4. Lay out steps 8 to 10 as placeholders: `checksum.bin` (`L` sectors), the
+   parity files (`L + 1` sectors each), and `RUN2.bin`. Read the extents
+   back. Every extent of the run is now known, and so are `run_sectors`,
+   `checksum_lba` and `parity_lba`.
 5. Check that the first data sector of `checksum.bin` is at or above
    `lba_base + k*L`, and that every column file is contiguous. A failure is a
    defect in the writer, not a recoverable condition.
-6. Fill in the run header, write it into `RUN.bin` and `RUN2.bin` and into
-   sector 0 of every parity file. Write `layout.bin` in place.
-7. Compute the checksum column and the parity over the finished domain and
-   write them into their files in place.
+6. Make the placeholders final, in this order. Each step needs only values
+   that an earlier step made final:
+   1. `manifest.bin`: it needs the object LBAs. Compute `manifest_hash`.
+      `filter_hash` may be computed at any time, because `filter.bin` was
+      final in pass 1.
+   2. `DISC.bin`, first run only: it needs `first_run_lba`.
+   3. `catalog/runs.bin` and `catalog/discs.bin`: they need `lba_base`,
+      `run_sectors` and the used sectors of this disc after this run. The run
+      table record of this run carries a zero `run_header_hash`
+      (section 12.5.2).
+   4. `catalog/CATALOG.bin`: it needs the hash of every catalog file.
+      Compute `catalog_hash`.
+   5. `layout.bin`: it needs every extent and the hash of every fixed-name
+      file that section 9.7 does not zero. Compute `layout_hash`.
+   6. The run header: it needs the column geometry and the four hashes
+      above. Write it into `RUN.bin`, into `RUN2.bin` and into sector 0 of
+      every parity file.
+   7. The checksum column and the parity, over the finished domain, which
+      now holds the final `RUN.bin`. Write them into `checksum.bin` and the
+      parity files.
 
 An in-place write changes the bytes of a file whose extents are already fixed,
 so it never moves a file. Under profile 0 and profile 1 the image is a
@@ -3338,7 +3504,10 @@ template.
 
 `{{.SpareMode}}` is `spare:min` under every profile by default. It is
 `spare:none` only when the step has `close_disc` set on the first write of a
-profile 0 disc, which is the sealed path of section 10.1.5.
+profile 0 disc, which is the sealed path of section 10.1.5. Informative:
+`{{.Speed}}` comes from `burner.speed` or `burner.speed_mdisc`, and
+`{{.Label}}` from `label.template`; the literal `-speed=4` and
+`NOAHSARK-0001` values elsewhere in this document are examples.
 
 Every rendering also prints, as comments:
 
@@ -3415,11 +3584,13 @@ Fill policy:
   `disc.force_capacity`.
 - `disc.fill_ratio` defaults to 0.95. The outer 3 mm of radius holds about
   5 percent of the disc and is the highest-risk region.
-- `fill_limit_sectors = floor(capacity_forced_sectors * disc.fill_ratio)` minus
-  the spare reserve.
+- Section 10.11 turns the forced capacity into `data_budget` and
+  `fill_limit_sectors`. Those two names are the only capacity figures that
+  the packer, the superblock and the close policy use.
 - `disc.min_spare_ratio` defaults to 0.20. When the remaining POW spare area
   falls below that fraction, the tool warns and recommends no further appends.
-- `disc.spare_reserve_bytes` defaults to 512 MiB on an appendable disc. POW
+- `disc.spare_reserve_bytes` defaults to 512 MiB on every disc that is
+  formatted with `spare:min`, which is every disc except a sealed one. POW
   defect management and filesystem metadata need it.
 - Under profile 2 the packer must also reserve the projected directory rewrite
   cost of the remaining appends (section 10.3.3).
@@ -3433,38 +3604,64 @@ Fill policy:
 The packer computes a default reserve per disc. The reserve is the part of the
 capacity that data must not use.
 
+All arithmetic is in sectors. A byte value from the configuration is
+converted with `ceil(bytes / 2048)`.
+
 ```
-reserve_default =
-      safety_margin                     # capacity_forced * (1 - disc.fill_ratio)
+fixed_terms =
+      safety_margin                     # ceil(capacity_forced * (1 - disc.fill_ratio))
     + superblock_and_headers            # DISC.bin, README.txt, FORMAT.txt,
                                         #   plus RUN.bin and RUN2.bin per run
-    + catalog_growth                    # filters and manifests for the expected
+    + catalog_growth                    # catalog copies for the expected
                                         #   number of future runs
-    + spare_area                        # POW spare, when the profile appends
-    + fec_parity                        # (m + 1) of every 255 sectors of the
-                                        #   run, rounded up to a whole stripe
+    + spare_area                        # POW spare, on every spare:min disc
     + alignment_padding                 # up to 32 KiB per write
+
+fec_region        = capacity_forced - fixed_terms - m      # m parity header sectors
+stripes           = floor(fec_region / 255)
+data_budget       = stripes * k
+fec_overhead      = fec_region - data_budget               # checksum, parity,
+                                                           #   partial stripe
+reserve_computed  = fixed_terms + fec_overhead
+reserve           = max(reserve_computed, reserve_forced) + reserve_extra
+data_budget       = capacity_forced - reserve              # the same value
+                                                           #   when no override
+fill_limit_sectors = data_budget + superblock_and_headers + catalog_growth
+                   + fec_overhead + alignment_padding
 ```
 
 Terms:
 
 | Term | Formula | Default input |
 |---|---|---|
-| `safety_margin` | `capacity_forced * (1 - disc.fill_ratio)` | `disc.fill_ratio` = 0.95 |
+| `safety_margin` | `ceil(capacity_forced * (1 - disc.fill_ratio))` | `disc.fill_ratio` = 0.95 |
 | `superblock_and_headers` | `3 sectors + expected_runs * 2 sectors` | `disc.expected_runs` = 32 |
-| `catalog_growth` | `expected_runs * (filter_size + 8 * manifest_size + snapshot_objects + snapshot_table + disc_directory)` | See sections 12.2, 12.3 and 12.5 for the sizes |
-| `spare_area` | `disc.spare_reserve_bytes`, or 0 under profile 0 | 512 MiB |
-| `fec_parity` | `ceil(run_sectors / 255) * (m + 1) + m` | `m` = 23, so 9.41 percent of the run, plus the `m` header sectors of the parity files |
+| `catalog_growth` | `expected_runs * (filter_size + 8 * manifest_size + snapshot_objects + snapshot_table + ref_table + run_table + disc_directory)` | See sections 12.2, 12.3 and 12.5 for the sizes |
+| `spare_area` | `disc.spare_reserve_bytes` on a `spare:min` disc, 0 on a sealed disc (`spare:none`) | 512 MiB |
+| `fec_overhead` | `stripes * (m + 1) + m + (fec_region - stripes * 255)` | `m` = 23. The three parts are the checksum and parity sectors, the `m` parity header sectors, and the fewer than 255 sectors of an incomplete stripe, which stay unused. |
 | `alignment_padding` | `expected_runs * 32 KiB` | - |
 
 `superblock_and_headers` counts only `RUN.bin` and `RUN2.bin`. The other `m`
-copies sit in the first sector of each parity file, and the `+ m` term of
-`fec_parity` counts those sectors. The worked examples below omit the `+ m`
-term, which is 23 sectors.
+header copies sit in the first sector of each parity file, and `fec_overhead`
+counts those sectors.
 
-`run_sectors` is the whole run, data plus parity. The packer solves the budget
-in one pass: it subtracts every other term from the forced capacity, splits what
-is left into whole stripes, and gives `k` of every 255 sectors to data.
+The packer solves the budget in one pass: it subtracts every fixed term and
+the `m` header sectors from the forced capacity, splits what is left into
+whole stripes, and gives `k` of every 255 sectors to data. `data_budget` is
+therefore always a whole number of stripes of `k` data sectors.
+
+Three names are used everywhere else in this document, and nowhere is a
+second formula given for them:
+
+- **`data_budget`**: the sectors that object data and the run's own tables
+  may occupy on the disc, across all its runs. The packer fills up to it
+  (section 15.6).
+- **`fill_limit_sectors`**: the first LBA that no run may reach. The
+  superblock records it (section 9.5). Every run, parity included, ends
+  below it. When no override is set it equals
+  `capacity_forced - safety_margin - spare_area`.
+- **`reserve`**: `capacity_forced - data_budget`, the part of the disc that
+  data must not use.
 
 Under profile 2 the packer adds the projected directory rewrite cost of the
 remaining appends (section 10.3.3) to `catalog_growth`.
@@ -3476,19 +3673,14 @@ Overrides:
 - `disc.extra_reserve` is added to the computed reserve. It accepts the same
   forms.
 - Both are recorded in the superblock next to the computed value, so a later
-  append uses the same budget.
-
-The data budget is:
-
-```
-data_budget = capacity_forced - max(reserve_computed, reserve_forced) - reserve_extra
-```
+  append uses the same budget. With an override in force, the packer rounds
+  `data_budget` down to a whole number of stripes of `k` data sectors.
 
 #### 10.11.1 Worked example, BD-R SL 25 GB
 
 Inputs: capacity 12,219,392 sectors (25,025,314,816 bytes), no forced capacity,
-`fill_ratio` 0.95, `expected_runs` 32, `m` 23, profile 1, P4 chunking with about
-6,000 objects per run.
+`fill_ratio` 0.95, `expected_runs` 32, `m` 23, a `spare:min` disc under
+profile 0 or profile 1, P4 chunking with about 6,000 objects per run.
 
 | Term | Sectors | Bytes |
 |---|---:|---:|
@@ -3496,14 +3688,19 @@ Inputs: capacity 12,219,392 sectors (25,025,314,816 bytes), no forced capacity,
 | `superblock_and_headers` | 67 | 137 kB |
 | `catalog_growth` (32 runs: filter 13.4 KiB, 8 manifests of 375 KiB, tables 0.6 MB) | 57,620 | 118.0 MB |
 | `spare_area` | 262,144 | 536.9 MB |
-| `fec_parity` (44,267 stripes x 24) | 1,062,408 | 2.18 GB |
 | `alignment_padding` | 512 | 1.0 MB |
-| **reserve_default** | **1,993,721** | **4.08 GB** |
-| **data_budget** | **10,225,671** | **20.94 GB** |
+| `fec_region` = 12,219,392 - 931,313 - 23 | 11,288,056 | |
+| `stripes` = floor(11,288,056 / 255) | 44,266 | |
+| `fec_overhead` = 44,266 x 24 + 23 + 226 | 1,062,633 | 2.18 GB |
+| **reserve_computed** | **1,993,946** | **4.08 GB** |
+| **data_budget** = 44,266 x 231 | **10,225,446** | **20.94 GB** |
+| **fill_limit_sectors** | **11,346,278** | **23.24 GB** |
 
-The run occupies 11,288,079 sectors. That is 44,267 stripes. Data takes 231 of
-every 255 sectors and parity takes 24, so 10,225,671 plus 1,062,408 gives the
-run back exactly.
+The FEC region holds 44,266 whole stripes: 10,225,446 data sectors and
+1,062,384 checksum and parity sectors, plus the 23 parity header sectors and
+226 sectors of an incomplete stripe that stay unused. `fill_limit_sectors` is
+`12,219,392 - 610,970 - 262,144`, and it also equals
+`10,225,446 + 67 + 57,620 + 1,062,633 + 512`.
 
 #### 10.11.2 Worked example, BD-R XL TL 100 GB
 
@@ -3516,10 +3713,13 @@ same knobs, about 24,000 objects per run.
 | `superblock_and_headers` | 67 | 137 kB |
 | `catalog_growth` (32 runs: filter 53.4 KiB, 8 manifests of 1.46 MiB, tables 0.6 MB) | 201,650 | 413.0 MB |
 | `spare_area` | 262,144 | 536.9 MB |
-| `fec_parity` (180,276 stripes x 24) | 4,326,624 | 8.86 GB |
 | `alignment_padding` | 512 | 1.0 MB |
-| **reserve_default** | **7,234,927** | **14.82 GB** |
-| **data_budget** | **41,643,665** | **85.29 GB** |
+| `fec_region` = 48,878,592 - 2,908,303 - 23 | 45,970,266 | |
+| `stripes` = floor(45,970,266 / 255) | 180,275 | |
+| `fec_overhead` = 180,275 x 24 + 23 + 141 | 4,326,764 | 8.86 GB |
+| **reserve_computed** | **7,235,067** | **14.82 GB** |
+| **data_budget** = 180,275 x 231 | **41,643,525** | **85.29 GB** |
+| **fill_limit_sectors** | **46,172,518** | **94.56 GB** |
 
 `pack --dry-run` prints exactly these numbers before it commits to a run:
 
@@ -3528,12 +3728,13 @@ $ noahsark pack --dry-run --disc 12
 disc              b21c7f90  seq 12  BD-R SL 25  profile udf201-pow (1b)
 capacity reported 12,219,392 sectors   25,025,314,816 B
 capacity forced   12,219,392 sectors   25,025,314,816 B
-reserve computed   1,993,721 sectors    4,083,140,608 B
+reserve computed   1,993,946 sectors    4,083,601,408 B
 reserve forced             -                        -
 reserve extra              -                        -
-data budget       10,225,671 sectors   20,942,174,208 B
-already used       4,096,512 sectors    8,389,656,576 B
-free for this run  6,129,159 sectors   12,552,517,632 B
+data budget       10,225,446 sectors   20,941,713,408 B
+fill limit        11,346,278 sectors   23,237,177,344 B
+data used so far   4,096,512 sectors    8,389,656,576 B
+free for this run  6,128,934 sectors   12,552,056,832 B
 staged objects         5,912           12,203,441,152 B
 plan               one run, 5,912 objects, fits
 ```
@@ -3625,6 +3826,8 @@ needs.
 
 ### 11.1 Why the design is what it is
 
+This section is informative. It gives the reasoning behind section 11.2.
+
 The drive already has a strong error-correction layer. Blu-ray uses a two-code
 picket scheme inside every 64 KiB ECC cluster. The Long Distance Code is
 RS(248,216) over GF(2^8), with 32 parity symbols per codeword. The Burst
@@ -3670,11 +3873,16 @@ The scheme follows dvdisaster RS03.
   produces the same parity bytes for the same information bytes conforms.
 - A **shard** is exactly one 2048-byte sector.
 - A **stripe** is 255 shards: `k` data + 1 checksum + `m` parity.
-- The default is `k = 231`, `m = 23`, which is `k + 1 + m = 255` and about
-  10 percent parity relative to payload.
-- `lba_base` is the first sector of `RUN.bin`. `data_span` is the number of
-  sectors from `lba_base` to the last sector of the last data file, inclusive.
-  The data files are steps 1 to 7 of section 10.5.
+- Format version 1 **fixes** `k = 231` and `m = 23`, which is
+  `k + 1 + m = 255` and about 10 percent parity relative to payload. A
+  version 1 writer writes no other pair, and a version 1 reader refuses any
+  other pair. The run header and the layout table still record both values,
+  so that a later version can change them under a new `version_major`.
+- `lba_base` is the first sector of the parity domain: LBA 0 for the first
+  run of a disc, and the first sector of `RUN.bin` for every later run
+  (section 9.3). `data_span` is the number of sectors from `lba_base` to the
+  last sector of the last data file, inclusive. The data files are steps 1 to
+  7 of section 10.5.
 - The column length is `L = ceil(data_span / k)`.
 - Data column `c`, for `c = 0 .. k-1`, occupies LBA
   `[lba_base + c*L, lba_base + (c+1)*L)`.
@@ -3726,8 +3934,12 @@ because a burst that crosses a file boundary lands in at most one more column.
 ### 11.3 Burst tolerance
 
 `L = ceil(data_span / k)`, which is close to `run_sectors / 255`. Maximum
-correctable single burst is `m * L` sectors. The table assumes the run covers
-the whole disc and rounds `L` to `floor(run_sectors / 255)`.
+correctable single burst is `m * L` sectors.
+
+The two tables below and the interpretation after them are informative. They
+compare the fixed `m = 23` with three other values to show why it was chosen;
+only the `m = 23` column describes a version 1 disc. The table assumes the
+run covers the whole disc and rounds `L` to `floor(run_sectors / 255)`.
 
 | Media | L (sectors) | m=12 (5%) | m=23 (10%) | m=28 (12.5%) | m=42 (20%) |
 |---|---:|---:|---:|---:|---:|
@@ -3752,42 +3964,49 @@ Interpretation against the damage table:
 - 20 percent costs 1.86 GB of payload against the 10 percent baseline of the
   table above, and it buys 1.86 GB more burst tolerance. Damage that large usually means the disc is mechanically
   unreadable anyway.
-- **10 percent is the knee of the curve.** It is the default. 20 percent is
-  available as a profile for a catalog-heavy disc.
+- **10 percent is the knee of the curve.** That is why version 1 fixes
+  `k = 231`, `m = 23`. No other pair is selectable in version 1.
 
 ### 11.4 Checksum column
 
-Sector `i` of the checksum column holds the digests of the data and parity
-sectors of stripe `(i + 1) mod L`. Sector `L - 1` therefore holds the digests
-of stripe 0.
+Sector `i` of the checksum column holds the digests of the `k` **data**
+sectors of stripe `i`, and of no other sector. There is no offset and no
+wrap.
 
-- The digest is an 8-byte truncated BLAKE3 of the sector.
-- `k + m = 254` digests at 8 bytes is 2032 bytes. That fits in a 2048-byte
-  sector with 16 bytes of header.
+- The digest is an 8-byte truncated BLAKE3 of the sector, computed over the
+  2048 bytes as they lie on the medium.
+- `k = 231` digests at 8 bytes is 1848 bytes. With the 16-byte header that is
+  1864 bytes; the remaining 184 bytes of the sector are zero.
 - The collision probability per sector is 2^-64. This detects decay. The
   cryptographic guarantee comes from the object content id, not from here.
-- The offset by one stripe means that the RS decode of stripe `i` recovers the
-  checksums for stripe `(i + 1) mod L`. The checksum column is therefore
-  protected by the parity itself. This is the dvdisaster RS03 trick.
-- The digest of a data or parity sector is computed over the 2048 bytes as
-  they are on the medium. A checksum sector is an information sector of its
-  own stripe, so the parity covers it; it has no digest of its own.
+- A checksum sector is an information sector of its own stripe, so the parity
+  covers it and reconstructs it after damage. It has no digest of its own; a
+  damaged checksum sector is one erasure of its stripe, and its header CRC
+  detects a silently wrong one.
+- A parity sector has no digest. The parity sectors are used only during a
+  reconstruction, and a silently wrong parity sector shows up there: the
+  reconstructed data sector fails its digest, and the object that holds it
+  fails its content id. The decoder then treats each parity sector of that
+  stripe in turn as one more erasure and retries, while the erasure count
+  stays at or below `m`. A parity sector that the drive cannot read is an
+  erasure from the start.
 
 Checksum sector header, 16 bytes:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
 | 0 | 4 | u32 | `magic` | `"NACS"`. |
-| 4 | 4 | u32 | `stripe_index` | The stripe whose digests follow, that is `(i + 1) mod L`. |
-| 8 | 2 | u16 | `digest_count` | `k + m`. 254 at the default k and m. |
+| 4 | 4 | u32 | `stripe_index` | `i`, the stripe whose data digests follow. Equals the sector's own index inside the column. |
+| 8 | 2 | u16 | `digest_count` | `k`. 231 in version 1. |
 | 10 | 1 | u8 | `digest_bytes` | 8. |
 | 11 | 1 | u8 | `hash_algo` | 0x1e, BLAKE3. |
 | 12 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 11. |
-| 16 | 2032 | u8[2032] | `digests` | 254 digests, in column order 0 to 254 excluding the checksum column. |
+| 16 | 1848 | u8[1848] | `digests` | `k` digests, in data column order 0 to `k - 1`. |
+| 1864 | 184 | u8[184] | `reserved` | Zero. |
 
-Silent corruption is detected per sector, converted into an erasure, and
-corrected with one parity symbol instead of two. This doubles the effective
-correction power.
+Silent corruption of a data sector is detected per sector, converted into an
+erasure, and corrected with one parity symbol instead of two. This doubles the
+effective correction power.
 
 ### 11.5 Header replication
 
@@ -3812,9 +4031,9 @@ the layout table locates every parity column. A recovery tool that has lost
 the layout table scans the raw disc for the `"NARH"` magic: the copies that
 lie between `checksum_lba` and the end of the run are, in LBA order, the
 header sectors of parity columns `k+1 .. 254`, and each column starts one
-sector after its header. A tool that has lost every header copy tries each
-candidate `m` and checks whether the checksum column lands where the trial
-predicts.
+sector after its header. A tool that has lost every header copy still knows
+`k` and `m`, because version 1 fixes them; it finds `L` by looking for the
+`"NACS"` magic of the first checksum sector.
 
 ### 11.6 Cross-disc layers
 
@@ -3855,9 +4074,13 @@ trustworthy first.
 6. **Give up.** Record the loss explicitly, with the object id, the file paths
    that reference it, and the affected snapshots.
 
-Reconstructed objects are written into `staging/heal/`. The next pack puts them
-into a **repair run**. The catalog marks the damaged run `degraded` and lists
-the lost ids. The restore planner prefers a healthy run over a degraded one.
+Reconstructed objects are written into `staging/heal/` and enter the staging
+state machine at STAGED with reason 3, `healed` (section 14.2). The next pack
+writes them again like any other STAGED object. In Phase 1 that is the next
+data run, on a new disc. From Phase 2, `pack --disc` may put them into a
+**repair run** (`run_kind` 2) on the damaged disc itself. The catalog marks
+the damaged run `degraded` and lists the lost ids. The restore planner
+prefers a healthy run over a degraded one.
 
 ### 11.8 Verify and scrub
 
@@ -3868,7 +4091,10 @@ ddrescue -b 2048 -n -r1 /dev/sr0 /staging/disc.iso map.log
 ```
 
 `-n` skips scraping on the first pass, so the pass is fast. Escalate to a full
-`ddrescue -d -r3` run only when errors appear.
+`ddrescue -d -r3` run only when errors appear. When verify works on an image
+file instead of a drive, `verify --image` takes the mapfile through
+`--mapfile` (section 19.11); every sector that the map does not mark as
+rescued is an erasure.
 
 Section 19.11 lists the three verify levels and what each one reads.
 
@@ -3888,13 +4114,13 @@ Scrub schedule:
 
 | Age | Interval | Depth |
 |---|---|---|
-| Within 24 hours of burning | once | Level 2, on a **second drive of a different model**. Do not file a disc until it passes on two drives. |
-| Year 0 to 1 | at 3 months, then at 12 months | Level 2 |
-| Year 1 to 5 | every 12 months | Level 2 on a rotating quarter of the library each quarter |
-| Year 5 to 10 | every 6 months | Level 2 |
-| Year 10 and beyond | every 6 months | Level 2, plus a migration plan |
-| Any disc marked degraded | every 3 months | Level 2, and schedule a re-burn |
-| After a flood, a heat event, or a move | immediately | Level 2 on the affected shelf |
+| Within 24 hours of burning | once | `integrity`, on a **second drive of a different model**. Do not file a disc until it passes on two drives. |
+| Year 0 to 1 | at 3 months, then at 12 months | `integrity` |
+| Year 1 to 5 | every 12 months | `integrity` on a rotating quarter of the library each quarter |
+| Year 5 to 10 | every 6 months | `integrity` |
+| Year 10 and beyond | every 6 months | `integrity`, plus a migration plan |
+| Any disc marked degraded | every 3 months | `integrity`, and schedule a re-burn |
+| After a flood, a heat event, or a move | immediately | `integrity` on the affected shelf |
 
 A full library scrub cycle should complete in under 12 months. At about 15
 minutes per 25 GB disc plus handling, one drive scrubs about 20 discs in an
@@ -3992,10 +4218,10 @@ The promise rests on three structures that every run carries:
 1. a **filter**, which answers "is this object probably in this run" and, when
    the answer is negative, proves absence;
 2. a **manifest**, which answers exactly where an object is;
-3. a **catalog**, which carries six items: the complete snapshot objects of
+3. a **catalog**, which carries seven items: the complete snapshot objects of
    the whole repository, the filters of every earlier run, the manifests of the
-   most recent runs, the snapshot table, the ref table, and the disc directory.
-   Section 12.7.2 defines its container.
+   most recent runs, the snapshot table, the ref table, the run table, and the
+   disc directory. Section 12.7.2 defines its container.
 
 The prerequisite list, which says what a run does not contain and where it
 lives, is part of the manifest (section 12.4). Every one of these is an
@@ -4010,6 +4236,17 @@ missing. It never says "I do not know".
 
 The filter type is **BinaryFuse16** (Graf and Lemire, 2022), with 3-wise
 fused segments and 16-bit fingerprints.
+
+**Membership.** The filter holds the id of every object that the run stores
+as an object of its own: every chunk, bundled chunks included under their own
+chunk ids, every bundle, every chunklist, every tree, and every snapshot
+object under `/NOAHSARK/snapshots/`. The catalog copies are not members:
+earlier filters, earlier manifests, the replicated snapshot objects under
+`catalog/snapobj/` and the tables. The manifest of section 12.3 has exactly
+the same membership, one record per member.
+
+The reasons and the size arithmetic below, up to the container table, are
+informative.
 
 Reasons:
 
@@ -4096,6 +4333,8 @@ A Bloom filter is used only in memory, for the run that is being built, where
 incremental insertion is genuinely required. A Bloom filter is never written to
 a disc.
 
+The size tables and the super-filter note below are informative.
+
 Filter sizes, at 18.2 bits per key plus the 84-byte header:
 
 | Run size | Objects (P4) | Filter size |
@@ -4166,15 +4405,25 @@ Chunk ids in version 1:
 
 | Chunk id | Content |
 |---|---|
-| `"FANO"` | Fan-out table: 256 or 65536 cumulative u32 counts. |
-| `"RECS"` | The sorted manifest records. |
-| `"BNDL"` | The bundle table: the ids of every bundle in this run, 32 bytes each, sorted ascending. Mandatory when the run holds a bundle. |
-| `"PREQ"` | The prerequisite list (section 12.4). Authoritative. |
-| `"SRCR"` | The set of run seqs that this run references: u64 values, sorted ascending. |
-| `"DUPS"` | Duplicate accounting: four u64 values, in the order of section 15.5. |
-| `"SPLT"` | Split records: files whose chunks continue on another run (section 15.7). |
+| `"FANO"` | Fan-out table: 256 or 65536 cumulative u32 counts. Mandatory. |
+| `"RECS"` | The sorted manifest records. Mandatory. |
+| `"BNDL"` | The bundle table: the ids of every bundle in this run, 32 bytes each, sorted ascending. Mandatory; zero length when the run holds no bundle. |
+| `"PREQ"` | The prerequisite list (section 12.4). Authoritative. Mandatory; zero length when nothing is missing. |
+| `"SRCR"` | The set of run seqs that this run references: u64 values, sorted ascending. Mandatory; zero length when the run references no other run. |
+| `"DUPS"` | Duplicate accounting: four u64 values, in the order of section 15.5. Mandatory. |
+| `"SPLT"` | Split records: files whose chunks continue on another run (section 15.7). Mandatory; zero length when no file is split. |
 | `"BMAP"` | Per-snapshot reachability bitmaps. Optional, `OPT_BITMAPS`. |
 | `"RIDX"` | Reverse index by LBA. Optional, `OPT_REVIDX`. |
+
+The seven mandatory chunks appear in every version 1 manifest, in the order
+above, so a reader finds each one at a fixed TOC index. A zero-length chunk
+has an `offset` equal to that of the next chunk.
+
+**Membership.** The manifest has one record for every object that the run
+stores as an object of its own, exactly the set that the filter holds
+(section 12.2). A snapshot object is a member through its file under
+`/NOAHSARK/snapshots/<name>`, and that is the LBA its record names; the copy
+under `catalog/snapobj/` is not a member.
 
 Manifest record, 64 bytes, sorted ascending by `content_id`:
 
@@ -4214,7 +4463,7 @@ is 48 bytes:
 
 Split records are sorted by `chunklist_id`, then by `part_index`.
 
-Manifest sizes:
+Manifest sizes, informative:
 
 | Objects in the run | Manifest size | Share of a 25 GB disc |
 |---:|---:|---:|
@@ -4251,7 +4500,7 @@ must never be indistinguishable from "corrupt".
 The list is bounded, because the capping knobs of section 15 bound the number of
 runs that one run may reference.
 
-### 12.5 Snapshot objects, snapshot table and ref table
+### 12.5 Snapshot objects, snapshot table, ref table and run table
 
 The catalog replicates the **complete snapshot objects** of every snapshot in
 the repository, not only a table of their ids. A snapshot object is a few
@@ -4263,11 +4512,12 @@ Tree objects are **not** replicated. A tree is large and there are many of them,
 so replicating trees would cost as much as the data. Only the snapshot objects,
 which name the root trees, are replicated.
 
-Both tables below are also replicated in full on every run. They grow with the
-size of the set, not with the size of the data, so replication is cheap and it
-makes any recent disc a usable entry point.
+The snapshot table, the ref table and the run table below, and the disc
+directory of section 12.6, are also replicated in full on every run. They
+grow with the size of the set, not with the size of the data, so replication
+is cheap and it makes any recent disc a usable entry point.
 
-Snapshot table record, 128 bytes, sorted by `generation` then by `snapshot_id`:
+Snapshot table record, 136 bytes, sorted by `generation` then by `snapshot_id`:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
@@ -4276,29 +4526,30 @@ Snapshot table record, 128 bytes, sorted by `generation` then by `snapshot_id`:
 | 64 | 32 | u8[32] | `root_tree` | Root tree id. |
 | 96 | 8 | u64 | `generation` | 1 + parent generation. |
 | 104 | 8 | i64 | `time_sec` | Snapshot time. |
-| 112 | 8 | u64 | `object_count` | Objects reachable. |
-| 120 | 4 | u32 | `first_run_seq` | The run that first held the snapshot object. |
-| 124 | 1 | u8 | `flags` | bit0 the snapshot is complete on this set. |
-| 125 | 1 | u8 | `hash_algo` | Multicodec code of `snapshot_id` and `root_tree`. |
-| 126 | 1 | u8 | `parent_hash_algo` | Multicodec code of `parent_id`. 0 for a root. |
-| 127 | 1 | u8 | `reserved_u8` | Zero. |
+| 112 | 8 | u64 | `object_count` | Objects reachable, as section 8.7 counts them. |
+| 120 | 8 | u64 | `first_run_seq` | The run that first held the snapshot object. |
+| 128 | 1 | u8 | `flags` | bit0 the snapshot is complete on this set. |
+| 129 | 1 | u8 | `hash_algo` | Multicodec code of `snapshot_id` and `root_tree`. |
+| 130 | 1 | u8 | `parent_hash_algo` | Multicodec code of `parent_id`. 0 for a root. |
+| 131 | 1 | u8 | `reserved_u8` | Zero. |
+| 132 | 4 | u32 | `reserved_u32` | Zero. |
 
 #### 12.5.1 The simple table container
 
-The snapshot table, the ref table and the disc directory share one container
-shape. Header, 64 bytes:
+The snapshot table, the ref table, the run table and the disc directory share
+one container shape. Header, 64 bytes:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 0 | 4 | u32 | `magic` | `"NAST"` snapshot table, `"NARF"` ref table, `"NADD"` disc directory. |
+| 0 | 4 | u32 | `magic` | `"NAST"` snapshot table, `"NARF"` ref table, `"NART"` run table, `"NADD"` disc directory. |
 | 4 | 2 | u16 | `version_major` | 1. |
 | 6 | 2 | u16 | `version_minor` | 0. |
 | 8 | 8 | u64 | `required_feat` | Refuse on an unknown bit. |
 | 16 | 8 | u64 | `optional_feat` | Ignore an unknown bit. |
 | 24 | 16 | u8[16] | `repo_uuid` | The repository. |
 | 40 | 8 | u64 | `record_count` | Records that follow. |
-| 48 | 2 | u16 | `record_size` | 128 snapshot table, 96 ref table, 160 disc directory. |
-| 50 | 1 | u8 | `hash_algo` | Multicodec code of every digest in the records that has no `hash_algo` of its own. For the disc directory, the algorithm of `super_hash`. |
+| 48 | 2 | u16 | `record_size` | 136 snapshot table, 96 ref table, 128 run table, 160 disc directory. |
+| 50 | 1 | u8 | `hash_algo` | Multicodec code of every digest in the records that has no `hash_algo` of its own. For the run table, the algorithm of `run_header_hash`. For the disc directory, the algorithm of `super_hash`. |
 | 51 | 1 | u8 | `digest_len` | 32. |
 | 52 | 4 | u32 | `reserved_u32` | Zero. |
 | 56 | 4 | u32 | `body_crc32c` | CRC-32C over the records. |
@@ -4307,12 +4558,20 @@ shape. Header, 64 bytes:
 
 Records are sorted, so a reader binary-searches them without an index. The
 snapshot table uses the record of this section, the ref table the ref record of
-section 8.8, and the disc directory the record of section 12.6.
+section 8.8, the run table the record of section 12.5.2, and the disc
+directory the record of section 12.6.
 
 The replicated snapshot objects live in `catalog/snapobj/<name>`, one ordinary
 file per snapshot, named by the full multihash hex of the snapshot object. The
 name is the content id, so a reader verifies each file without any other
 structure.
+
+A writer may pack the snapshot objects of the whole repository into one
+`catalog/snapobj.bin` container with the bundle layout of section 8.3. The
+container form is the default above `catalog.snapobj_pack_threshold`
+snapshots, default 1,000.
+
+The size math below is informative.
 
 Size math for 10,000 snapshots:
 
@@ -4321,20 +4580,55 @@ Size math for 10,000 snapshots:
 | Snapshot object payload, typical (header, three ids, times, a short tag list) | 320 B | 3.20 MB |
 | Snapshot object payload, worst case allowed by the size cap | 640 B | 6.40 MB |
 | UDF File Entry and directory overhead, one file each | 2,048 B | 20.48 MB |
-| Snapshot table record | 128 B | 1.28 MB |
+| Snapshot table record | 136 B | 1.36 MB |
 
-Typical total per run: 3.20 + 20.48 + 1.28 = **24.96 MB**, which is 0.10 percent
+Typical total per run: 3.20 + 20.48 + 1.36 = **25.04 MB**, which is 0.10 percent
 of a 25 GB disc and 0.025 percent of a 100 GB disc.
 
-The filesystem overhead dominates the payload. A writer may therefore pack the
-snapshot objects of the whole repository into one `catalog/snapobj.bin`
-container with the bundle layout of section 8.3, which removes the 20.48 MB and
-leaves **4.48 MB** per run. The container form is the default above
-`catalog.snapobj_pack_threshold` snapshots, default 1,000.
+The filesystem overhead dominates the payload. The `snapobj.bin` container
+form removes the 20.48 MB and leaves **4.56 MB** per run.
 
 At 10,000 snapshots and 2,000 runs, the replicated history costs about 9 GB
 across the whole archive in container form. That is under half of one
 disc for a complete, 2,000-fold redundant history.
+
+#### 12.5.2 Run table
+
+The run table lists every run of the repository and says on which disc, and
+where on that disc, each run lies. It is what lets a reader, and the planner
+of section 17.1, go from a `run_seq` in a manifest, a prerequisite record or a
+`"SRCR"` chunk to a physical disc without mounting anything. It is replicated
+in full on every run, like the other tables.
+
+Record, 128 bytes, sorted by `run_seq`:
+
+| Offset | Size | Type | Name | Meaning |
+|---:|---:|---|---|---|
+| 0 | 8 | u64 | `run_seq` | The run, 1-based. |
+| 8 | 8 | u64 | `disc_seq` | The disc that holds it, 0-based. |
+| 16 | 16 | u8[16] | `disc_uuid` | That disc's uuid. |
+| 32 | 8 | u64 | `lba_base` | As in the run header. |
+| 40 | 8 | u64 | `run_sectors` | As in the run header. |
+| 48 | 32 | u8[32] | `run_header_hash` | Hash of the 512 run header bytes (section 4.9), under the container's `hash_algo`. All zero in the record of the run that carries this table: that header is written after the table (section 10.5), and it is verified by its own CRC and by the next run's `prev_run_header_hash`. |
+| 80 | 8 | i64 | `created_sec` | Burn time, as in the run header. |
+| 88 | 4 | u32 | `disc_run_index` | Index of the run on its disc. 0 for the first run of a disc. |
+| 92 | 1 | u8 | `run_kind` | As in the run header: 1 data, 2 repair, 3 disc-close parity. |
+| 93 | 1 | u8 | `run_hash_algo` | Multicodec code of every object id in that run, copied from its run header. It names no digest inside this record. |
+| 94 | 1 | u8 | `run_fs_profile` | Disc filesystem profile of that run's disc. |
+| 95 | 1 | u8 | `reserved_u8` | Zero. |
+| 96 | 8 | u64 | `object_count` | As in the run header. |
+| 104 | 24 | u8[24] | `reserved` | Zero. |
+
+The container header is the simple table container of section 12.5.1, with
+magic `"NART"` and `record_size` 128. The table has one record per run that
+was ever burned and verified, in every repository. A run whose burn failed
+never enters it. The record of a run is appended once and never changed; a
+later copy of the table differs from an earlier one only by the runs added
+at its end.
+
+A reader that holds the run table and the disc directory knows, for every
+object it can locate through a manifest, the disc to ask for, the label to
+look for on the shelf, and the LBA range to read.
 
 ### 12.6 Disc directory
 
@@ -4382,6 +4676,7 @@ Every run carries:
 | Every snapshot object, complete | The whole repository | A reader lists, names and walks the whole history from one disc. |
 | The full snapshot table | The whole repository | The sorted index over those objects. |
 | The full ref table | The whole repository | The entry point for names. |
+| The full run table | The whole repository | Maps every run seq to its disc and its LBA range (section 12.5.2). |
 | The disc directory | The whole repository | The entry point for "which physical disc". |
 | This run's prerequisite list, inside the manifest | This run | What is missing and where it is. |
 | This run's layout table | This run | LBA extents of every file, for FEC and for the Phase 3 recovery read. |
@@ -4405,7 +4700,7 @@ order:
 |---:|---|---|
 | 1 | Every snapshot object | Never. |
 | 2 | Every run filter | Never. |
-| 3 | The disc directory | Never. |
+| 3 | The disc directory and the run table | Never. |
 | 4 | The snapshot table and the ref table | Never. |
 | 5 | Recent manifests, newest first | The cap is reached. |
 
@@ -4461,7 +4756,7 @@ Catalog entry, 64 bytes:
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
 | 0 | 32 | u8[32] | `file_hash` | Hash of the whole file's bytes. For a snapshot object file, this equals the digest in its name. |
-| 32 | 1 | u8 | `file_role` | 1 `filters/<seq>.bin`. 2 `manifests/<seq>.bin`. 3 `snapshots.bin`. 4 `refs.bin`. 5 `discs.bin`. 6 `snapobj/<name>`. 7 `snapobj.bin`. |
+| 32 | 1 | u8 | `file_role` | 1 `filters/<seq>.bin`. 2 `manifests/<seq>.bin`. 3 `snapshots.bin`. 4 `refs.bin`. 5 `discs.bin`. 6 `snapobj/<name>`. 7 `snapobj.bin`. 8 `runs.bin`. |
 | 33 | 1 | u8 | `hash_algo` | Multicodec code of the digest in a `snapobj/<name>` file name. 0 for other roles. |
 | 34 | 2 | u16 | `reserved_u16` | Zero. |
 | 36 | 4 | u32 | `reserved_u32` | Zero. |
@@ -4556,22 +4851,30 @@ prerequisite".
 
 ### 13.1 Location and contents
 
+Two rules are normative. Everything else in this subsection is informative.
+
+1. **Everything in the cache is derived from discs and is rebuildable.** A
+   command must behave the same, apart from speed, with the cache deleted
+   (section 13.4).
+2. **Never in the cache: anything that is not on a disc.** If losing the
+   cache loses data, the design is broken. Operator data such as shelf notes
+   lives in the repository (`<repo>/notes`, section 3.7), never here.
+
 Informative: the default location is `$XDG_CACHE_HOME/noahsark/<repo-uuid>/`,
 which falls back to `~/.cache/noahsark/<repo-uuid>/`. The `--cache-dir` flag
-and `cache.dir` override it. Only the contents below are normative.
-
-The directory name says what it is. Everything inside is derived and
-rebuildable.
+and `cache.dir` override it. The layout below is the reference
+implementation's; another layout that obeys the two rules conforms.
 
 | Item | Content |
 |---|---|
 | `index.bin` | Merged sorted index over all runs. The manifest record plus `run_seq`. Multi-pack-index shape. |
 | `filters/<seq>.bin` | Copies of run filters. |
 | `manifests/<seq>.bin` | Copies of run manifests, accumulated as discs are mounted. |
-| `snapshots.bin` | The snapshot table. |
-| `refs.bin` | The ref table. |
-| `discs.bin` | The disc directory, plus local additions: shelf location, notes. |
-| `health.log` | Per-disc verification history. |
+| `snapshots.bin` | A copy of the snapshot table. |
+| `refs.bin` | A copy of the ref table. |
+| `runs.bin` | A copy of the run table. |
+| `discs.bin` | A copy of the disc directory. |
+| `health.log` | Per-disc verification history, derived from the discs' checksum columns and the health records that `verify` writes. |
 | `xlate-<from>-<to>.bin` | Optional cross-algorithm side table (section 5.7). |
 | `pending-confirm.log` | Unconfirmed filter hits, with the runs that would confirm them. |
 
@@ -4581,14 +4884,11 @@ per-run manifests. There is never a conflict to resolve, because a manifest is
 immutable and a run seq is unique. That is the concrete meaning of "the cache is
 only an accelerator".
 
-**Never in the cache**: anything that is not on a disc. If losing the cache
-loses data, the design is broken.
-
 ### 13.2 Rebuild levels
 
 | Level | Minimum set | Gives | Cost |
 |---:|---|---|---|
-| 1 | The newest disc | The catalog: every run's filter, the snapshot table, the ref table, the disc directory, and the newest 8 manifests. Answers "which run probably holds X" for the whole repository. | One disc mount, a few seconds. |
+| 1 | The newest disc | The catalog: every run's filter, the snapshot table, the ref table, the run table, the disc directory, and the newest 8 manifests. Answers "which run probably holds X" and "which disc holds that run" for the whole repository. | One disc mount, a few seconds. |
 | 2 | The discs a snapshot references | Everything needed to restore that snapshot. | The plan's disc count. |
 | 3 | Every disc | The exact merged index, for maximum dedup on the next backup. | One mount per disc, about 0.3 s of reading each. |
 
@@ -4720,9 +5020,17 @@ Rules:
 6. A run that fails verify keeps its objects PACKED and marks the run for
    re-burn.
 7. An imported bundle object enters the machine at STAGED, exactly like a
-   locally chunked object. `commit` and `import` are the only entry points.
+   locally chunked object. `commit`, `import` and `verify --heal` are the
+   only entry points.
 8. The state log is authoritative only for objects that are not yet CLEAN.
    Everything about a CLEAN object is derivable from the discs.
+9. A healed object enters the machine at STAGED. `verify --heal` writes its
+   bytes into `staging/heal/` and appends the STAGED record with reason 3,
+   `healed`, before it reports success. From there the object follows the
+   normal path: the next `pack` selects it, and it reaches CLEAN only when
+   the run that holds it again passes `verify`. An object that is still
+   present in another run in a state at or beyond CLEAN is not healed; it is
+   re-fetched from that run (section 11.7).
 
 ### 14.3 State log format
 
@@ -4827,7 +5135,13 @@ The locks are advisory. They are not a security boundary.
 
 ## 15. Packing and locality
 
+In the data flow, commit (section 16) comes before packing. This section
+comes first because it defines the terms that the commit flow uses: capping,
+the split threshold and the duplication caps.
+
 ### 15.1 Why locality wins over dedup
+
+This subsection is informative.
 
 Read time is fixed by the size of the data. The number of discs that a restore
 touches is what the design controls.
@@ -4865,7 +5179,9 @@ The rules are ordered. A conflict is resolved by this order.
 
 ### 15.3 Algorithm
 
-Two passes, plus a pre-pass.
+This subsection is informative. The rules of section 15.2 and the knobs of
+section 15.4 are the requirement; any algorithm that satisfies them
+conforms. The reference implementation uses two passes, plus a pre-pass.
 
 ```
 pre-pass:  files larger than one disc get their own run chain first.
@@ -5195,7 +5511,7 @@ Defaults:
 |---|---|---|
 | Multiple roots | Allowed | One repository can cover `/home` and `/srv`. |
 | Root ordering | Sorted by path bytes | The snapshot must be deterministic. |
-| Exclude syntax | gitignore-style patterns | It is familiar, and it is well specified. |
+| Exclude syntax | The pattern language of section 16.5.1 | It is gitignore-shaped, so it is familiar, and it is specified here in full, because trees are content-addressed. |
 | Exclude sources | `config`, then `--exclude`, then a `.noahsarkignore` file in any directory | Local rules stay with the data. |
 | Sources | Read-only. Never written. |
 | Symlinks | Never followed | A followed symlink duplicates data and can leave the root. The link itself is stored. |
@@ -5213,9 +5529,16 @@ directory. It holds one entry per source root, in root order:
 - `entry_type` is 2, directory. Its content is the tree id of the root's own
   directory.
 - The name is the root's absolute path, encoded so that it is one path
-  component: every `/` byte becomes `%2F`, every `%` byte becomes `%25`, and
-  every other byte is kept. `/srv/data` becomes `%2Fsrv%2Fdata`. The encoding
-  is reversible, so two distinct roots never collide.
+  component that section 8.5.8 accepts. Every byte that section 8.5.8
+  rejects, and the `%` byte itself, becomes `%` followed by two uppercase hex
+  digits: `/` becomes `%2F`, `\` becomes `%5C`, NUL becomes `%00`, and `%`
+  becomes `%25`. Every other byte is kept. `/srv/data` becomes
+  `%2Fsrv%2Fdata`, and `/x\y` becomes `%2Fx%5Cy`. A root path is absolute,
+  so the encoded name always starts with `%2F` and is never empty, `.` or
+  `..`. Decoding replaces every `%XX` by its byte. The encoding is
+  reversible, so two distinct roots never collide. An encoded name above
+  4095 bytes, the `name_len` limit of section 8.5.1, is refused at commit
+  time.
 - The TLV `ROOT_PATH` (0x0004) carries the raw path bytes, unencoded.
 - mode, uid, gid and the times are those of the root directory itself.
 
@@ -5224,6 +5547,54 @@ The rule holds with one root as well, so every snapshot has the same shape.
 `TARGET/srv/data`, and `restore --include` names paths below a root. The
 synthetic root tree costs one small object per commit and changes only when a
 root's own metadata or content changes.
+
+#### 16.5.1 Exclude pattern language
+
+Trees are content-addressed, so two writers with the same source and the
+same rules must produce the same tree. The pattern language is therefore
+normative.
+
+**Rules and sources.** A rule is one pattern line. The rules come from three
+sources, and their order is: every `sources.exclude` key in config order,
+then every `--exclude` option in command-line order, then the
+`.noahsarkignore` files on the path from the source root down to the
+directory that holds the entry, root first. A rule in a deeper file comes
+after a rule in a shallower one. Inside one file, rules are in line order.
+
+**Lines.** A blank line and a line whose first byte is `#` are ignored. A
+leading `\#` or `\!` is a literal `#` or `!`. Trailing spaces are ignored
+unless the last one is escaped with `\`. Matching is on raw bytes, byte for
+byte, case-sensitive, with no normalization.
+
+**Anchoring.** A pattern that contains a `/` other than a trailing one is
+anchored: it matches relative to the directory of the rule, which is the
+source root for a config or `--exclude` rule and the directory that holds
+the `.noahsarkignore` file otherwise. A leading `/` anchors a pattern in the
+same way and is then removed. A pattern with no `/` other than a trailing one
+matches the name of an entry at any depth below the rule's directory.
+
+**Trailing slash.** A pattern that ends in `/` matches a directory only. The
+`/` is then removed and the rest is matched as above. A pattern with no
+trailing `/` matches an entry of any type.
+
+**Wildcards.** `*` matches any run of zero or more bytes except `/`. `?`
+matches exactly one byte except `/`. `[...]` matches one byte from the set,
+with `-` for a range and a leading `!` for the complement. `**` has three
+forms: a leading `**/` matches in every directory, so `**/foo` matches `foo`
+at any depth; a trailing `/**` matches every entry below the named
+directory; `/**/` in the middle matches zero or more directories. Any other
+`**` is two `*`. A `\` escapes the next byte.
+
+**Match order and negation.** A pattern whose first byte is `!` is a
+negation. The rules are applied in the order above to the path of an entry,
+relative to the rule's directory; the **last matching rule wins**. If it is
+a negation the entry is included, otherwise it is excluded. An entry that no
+rule matches is included. An excluded directory is not entered: nothing below
+it is scanned, and no later negation can bring anything below it back. The
+source root itself is never matched against any rule and cannot be excluded.
+
+The rules that produced a tree are stored in the snapshot as TLV tag 5, in
+the order above, so `ls` can explain why a path is absent.
 
 ### 16.6 In-flight change detection
 
@@ -5425,9 +5796,9 @@ cross the network.
 ```
 
 **Step 1, `catalog export`.** The server writes the current catalog as plain
-files: every run filter, the recent manifests, every snapshot object, and the
-disc directory. It is the same content that a run carries (section 12.7), in the
-same formats.
+files: every run filter, the recent manifests, every snapshot object, the
+snapshot table, the ref table, the run table, and the disc directory. It is
+the same content that a run carries (section 12.7), in the same formats.
 
 **Step 3, `commit --out`.** The source machine walks its own filesystem, chunks
 and hashes locally, and queries the exported filters. A filter negative is a
@@ -5537,16 +5908,31 @@ bundle format stays reserved.
 
 ### 17.1 The planner
 
-Restore planning is minimum set cover, which is NP-hard. The planner does three
-things in order.
+Restore planning is minimum set cover, which is NP-hard.
 
-**Step 1: unique-element reduction.** The planner works in discs, not runs;
-every run of a disc is available once the disc is in the drive. If every run
-that holds an object lies on one disc, that disc is in every valid plan. Add
-all such discs. Remove all objects they cover. This usually leaves a very small residual problem, and for a
-repository with no controlled duplication it leaves none at all.
+**Inputs.** The planner takes the object set of the snapshot, the manifests
+and filters that say which runs hold each object, and the **run table**
+(section 12.5.2), which maps every `run_seq` to its `disc_seq` and
+`disc_uuid`. The planner works in **discs**, not runs: every run of a disc is
+available once the disc is in the drive, and run order does not imply disc
+order, because `pack --disc` may add a run to an old disc after newer discs
+exist. Without the run table the planner cannot run; it takes the table from
+the cache or from the newest disc (section 17.9).
 
-**Step 2: greedy on the residual.**
+**Requirements.** Three things are normative: the plan covers every needed
+object or fails up front (section 17.4); the plan is deterministic, so the
+same inputs give the same plan (test 12); and the tie-breaks below are
+applied in the stated order.
+
+**Algorithm.** The three steps below are informative. Any algorithm that
+meets the requirements conforms.
+
+*Step 1: unique-element reduction.* If every run that holds an object lies
+on one disc, that disc is in every valid plan. Add all such discs. Remove all
+objects they cover. This usually leaves a very small residual problem, and
+for a repository with no controlled duplication it leaves none at all.
+
+*Step 2: greedy on the residual.*
 
 ```
 P = mandatory_discs(N)
@@ -5560,13 +5946,9 @@ return order(P)
 
 The default score is the number of **bytes** newly covered, not the object
 count, because bytes track read time. An object-count score is available as an
-option.
-
-Greedy returns at most `H(k) <= ln n + 1` times the optimum. Feige proved in
-1998 that `(1 - alpha) ln n` approximation is impossible for any constant
-`alpha > 0` unless P = NP. Greedy is therefore the right algorithm, and no
-better one is worth seeking. An exact ILP solve is feasible at this size, but it
-adds a dependency for no measurable gain.
+option. Greedy returns at most `H(k) <= ln n + 1` times the optimum, and a
+better approximation ratio is not achievable in polynomial time, so greedy
+is the reference choice.
 
 **Step 3: tie-breaks.** Applied in this fixed order, so a plan is deterministic
 and reproducible:
@@ -5788,8 +6170,8 @@ With `k` drives the goal changes from "fewest discs" to "shortest makespan".
 ### 17.9 Cache-less restore
 
 With no cache, the restorer reads the catalog from the newest disc first. That
-gives every filter, the snapshot table, the ref table, the disc directory, and
-the newest 8 manifests. The planner then works normally.
+gives every filter, the snapshot table, the ref table, the run table, the disc
+directory, and the newest 8 manifests. The planner then works normally.
 
 If the newest disc is lost, the fallback reads every available disc's manifest
 and rebuilds the catalog. That is slow but always possible. Both paths must
@@ -5894,8 +6276,12 @@ The order per entry is fixed, and every step has a reason:
    times come last.
 8. Directory times are applied in a **deferred second pass**, after all children
    are written, because writing a child updates the parent's mtime. The pass
-   uses the retained directory descriptor with `futimens(dirfd)`, never a
-   re-opened path.
+   uses the directory handle that was retained from step 1, never a re-opened
+   path. Informative: on Linux that is `futimens(dirfd)`.
+
+The system calls named in this list are the Linux way to meet each step and
+are informative. The order of the steps, and the reason for each, is the
+requirement.
 
 ### 18.5 Cross-platform capability matrix
 
@@ -5995,7 +6381,14 @@ target. This works even when every individual name is harmless, and it is a
 race even against a pre-check, because another process can plant the symlink
 between the check and the open.
 
-Defences, all mandatory:
+Defences, all mandatory. Each item states an invariant, which is the
+requirement, and names the Linux system calls that meet it, which are
+informative; another platform meets the same invariant with its own calls.
+The invariants are: a name is validated before it is used; a path string is
+never built and then opened; a symlink is never followed on the way to a
+target; the check that a path component is safe and the use of that
+component are one operation, so that nothing can change between them; a
+symlink target is stored and restored as data.
 
 1. **Validate at parse time.** Reject any entry whose name is empty, is `.` or
    `..`, contains `/`, `\`, or NUL. A tree entry name is one path component by
@@ -6152,7 +6545,7 @@ noahsark commit [SOURCE]... [-m MESSAGE] [--ref=NAME] [--checksum]
                 [--out=DIR --catalog=DIR] [--source-type=TYPE]
 ```
 
-Runs the commit flow of section 18.1. With no `SOURCE`, it uses the configured
+Runs the commit flow of section 16.1. With no `SOURCE`, it uses the configured
 source roots.
 
 | Option | Meaning |
@@ -6250,7 +6643,7 @@ Exit: 0 on a clean stop, 2 on failure.
 ### 19.7 `noahsark pack` (Phase 1)
 
 ```
-noahsark pack [--disc=UUID] [--media=BD-R-25|BD-R-50|BD-R-100|BD-R-128|image]
+noahsark pack [--disc=UUID] [--media=NAME|ID]
               [--capacity=BYTES|GiB] [--reserve=BYTES|PERCENT]
               [--extra-reserve=BYTES|PERCENT] [--label=TEXT]
               [--preset=NAME] [--now] [--close] [--dry-run]
@@ -6272,7 +6665,7 @@ and exits 1.
 | Option | Meaning |
 |---|---|
 | `--disc` | Continue an existing disc. Without it, `pack` starts a new disc. |
-| `--media` | Media type for a new disc. |
+| `--media` | Media type for a new disc: any name, or the numeric id, from the media type registry of section 4.6, for example `BD-R SL 25`, `M-DISC BD DL 50`, `BD-RE SL 25`, `Mini BD SL 8 cm`, `image`, or `8`. A space in a name may be written as `-`. Default `disc.media`. |
 | `--capacity` | Forced capacity for a new disc (section 9.12). It must be at or below the reported capacity. It cannot be changed later. |
 | `--reserve` | `disc.force_reserve` for this disc. Replaces the computed reserve. |
 | `--extra-reserve` | `disc.extra_reserve` for this disc. Added to the computed reserve. |
@@ -6357,7 +6750,7 @@ Exit: 0 on success, 2 on failure, 4 when the disc is already closed or sealed.
 ### 19.11 `noahsark verify` (Phase 1)
 
 ```
-noahsark verify [--disc=UUID] [--run=SEQ] [--image=PATH]
+noahsark verify [--disc=UUID] [--run=SEQ] [--image=PATH [--mapfile=PATH]]
                 [--level=catalog|connectivity|integrity]
                 [--heal] [--drive=PATH] [--report=FILE]
 ```
@@ -6367,6 +6760,8 @@ objects to CLEAN.
 
 | Option | Meaning |
 |---|---|
+| `--image` | Verify an image file instead of a drive. |
+| `--mapfile` | The ddrescue mapfile that produced `--image` (sections 11.8 and C.5). Every sector that the map does not mark `+` (rescued) is an erasure. Without it every sector of the image is treated as readable, and only the digests and the content ids find damage. Only valid with `--image`. |
 | `--level=catalog` | Cache consistency only. Reads no disc. |
 | `--level=connectivity` | Reads trees, chunklists, snapshots, filters and manifests. Under 1 percent of the bytes. |
 | `--level=integrity` | Reads every sector and every object. The default for a disc. |
@@ -6425,7 +6820,7 @@ noahsark restore SNAPSHOT TARGET [--plan=FILE] [--include=PATH]...
                  [--report=FILE] [--report-replay=FILE] [--strict-unstable]
 ```
 
-Runs the restore pipeline of section 16.8. `--plan` resumes a persisted plan.
+Runs the restore pipeline of section 17.8. `--plan` resumes a persisted plan.
 
 An entry with the `UNSTABLE` flag is restored, and a warning names the path.
 `--strict-unstable` refuses to write such an entry and reports it as missing
@@ -6519,8 +6914,11 @@ noahsark disc mark-degraded UUID [--reason=TEXT]
 profile, reported capacity, forced capacity, used, run count, open or closed,
 health, RS margin, spare remaining, and last verify date.
 
-`label` sets the human label and the shelf note in the local disc directory. The
-on-disc label is written at burn time and never changes.
+`label` sets a local display label and the shelf note for a disc in
+`<repo>/notes` (section 3.7). The on-disc label is written at burn time and
+never changes, and the cache holds only copies of disc data (section 13.1),
+so neither is touched. `list` and the restore plan show the shelf note next
+to the on-disc label.
 
 `mark-degraded` records a manual health downgrade, for example after a physical
 inspection.
@@ -6555,13 +6953,17 @@ Later-phase keys:
 
 | Phase | Keys |
 |---:|---|
-| 2 | `commit.copy_first`, `sync.*`, `fs.append_variant`, `disc.spare`, `disc.min_spare_ratio`, `disc.close_policy = when_full`, `disc.allow_raw_append`, `disc.spare_reserve_bytes`, `metadata.xattr`, `metadata.acl`, `metadata.windows` |
+| 2 | `commit.copy_first`, `sync.*`, `fs.append_variant`, `disc.spare`, `disc.min_spare_ratio`, `disc.close_policy = when_full`, `disc.allow_raw_append`, `metadata.xattr`, `metadata.acl`, `metadata.windows` |
 | 3 | `fec.disc_close_parity`, `fec.group_size`, `consolidate.*`, `restore.drives` above 1, `watch.*`, `mirror.*`, `reindex.*` |
 | Backlog | `commitbundle.*` |
 
 The config file lives at `<repo>/config`. It is a plain text key-value file with
 one `key = value` pair per line, `#` for a comment, and UTF-8 encoding. A CLI
 option always overrides the file.
+
+A key marked **tuning** changes speed, memory or waiting time only. It has no
+effect on any byte that reaches a disc, and its value is not recorded in any
+structure.
 
 ### 20.1 Identity and format
 
@@ -6578,7 +6980,7 @@ option always overrides the file.
 | `hash.current` | `blake3` | Algorithm for new objects. `blake3` or `sha256`. |
 | `chunker.profile` | `P4` | Chunker profile: `P3`, `P4`, `P5`. |
 | `chunker.gear_table_id` | 1 | Frozen Gear table version. Never change it under a profile name. |
-| `bundle.threshold` | 1 MiB | Files below this size go into a bundle. |
+| `bundle.threshold` | 1 MiB | A chunk whose uncompressed payload is below this size goes into a bundle (section 6.5). |
 | `bundle.target_size` | 64 MiB | Target bundle size. |
 | `chunklist.inline_max` | 64 | Above this many chunks, a file references a chunklist object. |
 | `tree.tlv_spill_threshold` | 4 KiB | A TLV area above this size spills into chunks. |
@@ -6607,7 +7009,8 @@ option always overrides the file.
 | `disc.extra_reserve` | unset | Add to the computed reserve. Bytes or a percentage. |
 | `disc.expected_runs` | 32 | Expected number of future runs, used by the catalog growth term of the reserve formula. |
 | `disc.spare` | `min` | Spare area size at format time: `min` or `default`. `default` reserves about 256 MB and gives more appends. |
-| `disc.spare_reserve_bytes` | 512 MiB | Reserve for POW spare and filesystem metadata on an appendable disc. |
+| `disc.spare_reserve_bytes` | 512 MiB | Reserve for POW spare and filesystem metadata on every `spare:min` disc, which is every disc except a sealed one (section 10.11). |
+| `disc.media` | `BD-R SL 25` | Default media type for a new disc. Any name or id from the media type registry of section 4.6. |
 | `disc.min_spare_ratio` | 0.20 | Warn and recommend no further appends below this remaining spare fraction. |
 | `disc.close_policy` | `never` | `never` or `always` (Phase 1), `when_full` (Phase 2). See section 9.9. |
 | `disc.allow_raw_append` | true | Allow the degraded raw append mode of section 9.11. |
@@ -6625,16 +7028,16 @@ option always overrides the file.
 | `burner.eject_after` | true | Eject after a successful write. |
 | `burn.verify_after` | true | Run `verify` after `burn --exec`. Only `verify` moves objects to CLEAN. |
 | `burn.verify_device` | unset | Second drive for the verification read. Used only when present. |
-| `burn.reload_seconds` | 10 | Wait after the reload before the verification read. |
+| `burn.reload_seconds` | 10 | Tuning. Wait after the reload before the verification read. |
 
 ### 20.6 FEC
 
 | Key | Default | Meaning |
 |---|---|---|
-| `fec.scheme` | `rs255-gf8` | FEC scheme registry. |
-| `fec.k` | 231 | Data columns. `k + 1 + m` must equal 255. |
-| `fec.m` | 23 | Parity columns. |
-| `fec.band_stripes` | 2048 | Stripes per encoding band, for a working set near 1 GiB. |
+| `fec.scheme` | `rs255-gf8` | FEC scheme registry. Only value 1 exists in version 1. |
+| `fec.k` | - | Reserved for a later format version. Version 1 fixes `k = 231` (section 11.2). A version 1 build refuses the key. |
+| `fec.m` | - | Reserved for a later format version. Version 1 fixes `m = 23`. A version 1 build refuses the key. |
+| `fec.band_stripes` | 2048 | Tuning. Stripes per encoding band, for a working set near 1 GiB (section 11.10). |
 | `fec.disc_close_parity` | false | Add a disc-wide parity run at close. |
 | `fec.group_size` | 0 | Discs per cross-disc parity group. 0 disables it. Use 10 with one parity disc, or 20 with two. |
 | `fec.reburn_margin` | 0.50 | Re-burn a disc below this RS margin. |
@@ -6655,7 +7058,7 @@ option always overrides the file.
 | Key | Default | Meaning |
 |---|---|---|
 | `sources.root` | unset, repeatable | An absolute source root. At least one is required. |
-| `sources.exclude` | unset, repeatable | A gitignore-style exclude pattern. |
+| `sources.exclude` | unset, repeatable | An exclude pattern in the language of section 16.5.1. |
 | `sources.ignore_file` | `.noahsarkignore` | Per-directory exclude file name. Empty disables it. |
 | `sources.one_file_system` | true | Do not cross a mount point. |
 | `sources.follow_symlinks` | false | Never true in Phase 1. A symlink is stored as a symlink. |
@@ -6666,8 +7069,7 @@ option always overrides the file.
 | `source.checksum_every` | 30 days | Force a full rehash on a remote root after this interval. 0 disables it. |
 | `source.type` | auto | Override the detected source type: `local`, `snapshot`, `nfs`, `smb`. |
 | `source.allow_smb` | true | Allow an SMB mount as a source root. It is never allowed for staging. |
-| `commit.quick_check` | true | Use the size, mtime and ctime comparison of section 18.2. |
-| `commit.checksum` | false | Always rehash. Equivalent to `--checksum` on every commit. |
+| `commit.checksum` | false | Always rehash. Equivalent to `--checksum` on every commit. The quick check itself is selected by `source.quick_check` above. |
 | `commit.restat_after_read` | true | In-flight change detection (section 16.6). Never set it to false on a live source. |
 | `commit.retry_unstable` | 1 | Re-reads of an unstable file before it is skipped. |
 | `commit.copy_first` | false | Copy changed files into staging before chunking. Phase 2. |
@@ -6707,7 +7109,7 @@ option always overrides the file.
 | `metadata.xattr` | false | Phase 2. |
 | `metadata.acl` | false | Phase 2. |
 | `metadata.windows` | false | Windows attributes and security descriptors. Phase 2. |
-| `restore.owner_policy` | `auto` | `auto`, `numeric`, `name`, `none`. See section 17.3. |
+| `restore.owner_policy` | `auto` | `auto`, `numeric`, `name`, `none`. See section 18.3. |
 
 ### 20.11 Staging and cache
 
@@ -6755,7 +7157,7 @@ Every change uses one of two mechanisms.
 | Mechanism | When | Old reader | New reader |
 |---|---|---|---|
 | A feature bit | A structure gains an item. | Ignores an `optional_feat` bit. Refuses a `required_feat` bit. | Uses the item. |
-| A version bump | A structure changes shape. | Refuses an unknown `version_major`. Ignores an unknown `version_minor` and skips `header_len - known`. | Uses the new shape. |
+| A version bump | A structure changes shape. | Refuses an unknown `version_major`. Ignores an unknown `version_minor`; for the three structures that carry `header_len` (section 4.7) it skips `header_len - known`. | Uses the new shape. |
 
 A registry id is never reused and never renumbered. That is what lets a 2050
 reader interpret a 2027 disc.
@@ -6768,7 +7170,7 @@ reader interpret a 2027 disc.
 | **Chunker profile change** | New id in the chunker registry. | Unaffected. A reader never needs the profile. | Uses the new profile for new runs. Old runs keep theirs. Dedup across the boundary falls. |
 | **Gear table change** | New `gear_table_id` **and** a new profile name. | Unaffected. | Must never reuse an existing profile name with a different table. That would silently split the object space. |
 | **New compression algorithm** | New id in the compression registry, plus `required_feat` bit `FEAT_COMPRESSION` semantics. | Refuses an object whose `compression` it does not know. The object is unreadable, not misread. | Reads it. |
-| **FEC parameter change (k, m)** | Recorded per run in the run header. | Reads any `k` and `m`, because both are in the header. | Same. |
+| **FEC parameter change (k, m)** | A new `version_major` of the run header and the layout table. Both already record `k` and `m`. | Refuses the run for repair, because version 1 fixes `k = 231`, `m = 23` and it accepts no other pair. Still reads the objects through the filesystem. | Reads the recorded pair. |
 | **New FEC scheme** | New id in the FEC registry, plus a `required_feat` bit. | Refuses the run for repair, but still reads its objects through the filesystem. | Repairs it. |
 | **UDF revision change** | `udf.revision` and `fs_revision` in the superblock. | Depends on the operating system, not on NoahsArk. | Same. |
 | **Disc filesystem profile change** | New id in the profile registry. | Refuses a profile it does not know, and says the id. | Reads it. |
@@ -6788,13 +7190,18 @@ reader interpret a 2027 disc.
 4. Record every parameter that a future diagnostic tool would need, even when a
    reader does not need it.
 5. Never depend on a structure that a later version might change. Read the
-   version and the `header_len` first.
+   version first, and the `header_len` where the structure carries one.
+6. Set the feature bits of section 4.4 exactly as its table states, and no
+   other.
 
 ### 21.4 Rules for a reader
 
 1. Check the magic. Refuse on a mismatch.
 2. Check `version_major`. Refuse on an unknown value, and print the value.
-3. Read `header_len` and skip the excess. Never assume the compiled size.
+3. For the common object header, the tree header and the tree entry, read
+   `header_len` and skip the excess. Never assume the compiled size. For every
+   other structure, use the fixed size of its `version_major`; it has no
+   `header_len` (section 4.7).
 4. Check `required_feat`. Refuse on an unknown bit, and print the bit number.
 5. Ignore unknown `optional_feat` bits.
 6. Verify the checksum before using any field.
@@ -6812,6 +7219,47 @@ structures. A Phase 1 reader does four things:
 - It reports a cross-disc parity group as "not supported" instead of using it.
 
 No data is lost in any of those cases.
+
+### 21.6 Reader and writer conformance
+
+The on-disc format has two roles. A program may claim one or both.
+
+**A conforming reader** of format major 1:
+
+1. reads every structure of this document at `version_major` 1 and any
+   `version_minor`, by the rules of section 21.4;
+2. reads objects under both hash algorithms of section 4.6, and under
+   compression ids 0 and 1; it may refuse id 2 (`lz4`), and must then name
+   the id;
+3. reads a disc of profile 0 and of profile 1, which share one filesystem; it
+   may refuse profile 2 and must then name the profile;
+4. finds every object through the filesystem, the run headers, the manifests,
+   the filters and the catalog, with no local cache and no other disc than
+   the ones the plan names;
+5. verifies every CRC, every hash of section 4.9 and every content id before
+   it uses the bytes;
+6. repairs a run with `k = 231`, `m = 23`, or says that it cannot repair;
+7. refuses an unknown `version_major`, an unknown `required_feat` bit, an
+   unknown registry id in a field it must interpret, and a critical TLV it
+   does not know, and says which.
+
+**A conforming writer** of format major 1:
+
+1. writes every structure exactly as its byte-offset table states, with
+   `version_major` 1, `version_minor` 0, reserved fields zero, and the
+   feature bits of section 4.4 and no other;
+2. writes BLAKE3-256 or SHA-256 content ids over the uncompressed payload,
+   FastCDC cut points by section 6.2, and bundles by section 8.3;
+3. writes every run with `k = 231`, `m = 23`, the checksum column of section
+   11.4, `m + 2` header copies, the fill order of section 10.5 and the
+   catalog copies of section 12.7;
+4. writes every byte as an ordinary file under `/NOAHSARK/` and never
+   rewrites a burned run;
+5. writes only a disc filesystem profile that it implements, and never a
+   reserved id, bit or value.
+
+Section 23.7 is the checklist for a Phase 1 build, which is both a reader and
+a writer.
 
 ---
 
@@ -6882,13 +7330,13 @@ drive. It does have `sudo`, so loop mounts work.
 | 15 | Compression heuristic: a low-gain chunk is stored uncompressed | The 5 percent rule |
 | 16 | Tree canonical order: two identical directories hash identically | Dedup does not break |
 | 17 | Name validation: every illegal name is refused at parse time | The traversal class is excluded |
-| 18 | Symlink redirection attack: a planted symlink does not escape | `O_NOFOLLOW` and `openat2` are used |
+| 18 | Symlink redirection attack: a planted symlink does not escape | The invariants of section 18.8 hold |
 | 19 | Hardlink group: restoring one member gives a correct file | No dangling links |
 | 20 | State log replay after a truncated write | A crash does not corrupt the store |
 | 21 | GC refuses to delete an object that is not CLEAN | The safety rule holds |
 | 22 | Burn plan refusal on a bad CRC or a misaligned seek | The plan is validated |
 | 23 | Forced capacity: the image, the budget and the FEC layout all shrink | The override reaches every consumer |
-| 24 | Reserve formula: the printed budget matches the worked example | The arithmetic is right |
+| 24 | Reserve formula: the printed budget matches both worked examples of section 10.11, and `data_budget` is a whole number of stripes of `k` data sectors | The arithmetic is right |
 | 25 | Connectivity check reports a missing object with no disc mounted | A filter negative is a proof |
 | 26 | Quick check: a file whose size, mtime and ctime match is never read | The commit cost is proportional to the change set |
 | 27 | In-flight change: a file rewritten during the read gets the parent entry when one exists, and the `UNSTABLE` flag when it does not | No snapshot ever holds torn content without a flag |
@@ -6898,6 +7346,8 @@ drive. It does have `sudo`, so loop mounts work.
 | 31 | `UNSTABLE` round trip: the flag survives write, read, restore and `ls` | The flag is part of the format, not a log line |
 | 32 | `pack --close` sealed path: no format step, full capacity, `-dvd-compat` in the plan | The Phase 1 sealed path is exercised |
 | 33 | Profile 0 open image: the volume mounts with the anchor at LBA 256 alone | The tail-anchor limitation is real and tolerated |
+| 34 | `pack --close` image: the plan holds one write step whose `byte_len` equals the full-size image, and `udfinfo` finds three `type=ANCHOR` lines in that image | A sealed disc gets its tail anchors from the same growisofs call |
+| 35 | Run table: after three runs on two discs, with the third run appended to the first disc, the planner names the right disc for every run | Run order does not imply disc order |
 
 ### 23.3 Composite action
 
@@ -7042,12 +7492,12 @@ names the section that defines it and the test of section 23.2 that proves it.
 | 5 | Every chunk below `bundle.threshold` goes into a bundle. | 6.5, 8.3 | 1, 16 |
 | 6 | zstd per chunk after hashing, with the 5 percent rule. | 7 | 15 |
 | 7 | Trees, chunklists, snapshots and refs are canonical: two identical inputs give identical bytes. | 8.10 | 16 |
-| 8 | Names are validated at parse time. Restore uses `openat`, `O_NOFOLLOW` and `openat2` where available. | 8.5.8, 18.8 | 17, 18 |
+| 8 | Names are validated at parse time. Restore holds the invariants of section 18.8. | 8.5.8, 18.8 | 17, 18 |
 | 9 | The root tree is synthetic, one entry per source root, with `ROOT_PATH`. | 16.5 | 1 |
-| 10 | A profile 0 disc is one run, UDF 2.01 from `mkudffs --media-type=hd`, POW `spare:min`, open by default; `pack --close` seals it. | 10.1 | 32, 33 |
-| 11 | The fill order of section 10.5 holds and `layout.bin` matches the read-back extents. | 10.5, 10.1.6 | 10, 23 |
-| 12 | Every run carries `k = 231`, `m = 23` parity over its parity domain, a checksum column with the wrap-around offset, and `m + 2` header copies. | 11 | 6, 7, 8, 9 |
-| 13 | Every run carries its filter, manifest with `BNDL`, `PREQ`, `SRCR`, `DUPS` and `SPLT` chunks, and its catalog with `CATALOG.bin`. | 12 | 4, 5, 30 |
+| 10 | A profile 0 disc is one run, UDF 2.01 from `mkudffs --media-type=hd`, POW `spare:min`, open by default; `pack --close` seals it and burns the full-size image. | 10.1 | 32, 33, 34 |
+| 11 | The fill order and the build passes of section 10.5 hold and `layout.bin` matches the read-back extents. | 10.5, 10.1.6 | 10, 23 |
+| 12 | Every run carries `k = 231`, `m = 23` parity over its parity domain, which starts at LBA 0 for the first run, a checksum column whose sector `i` holds the data digests of stripe `i`, and `m + 2` header copies. | 11 | 6, 7, 8, 9 |
+| 13 | Every run carries its filter, its manifest with the seven mandatory chunks `FANO`, `RECS`, `BNDL`, `PREQ`, `SRCR`, `DUPS` and `SPLT`, and its catalog with `CATALOG.bin` and the run table. | 12 | 4, 5, 30, 35 |
 | 14 | The filter query rule of section 12.2 accepts every inserted key. | 12.2 | 4 |
 | 15 | A filter hit is confirmed against a manifest before data is dropped. | 12.8 | 12 (section 22) |
 | 16 | Every command works with the cache deleted; restore works from the newest image alone. | 13.4, 17.9 | 11 |
@@ -7088,13 +7538,14 @@ reproduce them. The vectors are:
 | Manifest | Ten stated records, two in a bundle, one split, two prerequisites, one source run. | The container bytes with `FANO`, `RECS`, `BNDL`, `PREQ`, `SRCR`, `DUPS` and `SPLT`. |
 | Filter | 1,000 stated keys and a stated seed. | The container bytes, and the query result for those keys and for 1,000 absent keys. |
 | Catalog container | Five stated entries. | The container bytes. |
-| Simple tables | Two stated records of each of the snapshot table, the ref table and the disc directory. | The container bytes. |
-| Checksum sector | A stated stripe of 254 sectors. | The 2048 bytes of the checksum sector, with the wrap-around index. |
+| Simple tables | Two stated records of each of the snapshot table, the ref table, the run table and the disc directory. | The container bytes. |
+| Checksum sector | The 231 stated data sectors of one stripe. | The 2048 bytes of the checksum sector. |
 | Parity | A stated stripe of `k + 1` information sectors. | The `m` parity sectors, and the recovery of the stripe after `m` stated erasures. |
 | State log | Three stated records. | The log bytes, and the replay result after the last record is truncated. |
 | Burn plan | A stated plan with two steps. | The container bytes and the rendered command lines. |
 | Hardlink group id | A stated `repo_uuid`, `st_dev` and `st_ino`. | The u64. |
-| Root tree name encoding | The paths `/srv/data` and `/a%b/c`. | `%2Fsrv%2Fdata` and `%2Fa%25b%2Fc`. |
+| Root tree name encoding | The paths `/srv/data`, `/a%b/c` and `/x\y`. | `%2Fsrv%2Fdata`, `%2Fa%25b%2Fc` and `%2Fx%5Cy`. |
+| Exclude patterns | A stated tree and a stated rule set with anchored, unanchored, negated, `**` and trailing-slash rules. | The set of paths that the tree holds. |
 | CRC-32C | The 9-byte string `123456789`. | `0xE3069283`. |
 
 A vector file is named by the structure and the version. A vector is never
@@ -7104,8 +7555,14 @@ changed under a version; a format change adds a vector.
 
 ## 24. Implementation notes
 
-1. **Language: Go.** The standard library covers SHA-256, compression bindings
-   are mature, and a single static binary suits a recovery tool.
+Items 1, 7, 10 and 11 are informative. The other items are requirements on
+any implementation that claims conformance (section 21.6).
+
+1. **Language: Go, informative.** The reference implementation is written in
+   Go: the standard library covers SHA-256, compression bindings are mature,
+   and a single static binary suits a recovery tool. The format is defined
+   by this document and by nothing in Go; a conforming implementation may use
+   any language.
 2. **Code must explain itself.** Comments and commit messages must not cite
    section numbers of this document. A comment carries only information that is
    related to the code beside it.
@@ -7186,12 +7643,12 @@ Each term is defined once. The same word is used everywhere for the same thing.
 | **Bundle** | An object that holds many small chunks plus an index. |
 | **Burn plan** | The machine-readable file that `pack` writes and `burn` renders into command lines. |
 | **Capping** | Bounding the number of older runs that a new run may reference, to bound the restore plan. |
-| **Catalog** | The set of files under `runs/<seq>/catalog/` that every run carries: `CATALOG.bin`, every snapshot object, every earlier filter, recent manifests, the snapshot table, the ref table, and the disc directory. |
-| **Checksum column** | The FEC column whose sector `i` holds an 8-byte digest of every data and parity sector of stripe `(i + 1) mod L`. |
+| **Catalog** | The set of files under `runs/<seq>/catalog/` that every run carries: `CATALOG.bin`, every snapshot object, every earlier filter, recent manifests, the snapshot table, the ref table, the run table, and the disc directory. |
+| **Checksum column** | The FEC column whose sector `i` holds an 8-byte digest of each of the `k` data sectors of stripe `i`. |
 | **Commit bundle** | A directory of new objects plus a `BUNDLE.bin` header, produced by `commit --out` and consumed by `import`. Not the same thing as a bundle object. |
 | **Direct mode** | A commit that walks the source itself and reads only changed files. |
 | **Mirror mode** | A commit whose changed files are pulled into a mirror directory first, by `sync`. |
-| **Unstable path** | A file whose size or mtime changed while it was being read. The parent entry is reused, or the content is stored with the `UNSTABLE` flag. The path is reported. See section 18.6. |
+| **Unstable path** | A file whose size or mtime changed while it was being read. The parent entry is reused, or the content is stored with the `UNSTABLE` flag. The path is reported. See sections 16.6 and 18.10. |
 | **Quick check** | The size, mtime and ctime comparison against the parent snapshot's tree entry. |
 | **Chunk** | A content-defined slice of a file. The unit of deduplication. |
 | **Chunklist** | An object that holds the ordered chunk ids of one large file. |
@@ -7207,12 +7664,13 @@ Each term is defined once. The same word is used everywhere for the same thing.
 | **Manifest** | The sorted, fan-out-indexed table that maps a content id to its location in a run. |
 | **Multihash** | The self-describing id encoding: algorithm code, length, digest. |
 | **Object** | Any content-addressed unit: chunk, bundle, chunklist, tree, snapshot. |
-| **Parity domain** | The contiguous LBA range of a run's `k` data columns, `[lba_base, lba_base + k*L)`, which the Reed-Solomon layer protects. |
+| **Parity domain** | The contiguous LBA range of a run's `k` data columns, `[lba_base, lba_base + k*L)`, which the Reed-Solomon layer protects. It starts at LBA 0 for the first run of a disc. |
 | **POW** | Pseudo-OverWrite. The BD-R format mode that makes the medium logically overwritable. |
 | **Prerequisite** | An object that a run references but does not contain. |
 | **Raw append** | The degraded mode that writes a run past the next writable address without updating the filesystem directory. |
 | **Reserve** | The part of a disc's capacity that data must not use. |
 | **Run** | One write of a burn plan. The unit of packing, manifest, filter and parity. |
+| **Run table** | The catalog table that maps every `run_seq` to its disc, its LBA range and its run header hash (section 12.5.2). |
 | **RS margin** | `m` minus the worst-stripe erasure count, as a percentage of `m`. The headline health metric. |
 | **Shard** | One 2048-byte sector, as seen by the FEC layer. |
 | **Snapshot** | An object that names a root tree, a parent and a generation. |
@@ -7221,6 +7679,19 @@ Each term is defined once. The same word is used everywhere for the same thing.
 | **Stripe** | The 255 shards, one per column, at the same offset inside their columns. |
 | **Tree** | An object that describes one directory, with full metadata per entry. |
 | **TLV** | A type-length-value record in a tree entry's extension area. |
+
+---
+
+## 27. Document change log
+
+The document version is independent of the format version. A document
+change that alters a byte on a disc bumps the format version as section 21
+states; every entry below is under format major 1.
+
+| Document version | Change |
+|---|---|
+| 2.0 | Complete redesign of the previous specification. Appendix D lists what it superseded and why. Section 25 summarizes it. |
+| 2.1 | Run table added to the catalog (section 12.5.2). Feature-bit assignment table (section 4.4) and hash coverage table (section 4.9) added. `header_len` limited to three structures; every other structure grows only by major version (section 4.7). Checksum column covers the data sectors of its own stripe (section 11.4). `k` and `m` fixed for version 1 (section 11.2). First run's parity domain starts at LBA 0 (section 9.3). One capacity formula with `data_budget` and `fill_limit_sectors` (section 10.11). Build passes with explicit placeholders and final order (section 10.5). Sealed path burns the full-size image (section 9.9.1). Bundle chunk payloads carry no object header (section 8.3). Exclude pattern language (section 16.5.1) and complete root name encoding (section 16.5). `verify --mapfile` (section 19.11). Healed objects enter STAGED (section 14.2). Reader and writer conformance (section 21.6). Snapshot table record 136 bytes with a u64 `first_run_seq` (section 12.5). Shelf notes moved from the cache to the repository (sections 3.7, 13.1). |
 
 ---
 
@@ -7348,6 +7819,7 @@ u32 value is the little-endian reading of those bytes.
 | `NAFL` | 0x4C46414E | Filter container | 12.2 |
 | `NAST` | 0x5453414E | Snapshot table | 12.5 |
 | `NARF` | 0x4652414E | Ref table | 12.5 |
+| `NART` | 0x5452414E | Run table | 12.5.2 |
 | `NADD` | 0x4444414E | Disc directory | 12.6 |
 | `NACT` | 0x5443414E | Catalog container | 12.7.2 |
 | `NATR` | 0x5254414E | Tree object payload | 8.5 |
@@ -7456,8 +7928,9 @@ the hexadecimal column, and a test must assert that the two agree.
 
 **Tree TLV types**: see section 8.5.5.
 
-**Manifest TOC chunk ids**: `FANO`, `RECS`, `PREQ`, `SRCR`, `DUPS`, `BMAP`,
-`RIDX`. See section 12.3.
+**Manifest TOC chunk ids**: `FANO`, `RECS`, `BNDL`, `PREQ`, `SRCR`, `DUPS`,
+`SPLT` (mandatory, in this order), then `BMAP` and `RIDX` (optional). See
+section 12.3.
 
 **Burn step kinds** (section 10.7.1)
 
@@ -7543,6 +8016,9 @@ growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:min,tty \
 # M-DISC: replace -speed=4 with -speed=2 in any of the above.
 # CI dry run: add -dry-run.
 # Safety assertion when appending: add -C 16,${NWA}.
+# -speed=4 and ARK-0001 are examples; burner.speed and label.template decide.
+# run.udf is the used prefix on the open path and the full image when sealed
+# (section 9.9.1).
 ```
 
 Never pass `-overburn`. Never pass `-M` on a UDF disc. Never let the drive use
@@ -7582,7 +8058,7 @@ ddrescue -b 2048 -n -r1 /dev/sr0 rescued.img rescue.map
 ddrescue -b 2048 -d -r3 /dev/sr0 rescued.img rescue.map
 
 # The map file is the erasure list for the FEC layer.
-noahsark verify --image rescued.img --heal --report health.json
+noahsark verify --image rescued.img --mapfile rescue.map --heal --report health.json
 ```
 
 ### C.6 Read back the LBA map
@@ -7618,8 +8094,9 @@ blank BD-R. `burn --exec` must refuse it.
 
 **Superseded. Do not implement anything in this appendix.**
 
-This appendix records what was considered and rejected, with the reason and the
-evidence. It exists so that a future reader does not re-open a settled question.
+This appendix is informative. It records what was considered and rejected,
+with the reason and the evidence. It exists so that a future reader does not
+re-open a settled question.
 
 **Fixed 16 MiB chunking.** The previous design cut every file into fixed 16 MiB
 blocks. It is simple and predictable, and it produces about 1,500 objects per
