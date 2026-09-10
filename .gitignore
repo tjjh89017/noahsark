@@ -63,3 +63,4 @@ debug
 # Generated documentation
 /docs/_build/
 /site/
+tmp/
