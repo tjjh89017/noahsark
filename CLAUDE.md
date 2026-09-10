@@ -1,369 +1,157 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file gives an agent working guidance for this repository. It never
+repeats format details. `spec.md` is the design authority.
 
-## Project Overview
+## Project overview
 
-**NoahsArk** is a content-addressable backup system for write-once Blu-ray optical media, designed to be implemented in Go. The project is currently in the **specification phase** with no code implementation yet.
+NoahsArk is a backup system for write-once Blu-ray optical media. It writes
+content-addressed objects to discs and reads them back years later. It uses
+content-defined chunking for dedup, self-describing on-disc tables, and
+Reed-Solomon self-healing per run. The implementation language is Go. The
+project is spec-only today. No code exists yet.
 
-**Key Characteristics:**
-- Content-addressable storage inspired by Git (blob/tree/commit objects)
-- Fixed-size 16 MiB chunking for sub-file deduplication
-- Zero-block elimination for sparse files (all-zero chunks take zero space)
-- Multi-session disc support (incremental burning)
-- Disc-spanning for large files
-- SHA-256 content addressing for all objects including commits
-- No Forward Error Correction (uses duplicate disc copies for redundancy)
+## Where the truth lives
 
-## Architecture Overview
+`spec.md` is the single design authority. Read the relevant section before
+you write or change any code. Do not copy format tables, field layouts, magic
+values, or CLI syntax into this file. Point to the spec section name instead.
 
-### Object Model (Git-Inspired)
+Use these section names to find a topic, not the numbers (numbers drift when
+the spec is edited):
 
-NoahsArk uses a four-tier object model where all objects are content-addressed by SHA-256:
+- Overview, goals, and platform tiers: "Overview" and "Goals, non-goals, and
+  priorities".
+- System structure and data flow: "Architecture".
+- Byte layout rules that every structure obeys: "Binary format rules".
+- Hashing, multihash, and hash epochs: "Identity and hashing".
+- Chunking algorithm and profiles: "Chunking".
+- Compression rules: "Compression".
+- Chunk, bundle, chunklist, tree, snapshot, ref: "Object model".
+- Disc, run, and append behaviour: "Disc, run, and append model".
+- Burning and disc filesystem profiles: "Disc filesystems and burning".
+- Reed-Solomon parity and healing: "FEC and self-healing".
+- Filters, manifests, and the catalog: "Filters, manifests, and catalog".
+- Local cache: "Local cache".
+- Staging store and GC: "Staging store".
+- Packing and locality: "Packing and locality".
+- Restore planning: "Restore and the disc plan".
+- File metadata and permissions: "File metadata and permissions".
+- Commit flow, quick check, mirror mode: "Commit flow".
+- Command syntax: "CLI reference".
+- Config keys: "Configuration reference".
+- Format versioning rules: "Format evolution and compatibility".
+- Failure and recovery behaviour: "Failure modes and recovery matrix".
+- Testing and CI: "Testing and CI".
+- Go-level implementation notes: "Implementation notes".
+- What changed from the old design: "Design changes from the previous
+  specification".
+- Term definitions: "Glossary".
+- The Gear table generation rule: "Appendix A. Gear table".
+- Magic numbers and registries: "Appendix B. Magic numbers and registry
+  summary".
+- Burning-host command reference: "Appendix C. Command reference for the
+  burning host".
+- Rejected designs and why: "Appendix D. Rejected and superseded
+  alternatives".
 
-1. **Chunk** (16 MiB fixed-size): Raw data bytes stored in `objects/`, named by chunk hash
-2. **Blob**: File metadata stored in `metadata/`, contains chunk list, chunk hashes, Merkle root, size, and other file info
-3. **Tree**: Directory structure with mode/type/hash/name entries, stored in `metadata/`
-4. **Commit**: Snapshot with tree hash, parent commit hash, metadata, and changed blob list, stored in `metadata/`
+If this file and `spec.md` ever disagree, `spec.md` wins. Fix this file.
 
-**Critical Design Principle:** All objects including commits are named by their SHA-256 hash, forming immutable content-addressed storage. Commits point to parent commits via SHA-256 hash (not timestamp), creating a verifiable history chain.
+## Implementation rules
 
-**Storage Separation:** Raw chunk data is stored separately from structural metadata:
-- **Rationale**: Chunks are large (16 MiB each) and can be GC'd after disc archival, while metadata (blobs, trees, commits) is small and kept permanently for history
-- **Benefit**: Simpler garbage collection logic and clearer separation of concerns
-- **Location**: `objects/` for raw chunk data, `metadata/` for blobs/trees/commits
+Follow these rules for every change, in addition to the spec's "Implementation
+notes" section.
 
-### Repository Structure
+- Write Go. Use the standard library where it covers the need.
+- Code must explain itself. Do not lean on comments to carry the design.
+- A comment carries only information related to the code beside it.
+- A comment or a commit message must never cite a spec section number.
+  Section numbers drift; describe the rule or name the section instead.
+- Give every on-disc structure exactly one Go definition.
+- Write explicit little-endian encode and decode functions for every
+  structure. Do not use reflection-based marshalling. Do not use struct tags
+  for encoding.
+- Write the byte layout by hand, field by field, matching the structure's
+  offset table in the spec.
+- Write a golden-file test for every structure: encode known values, compare
+  to a checked-in file; decode that file, compare the fields.
+- Vendor the Gear table. Generate it once from the normative rule in
+  "Appendix A. Gear table", check it in as a literal array, and never
+  regenerate it from a dependency.
+- Check pinned tool versions at startup: `dvd+rw-tools` 7.1-14 or later, and
+  `udftools` 2.3 or later. Refuse to run the burn path on an older or
+  unpatched build.
+
+## Phase discipline
+
+- Implement Phase 1 only, unless the user asks for a later phase.
+- The phase table lives in the spec's "Implementation phases" and "CLI
+  reference" sections. Check a command's or a config key's phase tag before
+  you touch it.
+- A Phase 1 build must refuse a later-phase option or key with a clear
+  message. Do not silently ignore it.
+- Never start a Backlog item without an explicit decision from the user.
+  Backlog items are specified and reserved in the format, but not scheduled.
+
+## Testing rules
+
+Follow the spec's "Testing and CI" section. In summary:
+
+- Test image-first. Build a filesystem image, loop-mount it, verify it,
+  simulate append and damage on the image. Physical burns are a manual
+  checklist, not CI.
+- Put CI test steps in a composite action at `.github/actions/test/`.
+  Workflows call the composite action; they do not repeat its steps.
+- When a tool's behaviour is an open question, write a probe action under
+  `.github/actions/probe-<topic>/`. A probe records an unknown answer; a test
+  asserts a known one. Promote a probe to a test once its answer is stable.
+- Manual physical probes need a real drive and real media. Follow the spec's
+  manual checklist and manual probes; do not attempt to automate them in CI.
+- CI must prove the local cache is only an accelerator: delete the cache and
+  restore from the disc images alone.
+
+## Git rules
+
+- Never create a merge commit. Never merge a branch locally.
+- Use rebase or cherry-pick to bring in changes instead of merging.
+- Do not commit anything under `tmp/`.
+- Do not commit research artifacts (probe output, scratch notes, exploratory
+  scripts). Keep those local or in the scratchpad.
+- Sign off every commit (`git commit -s`). The sign-off certifies the
+  Developer Certificate of Origin.
+
+## Writing style
+
+Write this file, code comments, and commit messages in ASD-STE100 style:
+short sentences, active voice, one instruction per sentence. The spec already
+follows this style; match it.
+
+## Proposed directory layout
+
+No Go module exists yet. This layout is a proposal for when implementation
+starts. Confirm it with the user before creating it, and adjust as the design
+needs.
 
 ```
-.noahsark/
-├── objects/XX/YY...        # Raw chunk data only (16 MiB blocks, named by hash)
-├── metadata/XX/YY...       # Structural metadata (blobs, trees, commits)
-├── staged/                 # Staged disc sessions awaiting burn
-│   └── <disc_id>-s<N>/    # Per-session staging directories
-├── discs/                  # Disc metadata JSON files
-├── index.db                # SQLite global index (hash → disc location)
-├── bloom.dat              # Bloom filter for quick dedup checks
-├── config                 # Repository configuration
-└── HEAD                   # Current commit SHA-256 hash
-
-On-Disc Layout (UDF 2.50):
-├── objects/XX/YY...       # Raw chunk data only (16 MiB blocks, named by hash)
-├── metadata/XX/YY...      # Structural metadata (blobs, trees, commits)
-├── s1/                    # Session 1 directory
-│   ├── session.json       # Session 1 metadata
-│   └── index.db           # Index snapshot (up to session 1)
-├── s2/                    # Session 2 directory
-│   ├── session.json       # Session 2 metadata
-│   └── index.db           # Index snapshot (up to session 1+2)
-└── s3/                    # Session 3 directory (if present)
-    ├── session.json       # Session 3 metadata
-    └── index.db           # Index snapshot (up to session 1+2+3)
+cmd/noahsark        CLI entry point
+internal/format     binary structures: encode, decode, golden tests
+internal/chunker     FastCDC chunking, Gear table, profiles
+internal/object      chunk, bundle, chunklist, tree, snapshot, ref
+internal/staging     staging store, state machine, GC
+internal/pack        packing, locality, burn plan
+internal/fec         Reed-Solomon parity, heal, scrub
+internal/catalog     filters, manifests, snapshot table, ref table
+internal/restore     restore planner, restore pipeline
+internal/burn        burner wrapper, command templates
+internal/udf         disc filesystem profile handling
+.github/actions      composite test action, probe actions
+.github/workflows    CI workflow definitions
 ```
 
-### Multi-Session Workflow
+## How to work on this repo
 
-NoahsArk supports incremental disc burning where a partially-filled disc can have additional sessions added until capacity is reached:
-
-- **Session 1**: `growisofs -Z` (new disc)
-- **Session 2+**: `growisofs -M` (append to existing)
-- Each session adds new objects without duplicating existing ones
-- Sessions tracked in disc metadata with status: open/full/closed/error
-
-**Capacity Management:**
-- Remaining capacity: `remaining = disc_capacity - sum(session.bytes) - final_session_reserve`
-- Final session reserve: **1 GiB** (for UDF closing structures + safety margin)
-- Disc transitions to "full" status when `remaining <= 0`
-- This prevents overfilling and ensures space for UDF filesystem finalization
-
-## Core Commands (from spec.md)
-
-**Note:** These commands are defined in the specification but not yet implemented.
-
-### Essential Commands
-
-- `noahsark init` — Create `.noahsark/` structure
-- `noahsark commit` — mtime-based incremental scan, chunk files, deduplicate, write objects, create commit
-  - ⚠️ **Important**: Filesystem must be stable (no modifications) during commit
-  - `--full-scan` flag for complete scan (ignores mtime optimization)
-- `noahsark stage` — Select unstaged objects and prepare disc image directory
-  - `--size=BD-25|BD-50|BD-100|BD-128|<custom>` — Disc capacity
-  - `--disc=<disc_id>` — Continue filling existing disc (multi-session)
-  - `--label=<text>` — Optional disc label
-- `noahsark burn` — Wrapper around growisofs for burning
-  - `--mark-archived` — Close disc and allow GC of local objects
-- `noahsark test-burn` — Generate ISO for testing without physical disc
-- `noahsark restore` — Reassemble files from disc(s)
-- `noahsark log` — Show commit history via parent pointers
-- `noahsark gc` — Delete local objects safely archived on discs
-- `noahsark verify` — Verify disc/ISO integrity
-  - `--level=quick|full` — Verification thoroughness
-- `noahsark disc list|close|label|import` — Disc management
-
-### Watch Mode (Phase 2)
-- `noahsark watch` — fsnotify daemon that logs changed files to `.noahsark/watch.log`
-  - Commit reads this log for faster incremental scanning (100% accurate)
-  - Does NOT auto-commit (just logs events)
-
-## Implementation Phases
-
-### Phase 1 — Core (MVP)
-- All basic commands: init, commit, stage, burn, test-burn, restore, log, gc
-- mtime-based incremental commits (fast, 99% accurate)
-- SQLite global index + bloom filter
-- Content-addressed commits with parent pointers
-- Multi-session support
-- **Important**: Filesystem stability requirement during commit
-
-### Phase 2 — Integrity & Recovery
-- Full verification support (quick/full modes)
-- Disc import from mounted media
-- Optional disc piece layer (BitTorrent v2-inspired)
-- `noahsark watch` daemon - logs file changes to watch.log for 100% accurate incremental commits
-
-### Phase 3 — Optimization
-- Index consolidation and optimization
-- Optional zstd chunk compression
-
-## Key Technical Details
-
-### Chunking Strategy
-- **Fixed 16 MiB chunks** (16777216 bytes) — not configurable
-- Last chunk uses actual remaining bytes (no padding)
-- Simple, predictable, optimal for large files and slow optical media
-- Trade-off: Lower dedup ratio vs content-defined chunking, but much simpler
-
-### Zero-Block Elimination (Sparse File Optimization)
-- **Magic hash constant:** `080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e`
-- This is the SHA-256 hash of exactly 16 MiB (16777216 bytes) of zeros
-- **Behavior:**
-  - During commit: All-zero 16 MiB chunks are detected but NOT written to `objects/`
-  - During restore: When magic hash is encountered, 16 MiB of zeros are generated directly
-  - During staging: Magic hash is skipped (doesn't exist on disc)
-  - During verify: Zeros are generated and hashed to verify
-- **Benefit:** Sparse files (VM images, database files) with zero-filled regions take zero disc space
-- **Example:** VM image with 300 zero-filled chunks = 0 GB storage (vs 4.8 GB with dedup only)
-- **Scope:** Applies only to full 16 MiB zero chunks; partial chunks stored normally
-
-### Merkle Tree Integrity
-- Per-file Merkle tree (BitTorrent v2 BEP 52 style)
-- 16 KiB leaves (1024 leaves per 16 MiB chunk)
-- SHA-256 throughout
-- Single-pass implementation: compute Merkle leaves (16 KiB) and chunk hashes (16 MiB) simultaneously
-
-### Object Encoding
-**Metadata objects (blobs, trees, commits):**
-- Encoding: UTF-8 text files (no BOM)
-- Line endings: Unix-style LF (`\n`)
-- Full Unicode support for filenames, paths, and commit messages
-
-**Chunk objects:**
-- Raw binary data (no text encoding)
-
-**Tree entry format:**
-```
-<mode> <type> <hash> <filename>
-```
-- Parsing: Split on space for first 3 fields, everything after 3rd space is filename
-- Filenames: UTF-8, may contain spaces (cannot contain `\n` or null bytes)
-- Examples: `my file.txt`, `文档.pdf` fully supported
-
-**Commit blob list format:**
-```
-<blob_sha256> <relative_path>
-```
-- Parsing: Split on first space for hash (64 chars), everything after is path
-- Paths: UTF-8, may contain spaces (cannot contain `\n` or null bytes)
-
-### Disc Capacity Presets
-- BD-25: 23.28 GiB usable (after UDF overhead + 5% safety margin)
-- BD-50: 46.55 GiB
-- BD-100: 93.11 GiB
-- BD-128: 118.86 GiB
-- Custom: `<number><unit>` (e.g., 20G, 500M, 1T)
-
-### Bloom Filter (Optional Deduplication Optimization)
-- **Location:** `.noahsark/bloom.bin` (optional file)
-- **Purpose:** Ultra-fast deduplication checks before querying the index database
-- **How it works:**
-  - Space-efficient probabilistic data structure (~2 MB for 100K chunks)
-  - Uses multiple hash functions to set bits in a bit array
-  - Guarantees **zero false negatives**: if bloom says "not present", it's definitely new
-  - Allows ~1-5% false positives: if bloom says "maybe present", must check index.db
-- **Dedup workflow:**
-  1. Bloom filter check (~microseconds): if "definitely not present" → skip to step 3
-  2. Index check (~milliseconds): if present → deduplicate, else continue
-  3. Write new chunk to objects/
-- **Benefit:** Speeds up commit by avoiding 90%+ of index queries for new chunks
-- **Trade-off:** Small false positive rate requires index fallback, but never misses actual duplicates
-
-### Content-Addressed Commits (Critical Design Change)
-**Old design:** Commits named by RFC3339 timestamp
-**New design:** Commits named by SHA-256 hash of commit content
-
-This enables:
-- Verification of entire history chain
-- Immutable commits (changing any field changes the hash)
-- Distributed trust without central authority
-- Automatic deduplication of identical commits
-
-### Cross-Disc Scenarios
-
-1. **Multiple commits per disc**: Multi-session burning, each session references a commit
-2. **One commit spanning multiple discs**: Large backups distributed across discs
-3. **Single file exceeding disc capacity**: Chunks automatically span multiple discs
-
-## Development Guidelines
-
-### When Implementing
-
-**File Organization:**
-- Consider using a `cmd/` directory for CLI entry points (cobra commands)
-- Consider `pkg/` or `internal/` for core libraries (chunking, objects, index, disc management)
-- Follow Go project layout conventions
-
-**Core Components to Implement:**
-- Object storage engine with separated storage:
-  - Raw chunk data → `.noahsark/objects/XX/YY...`
-  - Metadata objects (blobs/trees/commits) → `.noahsark/metadata/XX/YY...`
-- Incremental commit engine:
-  - Phase 1: mtime-based scanning (only process files with mtime > last_commit_time)
-  - Phase 2: Read `.noahsark/watch.log` if exists, combine with mtime scan
-  - Store last_commit_time for incremental detection
-  - `--full-scan` flag bypasses mtime optimization
-  - **Critical**: Warn users filesystem must be stable during commit
-- Chunker (fixed 16 MiB with simultaneous Merkle tree computation)
-  - Zero-block elimination: detect magic hash `080acf35...` and skip writing to objects/
-- SQLite index management (hash → disc location mapping)
-- Bloom filter (optional): probabilistic dedup check before index query
-  - Zero false negatives guaranteed (never misses existing chunks)
-  - ~1-5% false positive rate (must check index for confirmation)
-- Commit chain traversal (parent pointer walking)
-- Disc session state machine (open → full/closed)
-  - **Important**: Session directories (s1/, s2/, s10/) must be sorted by integer not string
-  - Parse session number as int: s1 < s2 < s9 < s10 (correct)
-  - NOT lexicographic: s1 < s10 < s2 < s9 (wrong)
-- growisofs wrapper with multi-session detection (-Z vs -M)
-
-**Testing Strategy:**
-- Test with `test-burn` command (ISO generation) before physical burning
-- Verify workflows: stage → test-burn → mount ISO → verify → restore
-- Unit test object serialization/deserialization
-- Test multi-session scenarios and capacity management
-- Test cross-disc scenarios (files spanning multiple discs)
-- Test sparse file handling (zero-block elimination, restore generates zeros correctly)
-
-**Critical Safety Rules:**
-- Never duplicate objects within the same disc across sessions
-- Never delete chunks from `.noahsark/objects/` unless verified on burned disc
-- Metadata objects in `.noahsark/metadata/` should persist (blobs/trees/commits are small)
-- Always verify disc capacity before staging
-- Preserve content-addressing integrity (hash must match content)
-- Commit SHA-256 must be computed from full commit content
-
-**Storage Organization:**
-- **objects/**: Raw chunk data only (16 MiB blocks) — can be GC'd after archival
-- **metadata/**: Structural metadata (blobs listing chunks, trees, commits) — typically kept permanently for history
-
-**Git Workflow:**
-- Always use `git commit -s` to sign-off commits (adds Signed-off-by line)
-- When completing a batch of changes, commit with sign-off
-- Example: `git commit -s -m "spec: add UTF-8 encoding specification"`
-- Sign-off certifies the Developer Certificate of Origin (DCO)
-
-### Specification Reference
-
-The `spec.md` file is the **primary reference** for design decisions. When implementing:
-
-1. Read relevant sections of spec.md thoroughly before coding
-2. Follow the exact object formats specified (blob, tree, commit)
-3. Implement the SHA-256 naming scheme precisely
-4. Honor the fixed 16 MiB chunk size (not configurable)
-5. Follow the multi-session workflow exactly as specified
-
-**Note on Storage Layout:** This CLAUDE.md reflects an updated design decision:
-- **spec.md**: Stores all objects in `objects/` directory
-- **Updated design**: Separates `objects/` (raw chunks only) from `metadata/` (blobs/trees/commits)
-- When implementing, use the separated storage layout documented in this file
-- The spec.md should be updated to reflect this change
-
-### Common Operations
-
-**Creating a backup (single disc):**
-```bash
-noahsark commit -m "Initial backup"
-noahsark stage --size=BD-25 --label="Backup Q1 2026"
-noahsark test-burn .noahsark/staged/<disc_id>-s1/ test.iso  # Optional: test first
-noahsark burn <disc_id> /dev/sr0 --mark-archived
-```
-
-**Creating a backup (multi-disc, stage-all-first recommended):**
-```bash
-noahsark commit -m "Large backup"
-
-# Stage all discs first (discover total count upfront)
-noahsark stage --size=BD-25  # Disc 1
-noahsark stage --size=BD-25  # Disc 2
-noahsark stage --size=BD-25  # Disc 3
-# → Now you know you need 3 blank BD-25s
-
-# Burn all discs
-noahsark burn <disc_id_1> /dev/sr0
-noahsark burn <disc_id_2> /dev/sr0
-noahsark burn <disc_id_3> /dev/sr0
-
-# Mark all as archived
-noahsark disc mark-archived <disc_id_1>-s1
-noahsark disc mark-archived <disc_id_2>-s1
-noahsark disc mark-archived <disc_id_3>-s1
-```
-
-**Multi-session continuation:**
-```bash
-noahsark commit -m "Weekly backup"
-noahsark stage --disc=<existing_disc_id>  # Continue same disc
-noahsark burn <disc_id> /dev/sr0
-```
-
-**Restore:**
-```bash
-noahsark log                           # Find commit hash
-noahsark restore <commit_hash> / /restore/path
-# System will prompt for required discs
-```
-
-## Dependencies (from spec.md §11)
-
-- `github.com/fsnotify/fsnotify` — File system watching
-- `github.com/klauspost/compress/zstd` — Optional chunk compression (Phase 2+)
-- `github.com/spf13/cobra` — CLI framework
-- `github.com/schollz/progressbar/v3` — Progress display
-- Go standard library for SHA-256, JSON, SQLite, file I/O
-
-## Design Inspirations
-
-- **Git**: Content-addressed objects, commit/tree/blob model, parent pointers
-- **Restic**: Global index for object locations
-- **Casync**: Chunk store as CAS directory
-- **BitTorrent v2 (BEP 52)**: Per-file Merkle trees with 16 KiB leaves
-- **Borg**: Manifest copy on every disc, append-only multi-session
-- **UDF**: Multi-session append-only disc format
-
-## Important Notes
-
-- **No FEC in Phase 1**: Redundancy via duplicate disc copies, not Forward Error Correction
-- **No pack files**: Objects stored directly in hash-based directory structure (simplified from earlier Git-like pack design)
-- **Fixed chunk size**: 16 MiB is not configurable to ensure repository compatibility
-- **Commit history is immutable**: Parent pointers form a tamper-evident chain
-- **Multi-session is append-only**: Once burned, session data is immutable
-
-## Project Status
-
-**Current state:** Specification only (no implementation)
-
-When beginning implementation:
-1. Start with Phase 1 MVP commands
-2. Focus on correct object model implementation first
-3. Implement commit chain with proper SHA-256 content addressing
-4. Test thoroughly with `test-burn` and ISO mounting before physical burning
-5. Ensure multi-session logic prevents duplicate objects on same disc
+1. Read the spec section for the topic before writing or changing code.
+2. Check the phase tag for the command, key, or feature you touch.
+3. Write the golden-file test first, then the encode and decode functions.
+4. Never change a frozen on-disc format without a version bump and a matching
+   spec change. Ask the user before changing anything the spec calls frozen.
