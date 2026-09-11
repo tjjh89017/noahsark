@@ -1,6 +1,6 @@
 # NoahsArk operations
 
-**Document version 3.0.** Format major 1.
+**Document version 3.1.** Format major 1.
 
 This document defines everything a NoahsArk implementation does on the host
 that is not an on-disc byte. It covers the local repository and its files, the
@@ -75,6 +75,19 @@ defines it.
 
 1.7 Version 1 never removes a snapshot and never frees disc space. There is no
 retention and no expiry.
+
+1.8 The design priorities are ordered. A conflict between two of them is
+resolved by this order, and no other order applies.
+
+1. Data durability. Never lose bytes.
+2. Readability without the tool. A future reader must have a chance.
+3. Restore usability. Fewest disc swaps, clearest plan.
+4. Deduplication ratio.
+5. Speed.
+6. Media utilization.
+
+Priority 4 sits below priority 3 on purpose. The capping knobs of section 8.2
+turn that ordering into numbers.
 
 ---
 
@@ -175,20 +188,24 @@ which falls back to `~/.cache/noahsark/<repo-uuid>/`. `--cache-dir` and
 | `xlate-<from>-<to>.bin` | Optional cross-algorithm side table (section 3.6). |
 | `pending-confirm.log` | Unconfirmed filter hits, with the runs that would confirm them. The next `commit` regenerates it. |
 
-The health record of the newest disc lives only in the cache until the next
-disc is burned. A disc's health record reaches a disc through the disc
-directory, which the next run writes into its catalog, so the newest disc
-carries no health record for itself. Losing the cache therefore loses the
-newest disc's verification date and RS margin, and nothing else.
+The measured health record of the newest disc lives only in the cache until the
+next disc is burned. A measured health record reaches a disc through the disc
+directory, which the next run writes into its catalog. The newest disc
+therefore carries only the placeholder record that its own run wrote: `health`
+6, `unverified, this disc`, as FORMAT.md section 11.6 defines it. Losing the
+cache therefore loses the newest disc's verification date and RS margin, and
+nothing else.
 
-A reader that finds no health record for the newest disc reports `UNKNOWN` and
-recommends a scrub. It must not report `HEALTHY`.
+A reader that finds no measured health record for the newest disc reports
+`UNKNOWN` and recommends a scrub. It must not report `HEALTHY`. `health` 6 on a
+disc is not a measurement and never yields `HEALTHY`. This rule is host
+behaviour, and this section is its only home.
 
 ### 2.5 Cache rebuild levels
 
 | Level | Minimum set | Gives | Cost |
 |---:|---|---|---|
-| 1 | The newest disc | The catalog: every run's filter, the snapshot table, the ref table, the run table, the disc directory, and the catalog's 8 manifests plus the run's own, that is 9. | One disc mount. |
+| 1 | The newest disc | The catalog: every run's filter, the snapshot table, the ref table, the run table, the disc directory, and the catalog's `manifest.history_depth` manifests plus the run's own, that is the depth plus one. | One disc mount. |
 | 2 | The discs a snapshot references | Everything needed to restore that snapshot. | The plan's disc count. |
 | 3 | Every disc | The exact merged index, for maximum dedup on the next backup. | One mount per disc. |
 
@@ -352,7 +369,7 @@ an append-only log with the header of the state log, magic `"NANT"`,
 | 96 | 128 | u8[128] | `shelf` | Shelf note, UTF-8, zero-padded, for `record_type` 0. The downgrade reason, UTF-8 in the first `shelf_len` bytes, for `record_type` 1. |
 | 224 | 8 | u64 | `sequence` | Monotonic record number. |
 | 232 | 1 | u8 | `record_type` | 0 label and shelf note. 1 manual health downgrade. |
-| 233 | 1 | u8 | `health` | New `health` value for `record_type` 1, from the disc directory registry of FORMAT.md section 11.6: 1 healthy, 2 degraded, 3 critical, 4 failed, 5 unknown. `disc mark-degraded --health` supplies it, and its default is 2 (section 16.23). Zero for `record_type` 0. |
+| 233 | 1 | u8 | `health` | New `health` value for `record_type` 1, from the disc directory registry of FORMAT.md section 11.6: 1 healthy, 2 degraded, 3 critical, 4 failed, 5 unknown. `disc mark-degraded --health` supplies it, and its default is 2 (section 16.23). Value 6, `unverified, this disc`, is writer-only; `disc mark-degraded` never sets it. Zero for `record_type` 0. |
 | 234 | 18 | u8[18] | `reserved` | Zero. |
 | 252 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 251. |
 
@@ -423,6 +440,70 @@ A commit bundle is untrusted. `import` verifies every content id before an
 object enters staging, drops every object already present, and is idempotent.
 `import` refuses a `repo_uuid` mismatch.
 
+### 3.8 Local magic values
+
+Six four-byte magics name the host-only structures of this section. None of
+their bytes reaches a disc. FORMAT.md section 2.2 holds the on-disc magics, and
+no value is ever reused across the two lists.
+
+A magic is four ASCII bytes, read as a little-endian u32, so the first byte of
+the file is the first character of the mnemonic. An implementation computes the
+constant from the ASCII bytes and never copies the hexadecimal column.
+
+| Mnemonic | u32 value | Structure | Section |
+|---|---|---|---|
+| `NASL` | 0x4C53414E | Staging state log | 3.1 |
+| `NALR` | 0x524C414E | Local ref log | 3.3 |
+| `NANT` | 0x544E414E | Notes file | 3.4 |
+| `NABN` | 0x4E42414E | Commit bundle header. Backlog, reserved. | 3.7 |
+| `NABP` | 0x5042414E | Burn plan container | 11.2 |
+| `NABS` | 0x5342414E | Burn plan step | 11.3 |
+
+### 3.9 Local hash and CRC coverage
+
+Every hash field below covers all bytes of its target as they lie on the host
+filesystem, with every CRC already filled in.
+
+| Field | In | Covers | Algorithm |
+|---|---|---|---|
+| `payload_hash` | Burn step (section 11.3) | Every byte of the image file, or the sorted tree listing of section 11.5. | `hash.current`. |
+| `catalog_hash` | Commit bundle header (section 3.7) | Every byte of the exported `CATALOG.bin`. | Bundle `hash_algo`. |
+
+Every CRC is CRC-32C with the parameters of FORMAT.md section 2.1.
+
+| Structure | Field | Covers |
+|---|---|---|
+| State log header (section 3.1) | `header_crc32c` | Bytes 0 to 59. |
+| State log record (section 3.2) | `record_crc32c` | Bytes 0 to 91 of the record. |
+| Local ref log record (section 3.3) | `record_crc32c` | Bytes 0 to 123 of the record. |
+| Notes file record (section 3.4) | `record_crc32c` | Bytes 0 to 251 of the record. |
+| Commit bundle header (section 3.7) | `header_crc32c` | Bytes 0 to 251. |
+| Burn plan container (section 11.2) | `header_crc32c` | Bytes 0 to 251. |
+| Burn step record (section 11.3) | `step_crc32c` | Bytes 0 to 507 of the step. |
+
+The local ref log and the notes file share the state log header of section 3.1,
+so their header CRC covers bytes 0 to 59 too.
+
+### 3.10 Local limits
+
+A writer refuses an input that exceeds a limit of this table and names the
+limit. A reader refuses a structure that exceeds one and names the limit. None
+of these limits constrains a disc byte; FORMAT.md section 2.10 holds the on-disc
+limits.
+
+| Item | Limit | Where it is fixed |
+|---|---:|---|
+| Burn plan steps | 65,535 | `step_count`, section 11.2. |
+| Burn plan device hint | 64 bytes | `device_hint_len`, section 11.2. |
+| Burn step source path | 256 bytes | `source_len`, section 11.3. A longer staging path is an error. |
+| Burn step auxiliary path | 184 bytes | `aux_len`, section 11.3. A longer path is an error. |
+| Commit bundle host name | 64 bytes | `host_len`, section 3.7. |
+| Shelf note | 128 bytes | `shelf_len`, section 3.4. |
+| Local display label | 64 bytes | `note_label_len`, section 3.4. |
+| Host UDF name | 254 bytes | The Linux `UDF_NAME_LEN` limit. |
+| Host UDF path | 1023 bytes | The UDF standard. |
+| Host ISO 9660 name | 207 bytes | ISO 9660:1999 level 4. |
+
 ---
 
 ## 4. Staging state machine
@@ -490,7 +571,13 @@ BURNED to PACKED on a failed verify, and PACKED to STAGED on a failed burn.
    entry points.
 8. The state log is authoritative only for objects that are not yet CLEAN.
    Everything about a CLEAN object is derivable from the discs.
-9. A healed object enters the machine at STAGED with reason 3. `verify --heal`
+9. Withdrawing a run returns every PACKED record of that `run_seq` to STAGED,
+   with reason 2. The writer appends one STAGED record per object at the moment
+   it writes `run_status` 3 for the run. Without this rule those objects would
+   stay PACKED for ever, because the next `pack` selects a PACKED record only
+   when its `run_seq` belongs to no valid plan and to no burned run (section
+   4.4), and a withdrawn run is burned.
+10. A healed object enters the machine at STAGED with reason 3. `verify --heal`
    writes its bytes into `staging/heal/` and appends the STAGED record before
    it reports success. The object reaches CLEAN only when the run that holds it
    again passes `verify`. An object still present in another run in a state at
@@ -598,12 +685,18 @@ exists, gives the disc's manually recorded health.
 `record_type` 1 record.
 
 `notes.bin` is local repository state. It is never rebuilt from the discs, and
-nothing in it reaches a disc. A `record_type` 1 note therefore survives a cache
-deletion.
+no byte of it is ever copied onto a disc. A `record_type` 1 note therefore
+survives a cache deletion.
 
-A reader that computes disc health folds in the newest `record_type` 1 note
-when one is present, in addition to the health it derives from the disc
-directory and the checksum columns.
+`notes.bin` is the source of an operator's `degraded` or `withdrawn` judgement.
+A reader that computes disc health folds the newest `record_type` 1 note into
+the health it derives from the disc directory and the checksum columns. The
+next run of the repository copies that folded `health` value into the disc's
+record in the disc directory it writes into its own catalog, so the judgement
+reaches a disc only as a copied value in a later burn, never by a rewrite of
+the disc it judges and never as the note's own bytes. Section 12.1 states the
+same path for the lifecycle states, and FORMAT.md section 11.6 states what the
+record holds.
 
 Losing the `record_type` 0 records loses no archive data.
 
@@ -781,7 +874,7 @@ from the listing diff, which is authoritative.
 | Multiple roots | Allowed. |
 | Root ordering | Sorted by path bytes. |
 | Exclude syntax | The pattern language of FORMAT.md section 6.17. |
-| Exclude sources | `sources.exclude` in config order, then `--exclude` in command-line order, then a `.noahsarkignore` file in any directory. |
+| Exclude sources | The three rule sources, in the order that FORMAT.md section 6.17 fixes. |
 | Sources | Read-only, never written. |
 | Symlinks | Never followed. The link itself is stored. |
 | Filesystem boundaries | Never crossed, under `sources.one_file_system`. |
@@ -810,18 +903,15 @@ that alone does not change the exit code.
 3. stat the file again     -> (size_b, mtime_b, ctime_b)
 4. if size or mtime differ:
        mark the path "unstable"
-       if the parent tree has an entry for this path:
-             reuse the parent entry, unchanged
-             discard the chunk list read in step 2
-       else:
-             keep the content as read
-             set the UNSTABLE flag in the tree entry
+       apply the branch rule of FORMAT.md section 6.7, which chooses
+             between reusing the parent entry and storing the new
+             content with the UNSTABLE flag set
        list the path in the commit report
        retry on the next commit
 ```
 
-The two branches follow one rule: a snapshot never holds torn content without a
-flag that says so.
+FORMAT.md section 6.7 owns the branch rule and the tree bytes it produces. This
+section owns the detection, the retries and the report.
 
 `commit` exits with code 1 in both branches, and prints the count and the paths.
 The report says which branch was taken: `parent` when the parent entry was
@@ -1013,18 +1103,15 @@ references.
 
 ### 8.4 Duplication accounting
 
-Every run records, in the manifest chunk `"DUPS"`:
+Every run records duplicate accounting in the manifest chunk `"DUPS"`. That
+chunk holds four u64 values. FORMAT.md section 11.2 is the one definition of
+the four fields and of their order, because those are disc bytes. This section
+adds no field and no order of its own.
 
-| Field | Meaning |
-|---|---|
-| `duplicated_bytes` | Bytes written again for locality. |
-| `duplicated_objects` | Objects written again. |
-| `unique_bytes` | Bytes that exist only in this run. |
-| `dedup_saved_bytes` | Bytes not written because an older run supplies them. |
-
-The fields are written in that order. The run header repeats
-`duplicate_bytes`, and every manifest record for a duplicated object sets
-`record_flags` bit 1. FORMAT.md section 11.2 gives the records.
+The tool computes the four values while it packs. The run header repeats
+`duplicated_bytes` in `duplicate_bytes`, and every manifest record for a
+duplicated object sets `record_flags` bit 1. FORMAT.md section 11.2 gives the
+records.
 
 The tool prints the duplication overhead after every burn and keeps a running
 repository figure. An overhead above 5 percent is a warning.
@@ -1147,7 +1234,8 @@ fixed_terms =
                                         #   plus RUN.bin and RUN2.bin per run
     + catalog_growth                    # catalog copies for the expected
                                         #   number of future runs
-    + spare_area                        # POW spare, on every spare:min disc
+    + spare_area                        # POW spare, on every spare:min and
+                                        #   spare:default disc
     + alignment_padding                 # up to 32 KiB per write
     + parity_headers                    # m, one header sector per parity file
 
@@ -1157,7 +1245,8 @@ data_budget       = stripes * k
 fec_overhead      = fec_region - data_budget               # checksum, parity,
                                                            #   partial stripe
 reserve_computed  = fixed_terms + fec_overhead
-reserve           = max(reserve_computed, reserve_forced) + reserve_extra
+reserve           = (reserve_forced if set else reserve_computed)
+                    + reserve_extra                        # 9.9 selects
 data_budget       = capacity_forced - reserve              # the same value
                                                            #   when no override
 ```
@@ -1171,7 +1260,7 @@ Terms:
 | `safety_margin` | `ceil(capacity_forced * (1 - disc.fill_ratio))` | `disc.fill_ratio` = 0.95 |
 | `superblock_and_headers` | `1 + ceil(readme_bytes / 2048) + ceil(format_bytes / 2048) + expected_runs * 2` | See below. |
 | `catalog_growth` | `expected_runs * ceil(catalog_bytes_per_run / 2048)`, see below | `disc.expected_runs` |
-| `spare_area` | `ceil(disc.spare_reserve_bytes / 2048)` on a `spare:min` disc, 0 on a sealed disc (`spare:none`) | 256 MiB when `disc.spare` = `min`, 512 MiB when `disc.spare` = `default` |
+| `spare_area` | `ceil(disc.spare_reserve_bytes / 2048)` on a `spare:min` disc and on a `spare:default` disc, 0 on a sealed disc (`spare:none`) | 256 MiB when `disc.spare` = `min`, 512 MiB when `disc.spare` = `default` |
 | `alignment_padding` | `expected_runs * 16` | - |
 | `parity_headers` | `m` | `m` = 23 |
 | `fec_overhead` | `fec_region - data_budget`, which is `stripes * (m + 1) + (fec_region - stripes * 255)` | The two parts are the checksum and parity sectors of every whole stripe, and the fewer than 255 sectors of an incomplete stripe, which stay unused. |
@@ -1263,8 +1352,10 @@ sum is smaller.
 
 ### 9.9 Overrides
 
-- `disc.force_reserve` replaces the computed reserve. It accepts bytes or a
-  percentage of the forced capacity.
+- `disc.force_reserve` replaces the computed reserve. It does not compete with
+  it: when the key is set the estimator's `reserve_computed` is not used, and
+  the selection is the one section 9.3 writes. It accepts bytes or a percentage
+  of the forced capacity.
 - `disc.extra_reserve` is added to the computed reserve. It accepts the same
   forms.
 - Both are recorded in the superblock next to the computed value, so a later
@@ -1281,21 +1372,20 @@ This section is the writer's side: how each image is built and burned.
 
 ### 10.1 Profile 0 image build
 
-The profile 0 and profile 1 filesystem is pure UDF at revision 2.01, block
-size 2048. There is no ISO 9660 bridge, no Joliet and no Rock Ridge.
-
-Four things in the image build are normative: `--media-type=hd`,
-`--blocksize=2048`, `--udfrev=2.01`, the option order with `--utf8` first and
-every override after `--media-type`, and the absence of `--spartable`. Any
-build that reaches them conforms, whatever tool or script produces it.
+FORMAT.md section 8.1 is the normative home of the profile 0 and profile 1
+volume: the filesystem and its revision, the `mkudffs` options
+`--media-type=hd`, `--blocksize=2048`, `--udfrev=2.01`, `--uid=0`, `--gid=0`,
+`--mode=0555` and `--bootarea=erase`, the absence of a sparing table, the label
+from the writer, the image length, the anchor positions and the used prefix.
+This section adds only the host's side: the option order with `--utf8` first
+and every override after `--media-type`, and the checks below. Any build that
+reaches those bytes conforms, whatever tool or script produces it.
 
 - Never use `--media-type=bdr` or `dvdr`. Both make a write-once VAT volume,
   which cannot be populated.
-- Never use `--spartable`. A sparing table adds a second logical-to-physical
-  indirection that breaks the parity map.
-
-The image is built at the forced capacity rounded down to a multiple of 16
-sectors.
+- The exact UDF metadata bytes depend on the `mkudffs` version, so the tool
+  pins and checks that version at startup (section 11.9) and records the writer
+  and its tool versions in the run header's `tool_version`.
 
 The script below is **informative**.
 
@@ -1309,8 +1399,8 @@ mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 \
         --bootarea=erase run.udf
 ```
 
-The label comes from `label.template`. The remaining options are the reference
-implementation's choices.
+The label comes from `label.template`. Every other option in the script is the
+normative set of FORMAT.md section 8.1.
 
 ### 10.2 Profile 0 burn paths
 
@@ -1440,9 +1530,8 @@ spare blocks for one logical change.
 Informative: one conforming rendering of step 4 is
 `growisofs -use-the-force-luke=seek:N,spare:min,tty -Z /dev/sr0=run.bin`.
 
-An append must not rewrite more than `floor(m / 2)` blocks that fall into one
-stripe of any earlier run. The block diff checks this against the earlier runs'
-layout tables before it writes. FORMAT.md section 10.6 states the bound.
+FORMAT.md section 10.6 states the append rewrite bound. The block diff checks
+it against the earlier runs' layout tables before it writes.
 
 ### 10.6 Profile 2 build and burn
 
@@ -1635,9 +1724,9 @@ is, in order:
    68 lowercase hex characters under `hash.current`;
 6. one line feed byte, 0x0A.
 
-Lines are sorted ascending by the relative path bytes, unsigned, as section
-8.10 defines ascending. The listing ends with the line feed of its last line
-and has no trailing blank line. An empty tree serializes to zero bytes.
+Lines are sorted ascending by the relative path bytes, unsigned, as FORMAT.md
+section 6.20 defines ascending. The listing ends with the line feed of its
+last line and has no trailing blank line. An empty tree serializes to zero bytes.
 `payload_hash` is the hash of those bytes under `hash.current`.
 
 ### 11.6 JSON rendering
@@ -1678,7 +1767,7 @@ these values and no others taken from the burn plan and the config.
 |---|---|---|
 | Device | `device_hint`, or `--device` | every write, mount and close step |
 | Speed | `speed` in the plan, from `burner.speed` or `burner.speed_mdisc` | every write step |
-| Spare mode | `spare:min`, or `spare:none` on the sealed first write of a profile 0 disc | every write step |
+| Spare mode | `spare:min`, `spare:default`, or `spare:none` on the sealed first write of a profile 0 disc | every write step |
 | dvd-compat | `flags` bit 0 of the step | write and close steps |
 | Seek LBA | `seek_lba`, a multiple of 16 | a seeking write |
 | Source path | `source_path` | write, build and copy steps |
@@ -1690,9 +1779,13 @@ these values and no others taken from the burn plan and the config.
 A rendered command must carry no value that this table does not name, and must
 never carry a value that the plan does not hold.
 
-The spare mode is `spare:min` under every profile by default. It is
-`spare:none` only when the step has `close_disc` set on the first write of a
-profile 0 disc.
+The spare mode follows `disc.spare`. It renders as `spare:min` when
+`disc.spare` is `min`, which is the default under every profile, and as
+`spare:default` when `disc.spare` is `default`. It is `spare:none` only when the
+step has `close_disc` set on the first write of a profile 0 disc. A
+`spare:default` disc reserves `disc.spare_reserve_bytes` exactly as a
+`spare:min` disc does, and its `spare_area` term is the same expression with
+that mode's larger value (section 9.4, FORMAT.md section 9).
 
 Every rendering also prints, as comments:
 
@@ -1823,15 +1916,22 @@ the state set and what enters each state.
 | `blank` | The medium as it comes from the manufacturer. No NoahsArk state exists. | The disc's manufacturing. |
 | `POW-formatted` | The medium has a Pseudo-OverWrite spare area, `spare:min` or `spare:default`. No filesystem or data exists yet. | The first `pack` / `burn --exec` of a profile 0 or profile 1 disc, before that same burn's image is written (section 10.2). Profile 2 skips this state; it has no POW spare area. |
 | `open` | The disc holds a filesystem and at least one run, is not sealed, and has not yet received an append. | The same first burn as `POW-formatted`, when `disc.close_policy` is not `always` and `pack --close` was not given. |
-| `appended` | The disc has received at least one append run after its first. Still not sealed; may receive more appends. | `pack` or `append` against an existing `--disc` (profile 1 or profile 2 only; section 10.5). Appending again re-enters this same state. |
+| `appended` | The disc has received at least one append run after its first. Still not sealed; may receive more appends. | `pack` or `append` against an existing `--disc`. A later run may be appended to any unsealed UDF disc, whatever its `fs_profile`, 0 or 1 alike, because the two share one filesystem; `fs_profile` never gates an append (FORMAT.md sections 7.2 and 8.1). Appending again re-enters this same state. |
 | `sealed` | The disc is closed: no later run is possible. Permanent, and recorded in the run chain and the disc directory, never by a change to the superblock. A disc sealed at its first write also has `sealed` 1 in its superblock; a disc closed later has `sealed` 0 there and `run_flags` bit 0 set in its newest run header (FORMAT.md sections 7.5, 7.6 and 7.12). | `pack --close` on a new disc, or `noahsark close` (Phase 2) on an `open` or `appended` disc, or `close_policy = always` on the first burn. |
 | `degraded` | The library has a manual or a scrub-derived reason to distrust the disc, short of writing it off. Not permanent; a later `disc mark-degraded --health=...`, or a passing `verify`, supersedes the record and returns the disc to the state its run chain describes. | `disc mark-degraded --health=degraded` or `--health=critical` (section 16.23), or the health computation of section 13.5 when a `verify` or `scrub` finds the disc `CRITICAL` or `FAILED`. Reachable from `open`, `appended` or `sealed`; a sealed disc can still degrade physically. |
 | `withdrawn` | The operator has given up on the disc: it is excluded from restore planning and from future appends, though its objects remain wherever another copy also has them. | `disc mark-degraded --health=failed`, which records `health` 4, the terminal case. This is an operator judgment recorded in `<repo>/notes.bin` (section 3.4), not a burn; it never touches the medium. |
 
 Every transition except the recovery out of `degraded` is one-way.
 
-`withdrawn` is an operator judgment recorded in `<repo>/notes.bin`. It never
-touches the medium.
+**Where a `degraded` or a `withdrawn` judgement lives.** `<repo>/notes.bin` is
+the source. `disc mark-degraded` appends the operator's judgement there, and
+that act never touches a medium. A reader folds the newest `record_type` 1 note
+into the health it derives from the disc directory and the checksum columns
+(section 5.3). The next run of the repository copies that folded `health` value
+into the disc's record in the disc directory it writes into its own catalog, so
+the judgement reaches a disc only through a later burn, never by rewriting the
+disc it judges. FORMAT.md section 11.6 states what the record holds, and
+FORMAT.md section 7.15 states which state each value records.
 
 ### 12.2 Close policy
 
@@ -1847,8 +1947,15 @@ A writer refuses `disc.close_policy = always` under `fs.profile` 1 or 2.
 
 **Profile 0 under the default policy.** The disc is formatted for POW with
 `spare:min`, one large run is written up to the data budget, `-dvd-compat` is
-not passed, and the disc is left open. It can therefore receive a profile 1
-append later, with no format change.
+not passed, and the disc is left open.
+
+A later run may be appended to any unsealed UDF disc, whatever its `fs_profile`,
+0 or 1 alike. The two profiles share one filesystem, so an append needs no
+format change and no change to `fs_profile`, which stays at the value the first
+burn recorded. Only the `sealed` flag, the close state of the run chain and the
+drive's POW spare state decide whether the append is possible (FORMAT.md
+section 7.2). `disc.expected_runs` therefore stays at 2 under profile 0: the
+first burn plus one later run.
 
 **Sealing a disc.** `pack --close`, or `disc.close_policy = always`, selects
 `spare:none` and `-dvd-compat` instead: no format step, no spare area, no
@@ -1859,19 +1966,17 @@ Section 10.2 gives the two command lines.
 
 ### 12.3 Tail anchors
 
-`mkudffs` places UDF anchors at LBA 256, at `N - 256` and at `N` in the
-full-size image. The used prefix of the image is LBA 0 up to and including the
-last sector of `RUN2.bin`, rounded up to a multiple of 16 sectors.
+FORMAT.md section 8.1 states the anchor positions, the used-prefix rule, the
+image length, and what an open disc and a sealed disc each receive. This section
+states only which command writes which.
 
-**Open disc, the default.** The first run writes the used prefix only. The tail
-anchors are not on the disc yet. A disc with only the LBA 256 anchor still
-mounts, because that anchor is mandatory in the standard. The tail anchors
-reach the disc when an append or `close` writes them.
+**Open disc, the default.** The first run's `growisofs` call writes the used
+prefix only (section 10.2). The tail anchors reach the disc when an append or
+`close` writes them.
 
-**Sealed disc.** `pack --close` burns the full-size image: the used prefix, the
-unused middle as zero sectors, and the last 512 sectors with the tail anchors.
-A sealed disc can never be appended, so its tail anchors must be written at its
-only burn.
+**Sealed disc.** `pack --close` burns the full-size image in one call. A sealed
+disc can never be appended, so its tail anchors must be written at its only
+burn.
 
 ### 12.4 What close does
 
@@ -2104,20 +2209,15 @@ while needed is not empty:
     a chunk: membership alone is enough; do not read it
 ```
 
-Chunks are never read. A chunk has no outgoing reference, so membership is the
-whole obligation. Only trees, chunklists and snapshots are read.
-
-A filter negative across every run is a proof of absence, as FORMAT.md section
-11.10 states. The check can therefore conclude "missing" with certainty from
-the cached filters alone, with no disc mounted.
-
-A filter positive is only a hint. Resolve it against that run's manifest.
+FORMAT.md section 11.10 states the reader rules this check rests on: chunks are
+never read, a filter negative across every run is a proof of absence, a filter
+positive is a hint to resolve against that run's manifest, and a version 1
+reader always uses the walk. The check can therefore conclude "missing" with
+certainty from the cached filters alone, with no disc mounted.
 
 Deferred reads are grouped by run and processed one run at a time, so each disc
-is mounted at most once.
-
-A version 1 reader always uses the walk above. The reserved bitmap counting
-argument is not available.
+is mounted at most once. That grouping is host behaviour and this section is its
+only home.
 
 The report says, per object, "present on run X", "missing", or "declared
 prerequisite".
@@ -2310,8 +2410,8 @@ bit, once, before it writes anything.
 
 With no cache, the restorer reads the catalog from the newest disc first. That
 gives every filter, the snapshot table, the ref table, the run table, the disc
-directory, and the catalog's 8 manifests plus the run's own, that is 9. The
-planner then works normally.
+directory, and the catalog's `manifest.history_depth` manifests plus the run's
+own, that is the depth plus one. The planner then works normally.
 
 With the catalog alone the planner has exact manifests for the newest
 `manifest.history_depth` runs and filters for the rest, so an older object is
@@ -2330,9 +2430,9 @@ section is the restore policy.
 
 ### 15.1 Ownership
 
-1. The writer always stores both the numeric id and the name. The numeric id is
-   mandatory. The name is optional and is omitted when the source has no name
-   for the id.
+1. The writer always stores the numeric id, which is mandatory. It stores the
+   name when `metadata.user_group_names` is true and the source has one, and
+   omits the name otherwise.
 2. On restore, resolve the stored name locally and use the resulting id.
 3. When the name is absent or the lookup fails, fall back to the stored numeric
    id.
@@ -2411,8 +2511,17 @@ inode numbers, never from the mirror copy.
 
 ### 15.6 Name and symlink safety
 
-FORMAT.md section 2.11 states the five invariants. The system calls below are
-**informative**; another platform meets the same invariant with its own calls.
+Five invariants bind every restorer. This section is their only home; they are
+host behaviour and no byte of them reaches a disc.
+
+1. A name is validated before use.
+2. A path string is never built and opened.
+3. A symlink is never followed on the way to a target.
+4. The check and the use of a path component are one operation.
+5. A symlink target is stored and restored as data and is never rewritten.
+
+The system calls below are **informative**; another platform meets the same
+invariant with its own calls.
 
 1. Validate at parse time. Reject any entry whose name is empty, is `.` or
    `..`, or contains `/`, `\` or NUL.
@@ -3144,7 +3253,7 @@ Every key appears exactly once, in exactly one table below.
 | `source.allow_smb` | boolean | true | 1 | no | Allow an SMB mount as a source root. Never allowed for staging. |
 | `commit.checksum` | boolean | false | 1 | no | Always rehash. Equivalent to `--checksum` on every commit. |
 | `commit.restat_after_read` | boolean | true | 1 | no | In-flight change detection. Never set it false on a live source. |
-| `commit.retry_unstable` | integer | 1 | 1 | no | Re-reads of an unstable file before it is skipped. |
+| `commit.retry_unstable` | integer | 1 | 1 | no | Re-reads of an unstable file before the rule of section 7.6 applies. |
 | `commit.copy_first` | boolean | false | 2 | no | Copy changed files into staging before chunking. |
 | `repo.lock_timeout` | integer | 0 | 1 | no | Seconds to wait for the repository lock. 0 means fail at once. |
 | `sync.rsync_path` | path | `rsync` | 2 | no | Path to the `rsync` binary. |
@@ -3376,6 +3485,12 @@ is complete.
 
 ## 22. Test list
 
+The probe list is normative: each question in it must be answered before the
+feature that depends on it ships. The notes document holds the probe list and
+the action paths. A probe is not a test: a test asserts a known answer, a probe
+records an unknown one. A probe answer that becomes stable moves into the test
+list below as a test.
+
 Every test below must run. A test marked FORMAT proves a rule of `FORMAT.md`;
 a test marked OPS proves a rule of this document. Every burn test uses an image
 file first. Physical burns are a manual checklist, not CI.
@@ -3482,7 +3597,7 @@ implementation note, and belongs to neither normative document.
 | D261 | FORMAT.md section 8.5 | D262 | FORMAT.md section 8.5 | D263 | FORMAT.md section 8.7 | D264 | FORMAT.md section 8.7 | D265 | FORMAT.md section 8.7 | D266 | FORMAT.md section 8.6 | D267 | FORMAT.md section 8.6 | D268 | FORMAT.md section 8.6 | D269 | FORMAT.md section 8.6 | D270 | FORMAT.md section 8.6 | D271 | FORMAT.md section 8.6 | D272 | FORMAT.md section 8.6 | D273 | FORMAT.md section 8.6 | D274 | FORMAT.md section 8.6 | D275 | FORMAT.md section 8.6 | D276 | FORMAT.md section 8.6 | D277 | FORMAT.md section 8.6 | D278 | FORMAT.md section 8.6 | D279 | FORMAT.md section 8.6 | D280 | FORMAT.md section 8.6 | D281 | FORMAT.md section 8.6 | D282 | FORMAT.md section 8.6 | D283 | 10.4 | D284 | FORMAT.md section 8.6 | D285 | 11.1 | D286 | 11.1 |
 | D287 | 11.1 | D288 | 11.1 | D289 | 11.4 | D290 | 11.4 | D291 | 11.4 | D292 | 11.4 | D293 | 11.4 | D294 | 11.4 | D295 | 11.4 | D296 | 11.5 | D297 | 11.6 | D298 | 11.4 | D299 | 11.7 | D300 | 11.7 | D301 | 11.7 | D302 | 11.7 | D303 | 11.8 | D304 | 11.8 | D305 | 11.8 | D306 | 11.8 | D307 | 9.1 | D308 | 11.9 | D309 | 11.9 | D310 | notes | D311 | 11.11 | D312 | FORMAT.md section 9 |
 | D313 | FORMAT.md section 9 | D314 | FORMAT.md section 9 | D315 | FORMAT.md section 9 | D316 | FORMAT.md section 9 | D317 | FORMAT.md section 9 | D318 | FORMAT.md section 9 | D319 | FORMAT.md section 9 | D320 | 9 | D321 | 9.3 | D322 | 9.9 | D323 | 9.7 | D324 | FORMAT.md section 10.1 | D325 | FORMAT.md section 10.1 | D326 | FORMAT.md section 10.1 | D327 | FORMAT.md section 10.1 | D328 | FORMAT.md section 10.1 | D329 | FORMAT.md section 10.1 | D330 | FORMAT.md section 10.1 | D331 | FORMAT.md section 10.1 | D332 | FORMAT.md section 10.1 | D333 | FORMAT.md section 10.1 | D334 | FORMAT.md section 10.1 | D335 | FORMAT.md section 10.1 | D336 | FORMAT.md section 10.2 | D337 | FORMAT.md section 10.2 | D338 | FORMAT.md section 10.2 |
-| D339 | FORMAT.md section 10.2 | D340 | FORMAT.md section 10.2 | D341 | FORMAT.md section 10.2 | D342 | notes | D343 | FORMAT.md section 10.4 | D344 | FORMAT.md section 10.4 | D345 | 13.4 | D346 | 13.4 | D347 | 13.4 | D348 | 13.2 | D349 | FORMAT.md section 7.11 | D350 | FORMAT.md section 10.6 | D351 | 13.2 | D352 | FORMAT.md section 10.7 | D353 | FORMAT.md section 10.7 | D354 | FORMAT.md section 10.7 | D355 | 13.5 | D356 | notes | D357 | notes | D358 | FORMAT.md section 10.3 | D359 | FORMAT.md section 10.3 | D360 | FORMAT.md section 10.3 | D361 | FORMAT.md section 10.3 | D362 | FORMAT.md section 10.3 | D363 | FORMAT.md section 10.3 | D364 | FORMAT.md section 10.5 |
+| D339 | FORMAT.md section 10.2 | D340 | FORMAT.md section 10.2 | D341 | FORMAT.md section 10.2 | D342 | FORMAT.md section 10.1 | D343 | FORMAT.md section 10.4 | D344 | FORMAT.md section 10.4 | D345 | 13.4 | D346 | 13.4 | D347 | 13.4 | D348 | 13.2 | D349 | FORMAT.md section 7.11 | D350 | FORMAT.md section 10.6 | D351 | 13.2 | D352 | FORMAT.md section 10.7 | D353 | FORMAT.md section 10.7 | D354 | FORMAT.md section 10.7 | D355 | 13.5 | D356 | notes | D357 | notes | D358 | FORMAT.md section 10.3 | D359 | FORMAT.md section 10.3 | D360 | FORMAT.md section 10.3 | D361 | FORMAT.md section 10.3 | D362 | FORMAT.md section 10.3 | D363 | FORMAT.md section 10.3 | D364 | FORMAT.md section 10.5 |
 | D365 | FORMAT.md section 10.3 | D366 | notes | D367 | FORMAT.md section 11.7 | D368 | FORMAT.md section 11.1 | D369 | FORMAT.md section 11.1 | D370 | FORMAT.md section 11.1 | D371 | FORMAT.md section 11.1 | D372 | FORMAT.md section 11.1 | D373 | FORMAT.md section 11.1 | D374 | FORMAT.md section 11.1 | D375 | FORMAT.md section 11.1 | D376 | FORMAT.md section 11.1 | D377 | FORMAT.md section 11.1 | D378 | FORMAT.md section 11.1 | D379 | FORMAT.md section 11.1 | D380 | FORMAT.md section 11.1 | D381 | FORMAT.md section 11.1 | D382 | FORMAT.md section 11.1 | D383 | FORMAT.md section 11.2 | D384 | FORMAT.md section 11.2 | D385 | FORMAT.md section 11.2 | D386 | FORMAT.md section 11.2 | D387 | FORMAT.md section 11.2 | D388 | FORMAT.md section 11.2 | D389 | FORMAT.md section 11.2 | D390 | FORMAT.md section 11.2 |
 | D391 | FORMAT.md section 11.2 | D392 | FORMAT.md section 11.3 | D393 | FORMAT.md section 11.3 | D394 | FORMAT.md section 11.3 | D395 | FORMAT.md section 11.3 | D396 | FORMAT.md section 11.3 | D397 | FORMAT.md section 11.3 | D398 | FORMAT.md section 11.3 | D399 | FORMAT.md section 11.4 | D400 | FORMAT.md section 11.4 | D401 | FORMAT.md section 11.4 | D402 | FORMAT.md section 11.4 | D403 | FORMAT.md section 11.4 | D404 | FORMAT.md section 11.4 | D405 | FORMAT.md section 11.4 | D406 | FORMAT.md section 11.4 | D407 | FORMAT.md section 11.5 | D408 | FORMAT.md section 11.5 | D409 | FORMAT.md section 11.5 | D410 | FORMAT.md section 11.5 | D411 | FORMAT.md section 11.5 | D412 | FORMAT.md section 11.5 | D413 | FORMAT.md section 11.5 | D414 | FORMAT.md section 11.5 | D415 | FORMAT.md section 11.5 | D416 | FORMAT.md section 11.5 |
 | D417 | FORMAT.md section 11.6 | D418 | FORMAT.md section 11.6 | D419 | FORMAT.md section 11.6 | D420 | FORMAT.md section 11.7 | D421 | FORMAT.md section 11.7 | D422 | FORMAT.md section 11.7 | D423 | FORMAT.md section 11.7 | D424 | FORMAT.md section 11.8 | D425 | FORMAT.md section 11.8 | D426 | FORMAT.md section 11.8 | D427 | FORMAT.md section 11.8 | D428 | FORMAT.md section 11.9 | D429 | FORMAT.md section 11.9 | D430 | FORMAT.md section 11.9 | D431 | FORMAT.md section 11.10 | D432 | FORMAT.md section 11.10 | D433 | FORMAT.md section 11.10 | D434 | FORMAT.md section 11.10 | D435 | FORMAT.md section 12.3 | D436 | 2.4 | D437 | 2.4 | D438 | 2.4 | D439 | 2.5 | D440 | 2.5 | D441 | 2.6 | D442 | 2.6 |
@@ -3492,7 +3607,7 @@ implementation note, and belongs to neither normative document.
 | D521 | 15.3 | D522 | 7.7 | D523 | notes | D524 | notes | D525 | notes | D526 | FORMAT.md section 6.15 | D527 | 7.9 | D528 | 7.9 | D529 | 14.1 | D530 | 14.1 | D531 | 14.1 | D532 | 14.1 | D533 | FORMAT.md section 11.10 | D534 | FORMAT.md section 11.10 | D535 | FORMAT.md section 11.10 | D536 | 14.1 | D537 | 14.1 | D538 | 14.1 | D539 | 14.2 | D540 | 14.2 | D541 | 14.3 | D542 | 14.4 | D543 | 14.5 | D544 | 14.6 | D545 | 14.6 | D546 | FORMAT.md section 12.1 |
 | D547 | 14.7 | D548 | 14.8 | D549 | 16.1 | D550 | 16.1 | D551 | 19 | D552 | 16.2 | D553 | 16.2 | D554 | 16.2 | D555 | 16.8 | D556 | 16.8 | D557 | 16.10 | D558 | 16.10 | D559 | 13.1 | D560 | 16.12 | D561 | 16.9 | D562 | 16.23 | D563 | 16.23 | D564 | 16.15 | D565 | 16.20 | D566 | 16.21 | D567 | 16.24 | D568 | 17 | D569 | 17 | D570 | 17 | D571 | 17.1 | D572 | 17.7 |
 | D573 | 17.9 | D574 | 17.9 | D575 | 17.9 | D576 | 17.9 | D577 | 17.9 | D578 | 17.14 | D579 | FORMAT.md section 12.8 | D580 | FORMAT.md section 12.8 | D581 | FORMAT.md section 12.5 | D582 | FORMAT.md section 12.5 | D583 | FORMAT.md section 12.5 | D584 | FORMAT.md section 12.2 | D585 | FORMAT.md section 12.1 | D586 | FORMAT.md section 12.6 | D587 | FORMAT.md section 12.4 | D588 | FORMAT.md section 12.4 | D589 | FORMAT.md section 12.7 | D590 | FORMAT.md section 12.4 | D591 | 18 | D592 | 18 | D593 | 20 | D594 | FORMAT.md section 2.11 | D595 | FORMAT.md section 2.11 | D596 | FORMAT.md section 2.11 | D597 | FORMAT.md section 2.11 | D598 | FORMAT.md section 2.11 |
-| D599 | 11.4 | D600 | FORMAT.md section 2.11 | D601 | 11.10 | D602 | 11.10 | D603 | FORMAT.md section 1 | D604 | notes | D605 | notes | D606 | notes | D607 | notes | D608 | notes | D609 | notes | D610 | 21 | D611 | FORMAT.md section 13 | D612 | FORMAT.md section 13 | D613 | 2.7 | D614 | FORMAT.md section 4.8 | D615 | 11.9 | D616 | FORMAT.md section 12.1 | D617 | FORMAT.md section 12.7 | D618 | notes |  |  |  |  |  |  |  |  |  |  |  |  |
+| D599 | 11.4 | D600 | FORMAT.md section 2.11 | D601 | 11.10 | D602 | 11.10 | D603 | FORMAT.md section 1 | D604 | 1 | D605 | notes | D606 | notes | D607 | notes | D608 | 22 | D609 | notes | D610 | 21 | D611 | FORMAT.md section 13 | D612 | FORMAT.md section 13 | D613 | 2.7 | D614 | FORMAT.md section 4.8 | D615 | 11.9 | D616 | FORMAT.md section 12.1 | D617 | FORMAT.md section 12.7 | D618 | notes |  |  |  |  |  |  |  |  |  |  |  |  |
 
 Decisions listed: 618. Carried by this document: 212. Carried by `FORMAT.md`:
 390. Marked notes: 16. Every decision is carried by exactly one of the two

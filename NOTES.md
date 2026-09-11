@@ -1,6 +1,6 @@
 # NoahsArk design notes
 
-Document version 3.0.
+Document version 3.1.
 
 **Nothing in this document is normative.** It carries rationale, evidence,
 research summaries, comparison tables, worked examples, estimates, the
@@ -161,7 +161,9 @@ Tier-2 burners are surveyed in section 2.7.
 
 ### 1.4 Priorities
 
-The priorities are ordered. A conflict is resolved by this order.
+OPERATIONS.md section 1 rule 1.8 is the rule: the priorities are ordered, and a
+conflict between two of them is resolved by that order. The list below is a
+copy for convenience and is never the definition.
 
 1. Data durability. Never lose bytes.
 2. Readability without the tool. A future reader must have a chance.
@@ -170,10 +172,10 @@ The priorities are ordered. A conflict is resolved by this order.
 5. Speed.
 6. Media utilization.
 
-Priority 4 is below priority 3 on purpose. A disc costs a small amount of
-money. A disc swap costs a minute of human attention on every future restore.
-The capping knobs of OPERATIONS.md section 8.2 turn this priority into
-numbers. Section 2.11 gives the arithmetic.
+This section explains why priority 4 sits below priority 3. A disc costs a
+small amount of money. A disc swap costs a minute of human attention on every
+future restore. The capping knobs of OPERATIONS.md section 8.2 turn that
+ordering into numbers. Section 2.11 gives the arithmetic.
 
 ### 1.5 Implementation phases
 
@@ -212,26 +214,29 @@ case.
 
 ### 1.6 Performance and resource targets
 
-Each row names the document that holds the rule. A target marked
-**requirement** must hold. A target marked **budget** is a design goal that
-the reference implementation meets; a slower implementation still conforms.
+Each row names the document that holds the rule. Nothing in this table is
+itself a rule; the home column names the file that carries one. A row marked
+**rule** describes a target that the named home states as a rule, and the home
+is the only place that binds. A row marked **budget** describes a design goal
+that the reference implementation meets and that no document makes a rule; a
+slower implementation still conforms.
 
 | Item | Target | Class | Home |
 |---|---|---|---|
-| Commit cost on an unchanged file | One `stat`. The file is never opened. | requirement | OPERATIONS.md 7.2 |
-| Commit cost on an unchanged directory | One tree id comparison. | requirement | OPERATIONS.md 7.1 |
-| Staging space for a commit | The change set, never a second copy of the source. | requirement | OPERATIONS.md 7.2 |
+| Commit cost on an unchanged file | One `stat`. The file is never opened. | rule | OPERATIONS.md 7.2 |
+| Commit cost on an unchanged directory | One tree id comparison. | rule | OPERATIONS.md 7.1 |
+| Staging space for a commit | The change set, never a second copy of the source. | rule | OPERATIONS.md 7.2 |
 | FEC encoder working set | 512 MiB to 1 GiB per band, at `fec.band_stripes` 2048. | budget | section 2.9 |
 | FEC encode time, 25 GB run | Under 2 minutes on one core. Never the bottleneck against a 4x burn. | budget | section 2.9 |
-| Parity overhead per run | `m / (k + 1 + m)` = 9.02 percent of the stripe. | requirement | FORMAT.md 10.1 |
+| Parity overhead per run | `m / (k + 1 + m)` = 9.02 percent of the stripe. | rule | FORMAT.md 10.1 |
 | Catalog cost per run | Under 0.16 percent of a 25 GB disc at 2,000 runs. | budget | FORMAT.md 11.1, 11.7 |
-| Catalog cap per run | `catalog.max_bytes`, default 512 MiB. | requirement | FORMAT.md 11.7 |
-| Manifest cost per run | 64 bytes per object, about 0.0015 percent of the disc. | requirement | FORMAT.md 11.2 |
-| Filter false-positive rate | 2^-16 per run. | requirement | FORMAT.md 11.1 |
+| Catalog cap per run | `catalog.max_bytes`, default 512 MiB. | rule | FORMAT.md 11.7 |
+| Manifest cost per run | 64 bytes per object, about 0.0015 percent of the disc. | rule | FORMAT.md 11.2 |
+| Filter false-positive rate | 2^-16 per run. | rule | FORMAT.md 11.1 |
 | UDF overhead per object, P4 | About 3.1 KiB, under 0.1 percent of a 25 GB disc. | budget | FORMAT.md 4.3 |
 | Duplication overhead per repository | Warn above 5 percent. | budget | OPERATIONS.md 8.4 |
-| Restore peak staging | `restore.staging_budget`, default 16 GiB. Above it the planner splits into passes. | requirement | OPERATIONS.md 14.3 |
-| Restore disc switches | One per disc in the plan, which is the minimum. | requirement | OPERATIONS.md 14.2 |
+| Restore peak staging | `restore.staging_budget`, default 16 GiB. Above it the planner splits into passes. | rule | OPERATIONS.md 14.3 |
+| Restore disc switches | One per disc in the plan, which is the minimum. | rule | OPERATIONS.md 14.2 |
 | Restore read rate for planning | `restore.rate_mb_s`, default 20 MB/s. | budget | OPERATIONS.md 14.5 |
 | Restore fixed cost per switch | `restore.switch_seconds`, default 60 s. | budget | OPERATIONS.md 14.5 |
 | Scrub throughput | About 15 minutes per 25 GB disc, about 20 discs per drive-day. | budget | OPERATIONS.md 13.3 |
@@ -1317,14 +1322,15 @@ normative outcome is only that every required test runs and that a physical
 burn is never part of CI. Any CI system that runs the required tests conforms;
 GitHub Actions is not required. Section 7 holds the workflow.
 
-**Probes.** The probe list is normative: each question must be answered before
-the feature that depends on it ships. The action paths are informative. Any
-open question about tool behaviour becomes a probe action: a small composite
-action that runs the experiment on an image file and records the result as a
-job artifact. A probe is not a test. A test asserts a known answer. A probe
-records an unknown one. When a probe answer becomes stable, it moves into the
-test list with an assertion. Section 7 holds the probe actions and the manual
-probes.
+**Probes.** OPERATIONS.md section 22 holds the rule: the probe list is
+normative, and each question in it must be answered before the feature that
+depends on it ships. This document holds the probe list itself and the action
+paths, which are informative. Any open question about tool behaviour becomes a
+probe action: a small composite action that runs the experiment on an image
+file and records the result as a job artifact. A probe is not a test. A test
+asserts a known answer. A probe records an unknown one. When a probe answer
+becomes stable, it moves into the test list with an assertion. Section 7 holds
+the probe actions and the manual probes.
 
 ### 2.18 Rejected and superseded alternatives
 
@@ -1447,7 +1453,7 @@ FORMAT.md section 12.8 is the index that governs that column.
 | OC006 | `filter_bytes` planning figure | `84 + ceil(n * 91 / 40)`, that is 18.2 bits per key | OPERATIONS.md 9.6; FORMAT.md 11.1 | Yes | The asymptotic paper figure; the real body size from the sizing rule is a little larger. |
 | OC007 | `manifest_bytes` header allowance | 4,096 bytes added to `64 * objects_per_run` | OPERATIONS.md 9.6 | Yes | Round allowance for header, TOC, fan-out and small chunks. |
 | OC008 | `alignment_padding` | `expected_runs * 16` sectors | OPERATIONS.md 9.4 | Yes | Assumes exactly one 32 KiB alignment loss per run. |
-| OC009 | `manifest.history_depth` | 8 | FORMAT.md 11.7; OPERATIONS.md 17.8 | Yes | Chosen so one disc yields 9 manifests. No requirement fixes 8. |
+| OC009 | `manifest.history_depth` | 8 | FORMAT.md 11.7; OPERATIONS.md 17.8 | Yes | Chosen so one disc yields the depth plus one manifests. Nothing fixes the value at 8. |
 | OC010 | `catalog.max_bytes` | 512 MiB | OPERATIONS.md 17.8; FORMAT.md 11.7 | Yes | Round cap. |
 | OC011 | `catalog.snapobj_pack_threshold` | 1,000 snapshots | OPERATIONS.md 17.8; FORMAT.md 11.4 | Yes | Round threshold for switching to `snapobj.bin`. |
 | OC012 | `bundle.threshold` | 1 MiB | OPERATIONS.md 17.2; FORMAT.md 4.5 | Yes | Changes which chunks are bundled, so it changes disc bytes. Derived from a UDF overhead argument, not a requirement. |
@@ -2104,9 +2110,10 @@ history.
 
 ### 5.9 Burst tolerance tables
 
-`L = ceil(data_span / k)`, which is close to `run_sectors / 255`. The maximum
-correctable single burst is `m * L` sectors, and the bound holds inside the
-data columns only. The two tables compare the fixed `m = 23` with three other
+`L = ceil(data_span / k)`, which is close to `run_sectors / 255`. FORMAT.md
+section 10.1 states the burst bound: the maximum correctable single burst is
+`m * L` sectors, and the bound holds inside the data columns only. The two
+tables compare the fixed `m = 23` with three other
 values to show why it was chosen; only the `m = 23` column describes a version
 1 disc. The table assumes the run covers the whole disc and rounds `L` to
 `floor(run_sectors / 255)`.
@@ -2458,6 +2465,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 3.1 | Eleven contradictions, nine blocking gaps, six split defects and nine mechanical failures closed across the three documents. **Contradictions**: `fs_profile` records the writer's plan at the first burn and never gates an append, so profile 0 and profile 1 share one filesystem and a reader treats them identically; `notes.bin` is named as the source of a `degraded` or `withdrawn` judgement and the next run copies the folded `health` value into its disc directory record; ctime storage and user and group names are conditioned on `metadata.ctime` and `metadata.user_group_names`; the catalog cap drops the oldest manifest first; every literal 8 or 9 manifest count became `manifest.history_depth` and "the depth plus one"; `spare:default` gained its rendering and its `spare_area` case; `disc.force_reserve` replaces the computed reserve and the estimator selects between them; `source_type` 5 reads "Imported from a commit bundle" in both homes; `commit.retry_unstable` names the rule of the in-flight branch instead of a skip; and the checksum rule became a write-order rule with the run filter named as the one structure whose body CRC trails the body. **Gaps closed**: the `mkudffs` options, the sparing-table ban, the label source, the image length, the anchor LBAs and the used prefix are normative in FORMAT.md; `tool_version` is a u32 with a writer registry id in its high 8 bits, and conformance is judged on ids, structures and readability, never on compressed bytes; `snapobj.bin` members are laid out by ascending `content_id` with `compression` 0; withdrawing a run returns its PACKED records to STAGED; the writing run's own disc directory record carries `health` 6, `unverified, this disc`; every stored percentage is rounded down and clamped to 0 to 100; the ref table sort key gained `time_nsec` and `run_seq` and is total; every run header repeats the superblock's `fs_profile` and a reader refuses a mismatch; and `sources.one_file_system` and `sources.follow_symlinks` have FORMAT.md rows. **Splits repaired**: `extent_flags` bit 2 and the `"DUPS"` field order are defined in FORMAT.md; the six local magics, the local hash and CRC coverage, the host limits and the restore safety invariants moved to OPERATIONS.md; the priority order, the probe rule and the burst bound moved out of this document into OPERATIONS.md and FORMAT.md, leaving citations; and each rule that stood in two files now stands in one with a citation in the other. **Mechanical**: every stale section citation corrected, and Appendix A of FORMAT.md regenerated from FORMAT.md's own tables, so every meaning cell and every section number in `FORMAT.txt` matches the table it came from. `FORMAT.txt` stays format major 1 minor 0 and is 40,485 bytes in 825 lines. The `health` registry gained value 6 and the disc directory record's meaning cell with it; no other on-disc field changed width, offset or meaning. |
 | 2.5 | Ten contradictions and seventeen blocking gaps closed, and the same-name fields, registry-to-CLI mismatches and state-machine gaps with them. **Close state**: the superblock is never updated, so a close performed by `close` is recorded in the closing run's header, in the new `run_flags` bit 0 `CLOSING_RUN` taken from the run header's reserved bytes, and in `state_flags` bit 0 of the disc directory; `sealed` now means only "burned sealed at first write", and `disc --close` is gone. **Run table**: the record of the run that carries the table holds a zero `run_header_hash` that the next copy fills in, and `run_status` and `run_header_hash` are named as the only two fields a later copy may complete. **Catalog snapshot objects**: `catalog/snapobj/<name>` is the complete object file, its name is verified by hashing the payload after decompression, and `file_hash` is the hash of the whole file and does not equal the name. **Times**: every `created_sec` and `first_burn_sec` is pack time, and the actual burn time lives only in the state log. **Layout records** are in copy order, which is LBA order, and a zero-length `pad.bin` record carries `start_lba` equal to `lba_base + data_span`. **Fill order** inside steps 5 and 6 made total, with the walk, the first-occurrence rule for shared chunks and bundles, and the rule that an object the target disc already holds is never written again. **Prerequisites** hold every directly referenced absent id and no transitive one, exclude a snapshot `parent`, and `"SRCR"` is the distinct run seqs of `"PREQ"`. **Withdrawn runs** keep their catalog copies but leave the dedup query, the prerequisite targets, the packer and the planner, and every affected local ref record returns to `run_seq` 0. **New exact rules**: the bundle boundary; a version 1 writer never writes a `level` 1 chunklist; the TLV spill loop, largest first, ties by lowest `tlv_type`; hardlink group membership by two entries with one device and inode inside the roots; the tree entry variable-area order; `"SPLT"` one record per other part, sorted by `chunklist_id` then `other_run_seq`; snapshot tag 5 holds the config and `--exclude` rules only, LF-terminated raw bytes; zstd frame parameters pinned, with the pinned encoder version named as the condition for byte identity; `payload_bytes`, `snapshot_count`, `total_size`, `used_sectors` and `disc_used_sectors` defined; the superblock chain and a consumed `disc_seq`; which catalog a reader trusts, by the five hashes that must verify. **`FORMAT.txt`**: its exact text for major 1 minor 0 is now normative, and FORMAT.md section 8.5 holds it, and the generation rule is informative and names the part titles, the eleven registries and their source tables, the thirty structure names, the six mask constant names and the cell rendering. **Same-name fields separated**: `extent_flags` and `record_flags` in place of two different `flags`; `container_len` in place of the layout and manifest `payload_len`; `note_label_len` in the notes record. **Registry and CLI**: burn plan `burner_backend` 4, IMAPI, marked reserved and never written and dropped from the JSON rendering; `append --raw` documented; `disc mark-degraded --health` added, which gives every `health` value a way in; `commit --from` spelled as the `commit` reference defines it; `disc mark-degraded` added to the exclusive-lock list; the undefined `watch.*`, `mirror.*` and `reindex.*` key prefixes removed from the phase table. **State machines**: BURNED to PACKED on a failed verify drawn in the object state machine, and the recovery arrow out of `degraded` drawn in the disc lifecycle. **Numbers**: the fill-limit example corrected to 11,477,350 sectors; `disc.spare_reserve_bytes` corrected to 256 MiB under `spare:min` and 512 MiB under `spare:default`; the `m = 28` BD 128 GB burst figure corrected to 14.06 GB; the loss report's `exit_code` set corrected to 0, 1, 2 or 3; the `README.txt` slot count corrected to nineteen, with every slot substituted including the six in part 7. Tests 50 to 59 added, and test 41 extended. |
 | 2.4 | Reserve estimator: `catalog_bytes_per_run` now charges `earlier_runs * filter_bytes` instead of one filter, and `table_bytes` is derived from `catalog.expected_snapshots * (snapobj_bytes + 136) + catalog.table_reserve_bytes` instead of a flat constant; the catalog cap remedy stated as a formula; both worked examples, the dry-run printout, the catalog-cost figure and test 24 recomputed. `disc.expected_runs` defaults to 2 under profile 0, for the Phase 2 repair run's catalog copy. `disc.spare_reserve_bytes` depends on `disc.spare`: 256 MiB under `min`, 512 MiB under `default`. `fs_profile` stated to name the filesystem only; appendability comes from `sealed` and the drive's POW state. `body_crc32c` after the body is named as the filter container's exception to rule 7. The filter's `a`/`b` fingerprint rule made total, by lowest matching index. `README.txt`'s 16 KiB cap made normative, and the identity block's slot count corrected to thirteen. The catalog entry field renamed `catalog_role`, distinct from the layout table's `file_role`. Objects per run capped at 2^32-1, matching the `"FANO"` table. `repo.short_name`'s derivation stated. `pack`'s behavior on a staged set larger than one run stated. `disc mark-degraded` moved into a new `notes.bin` record type, local and independent of the cache. Manifest count restated as "8 plus the run's own, 9". Restore exit code 3 added to the 18.9 table. `image build` moved to the exclusive lock class. The photo-directory seek estimate corrected to 75 minutes. The snapshot header's `object_count` renamed `reachable_object_count`, and the snapshot table's mirrors it, to stop it being compared with the run header's physical `object_count`. Clarified: the local ref log's `sequence` order and the on-disc ref table's order govern different files; two-byte rolling is not a normative optimization; `data_budget` charges `data_span`; an unreadable checksum sector and a present-but-wrong digest are different cases; `disc.close_policy = always` is profile 0 only; manifest TOC offsets are 8-byte aligned; a snapshot object's bytes legitimately appear at two LBAs in one run. Go packages, project layout and coding style moved into informative reference-implementation notes. Informative markers and normative-outcome sentences added or strengthened for scheduling examples, the CI composite action, command templates, the FEC memory strategy, the filter construction steps and the restore-order syscalls. The broken local-cache table fixed by moving its prose below the table. The table of contents extended to every `####` heading. A sentence added naming the disc filesystem chapter as the append model's normative home. New sections added: a disc lifecycle state machine, an evolution rule for the JSON documents, a config-to-disc-bytes index, and a document status and governance paragraph. Golden vector files are published beside the specification. |
 | 2.3 | `fec_overhead` is `fec_region - data_budget`; the `m` parity header sectors became the named fixed term `parity_headers`, and both worked examples, the dry-run printout and test 24 were recomputed. The reserved-space chapter split into invariants, a reference estimator and the two examples; `fill_limit_sectors` has one definition and one consequence, and the superblock records the values the writer used. `disc.expected_runs` defaults to 1 under profile 0. `superblock_and_headers` counts the real sizes of `README.txt` and `FORMAT.txt`, which gained normative caps. `filter_bytes` uses the 80-byte header plus the 4-byte body CRC. `data_span` covers steps 1 to 6 only, ends at the File Entry block of the last file of step 6, and `pad.bin` is `k*L - data_span` sectors. The exact text of `README.txt` and the generation rule of `FORMAT.txt`. The BinaryFuse16 construction, peeling order and seed search. The burn step tree listing serialization. `RUN.bin` and `RUN2.bin` are 2048-byte files. `disc_run_index` is u32 in the run header. The run table holds every burned run with a `run_status`, and withdrawal is explicit. `snapobj.bin` is a kind 2 bundle object. `"BMAP"` and `"RIDX"` are reserved with no payload in version 1. Kind 6 never appears in a manifest, layout or state log record. Plans mark an object located only by a filter as probable and the restore confirms it. `init --repo-uuid` requires the next sequence numbers or a disc scan. Retention stated as a version 1 non-goal, threat model, performance and resource requirements, what a partial `pack` leaves behind, reader and writer interop matrix. The burst bound qualified to the data columns and the parity retry bounded. Command templates made informative. Profile 2 append cost corrected to 4.3 percent. Objects per run, the Mini BD size and the FastCDC minimum-chunk reading corrected. `disc.spare` is Phase 1. Tests 41 to 49 added. |
@@ -2470,12 +2478,11 @@ of each entry is unchanged.
 
 ## 11. Decision index
 
-The sixteen decisions whose home is this document.
+The thirteen decisions whose home is this document.
 
 | Id | Decision | Section |
 |---|---|---|
 | D310 | Tier-2 burning is not implemented in version 1; `burn --print` already renders the command lines. | 2.7 |
-| D342 | The maximum correctable single burst is `m * L` sectors, and the bound holds inside the data columns only. | 5.9 |
 | D356 | Parity must be computable within bounded memory; the whole run is never held at once. | 2.9 |
 | D357 | Cross-disc layers 0 to 5 exist; layer 2, content-addressed re-fetch, is free and must be tried first. | 2.9 |
 | D366 | A local index is an accelerator. The discs answer every question without it. | 2.10 |
@@ -2483,10 +2490,8 @@ The sixteen decisions whose home is this document.
 | D523 | NoahsArk has no built-in scheduler. `commit` is a batch job run by an external scheduler, and the exclusive repository lock keeps two commits from running at once. | 2.12, 7 |
 | D524 | Phase 1 has manual `commit` only. There is no daemon. A watcher never commits by itself. | 2.12 |
 | D525 | `commit` is idempotent, so a watcher changes no format and no state. | 2.12 |
-| D604 | Priorities are ordered and a conflict is resolved by that order: durability, readability without the tool, restore usability, dedup ratio, speed, media utilization. | 1.4 |
 | D605 | Every burn test uses an image file first. Physical burns are a manual checklist, not CI. | 2.17 |
 | D606 | The 59 required tests must all run. | 2.17 |
 | D607 | A probe records an unknown answer; a test asserts a known one. A probe answer that becomes stable moves into the test list as a test. | 2.17, 7 |
-| D608 | The probe list is normative: each question must be answered before the feature that depends on it ships. | 2.17, 7 |
 | D609 | Probe 2 (Windows reads ISO 9660:1999 level 4 long lowercase names) is blocking; profile 2 must not be used in production until it passes. | 4.6, 7 |
 | D618 | Chunk and hash in parallel across files. Write the run image single-threaded, because copy order is LBA order. | 6 |
