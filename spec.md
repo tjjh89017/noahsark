@@ -1,6 +1,6 @@
 # NoahsArk Specification
 
-Version: 2.1 (format major 1)
+Version: 2.2 (format major 1)
 Status: design specification. No implementation exists yet.
 Reference implementation language: Go (informative, section 24).
 
@@ -26,6 +26,7 @@ Reference implementation language: Go (informative, section 24).
   - 3.5 Component list
   - 3.6 Trust boundaries
   - 3.7 Repository layout and discovery
+  - 3.8 Security summary
 - 4. Binary format rules
   - 4.1 The ten rules
   - 4.2 Magic values
@@ -36,6 +37,8 @@ Reference implementation language: Go (informative, section 24).
   - 4.7 Version policy
   - 4.8 Endianness and alignment test
   - 4.9 Hash coverage per structure
+  - 4.10 CRC coverage per structure
+  - 4.11 Limits
 - 5. Identity and hashing
   - 5.1 The content id rule
   - 5.2 Hash algorithms
@@ -131,6 +134,7 @@ Reference implementation language: Go (informative, section 24).
   - 14.3 State log format
   - 14.4 GC rules
   - 14.5 Concurrency and locking
+  - 14.6 Local repository state: refs, the pending snapshot chain, and notes
 - 15. Packing and locality
   - 15.1 Why locality wins over dedup
   - 15.2 Rules
@@ -252,6 +256,7 @@ Reference implementation language: Go (informative, section 24).
   - C.7 Tool versions to check at startup
 - Appendix D. Rejected and superseded alternatives
 - Appendix E. Evidence: why true UDF multi-session is not possible
+- Appendix F. References
 
 ---
 
@@ -271,7 +276,8 @@ The system has five properties.
 The local index is an accelerator. It is never a source of truth. A user can
 delete the whole local cache. The discs still answer every question.
 
-The unit of writing is the **run**. One run is one growisofs write. A disc holds
+The unit of writing is the **run**. One run is one execution of one burn plan
+(section 10.7). Under profile 0 that is one growisofs write. A disc holds
 one or more runs. The disc always has exactly one physical UDF session. Section
 9 explains why true UDF multi-session is not possible with current open source
 tools, and gives the evidence.
@@ -402,8 +408,8 @@ Phase 1 does not implement (section 21.5).
 
 | Phase | Content |
 |---:|---|
-| **1** | Disc filesystem profile 0 only, as section 10.1 defines it. Sealing with `pack --close`. FastCDC chunking. Dedup with filters and manifests. Cache-less restore. Per-run Reed-Solomon parity and `verify --heal`. All media sizes. Forced capacity and forced reserve. The staging state machine and GC, with a mandatory `verify` before an object becomes CLEAN. Manual `commit` only, with no watcher. The disc-major restore plan. The Phase 1 metadata set: type, mode, uid, gid, names, mtime, symlink target and hardlink group. |
-| **2** | The `sync` mirror wrapper over rsync. Extended metadata: extended attributes, POSIX ACLs, the remaining timestamps, Windows attributes. Disc filesystem profile 1: POW append on UDF with the image mirror and the block diff. The LBA stability check after every append. The `close` and `append` commands, and the `when_full` close policy. Repair runs. The raw append degraded mode. Spare area monitoring. |
+| **1** | Disc filesystem profile 0 only, as section 10.1 defines it. Sealing with `pack --close`. FastCDC chunking. Dedup with filters and manifests. Cache-less restore. Per-run Reed-Solomon parity and `verify --heal`. All media sizes. Forced capacity and forced reserve. The staging state machine and GC, with a mandatory `verify` before an object becomes CLEAN. Manual `commit` only, with no watcher. The disc-major restore plan. The Phase 1 metadata set: type, mode, uid, gid, names, mtime, ctime, symlink target and hardlink group. |
+| **2** | The `sync` mirror wrapper over rsync. Extended metadata: extended attributes, POSIX ACLs, atime and birth time, Windows attributes. Disc filesystem profile 1: POW append on UDF with the image mirror and the block diff. The LBA stability check after every append. The `close` and `append` commands, and the `when_full` close policy. Repair runs. The raw append degraded mode. Spare area monitoring. |
 | **3** | Watch mode, the change-recording daemon. Disc-close parity. The cross-disc parity disc. Mirror bookkeeping. `consolidate`. Multi-drive restore. `reindex`. Disc filesystem profile 2, ISO 9660:1999 level 4 with `growisofs -M`. Burning on tier-2 operating systems. |
 | **Backlog** | Commit bundles: the binary on the data host, `catalog export`, `commit --out`, `import`, and deployment mode C. Specified in full and reserved in the format, but not scheduled for any phase. |
 
@@ -594,11 +600,12 @@ disc and not in the cache:
 | `<repo>/config` | The configuration file of section 20. It holds `repo.uuid`. | Yes. |
 | `<repo>/lock` | The repository lock file of section 14.5. | Yes. |
 | `<repo>/staging/` | The staging store of section 14, unless `staging.dir` moves it. | Yes, the role. The name is the default. |
-| `<repo>/notes` | Operator notes per disc: shelf location and a local display label, keyed by `disc_uuid` (section 19.22). Convenience data. Losing it loses no archive data. | Yes, the role. The name is the default. |
+| `<repo>/refs.bin` | The local ref log of section 14.6: the current value of every ref, and the head of the pending snapshot chain. Authoritative for a ref whose run is not yet CLEAN. | Yes. |
+| `<repo>/notes.bin` | Operator notes per disc: shelf location and a local display label, keyed by `disc_uuid` (sections 14.6 and 19.22). Convenience data. Losing it loses no archive data. | Yes, the role. The name is the default. |
 | `<repo>/probes/` | Results of the manual probes of section 23.6, one text file each. | Informative. |
 
 `init` creates the directory, `config` with a fresh `repo.uuid`, an empty
-`staging/` with an empty state log, and `lock`. A directory is a repository
+`staging/` with an empty state log, an empty `refs.bin`, and `lock`. A directory is a repository
 when it holds a readable `config` whose `repo.uuid` parses as a uuid.
 
 Discovery, in order. The first hit wins:
@@ -617,7 +624,27 @@ cache and deleting the repository stay independent acts. Every disc of a
 repository carries `repo_uuid`, so a repository that was lost is recreated by
 `init --repo-uuid=<uuid>` followed by `rebuild-cache`; nothing in the
 repository directory is a source of truth except the state log for objects
-that are not yet CLEAN.
+that are not yet CLEAN and the local ref log for refs whose run is not yet
+CLEAN (section 14.6).
+
+### 3.8 Security summary
+
+Security in this document is a set of invariants, each stated once in the
+section that owns it. This subsection joins them.
+
+| Invariant | Section |
+|---|---|
+| Bytes from a disc, from the cache, from a bundle and from a source mount are untrusted until they verify. | 3.6 |
+| A content id is verified after decompression on every read. There is no trusted path. | 5.1, 24 |
+| A filter hit never drops data; only an exact manifest hit does. | 12.8 |
+| A tree entry name is validated at parse time: never empty, `.`, `..`, or a name with `/`, `\` or NUL. | 8.5.8 |
+| The restorer never builds a path string, never follows a symlink on the way to a target, and treats a symlink target as data. | 18.8 |
+| Ownership and times are applied with `AT_SYMLINK_NOFOLLOW` semantics. | 18.3, 18.4 |
+| An ACL is never translated between models silently; a translation never widens access. | 18.6 |
+| A burn plan is validated before it is rendered or executed: every CRC, every seek alignment, every payload hash. | 10.7.1 |
+| `burn --exec` runs only the printed commands and refuses an unpatched burner. | 10.7, 10.12 |
+| Locks are advisory and are not a security boundary. | 14.5 |
+| Encryption and signing are reserved, not implemented. | 8.9 |
 
 ---
 
@@ -648,10 +675,17 @@ breaks a rule is a defect.
    and `optional_feat` (u64). A reader must refuse the structure if any unknown
    bit is set in `required_feat`. A reader must ignore unknown bits in
    `optional_feat`.
-7. **Checksum last.** Every structure ends with a checksum over the structure
-   bytes that precede it. Small headers use CRC-32C (Castagnoli, polynomial
-   0x1EDC6F41, reflected, initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF).
-   Objects use the full content hash instead; the content id is the checksum.
+7. **Checksum last.** Every structure carries a checksum, and every checksum
+   field lies after every byte that it covers. A structure has one of two
+   shapes. A structure with no separate body ends with one CRC over every
+   byte that precedes it. A container with a header and a body carries two
+   CRCs at the end of its header: `header_crc32c` over the header bytes that
+   precede it, and `body_crc32c` over the body that follows the header; the
+   header is then written last, after the body is final. Section 4.10 states
+   what each CRC covers, per structure. CRCs use CRC-32C (Castagnoli,
+   polynomial 0x1EDC6F41, reflected, initial value 0xFFFFFFFF, final XOR
+   0xFFFFFFFF). Objects use the full content hash instead of a body CRC; the
+   content id is the checksum.
 8. **Hashed pointers.** Every pointer carries the hash of its target. No
    unhashed reference exists. This rule comes from GEFS.
 9. **String encoding.** A string is `encoding` (u8), then `reserved` (u8[3],
@@ -717,7 +751,8 @@ Bits are assigned once and never reused.
 | 2 | optional | `OPT_XLATE` | A cross-algorithm side table is present. |
 | 3 | optional | `OPT_DISC_PARITY` | A disc-wide parity run is present. |
 
-Bits 7 to 63 of each half are reserved. A writer must set them to zero.
+Bits 7 to 63 of the required half and bits 4 to 63 of the optional half are
+reserved. A writer must set them to zero.
 
 **Bits set by a version 1 writer.** A feature bit belongs to the structure
 that carries it. A reader checks the bits of the structure it reads and no
@@ -802,7 +837,7 @@ renumbered. Appendix B repeats these tables in one place.
 
 | Id | Name | Field | Shards | Status |
 |---:|---|---|---:|---|
-| 1 | `rs255-gf8` | GF(2^8) | 255 | Default. k + 1 + m = 255. |
+| 1 | `rs255-gf8` | GF(2^8) | 255 | Default. A stripe is `k + 1 + m = 255` sectors; the code is over the `k + m` data and parity shards (section 11.2). |
 | 2 | `rs-leopard-gf16` | GF(2^16) | up to 65536 | Reserved. |
 
 **Object kind registry.** Section 8.1 repeats it with detail.
@@ -895,11 +930,76 @@ every such field.
 | `payload_hash` | Burn step (section 10.7.1) | Every byte of the image file, or the sorted tree listing. | `hash.current`. |
 | `catalog_hash` | Commit bundle header (section 16.11.1) | Every byte of the exported `CATALOG.bin`. | Bundle `hash_algo`. |
 | Content id | Object file name | The uncompressed payload only (section 5.1). Never the object header. | Run header `hash_algo`. |
-| Sector digest | Checksum sector (section 11.4) | The 2048 bytes of one data sector as they lie on the medium. | BLAKE3, truncated to 8 bytes. |
+| Sector digest | Checksum sector (section 11.4) | The 2048 bytes of one data sector as they lie on the medium. | BLAKE3-256, the first 8 bytes of the 32-byte digest. |
 
 A reader verifies a hash before it uses any field of the hashed structure,
 and it verifies the CRC of that structure as well. The CRC catches a torn
 write. The hash catches a substituted file.
+
+### 4.10 CRC coverage per structure
+
+Rule 7 of section 4.1 allows one CRC or a header CRC plus a body CRC. The
+table states what each CRC covers. A structure that the table does not name
+carries no CRC and is covered by its content id or by the CRC of its
+container.
+
+| Structure | Field | Covers |
+|---|---|---|
+| Common object header (section 4.3) | `header_crc32c` | Bytes 0 to 59. The payload is covered by the content id. |
+| Bundle header (section 8.3) | `header_crc32c` | Bytes 0 to 59 of the bundle header. |
+| Bundle trailer (section 8.3) | `trailer_crc32c` | Bytes 0 to 27 of the trailer. The chunk payloads and the index are covered by the bundle's content id. |
+| Chunklist, tree and snapshot payloads (sections 8.4, 8.5, 8.7) | none | The content id covers the whole payload, records included. |
+| Reindex container (section 5.7) | `header_crc32c`, `body_crc32c` | Bytes 0 to 59; every record. |
+| Disc superblock (section 9.5) | `super_crc32c` | Bytes 0 to 2043. |
+| Run header (section 9.6) | `header_crc32c` | Bytes 0 to 507. |
+| Run layout table (section 9.7) | `header_crc32c`, `body_crc32c` | Bytes 0 to 107; every extent record. |
+| Burn plan container (section 10.7.1) | `header_crc32c` | Bytes 0 to 251. |
+| Burn step record (section 10.7.1) | `step_crc32c` | Bytes 0 to 507 of the step. |
+| Checksum sector (section 11.4) | `header_crc32c` | Bytes 0 to 11. The digests are checked as section 11.4 states. |
+| Filter container (section 12.2) | `header_crc32c`, `body_crc32c` | Bytes 0 to 75; the fingerprint array. |
+| Manifest container (section 12.3) | `header_crc32c`, `body_crc32c` | Bytes 0 to 59; every byte from offset 64 to the end, that is the TOC, the sentinel and every chunk. |
+| Simple table container (section 12.5.1) | `header_crc32c`, `body_crc32c` | Bytes 0 to 59; every record. |
+| Catalog container (section 12.7.2) | `header_crc32c`, `body_crc32c` | Bytes 0 to 59; every entry. |
+| State log (section 14.3) | `header_crc32c`, `record_crc32c` | Bytes 0 to 59 of the header; bytes 0 to 91 of each record. |
+| Local ref log and notes file (section 14.6) | `header_crc32c`, `record_crc32c` | Bytes 0 to 59 of the header; every byte of each record before its CRC. |
+| Commit bundle header (section 16.11.1) | `header_crc32c` | Bytes 0 to 251. |
+
+### 4.11 Limits
+
+Every limit that a structure fixes is listed here. A writer refuses an input
+that exceeds a limit and names the limit. A reader refuses a structure that
+exceeds a limit and names the limit.
+
+| Item | Limit | Where it is fixed |
+|---|---:|---|
+| Digest length | 32 bytes | Section 5.3. A longer digest needs a new major version. |
+| Tree entry name | 1 to 4095 bytes | `name_len`, section 8.5.1. |
+| Tree entries per directory | 2^32 - 1 | `entry_count`, section 8.5. |
+| Inline chunk ids per entry | writer 64, reader any | `chunklist.inline_max`, section 8.4. |
+| Chunklist entries | 2^64 - 1 | `entry_count`, section 8.4. A level 1 chunklist is required only above the writer's chunklist size target. |
+| Tree entry length | 2^32 - 1 bytes | `entry_len`, section 8.5.1. |
+| TLV payload | 2^32 - 1 bytes; spilled above `tree.tlv_spill_threshold` | Sections 8.5.4 and 8.5.6. |
+| Snapshot metadata TLVs | 65,535 per snapshot | `meta_count`, section 8.7. |
+| Ref name | 1 to 40 bytes | Section 8.8. |
+| Disc label | 64 bytes in the superblock, 48 bytes in the disc directory | Sections 9.5 and 12.6. |
+| Run sequence number | 1 to 9,999,999,999 | The 10-digit run directory name, section 10.4. |
+| Manifest fan-out | 256 or 65,536 entries | Section 12.3. |
+| Objects per run | 2^64 - 1; a 16-bit fan-out above 1,000,000 | Section 12.3. |
+| Burn plan steps | 65,535 | `step_count`, section 10.7.1. |
+| Burn plan device hint | 64 bytes | Section 10.7.1. |
+| Burn step source path | 256 bytes | Section 10.7.1. A longer staging path is an error. |
+| Burn step auxiliary path | 184 bytes | Section 10.7.1. A longer path is an error. |
+| Commit bundle host name | 64 bytes | Section 16.11.1. |
+| Shelf note | 128 bytes | Section 14.6. |
+| File size | 2^64 - 1 bytes | Every size field is u64, section 2.6. |
+| Disc capacity | 2^64 - 1 sectors | Section 9.5. |
+| FEC geometry | `k = 231`, `m = 23` | Section 11.2. |
+| On-disc object name | 68 characters | Section 5.4. |
+| Any on-disc name | 126 characters | Section 10.6. |
+| Any on-disc path | under 220 characters | Section 10.6. |
+| Host UDF name | 254 bytes | Section 10.1.3. |
+| Host UDF path | 1023 bytes by the standard | Section 10.1.3. |
+| Host ISO 9660 name | 207 bytes | Section 10.3.2. |
 
 ---
 
@@ -1022,9 +1122,13 @@ directory of a few hundred entries is still a short linear scan.
 
 | Profile | Levels allowed | Reason |
 |---|---|---|
-| 1, `udf201-pow` | 1, or optionally 2 (`objects/<d0><d1>/<d2><d3>/<id>`) | A UDF append rewrites only the changed directories, so a second level costs nothing. |
+| 0, `oneshot` | 1, or optionally 2 (`objects/<d0><d1>/<d2><d3>/<id>`) | There is no append. |
+| 1, `udf201-pow` | 1, or optionally 2 | A UDF append rewrites only the changed directories, so a second level costs nothing. |
 | 2, `iso9660v1-l4-pow` | 1 only | Each ISO 9660 append rewrites every directory record. Two levels would create up to 65,536 directories and would cost about 107 MiB per append at 100,000 objects. |
-| 0, `oneshot` | 1, or optionally 2 | There is no append. |
+
+Profile 0 and profile 1 allow two levels. Profile 2 allows one. This table is
+the one normative statement of the rule; `fanout_levels` in the superblock
+(section 9.5) and `fs.fanout_levels` (section 20.4) record the choice.
 
 The disc superblock records the choice in `fanout_levels`. The longest object
 path is `/NOAHSARK/objects/ab/<68>`, that is 89 characters at one level and 92
@@ -1184,7 +1288,7 @@ boundary.
 
 Restore seek cost, worst case, at 150 ms per seek and one seek per chunk:
 
-| Profile | Seeks per GB | Seek time per GB |
+| Profile | Seeks per GiB | Seek time per GiB |
 |---|---:|---:|
 | P3 | 512 | 77 s |
 | P4 | 256 | 38 s |
@@ -1228,8 +1332,11 @@ seeking.
 
 There is no extent table in the format for sparse regions.
 
-- All-zero regions produce identical maximum-size zero chunks. Those chunks
-  dedup to one object in the repository.
+- An all-zero region cuts into identical chunks of exactly `max` bytes. This
+  is a property of the Gear table and the masks, not an assumption: the zero
+  chunk golden vector of section 23.8 verifies it for every profile, and a
+  writer relies on the vector, not on the statement. Those chunks dedup to one
+  object in the repository.
 - On restore, the restorer detects an all-zero chunk by scanning its bytes,
   never by comparing its id to a constant. It skips the write, or it punches a
   hole. The file becomes sparse again. Informative: on Linux the hole is
@@ -1372,9 +1479,10 @@ A **chunk** object is the common header followed by the payload bytes.
 
 A **bundle** holds every chunk whose uncompressed payload is below
 `bundle.threshold` (default 1 MiB), as section 6.5 states. The target bundle
-size is `bundle.target_size` (default 64 MiB). A bundle is filled in path order
-from one directory subtree, so that restoring a photo folder reads one or two
-contiguous bundles.
+size is `bundle.target_size` (default 64 MiB). A bundle is filled in path order,
+which is the depth-first order of section 15.2. A bundle may span sibling
+files and sibling directories; only the path order is required. Restoring a
+photo folder then reads one or two contiguous bundles.
 
 Bundle payload layout:
 
@@ -1557,12 +1665,12 @@ Padding is covered by `entry_len`.
 |---:|---|---|
 | 0 | `HARDLINK_MEMBER` | The entry belongs to a hardlink group. Redundant with a non-zero `hardlink_group`, kept for a cheap test. |
 | 1 | `ATIME_ABSENT` | `atime_sec` and `atime_nsec` carry no information. |
-| 2 | `CTIME_ABSENT` | `ctime_sec` and `ctime_nsec` carry no information. |
+| 2 | `CTIME_ABSENT` | `ctime_sec` and `ctime_nsec` carry no information. A writer sets it only when the source reported no ctime (section 16.10). A Phase 1 writer stores ctime whenever the source reports one, because the quick check of section 16.2 compares it. |
 | 3 | `BTIME_ABSENT` | `btime_sec` and `btime_nsec` carry no information. |
 | 4 | `SPARSE` | The source file had holes. The restorer punches holes, as section 6.6 states. |
 | 5 | `METADATA_PARTIAL` | The source read failed for at least one metadata field. |
 | 6 | `CONTENT_IS_CHUNKLIST` | The content area holds one chunklist id, not chunk ids. |
-| 7 | `UNSTABLE` | The file changed while it was being read, and no earlier consistent version existed. The content is one possible read of a moving file. See section 18.6. |
+| 7 | `UNSTABLE` | The file changed while it was being read, and no earlier consistent version existed. The content is one possible read of a moving file. Section 16.6 states when a writer sets it; section 18.10 states what a restore does with it. |
 
 #### 8.5.3 Variable areas
 
@@ -1710,11 +1818,33 @@ hardlink_group = u64le( BLAKE3-256( repo_uuid || u64le(st_dev) || u64le(st_ino) 
 if hardlink_group == 0: hardlink_group = 1
 ```
 
-`repo_uuid` is the 16-byte repository uuid. The id is compared only inside one
-snapshot. It is stable, so an unchanged directory keeps its tree hash from one
-commit to the next. It is not the raw inode number, so it leaks no host state
-and it cannot be confused with an inode. When the source does not report link
-counts (`NO_HARDLINKS`, section 8.7), no group is formed.
+`repo_uuid` is the 16-byte repository uuid. `st_dev` and `st_ino` are those
+of the **source** file. In direct mode the walker reads them from the source.
+In mirror mode (section 16.4) they come from the stat listing of the source,
+never from the mirror copy, whose inodes belong to the staging disk. The id
+is compared only inside one snapshot. It is stable, so an unchanged directory
+keeps its tree hash from one commit to the next. It is not the raw inode
+number, so it leaks no host state and it cannot be confused with an inode.
+When the source does not report link counts (`NO_HARDLINKS`, section 8.7),
+no group is formed.
+
+When a stat listing reports link counts but no device or inode numbers, the
+writer derives the id from the source path set of the group instead. The
+group members are the mirror files that share one mirror inode, which
+`rsync -H` preserves. The rule is:
+
+```
+paths          = the source paths of the group, sorted by raw bytes, each
+                 followed by one NUL byte
+hardlink_group = u64le( BLAKE3-256( repo_uuid || 0x01 || paths )[0 .. 7] )
+if hardlink_group == 0: hardlink_group = 1
+```
+
+The `0x01` byte separates this rule from the device-and-inode rule, so the
+two never collide. A path-set id changes when a member is added or removed;
+the writer then re-emits every member of the group with the new id, so that
+all members of one group in one snapshot carry one id. The snapshot records
+which rule was used in `source_flags` bit 6, `HARDLINK_BY_PATH`.
 
 Consequences:
 
@@ -1766,7 +1896,7 @@ Metadata TLV record:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 0 | 2 | u16 | `tag` | 1 author, 2 host, 3 message, 4 source root, 5 exclude rules, 6 checksum commit. Tags 4 and 5 repeat, one per root, in root order. |
+| 0 | 2 | u16 | `tag` | Snapshot metadata tag registry, Appendix B.2: 1 author, 2 host, 3 message, 4 source root, 5 exclude rules, 6 checksum commit. Tags 4 and 5 repeat, one per root, in root order. |
 | 2 | 2 | u16 | `flags` | bit0 CRITICAL. |
 | 4 | 4 | u32 | `len` | Payload bytes. |
 | 8 | `len` | u8[] | `value` | UTF-8 for tags 1 to 3. Raw path bytes for tag 4. UTF-8 pattern lines for tag 5. Empty for tag 6. |
@@ -1793,7 +1923,8 @@ Metadata TLV record:
 | 3 | `SYNTHETIC_IDS` | uid, gid or mode may have been synthesized by the mount. |
 | 4 | `CASE_INSENSITIVE` | The source did not distinguish names by case. |
 | 5 | `MTIME_SLACK` | An mtime slack was applied in the quick check. |
-| 6 to 7 | reserved | Zero. |
+| 6 | `HARDLINK_BY_PATH` | Hardlink group ids were derived from source path sets, not from device and inode numbers (section 8.6). |
+| 7 | reserved | Zero. |
 
 `restore` prints one warning per set bit, once, before it writes anything.
 
@@ -1820,9 +1951,12 @@ Ref record, 96 bytes:
 | 48 | 40 | u8[40] | `name` | UTF-8, zero-padded. A name above 40 bytes is refused at commit time. The limit is part of the format. |
 | 88 | 8 | u64 | `run_seq` | Run that recorded this value. |
 
-The table is append-only across runs. A reader takes the newest record for each
-name, by `run_seq` and then by time. `LATEST` is the reserved name for the
-newest snapshot. This is a reflog, not a ref: the whole history of the pointer
+The table is sorted by `name` bytes, unsigned, ascending, then by `time_sec`
+ascending, then by `snapshot_id` bytes ascending (section 12.5.1). It is
+append-only across runs. A reader takes the newest record for each name: the
+highest `run_seq`, then the highest `time_sec`, then the highest `time_nsec`.
+A record with `run_seq` 0 exists only in the local ref log of section 14.6,
+never on a disc. `LATEST` is the reserved name for the newest snapshot. This is a reflog, not a ref: the whole history of the pointer
 is distributed over the runs in burn order.
 
 ### 8.9 Reserved crypto fields
@@ -1851,6 +1985,10 @@ the root snapshot id. None of this is part of version 1.
 | Chunklist entries | File offset ascending. |
 | Bundle index entries | Content id ascending. |
 | Manifest records | Content id ascending. |
+
+Every "ascending" in this table, and everywhere else in this document, is an
+unsigned bytewise comparison: the first differing byte decides, and a
+shorter string that is a prefix of a longer one sorts first.
 
 Two identical directories must serialize to identical bytes. A writer that
 breaks a rule in this table breaks dedup silently.
@@ -1929,7 +2067,9 @@ path.
 
 ### 9.3 The run
 
-A **run** is one write of the burn plan by an external burner. It is the unit
+A **run** is one execution of one burn plan (section 10.7). Under profile 0
+and profile 1 variant 1b that is one or more growisofs writes; under
+profile 1 variant 1a it is a mount, a copy and an unmount. It is the unit
 of:
 
 - packing;
@@ -1948,7 +2088,7 @@ full:
 | Term | Meaning |
 |---|---|
 | `lba_base` | The first sector of the run's parity domain. For the first run of a disc it is **LBA 0**, so that the filesystem descriptors, the anchor at LBA 256 and every directory block below `RUN.bin` are protected. For every later run it is the first sector of that run's `RUN.bin`. |
-| `L`, column length | The number of sectors in one column. `L = ceil(data_span / k)`, where `data_span` is the number of sectors from `lba_base` to the last sector of the last data file, inclusive. |
+| `L`, column length | The number of sectors in one column. `L = ceil(data_span / k)`, where `data_span` is the number of sectors from `lba_base` to the last sector of the **data extent** of the last data file, inclusive. The File Entry block of that file, and of `pad.bin`, `checksum.bin` and the parity files, lies outside the domain (section 11.2). |
 | Column | A range of `L` sectors. The `k` data columns are the LBA ranges `[lba_base + c*L, lba_base + (c+1)*L)` for `c = 0 .. k-1`. The checksum column and the `m` parity columns are the sector ranges of the files `checksum.bin` and `parity/pNNNN.bin`. |
 | Parity domain | The `k` data columns together: the contiguous range `[lba_base, lba_base + k*L)`. Every sector in it is protected, whatever file or filesystem structure it belongs to. |
 
@@ -2215,8 +2355,8 @@ distinct directories:
 
 | Fan-out | Directories on the path | Directory blocks overwritten | LVID and bitmap | Total per append |
 |---|---:|---:|---:|---:|
-| One level, `/NOAHSARK/objects/ab/<name>` | 2 per object (`objects`, `objects/ab`) | 1 + min(d, 256) | 2 to 4 | `3 + min(d,256) + 2` blocks, at most **263 blocks (526 KiB)** |
-| Two levels, `/NOAHSARK/objects/ab/cd/<name>` | 3 per object | 1 + 256 + min(d, 65536) | 2 to 4 | at most **65,797 blocks (128.5 MiB)** in the worst case, and `3 + d + 3` in the common case where the new objects touch few leaf directories |
+| One level, `/NOAHSARK/objects/ab/<name>` | 2 per object (`objects`, `objects/ab`) | 1 + min(d, 256) | 2 to 4 | `1 + min(d,256) + 2 to 4` blocks, at most **261 blocks (522 KiB)** |
+| Two levels, `/NOAHSARK/objects/ab/cd/<name>` | 3 per object | 1 + 256 + min(d, 65536) | 2 to 4 | at most **65,797 blocks (128.5 MiB)** in the worst case, and about `1 + 2d + 4` in the common case where the new objects touch `d` leaf directories under `d` distinct first-level directories |
 
 The one-level worst case is bounded by the 256 first-level directories. The
 two-level worst case is bounded by 65,536 leaf directories, but it is reached
@@ -2287,7 +2427,7 @@ Extent record, 64 bytes:
 | 48 | 4 | u32 | `sector_count` | Sectors this extent covers. |
 | 52 | 4 | u32 | `byte_off` | Byte offset inside the first sector. |
 | 56 | 2 | u16 | `extent_index` | 0 for the first extent of an object. |
-| 58 | 2 | u16 | `flags` | bit0 last extent, bit1 duplicate for locality, bit2 metadata object. |
+| 58 | 2 | u16 | `flags` | bit0 last extent, bit1 duplicate for locality, bit2 metadata object, that is a tree, a chunklist or a snapshot object (section 26). |
 | 60 | 1 | u8 | `kind` | Object kind registry. 0 for a fixed-name file. |
 | 61 | 1 | u8 | `compression` | Compression id. 0 for a fixed-name file. |
 | 62 | 1 | u8 | `file_role` | 0 object. 1 `RUN.bin`. 2 `DISC.bin`. 3 `README.txt`. 4 `FORMAT.txt`. 5 `layout.bin`. 6 `manifest.bin`. 7 `filter.bin`. 8 a catalog file. 9 `pad.bin`. 10 `checksum.bin`. 11 a parity file. 12 `RUN2.bin`. |
@@ -2295,6 +2435,9 @@ Extent record, 64 bytes:
 
 A fragmented file produces several records with the same `content_id` and
 increasing `extent_index`. The record with `flags` bit 0 set is the last one.
+A zero-length file, which only `pad.bin` can be (section 10.5), has exactly
+one record with `start_lba` 0, `byte_len` 0, `sector_count` 0, `byte_off` 0
+and `flags` bit 0 set.
 
 The table covers **every file** of the run, not only the objects: `RUN.bin`,
 `DISC.bin`, `README.txt` and `FORMAT.txt` in the first run, `layout.bin`,
@@ -2326,6 +2469,14 @@ When the filesystem directory is unreadable, a recovery tool works as follows:
 
 This path needs no filesystem code at all. It is Phase 3, because Phase 1 and
 Phase 2 discs are read through the filesystem.
+
+**Raw-LBA reading** means that the tool reads the physical device by LBA,
+with no filesystem and no image file between them. Reading an image file by
+byte offset, where sector `s` is the bytes `[s * 2048, s * 2048 + 2048)`, is
+not raw-LBA reading. Phase 1 `verify --image` reads an image that way,
+locates the run header and the layout table in it, and repairs from it
+(section 11.8). A raw-append run (section 9.11) and a disc whose filesystem
+directory is unreadable in the drive need this Phase 3 path.
 
 ### 9.8 Append model
 
@@ -2360,7 +2511,8 @@ superblock field `sealed` and in `state_flags` bit 0 of the disc directory, so
 a later tool never tries to append to it.
 
 Section 10.1.5 is the normative home of the two profile 0 burn paths, with the
-command lines and the trade-off table.
+command lines, what each path writes, and the trade-off table. Section 9.9.1
+below explains the tail anchors only.
 
 #### 9.9.1 Tail anchors
 
@@ -2369,7 +2521,7 @@ full-size image. The **used prefix** of the image is LBA 0 up to and including
 the last sector of `RUN2.bin`, rounded up to a multiple of 16 sectors.
 
 **Open disc, the default.** The first run writes the used prefix and nothing
-else, with one growisofs call (section 10.1.5). The tail anchors are not on
+else (section 10.1.5). The tail anchors are not on
 the disc yet. A disc with only the LBA 256 anchor still mounts, because that
 anchor is mandatory in the standard, but three anchors are what every reader
 expects on a premastered disc. The tail anchors reach the disc when an append
@@ -2381,7 +2533,7 @@ sectors of the image.
 
 **Sealed disc, `pack --close`.** A sealed disc can never be appended, so its
 tail anchors must be written at its only burn. `pack --close` therefore burns
-the **full-size image** in one growisofs call: the used prefix, the unused
+the **full-size image** (section 10.1.5): the used prefix, the unused
 middle as zero sectors, and the last 512 sectors with the tail anchors. The
 zero region costs burn time and nothing else; `pack` runs only when the disc
 is at least `disc.min_fill` full, so that time is bounded. Test 34 of
@@ -2407,6 +2559,9 @@ Benefits of leaving a disc open:
 2. An extra parity run can be added later, when the health report shows a
    shrinking RS margin.
 3. No capacity is wasted. A disc that is 60 percent full stays available.
+
+This subsection is the normative home of what `close` does. Section 19.10
+is the command; section 10.2.2 is the append mechanism it uses.
 
 When the user does close a disc with `noahsark close` (Phase 2), the writer
 must:
@@ -2478,8 +2633,8 @@ In raw append mode:
 2. The filesystem directory is **not** updated. No overwrite happens, so no
    spare block is needed.
 3. The run header, the manifest, the filter, and the layout table go inside the
-   new run, exactly as usual. The LBA extents in the run header therefore make
-   every object readable.
+   new run, exactly as usual. The LBA extents in the layout table, which the
+   run header locates, therefore make every object readable.
 4. The disc directory marks the disc `append-raw-only`. A reader finds the raw
    runs through the run header chain. A raw append writes its `RUN.bin` at
    `lba_base + run_sectors` of the previous run, rounded up to a multiple of 16
@@ -2552,6 +2707,20 @@ verification.
 A reader who only implements Phase 1 needs section 10.1 and sections 10.4
 onward. Sections 10.2 and 10.3 are later phases.
 
+Each burn-side topic has exactly one normative home. Every other mention is
+a pointer to it.
+
+| Topic | Normative home | Pointers |
+|---|---|---|
+| Profile 0 burn command lines, open and sealed | 10.1.5 | 9.9, 9.9.1, 10.8, C.3 |
+| Append mechanism and LBA re-verification | 10.2.2 | 9.8, 26 |
+| Profile 1 variant 1b write command line | 10.2.4 | 10.8, C.3 |
+| Profile 2 build and burn command lines | 10.3.4 | 10.2.2, 10.8, C.3 |
+| What `close` writes | 9.9.2 | 19.10, 10.7.1 |
+| Command templates that `burn --print` renders | 10.8 | 20.5 |
+| Burn plan container | 10.7.1 | 3.1, 19.9 |
+| Fallback table | 10.12.1 | 9.10 |
+
 ### 10.1 Profile 0, `oneshot` (default, Phase 1)
 
 Profile 0 writes **one large run per disc**. There is no append, no
@@ -2622,8 +2791,13 @@ mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 \
         --bootarea=erase "$IMG"
 ```
 
-Informative: the label `NOAHSARK-0001` is an example. `label.template`
-(section 20.8) produces the real one.
+Only four things in that command line are normative: `--media-type=hd`,
+`--blocksize=2048`, `--udfrev=2.01`, the option order with `--utf8` first and
+every override after `--media-type`, and the absence of `--spartable`. The
+rest is an example: the label comes from `label.template` (section 20.8);
+`--uid`, `--gid`, `--mode` and `--bootarea` are the reference
+implementation's choices; the `truncate` size is the forced capacity rounded
+down to 16 sectors, which section 9.12 requires, by whatever means.
 
 Rules that the command line encodes:
 
@@ -2674,14 +2848,15 @@ user file names are ever written to the disc directly.
 
 #### 10.1.4 Fan-out
 
-Section 5.5 states the fan-out rule and its default. Profile 1 also allows a
-second level, because a UDF append rewrites only the directories that changed.
+Section 5.5 states the fan-out rule and its default. Profile 0 and profile 1
+allow a second level; profile 2 does not.
 
 #### 10.1.5 Burn
 
 The burn is one growisofs call. Two variants exist, and this subsection is
-their normative home. Section 9.9 states the close policy that selects between
-them, and section 9.9.1 states what each one writes. Informative: `-speed=4`
+their normative home: the command line and what each variant writes. Section
+9.9 states the close policy that selects between them, and section 9.9.1
+explains the tail anchors. Informative: `-speed=4`
 in the command lines below is an example; `burner.speed` and
 `burner.speed_mdisc` (section 20.5) set the real value.
 
@@ -2807,7 +2982,7 @@ received more runs. Everything in section 10.1 applies to it unchanged.
 
 The filesystem, the image build, the limits, the fan-out, the LBA read-back,
 the reader issues and the placement order are those of profile 0, sections
-10.1.1 to 10.1.8. A profile 1 disc may also use two fan-out levels
+10.1.1 to 10.1.8. A profile 1 disc may use two fan-out levels, as a profile 0 disc may
 (section 5.5), because a UDF append rewrites only the directories that
 changed.
 
@@ -2816,14 +2991,15 @@ changed.
 Both appendable profiles use the same medium mechanism: **Pseudo-OverWrite
 growth on a formatted BD-R**. Only the filesystem step differs.
 
-The medium mechanism, from the growisofs source:
+The medium mechanism, which growisofs implements (Appendix E names the
+functions):
 
-- `bd_r_format()` formats any blank BD-R unless `spare:none` is passed, and it
+- growisofs formats any blank BD-R unless `spare:none` is passed, and it
   forces the Format Subtype to SRM+POW.
-- `poor_man_rewritable()` classes `profile == 0x41 && bdr_plus_pow` as
-  rewritable, next to DVD+RW and BD-RE.
-- `plusminus_r_C_parm()` then takes `next_session` from the track's Next
-  Writable Address and forces `prev_session = 0`.
+- growisofs treats a POW-formatted BD-R as rewritable, next to DVD+RW and
+  BD-RE.
+- An append takes `next_session` from the track's Next Writable Address and
+  keeps `prev_session = 0`.
 - The man page agrees: "volumes are grown within a single session" on Blu-ray.
 
 The consequence is measurable: `dvd+rw-mediainfo` always reports
@@ -2833,10 +3009,10 @@ never engages.
 | Step | Profile 1, variant 1a | Profile 1, variant 1b | Profile 2 |
 |---|---|---|---|
 | Format | `spare:min` on the first write | `spare:min` on the first write | `spare:min` on the first write |
-| Build | `mkudffs`, then a mount of the disc itself | `mkudffs`, then a loop mount of an image mirror | `genisoimage` inside growisofs |
-| Append | Mount `/dev/sr0` read-write with the kernel udf driver, copy files in fill order (section 10.5) | Copy into the mirror, diff 32 KiB blocks, write each changed run with `growisofs -use-the-force-luke=seek:N,spare:min -Z` | `growisofs -M`, one command |
+| Build | `mkudffs`, then a mount of the disc itself | `mkudffs`, then a loop mount of an image mirror | `genisoimage`, run by NoahsArk, writes an image (section 10.3.4) |
+| Append | Mount `/dev/sr0` read-write with the kernel udf driver, copy files in fill order (section 10.5) | Copy into the mirror, diff 32 KiB blocks, write each changed run with `growisofs -use-the-force-luke=seek:N,spare:min -Z` (section 10.2.4) | `genisoimage -C -M` builds the session image, then `growisofs -M /dev/sr0=image`, one call (section 10.3.4) |
 | Burner used for the append | None. The kernel writes. | growisofs, one call per changed run | growisofs, one call |
-| New code needed | None | Image mirror and block diff | None |
+| New code needed | None | Image mirror and block diff | The genisoimage driver and the placeholder rewrite |
 | Per-append cost | About one block per new object | About one block per new object | Rewrites the whole directory tree |
 | LBA read-back | Parse UDF File Entries | Parse UDF File Entries | `isoinfo -l -T <session>` |
 | Risk | The `sr` block device may refuse writes. Manual probe required. | Proven mechanism, more moving parts | Windows long-name support unverified |
@@ -2944,8 +3120,8 @@ filesystem. Budget 512 MiB of spare and metadata reserve per disc.
 Profile 2 exists for two cases:
 
 1. The UDF append path is unavailable on the host.
-2. A user wants genisoimage to manage the appends, with no NoahsArk-side
-   filesystem work at all.
+2. A user wants genisoimage to manage the directory tree, with no UDF work on
+   the NoahsArk side.
 
 Profile 2 must not be used until probe 2 of section 23.6 passes.
 
@@ -2989,9 +3165,8 @@ therefore inspect the raw image bytes, not a mount.
 Profile 2 uses **one** hex fan-out level only: `/NOAHSARK/objects/<ab>/<name>`,
 256 directories.
 
-The reason is the append cost. `growisofs -M` hands the merge to genisoimage,
-which rewrites the entire directory tree and the path tables into the new
-session. Measured, with 1-byte files so that the figure is pure metadata:
+The reason is the append cost. `genisoimage -M` rewrites the entire directory
+tree and the path tables into the new session image. Measured, with 1-byte files so that the figure is pure metadata:
 
 | Objects on disc | Directory bytes rewritten per append | Path table bytes | Cost per append |
 |---:|---:|---:|---:|
@@ -3010,7 +3185,11 @@ in its capacity budget (section 15.6).
 
 #### 10.3.4 Build and burn command lines
 
-genisoimage runs inside growisofs. NoahsArk never calls genisoimage directly.
+This subsection is the normative home of the profile 2 command lines.
+NoahsArk builds every ISO 9660 image itself with genisoimage and hands the
+finished image to growisofs. growisofs never runs genisoimage on NoahsArk's
+behalf, because the placeholder rewrite of section 10.5 needs the image bytes
+before they are burned.
 
 | Option | Effect |
 |---|---|
@@ -3026,26 +3205,34 @@ Forbidden options: `-R`, `-r`, `-J`, `-joliet-long`, `-udf`, and every level
 below 4.
 
 ```bash
-# First write on a blank BD-R. spare:min formats for POW.
-growisofs -speed=4 -use-the-force-luke=spare:min,tty \
-          -Z /dev/sr0 -iso-level 4 -D -l -allow-limited-size \
-          -no-limit-pathtables -sort sortfile -V ARK-0001 /srv/ark/ob
+# First write on a blank BD-R. Build the image, then burn it.
+# spare:min formats for POW.
+genisoimage -iso-level 4 -D -l -allow-limited-size -no-limit-pathtables \
+            -sort sortfile -V ARK-0001 -o first.iso /srv/ark/tree
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=first.iso
 
-# Every later append. -M grows the same session.
-growisofs -speed=4 -use-the-force-luke=spare:min,tty \
-          -M /dev/sr0 -iso-level 4 -D -l -allow-limited-size \
-          -no-limit-pathtables -sort sortfile -V ARK-0001 /srv/ark/ob
+# Every later append. LAST and NEXT come from growisofs -F on the disc:
+# LAST is the start sector of the existing session, 0 on a POW disc;
+# NEXT is the next writable address in sectors. The mirror image is the
+# disc content so far (section 10.2.4 keeps it).
+genisoimage -iso-level 4 -D -l -allow-limited-size -no-limit-pathtables \
+            -sort sortfile -V ARK-0001 -C ${LAST},${NEXT} -M mirror.iso \
+            -o add.iso /srv/ark/tree
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -M /dev/sr0=add.iso
 
 # Final append: close the disc.
 growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:min,tty \
-          -M /dev/sr0 -iso-level 4 -D -l -allow-limited-size \
-          -no-limit-pathtables -sort sortfile -V ARK-0001 /srv/ark/ob
+          -M /dev/sr0=add.iso
 ```
 
-M-DISC uses `-speed=2`. Every other flag is identical.
+Informative: `-speed=4` and `ARK-0001` are examples (section 10.8). M-DISC
+uses `-speed=2`. Every other flag is identical.
 
-growisofs passes every unrecognised option straight through to genisoimage, so
-`-sort` and the level options reach the builder unchanged.
+The image is what the burn plan names (section 10.7.1): step kind 2 builds
+`first.iso` or `add.iso` from the tree with the `-sort` file as `aux_path`,
+and step kind 1 or 3 writes it. The writer runs genisoimage twice per run:
+once to learn the extents, once with the final placeholder bytes (section
+10.5). Section 10.3.7 shows the measured `-C` and `-M` sequence.
 
 #### 10.3.5 Placement order
 
@@ -3152,7 +3339,7 @@ under every profile.
 | `/NOAHSARK/runs/<seq>/catalog/refs.bin` | The ref table. | With its run. |
 | `/NOAHSARK/runs/<seq>/catalog/discs.bin` | The disc directory. | With its run. |
 | `/NOAHSARK/runs/<seq>/catalog/runs.bin` | The run table (section 12.5.2). | With its run. |
-| `/NOAHSARK/runs/<seq>/pad.bin` | Zero bytes that fill the data columns to `lba_base + k*L`. Absent when no fill is needed. | Last data file of its run. |
+| `/NOAHSARK/runs/<seq>/pad.bin` | Zero bytes that fill the data columns to `lba_base + k*L`. Always present; zero length when no fill is needed. | Last data file of its run. |
 | `/NOAHSARK/runs/<seq>/checksum.bin` | The checksum column, `L` sectors. | After `pad.bin`. |
 | `/NOAHSARK/runs/<seq>/parity/pNNNN.bin` | One file per parity column, `L + 1` sectors. Sector 0 is a run header copy; sectors 1 to `L` are the column. | After `checksum.bin`, in column order. |
 | `/NOAHSARK/runs/<seq>/RUN2.bin` | Run header copy. | Last file of its run. |
@@ -3254,12 +3441,31 @@ every filesystem block and free sector between them. Steps 8 and 9 cover it.
 Step 10 sits outside the domain, at the highest LBA of the run, so that a copy
 of the header survives damage at either end.
 
-The writer builds the run in these passes. A file whose content depends on an
-LBA, a hash or a size that is known only after layout is a **placeholder** in
-the pass that places it: a file of its final size, filled with zero bytes,
-and rewritten in place later. Every placeholder has a known final size,
-because every such file is fixed-width and its record count is known before
-layout.
+A file whose content depends on an LBA, a hash or a size that is known only
+after layout is a **placeholder** in the pass that places it: a file of its
+final size, filled with zero bytes, and rewritten in place later. Every
+placeholder has a known final size, because every such file is fixed-width
+and its record count is known before layout.
+
+**Invariants.** These five statements are the requirement. Any build
+procedure that meets them conforms.
+
+1. The extent of every file is fixed, and read back from the image, before
+   any hash that names that file is computed. No file moves after its extent
+   is read back.
+2. `pad.bin` always exists. It fills the data columns exactly to
+   `lba_base + k*L`, and it has zero length when no fill is needed. A
+   zero-length `pad.bin` still has one layout record (section 9.7).
+3. The first data sector of `checksum.bin` is at or above `lba_base + k*L`,
+   and every column file is contiguous.
+4. `manifest.bin`, `DISC.bin`, `catalog/runs.bin`, `catalog/discs.bin`,
+   `catalog/CATALOG.bin`, `layout.bin` and the run header become final in
+   that order, each from values that are already final.
+5. The checksum column and the parity are computed over the finished domain,
+   which holds the final bytes of `RUN.bin` and of every other file in it.
+
+The passes below are informative. They are the reference implementation's
+way to meet the invariants.
 
 1. Lay out steps 1 to 6. These files are placeholders: `RUN.bin`;
    `DISC.bin` in the first run; `layout.bin`; `manifest.bin`;
@@ -3272,7 +3478,7 @@ layout.
 2. Compute `data_span` from the last sector of the last file of step 6, and
    `L = ceil(data_span / k)`.
 3. Write `pad.bin` with `lba_base + k*L - (last data sector + 1)` sectors of
-   zero bytes. Omit it when that count is 0.
+   zero bytes. When that count is 0, write it with zero length.
 4. Lay out steps 8 to 10 as placeholders: `checksum.bin` (`L` sectors), the
    parity files (`L + 1` sectors each), and `RUN2.bin`. Read the extents
    back. Every extent of the run is now known, and so are `run_sectors`,
@@ -3304,14 +3510,18 @@ layout.
 An in-place write changes the bytes of a file whose extents are already fixed,
 so it never moves a file. Under profile 0 and profile 1 the image is a
 loop-mounted file, and the in-place write is an ordinary write to the mounted
-file. Under profile 2 the writer builds the tree, runs `genisoimage` once to
-learn the extents, then runs it again with the final bytes.
+file. Under profile 2 NoahsArk runs `genisoimage` itself (section 10.3.4):
+once over the tree with placeholders, to learn the extents from `isoinfo -l`,
+then again over the tree with the final bytes. genisoimage is deterministic
+for an unchanged tree shape and unchanged file sizes, so the second image has
+the same extents; the writer checks that and treats a difference as a defect.
 
-Under profile 1 the order is expressed as the copy order into the mount. Under
-profile 2 it is expressed as `-sort` weights.
+Under profile 0 and profile 1 the order is expressed as the copy order into
+the mount. Under profile 2 it is expressed as `-sort` weights.
 
-Metadata objects are placed together on purpose. A connectivity check over one
-run then costs one seek and one sequential read.
+Metadata objects, that is trees, chunklists and snapshot objects, are placed
+together on purpose. A connectivity check over one run then costs one seek
+and one sequential read.
 
 ### 10.6 Name and path budget
 
@@ -3406,15 +3616,15 @@ Burn step record, 512 bytes, in execution order:
 |---:|---:|---|---|---|
 | 0 | 4 | u32 | `magic` | `"NABS"`. |
 | 4 | 2 | u16 | `step_index` | 0-based. |
-| 6 | 1 | u8 | `step_kind` | 1 write image, 2 build and write from a tree, 3 append from a tree, 4 mount read-write, 5 copy tree into the mount, 6 unmount, 7 close, 8 eject, 9 reload. |
+| 6 | 1 | u8 | `step_kind` | 1 write image with `-Z`, 2 build an ISO 9660 image from a tree with genisoimage (profile 2), 3 write image with `-M` (profile 2 append), 4 mount read-write, 5 copy tree into the mount, 6 unmount, 7 close, 8 eject, 9 reload. |
 | 7 | 1 | u8 | `flags` | bit0 add `-dvd-compat`, bit1 first write of the disc, bit2 metadata patch, bit3 the step needs an arbitrary seek. |
 | 8 | 8 | u64 | `seek_lba` | Target LBA. Must be a multiple of 16. 0 when the step does not seek. |
 | 16 | 8 | u64 | `byte_len` | Bytes to write. Must be a multiple of 32768 when the step seeks. |
 | 24 | 32 | u8[32] | `payload_hash` | Hash of the file, or of the sorted tree listing. |
 | 56 | 4 | u32 | `source_len` | Byte length of `source_path`. |
-| 60 | 256 | u8[256] | `source_path` | Image file, or the directory tree to copy or build from. UTF-8, zero-padded. |
+| 60 | 256 | u8[256] | `source_path` | Image file, or the directory tree to copy or build from. UTF-8, zero-padded. At most 256 bytes; see rule 7. |
 | 316 | 4 | u32 | `aux_len` | Byte length of `aux_path`. |
-| 320 | 184 | u8[184] | `aux_path` | The `-sort` file under profile 2, or the mount point under profile 1 variant 1a. Empty otherwise. |
+| 320 | 184 | u8[184] | `aux_path` | For kind 2, the `-sort` file; for kind 3, the mirror image given to `-M`; for kind 4, the mount point. Empty otherwise. At most 184 bytes; see rule 7. |
 | 504 | 4 | u32 | `reserved_u32` | Zero. |
 | 508 | 4 | u32 | `step_crc32c` | CRC-32C over bytes 0 to 507. |
 
@@ -3436,11 +3646,40 @@ Rules:
    `noahsark close` produced (Phase 2), or by `pack` under
    `disc.close_policy = when_full` (Phase 2). Under the default policy,
    `never`, no plan ever carries them.
+7. A `source_path` above 256 bytes or an `aux_path` above 184 bytes is an
+   error. The plan writer refuses to write the plan, `pack` exits with code
+   2, and the message names the path and the limit. The path is never
+   truncated and never stored in a side file. Informative: a short
+   `staging.dir` keeps every plan path far below the limit.
 
 #### 10.7.2 JSON rendering
 
 `burn.json` is a convenience for a human and for a script. It is derived from
-`burn.bin` and is never authoritative.
+`burn.bin` and is never authoritative. Its fields are:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | string | Always `noahsark-burn-plan`. |
+| `version` | integer | 1. |
+| `repo_uuid`, `disc_uuid` | string | Hyphenated lowercase uuid text. `disc_uuid` is all zero for a blank disc. |
+| `disc_seq`, `run_seq` | integer | As in the container. |
+| `media_type` | string | Media type registry name. |
+| `fs_profile` | string | Profile registry name. |
+| `append_variant` | string | `1a`, `1b`, or absent. |
+| `burner_backend` | string | `growisofs`, `cdrskin`, `imgburn`, `imapi`, `hdiutil`, `kernel`. |
+| `device_hint` | string | As in the container. |
+| `speed` | integer | As in the container. |
+| `close_disc` | boolean | As in the container. |
+| `expected_nwa_sectors`, `capacity_sectors` | integer | As in the container. |
+| `steps` | array of objects | One per step record, in order. |
+| `steps[].index` | integer | `step_index`. |
+| `steps[].kind` | string | `write_image`, `build_image`, `write_image_append`, `mount`, `copy`, `unmount`, `close`, `eject`, `reload`, for kinds 1 to 9. |
+| `steps[].seek_lba`, `steps[].byte_len` | integer | Present for kinds 1 and 3. |
+| `steps[].source_path`, `steps[].aux_path` | string | Present when non-empty. |
+| `steps[].payload_hash` | string | Multihash text form. Present for kinds 1, 2, 3 and 5. |
+| `steps[].dvd_compat` | boolean | `flags` bit 0. Present for kinds 1, 3 and 7. |
+
+Informative example:
 
 ```json
 {
@@ -3495,8 +3734,9 @@ template.
 | `growisofs` | Linux | first write, profile 1 and 0 | `growisofs -speed={{.Speed}} -use-the-force-luke={{.SpareMode}},tty {{if .DvdCompat}}-dvd-compat {{end}}-Z {{.Device}}={{.SourcePath}}` |
 | `growisofs` | Linux | seeking write, profile 1 variant 1b | `growisofs -speed={{.Speed}} -use-the-force-luke=seek:{{.SeekLBA}},spare:min,tty {{if .DvdCompat}}-dvd-compat {{end}}-Z {{.Device}}={{.SourcePath}}` |
 | `kernel` | Linux | mount, copy, unmount, profile 1 variant 1a | `mount -t udf -o rw {{.Device}} {{.AuxPath}}` then one `cp` per object in fill order, then `umount {{.AuxPath}}` |
-| `growisofs` | Linux | first write, profile 2 | `growisofs -speed={{.Speed}} -use-the-force-luke=spare:min,tty -Z {{.Device}} -iso-level 4 -D -l -allow-limited-size -no-limit-pathtables -sort {{.AuxPath}} -V {{.Label}} {{.SourcePath}}` |
-| `growisofs` | Linux | append, profile 2 | `growisofs -speed={{.Speed}} -use-the-force-luke=spare:min,tty {{if .DvdCompat}}-dvd-compat {{end}}-M {{.Device}} -iso-level 4 -D -l -allow-limited-size -no-limit-pathtables -sort {{.AuxPath}} -V {{.Label}} {{.SourcePath}}` |
+| `genisoimage` | Linux | build image, profile 2 (kind 2) | `genisoimage -iso-level 4 -D -l -allow-limited-size -no-limit-pathtables -sort {{.AuxPath}} -V {{.Label}} {{if .Append}}-C {{.LastSession}},{{.SeekLBA}} -M {{.MirrorImage}} {{end}}-o {{.OutputImage}} {{.SourcePath}}` |
+| `growisofs` | Linux | first write, profile 2 (kind 1) | The profile 0 first-write template above. |
+| `growisofs` | Linux | append, profile 2 (kind 3) | `growisofs -speed={{.Speed}} -use-the-force-luke=spare:min,tty {{if .DvdCompat}}-dvd-compat {{end}}-M {{.Device}}={{.SourcePath}}` |
 | `cdrskin` | Linux | write image | `cdrskin dev={{.Device}} speed={{.Speed}} -multi -tao {{.SourcePath}}` |
 | `imgburn` | Windows | write image | `ImgBurn.exe /MODE WRITE /SRC "{{.SourcePath}}" /DEST {{.Device}} /SPEED {{.Speed}} /START /CLOSE` |
 | `hdiutil` | macOS | write image | `hdiutil burn -device {{.Device}} -speed {{.Speed}} {{.SourcePath}}` |
@@ -3544,7 +3784,7 @@ Common rules for every burn:
 
 - `seek:N` requires `N % 16 == 0`. growisofs rejects any other value.
 - Both the byte offset and the byte length of a seeking write must be multiples
-  of 32768. `poor_mans_pwrite64` rejects anything else with `EINVAL`.
+  of 32768. Appendix E states where growisofs enforces it.
 - Never use `-overburn`. The overburn test compares the final progress against
   the drive-reported capacity, which is the correct number.
 - Never let a drive use BD-R Random Recording Mode. growisofs refuses profile
@@ -3595,9 +3835,8 @@ Fill policy:
 - Under profile 2 the packer must also reserve the projected directory rewrite
   cost of the remaining appends (section 10.3.3).
 - One growisofs command line covers every media size. There is no layer logic
-  and no hardcoded sector count in growisofs; `get_2k_capacity()` computes
-  `nwa + free_blocks` from `READ TRACK INFORMATION`. BDXL needs a BDXL-capable
-  drive and nothing else.
+  and no hardcoded sector count in growisofs; it takes the capacity from the
+  drive (Appendix E). BDXL needs a BDXL-capable drive and nothing else.
 
 ### 10.11 Reserved space
 
@@ -3636,10 +3875,35 @@ Terms:
 |---|---|---|
 | `safety_margin` | `ceil(capacity_forced * (1 - disc.fill_ratio))` | `disc.fill_ratio` = 0.95 |
 | `superblock_and_headers` | `3 sectors + expected_runs * 2 sectors` | `disc.expected_runs` = 32 |
-| `catalog_growth` | `expected_runs * (filter_size + 8 * manifest_size + snapshot_objects + snapshot_table + ref_table + run_table + disc_directory)` | See sections 12.2, 12.3 and 12.5 for the sizes |
+| `catalog_growth` | `expected_runs * ceil(catalog_bytes_per_run / 2048)`, see below | `disc.expected_runs` = 32 |
 | `spare_area` | `disc.spare_reserve_bytes` on a `spare:min` disc, 0 on a sealed disc (`spare:none`) | 512 MiB |
 | `fec_overhead` | `stripes * (m + 1) + m + (fec_region - stripes * 255)` | `m` = 23. The three parts are the checksum and parity sectors, the `m` parity header sectors, and the fewer than 255 sectors of an incomplete stripe, which stay unused. |
 | `alignment_padding` | `expected_runs * 32 KiB` | - |
+
+`catalog_growth` is exact integer arithmetic over four named inputs. Every
+input is an integer number of bytes.
+
+```
+objects_per_run       = ceil(capacity_forced * 2048 / chunk_avg)
+filter_bytes          = 88 + ceil(objects_per_run * 91 / 40)
+manifest_bytes        = 64 * objects_per_run + 4096
+table_bytes           = catalog.table_reserve_bytes
+catalog_bytes_per_run = filter_bytes
+                      + manifest.history_depth * manifest_bytes
+                      + table_bytes
+catalog_growth        = expected_runs * ceil(catalog_bytes_per_run / 2048)
+```
+
+`chunk_avg` is the average chunk size of the chunker profile (section 6.3).
+`filter_bytes` is the 84-byte filter header, the 4-byte body CRC and 18.2
+bits per key written as `91 / 40` bytes per key (section 12.2).
+`manifest_bytes` is one 64-byte record per object plus 4096 bytes for the
+header, the TOC, the fan-out and the small chunks (section 12.3).
+`table_bytes` is a planning reserve for the snapshot objects and the four
+tables of one catalog copy; `catalog.table_reserve_bytes` (section 20.7)
+defaults to 614,400. Under profile 2 the projected directory rewrite cost of
+section 10.3.3 is added to `catalog_bytes_per_run`. `objects_per_run` is a
+planning figure only; the packer never limits a run by it.
 
 `superblock_and_headers` counts only `RUN.bin` and `RUN2.bin`. The other `m`
 header copies sit in the first sector of each parity file, and `fec_overhead`
@@ -3663,9 +3927,6 @@ second formula given for them:
 - **`reserve`**: `capacity_forced - data_budget`, the part of the disc that
   data must not use.
 
-Under profile 2 the packer adds the projected directory rewrite cost of the
-remaining appends (section 10.3.3) to `catalog_growth`.
-
 Overrides:
 
 - `disc.force_reserve` replaces the computed reserve. It accepts bytes or a
@@ -3680,46 +3941,64 @@ Overrides:
 
 Inputs: capacity 12,219,392 sectors (25,025,314,816 bytes), no forced capacity,
 `fill_ratio` 0.95, `expected_runs` 32, `m` 23, a `spare:min` disc under
-profile 0 or profile 1, P4 chunking with about 6,000 objects per run.
+profile 0 or profile 1, P4 chunking (`chunk_avg` 4,194,304),
+`manifest.history_depth` 8, `catalog.table_reserve_bytes` 614,400.
+
+`catalog_growth`: `objects_per_run` = ceil(25,025,314,816 / 4,194,304) =
+5,967; `filter_bytes` = 88 + ceil(5,967 x 91 / 40) = 13,663;
+`manifest_bytes` = 64 x 5,967 + 4,096 = 385,984; `catalog_bytes_per_run` =
+13,663 + 8 x 385,984 + 614,400 = 3,715,935; ceil(3,715,935 / 2048) = 1,815
+sectors per copy; 32 x 1,815 = 58,080.
 
 | Term | Sectors | Bytes |
 |---|---:|---:|
-| `safety_margin` | 610,970 | 1.25 GB |
-| `superblock_and_headers` | 67 | 137 kB |
-| `catalog_growth` (32 runs: filter 13.4 KiB, 8 manifests of 375 KiB, tables 0.6 MB) | 57,620 | 118.0 MB |
-| `spare_area` | 262,144 | 536.9 MB |
-| `alignment_padding` | 512 | 1.0 MB |
-| `fec_region` = 12,219,392 - 931,313 - 23 | 11,288,056 | |
-| `stripes` = floor(11,288,056 / 255) | 44,266 | |
-| `fec_overhead` = 44,266 x 24 + 23 + 226 | 1,062,633 | 2.18 GB |
-| **reserve_computed** | **1,993,946** | **4.08 GB** |
-| **data_budget** = 44,266 x 231 | **10,225,446** | **20.94 GB** |
+| `safety_margin` = ceil(12,219,392 x 0.05) | 610,970 | 1.25 GB |
+| `superblock_and_headers` = 3 + 32 x 2 | 67 | 137 kB |
+| `catalog_growth` = 32 x 1,815 | 58,080 | 118.9 MB |
+| `spare_area` = 536,870,912 / 2048 | 262,144 | 536.9 MB |
+| `alignment_padding` = 32 x 16 | 512 | 1.0 MB |
+| `fixed_terms` | 931,773 | |
+| `fec_region` = 12,219,392 - 931,773 - 23 | 11,287,596 | |
+| `stripes` = floor(11,287,596 / 255) | 44,265 | |
+| `fec_overhead` = 44,265 x 24 + 23 + 21 | 1,062,404 | 2.18 GB |
+| **reserve_computed** = 931,773 + 1,062,404 | **1,994,177** | **4.08 GB** |
+| **data_budget** = 44,265 x 231 | **10,225,215** | **20.94 GB** |
 | **fill_limit_sectors** | **11,346,278** | **23.24 GB** |
 
-The FEC region holds 44,266 whole stripes: 10,225,446 data sectors and
-1,062,384 checksum and parity sectors, plus the 23 parity header sectors and
-226 sectors of an incomplete stripe that stay unused. `fill_limit_sectors` is
+The FEC region holds 44,265 whole stripes: 10,225,215 data sectors and
+1,062,360 checksum and parity sectors, plus the 23 parity header sectors and
+21 sectors of an incomplete stripe that stay unused. `fill_limit_sectors` is
 `12,219,392 - 610,970 - 262,144`, and it also equals
-`10,225,446 + 67 + 57,620 + 1,062,633 + 512`.
+`10,225,215 + 67 + 58,080 + 1,062,404 + 512`.
 
 #### 10.11.2 Worked example, BD-R XL TL 100 GB
 
 Inputs: capacity 48,878,592 sectors (100,103,356,416 bytes), no forced capacity,
-same knobs, about 24,000 objects per run.
+same knobs.
+
+`catalog_growth`: `objects_per_run` = ceil(100,103,356,416 / 4,194,304) =
+23,867; `filter_bytes` = 88 + ceil(23,867 x 91 / 40) = 54,386;
+`manifest_bytes` = 64 x 23,867 + 4,096 = 1,531,584; `catalog_bytes_per_run`
+= 54,386 + 8 x 1,531,584 + 614,400 = 12,921,458; ceil(12,921,458 / 2048) =
+6,310 sectors per copy; 32 x 6,310 = 201,920.
 
 | Term | Sectors | Bytes |
 |---|---:|---:|
-| `safety_margin` | 2,443,930 | 5.01 GB |
+| `safety_margin` = ceil(48,878,592 x 0.05) | 2,443,930 | 5.01 GB |
 | `superblock_and_headers` | 67 | 137 kB |
-| `catalog_growth` (32 runs: filter 53.4 KiB, 8 manifests of 1.46 MiB, tables 0.6 MB) | 201,650 | 413.0 MB |
+| `catalog_growth` = 32 x 6,310 | 201,920 | 413.5 MB |
 | `spare_area` | 262,144 | 536.9 MB |
 | `alignment_padding` | 512 | 1.0 MB |
-| `fec_region` = 48,878,592 - 2,908,303 - 23 | 45,970,266 | |
-| `stripes` = floor(45,970,266 / 255) | 180,275 | |
-| `fec_overhead` = 180,275 x 24 + 23 + 141 | 4,326,764 | 8.86 GB |
-| **reserve_computed** | **7,235,067** | **14.82 GB** |
-| **data_budget** = 180,275 x 231 | **41,643,525** | **85.29 GB** |
+| `fixed_terms` | 2,908,573 | |
+| `fec_region` = 48,878,592 - 2,908,573 - 23 | 45,969,996 | |
+| `stripes` = floor(45,969,996 / 255) | 180,274 | |
+| `fec_overhead` = 180,274 x 24 + 23 + 126 | 4,326,725 | 8.86 GB |
+| **reserve_computed** = 2,908,573 + 4,326,725 | **7,235,298** | **14.82 GB** |
+| **data_budget** = 180,274 x 231 | **41,643,294** | **85.29 GB** |
 | **fill_limit_sectors** | **46,172,518** | **94.56 GB** |
+
+`fill_limit_sectors` is `48,878,592 - 2,443,930 - 262,144`, and it also
+equals `41,643,294 + 67 + 201,920 + 4,326,725 + 512`.
 
 `pack --dry-run` prints exactly these numbers before it commits to a run:
 
@@ -3728,13 +4007,13 @@ $ noahsark pack --dry-run --disc 12
 disc              b21c7f90  seq 12  BD-R SL 25  profile udf201-pow (1b)
 capacity reported 12,219,392 sectors   25,025,314,816 B
 capacity forced   12,219,392 sectors   25,025,314,816 B
-reserve computed   1,993,946 sectors    4,083,601,408 B
+reserve computed   1,994,177 sectors    4,084,074,496 B
 reserve forced             -                        -
 reserve extra              -                        -
-data budget       10,225,446 sectors   20,941,713,408 B
+data budget       10,225,215 sectors   20,941,240,320 B
 fill limit        11,346,278 sectors   23,237,177,344 B
 data used so far   4,096,512 sectors    8,389,656,576 B
-free for this run  6,128,934 sectors   12,552,056,832 B
+free for this run  6,128,703 sectors   12,551,583,744 B
 staged objects         5,912           12,203,441,152 B
 plan               one run, 5,912 objects, fits
 ```
@@ -3748,12 +4027,9 @@ plan               one run, 5,912 objects, fits
 | `cdrskin` | libburn | 1.5.8 or newer | Fallback, profile 0 only. |
 
 The version requirement is not cosmetic. Upstream dvd+rw-tools 7.1 (2008-03-05)
-is broken for BD-R in two ways, and both fixes are distro patches:
-
-| Patch | Bug | Effect without it |
-|---|---|---|
-| `ignore_pseudo_overwrite.patch`, 2011-03-07 | Debian #615978 | A POW-capable drive under-reports BD-R capacity and the disc cannot be filled. |
-| `fix_burning_bd-r_discs.patch`, 2015-02-20 | Debian #713016 | A blank BD-R fails to close with `CLOSE SESSION failed with SK=5h/INVALID FIELD IN CDB`. |
+is broken for BD-R in two ways, and both fixes are distribution patches:
+without them a POW-capable drive under-reports BD-R capacity, and a blank
+BD-R fails to close. Appendix E names the patches and the bug reports.
 
 The tool must check the burner version at startup. `burn --print` must warn when
 the version is unknown or unpatched. `burn --exec` must refuse.
@@ -3773,6 +4049,7 @@ support duplicates what growisofs already does.
 | growisofs fails, or the build is unpatched. | Use the `cdrskin` burner backend, and therefore profile 0 sealed. |
 | An object moved after an append. | Abort the append. Keep the objects PACKED. Mark the run for re-burn. Report the moved ids. |
 | The image mirror is lost (variant 1b). | Rebuild it with `ddrescue` from the disc. |
+| A burn fails, or a verify fails. | The `run_seq` of the failed run is never reused. The re-burn is a new plan with the next `run_seq`; the old number is a hole in the run table (section 12.5.2). |
 
 ### 10.13 Tier-2 burners
 
@@ -3865,14 +4142,18 @@ placed at the end of the disc.
 
 ### 11.2 Layout
 
-The scheme follows dvdisaster RS03.
+Informative: the column-and-stripe layout is similar to dvdisaster RS03; the
+code itself is defined here and nowhere else.
 
-- The FEC scheme is `rs255-gf8`: systematic Reed-Solomon over GF(2^8) with
-  the field polynomial `x^8 + x^4 + x^3 + x^2 + 1` (0x11D), a Vandermonde
-  generator matrix in Cauchy form, and 255 total shards. Any encoder that
-  produces the same parity bytes for the same information bytes conforms.
+- The FEC scheme is `rs255-gf8`: a systematic erasure code over GF(2^8)
+  with `k` information shards and `m` parity shards per stripe. Section
+  11.2.1 defines the arithmetic and the generator matrix exactly. Any encoder
+  that produces the same parity bytes for the same information bytes
+  conforms.
 - A **shard** is exactly one 2048-byte sector.
-- A **stripe** is 255 shards: `k` data + 1 checksum + `m` parity.
+- A **stripe** is 255 shards: `k` data + 1 checksum + `m` parity. The code
+  covers the `k` data shards and the `m` parity shards. The checksum shard is
+  outside the code (section 11.4).
 - Format version 1 **fixes** `k = 231` and `m = 23`, which is
   `k + 1 + m = 255` and about 10 percent parity relative to payload. A
   version 1 writer writes no other pair, and a version 1 reader refuses any
@@ -3881,8 +4162,11 @@ The scheme follows dvdisaster RS03.
 - `lba_base` is the first sector of the parity domain: LBA 0 for the first
   run of a disc, and the first sector of `RUN.bin` for every later run
   (section 9.3). `data_span` is the number of sectors from `lba_base` to the
-  last sector of the last data file, inclusive. The data files are steps 1 to
-  7 of section 10.5.
+  last sector of the data extent of the last data file, inclusive. The data
+  files are steps 1 to 7 of section 10.5. The File Entry block of `pad.bin`
+  lies at or after `lba_base + k*L`, outside the domain, and so do the File
+  Entry blocks of `checksum.bin` and of every parity file; those blocks are
+  filesystem metadata that the layout table makes unnecessary for a reader.
 - The column length is `L = ceil(data_span / k)`.
 - Data column `c`, for `c = 0 .. k-1`, occupies LBA
   `[lba_base + c*L, lba_base + (c+1)*L)`.
@@ -3901,9 +4185,10 @@ The scheme follows dvdisaster RS03.
 - Every column file is contiguous. The layout table records the extent of
   each one, and the run header records `checksum_lba` and `parity_lba`.
 - Stripe `i`, for `i = 0 .. L-1`, is sector `i` of every column.
-- Encoding is byte-column-wise. Take one byte from each of the `k + 1`
-  information sectors, at the same byte offset. Produce `m` parity bytes at that
-  byte offset in the `m` parity sectors. Repeat for all 2048 byte offsets.
+- Encoding is byte-column-wise. Take one byte from each of the `k` data
+  sectors of the stripe, at the same byte offset, in column order 0 to
+  `k - 1`. Produce `m` parity bytes at that byte offset in the `m` parity
+  sectors, column `k + 1` first. Repeat for all 2048 byte offsets.
 
 ```
   LBA ->  lba_base                                 lba_base + k*L
@@ -3931,6 +4216,91 @@ erasure each. The header sectors and File Entry blocks between the column
 files shift the column files by a few sectors; the bound above still holds,
 because a burst that crosses a file boundary lands in at most one more column.
 
+#### 11.2.1 The code
+
+**Field.** GF(2^8) with the polynomial `x^8 + x^4 + x^3 + x^2 + 1`, 0x11D.
+A byte is a field element. Addition is XOR. Multiplication is carry-less
+polynomial multiplication reduced modulo 0x11D:
+
+```
+mul(a, b):
+    r = 0
+    while b != 0:
+        if b & 1: r = r ^ a
+        a = a << 1
+        if a & 0x100: a = a ^ 0x11D
+        b = b >> 1
+    return r                                  # r fits in 8 bits
+inv(a): the unique x with mul(a, x) == 1, for a != 0
+div(a, b) = mul(a, inv(b))
+```
+
+**Shards.** The information shards are the `k` data columns of the stripe,
+in column order `i = 0 .. k-1`. The parity shards are the `m` parity
+columns, `j = 0 .. m-1`, where parity shard `j` is column `k + 1 + j`.
+
+**Generator matrix.** The code is systematic. Parity shard `j` is a linear
+combination of the `k` information shards with the coefficients of row `j`
+of an `m x k` Cauchy matrix `C`:
+
+```
+x_j = k + j                 for j = 0 .. m-1       # 231 .. 253 in version 1
+y_i = i                     for i = 0 .. k-1       #   0 .. 230 in version 1
+C[j][i] = inv(x_j ^ y_i)                            # 1 / (x_j + y_i) in GF(2^8)
+```
+
+Every `x_j` differs from every `y_i`, so no denominator is zero, and every
+square submatrix of `[I_k ; C]` is invertible. That is what lets any `k`
+surviving shards of a stripe, data or parity, determine the missing ones.
+
+**Encoding.** For every byte offset `t` in `0 .. 2047`:
+
+```
+p_j[t] = XOR over i = 0 .. k-1 of mul(C[j][i], d_i[t])
+```
+
+where `d_i` is data shard `i` and `p_j` is parity shard `j`.
+
+**Decoding.** Take the `k` rows of the `(k + m) x k` matrix `[I_k ; C]`
+that correspond to `k` surviving shards, invert that `k x k` matrix over the
+field, and multiply it by the surviving shard bytes at each offset. The
+result is every data shard; the missing parity shards are then re-encoded.
+A stripe with more than `m` erasures is not decodable, and the decoder must
+say so (test 7). The ordering of the shards is the only implementation
+freedom, and this subsection fixes it.
+
+**Worked example, `k = 3`, `m = 2`.** The geometry is not a version 1
+geometry; the example exists so that an implementer can test the arithmetic
+by hand. With `k = 3`, `x_0 = 3`, `x_1 = 4`, and `y = (0, 1, 2)`:
+
+| Inverse | Value |
+|---|---|
+| `inv(1)` | 0x01 |
+| `inv(2)` | 0x8E |
+| `inv(3)` | 0xF4 |
+| `inv(4)` | 0x47 |
+| `inv(5)` | 0xA7 |
+| `inv(6)` | 0x7A |
+
+```
+C[0] = ( inv(3^0), inv(3^1), inv(3^2) ) = ( 0xF4, 0x8E, 0x01 )
+C[1] = ( inv(4^0), inv(4^1), inv(4^2) ) = ( 0x47, 0xA7, 0x7A )
+```
+
+One byte offset, with data bytes `d = (0x53, 0xA7, 0x0C)`:
+
+```
+p_0 = mul(0xF4,0x53) ^ mul(0x8E,0xA7) ^ mul(0x01,0x0C)
+    = 0x31 ^ 0xDD ^ 0x0C = 0xE0
+p_1 = mul(0x47,0x53) ^ mul(0xA7,0xA7) ^ mul(0x7A,0x0C)
+    = 0xDD ^ 0x72 ^ 0x02 = 0xAD
+```
+
+Recovery check: with `d_0` and `d_1` lost, the surviving shards are `d_2`,
+`p_0` and `p_1`. Solving the three equations above for `d_0` and `d_1`
+returns `0x53` and `0xA7`. The full-size golden vector of section 23.8 is
+computed by the same rules at `k = 231`, `m = 23`.
+
 ### 11.3 Burst tolerance
 
 `L = ceil(data_span / k)`, which is close to `run_sectors / 255`. Maximum
@@ -3948,7 +4318,7 @@ run covers the whole disc and rounds `L` to `floor(run_sectors / 255)`.
 | BD 100 GB | 191,680 | 2,300,160 sec = 4.71 GB | 4,408,640 sec = **9.03 GB** | 5,367,040 sec = 10.99 GB | 8,050,560 sec = 16.49 GB |
 | BD 128 GB | 245,101 | 2,941,212 sec = 6.02 GB | 5,637,323 sec = **11.55 GB** | 6,862,828 sec = 14.05 GB | 10,294,242 sec = 21.08 GB |
 
-Configuration and payload, with `k + 1 + m = 255`:
+Configuration and payload, with `k + 1 + m = 255` sectors per stripe:
 
 | Target | k | m | actual m/k | parity fraction m/255 | 25 GB payload | 50 GB | 100 GB | 128 GB |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -3973,16 +4343,23 @@ Sector `i` of the checksum column holds the digests of the `k` **data**
 sectors of stripe `i`, and of no other sector. There is no offset and no
 wrap.
 
-- The digest is an 8-byte truncated BLAKE3 of the sector, computed over the
-  2048 bytes as they lie on the medium.
+- The digest is the first 8 bytes of the 32-byte BLAKE3-256 digest of the
+  sector, computed over the 2048 bytes as they lie on the medium.
 - `k = 231` digests at 8 bytes is 1848 bytes. With the 16-byte header that is
   1864 bytes; the remaining 184 bytes of the sector are zero.
 - The collision probability per sector is 2^-64. This detects decay. The
   cryptographic guarantee comes from the object content id, not from here.
-- A checksum sector is an information sector of its own stripe, so the parity
-  covers it and reconstructs it after damage. It has no digest of its own; a
-  damaged checksum sector is one erasure of its stripe, and its header CRC
-  detects a silently wrong one.
+- The checksum column is **outside** the Reed-Solomon code (section 11.2.1).
+  The parity neither covers it nor reconstructs it. A checksum sector that
+  the drive cannot read, or whose header CRC fails, loses the digests of its
+  stripe and nothing else: verify then checks the data sectors of that stripe
+  through the content ids of the objects that the layout table maps them to,
+  and treats a sector of an object that fails its content id as an erasure.
+  A sector that no extent record covers is then treated as readable.
+- A silently wrong digest byte makes verify treat a good data sector as an
+  erasure. Reconstruction returns the same bytes, the digest still
+  mismatches, and the object's content id passes; verify then reports the
+  checksum sector, not the data sector, as damaged. No data is lost.
 - A parity sector has no digest. The parity sectors are used only during a
   reconstruction, and a silently wrong parity sector shows up there: the
   reconstructed data sector fails its digest, and the object that holds it
@@ -4098,19 +4475,39 @@ rescued is an erasure.
 
 Section 19.11 lists the three verify levels and what each one reads.
 
+**How verify locates the columns.** Verify needs the run header and the
+layout table of every run it checks. On a mounted disc or a mountable image
+it reads `runs/<seq>/RUN.bin` and `runs/<seq>/layout.bin` through the
+filesystem. When the image does not mount, or a run directory is unreadable,
+verify scans the image at sector alignment for the `"NARH"` magic, verifies
+`header_crc32c` of every copy it finds, groups the copies by `run_seq` (all
+copies of one run are byte-identical), and takes `layout_lba`,
+`checksum_lba`, `parity_lba` and `column_sectors` from the header. It reads
+`layout.bin` at `layout_lba` and takes the extent of `checksum.bin` and of
+every parity file from the extent records with `file_role` 10 and 11. Every
+read of an image is a byte-offset read: sector `s` is the bytes
+`[s * 2048, s * 2048 + 2048)` of the image file. That is Phase 1 behaviour
+and is not raw-LBA reading (section 9.7.1), which reads the physical device
+and is Phase 3.
+
 **Sectors that no extent record covers.** Inside a parity domain, a sector
 that no extent record of the layout table covers is filesystem metadata or
 free space. Verify does not compare such a sector with its recorded digest,
 and never reports it as damage, because a later append under profile 1 may
 have rewritten it in place (section 9.6.3). The healer treats such a sector as
 an erasure when its digest does not match, so a repair never trusts stale
-bytes. A run whose uncovered sectors alone exceed `m` erasures in a stripe is
-reported as `CRITICAL` and the health report names the append that caused it.
-The packer bounds this: under profile 1 an append must not rewrite more than
-`m / 2` blocks that fall into one stripe of any earlier run, which the block
-diff checks against the earlier runs' layout tables before it writes.
+bytes. The status of a run follows the one rule of section 11.9: a run
+whose worst stripe has an RS margin below 50 percent is `CRITICAL`, and
+when uncovered sectors alone cause that, the health report names the append
+that caused it. The packer bounds this: under profile 1 an append must not
+rewrite more than `floor(m / 2)` blocks that fall into one stripe of any
+earlier run, which the block diff checks against the earlier runs' layout
+tables before it writes.
 
-Scrub schedule:
+**Scrub schedule.** The table below is the default of `scrub.schedule`,
+`scrub.first_check_hours` and `scrub.degraded_interval` (section 20.13),
+which the operator may change. The 24-hour second-drive check is a
+requirement; the rest is the recommended default.
 
 | Age | Interval | Depth |
 |---|---|---|
@@ -4122,9 +4519,10 @@ Scrub schedule:
 | Any disc marked degraded | every 3 months | `integrity`, and schedule a re-burn |
 | After a flood, a heat event, or a move | immediately | `integrity` on the affected shelf |
 
-A full library scrub cycle should complete in under 12 months. At about 15
-minutes per 25 GB disc plus handling, one drive scrubs about 20 discs in an
-8-hour day. A 1000-disc library therefore needs about 50 drive-days per year.
+Informative: a full library scrub cycle should complete in under 12 months.
+At about 15 minutes per 25 GB disc plus handling, one drive scrubs about 20
+discs in an 8-hour day. A 1000-disc library therefore needs about 50
+drive-days per year.
 
 Bad burns, not aging, are the dominant cause of early failure. The 24-hour
 second-drive check is the single most valuable item in the table.
@@ -4186,6 +4584,35 @@ Health thresholds when the drive exposes the counters: an LDC average below 13
 and a BIS average below 15 indicate a healthy disc. Twice those values is a
 warning. Any uncorrectable read is critical. Only some drives expose these
 counters, and only through vendor commands.
+
+**Report file.** `health --json` and `verify --report` write one JSON object
+with these fields. A field whose value is unknown is absent, never null.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | string | Always `noahsark-health-report`. |
+| `version` | integer | 1. |
+| `repo_uuid` | string | Hyphenated lowercase uuid. |
+| `generated_sec` | integer | Report time, seconds since 1970-01-01 UTC. |
+| `discs` | array of objects | One per disc in the report. |
+| `discs[].disc_uuid` | string | The disc. |
+| `discs[].disc_seq` | integer | 0-based. |
+| `discs[].label`, `discs[].shelf` | string | On-disc label; shelf note from the notes file (section 14.6). |
+| `discs[].media_type`, `discs[].fs_profile` | string | Registry names. |
+| `discs[].burn_sec`, `discs[].last_scrub_sec`, `discs[].next_scrub_sec` | integer | Times. |
+| `discs[].status` | string | `HEALTHY`, `DEGRADED`, `CRITICAL`, `FAILED`, `UNKNOWN`. |
+| `discs[].rs_margin_percent` | integer | Worst stripe over every run of the disc. |
+| `discs[].sectors_unreadable`, `discs[].sectors_corrected` | integer | Counts from the last scrub. |
+| `discs[].objects_total`, `discs[].objects_verified`, `discs[].objects_repaired`, `discs[].objects_lost` | integer | Counts. |
+| `discs[].capacity_sectors`, `discs[].capacity_forced_sectors`, `discs[].used_sectors` | integer | As in the disc directory. |
+| `discs[].closed`, `discs[].append_raw_only`, `discs[].capacity_forced` | boolean | `state_flags` of the disc directory. |
+| `discs[].spare_remaining_percent` | integer | As in the disc directory. |
+| `discs[].ldc_average`, `discs[].bis_average` | number | Present only when the drive exposes them. |
+| `discs[].runs` | array of objects | One per run: `run_seq`, `run_kind`, `status`, `rs_margin_percent`, `lost_ids` (array of multihash text). |
+| `discs[].critical_cause_run_seq` | integer | The append that rewrote the uncovered sectors, when that is the cause (section 11.8). |
+| `library` | object | `margin_histogram` (array of 11 integers, one per 10 percent band), `count_by_status` (object), `overdue_discs` (array of uuid), `oldest_unscrubbed_sec` (integer), `objects_replication_1` (integer), `objects_lost` (integer), `reburn_forecast_12m` (integer), `duplication_ratio` (number), `consolidation_triggers` (object of the keys of section 15.8 to booleans). |
+| `objects` | array of objects | Present under `health --object`: `content_id`, `size`, `runs` (array of `run_seq`), `discs` (array of uuid), `replication`, `last_verified_sec`. |
+| `manufacturer_trend` | array of objects | `manufacturer_id`, `discs`, `failed`, `degraded`. |
 
 ### 11.10 Encoding cost and memory
 
@@ -4387,7 +4814,7 @@ Container header:
 | 46 | 1 | u8 | `hash_algo` | Multicodec code. |
 | 47 | 1 | u8 | `fanout_bits` | 8 or 16. |
 | 48 | 8 | u64 | `payload_len` | Container length, for validation. |
-| 56 | 4 | u32 | `body_crc32c` | CRC-32C over every byte after the TOC. |
+| 56 | 4 | u32 | `body_crc32c` | CRC-32C over every byte from offset 64 to the end of the container: the TOC, the sentinel and every chunk. |
 | 60 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 59. |
 | 64 | `16 * (chunk_count + 1)` | | `toc` | TOC entries, then a sentinel. |
 
@@ -4433,16 +4860,21 @@ Manifest record, 64 bytes, sorted ascending by `content_id`:
 | 32 | 8 | u64 | `uncompressed_size` | Payload bytes after decompression. |
 | 40 | 8 | u64 | `container` | With `flags` bit0 set: the 0-based index of the bundle in the `"BNDL"` table. Otherwise: the absolute LBA of the first sector of the object's file. |
 | 48 | 8 | u64 | `offset` | With `flags` bit0 set: the byte offset of the chunk's stored bytes from the first byte of the bundle file. Otherwise: the byte offset of the object header from the start of sector `container`, normally 0. |
-| 56 | 2 | u16 | `flags` | bit0 in a bundle, bit1 duplicate for locality, bit2 metadata object, bit3 spilled TLV payload. |
+| 56 | 2 | u16 | `flags` | bit0 in a bundle, bit1 duplicate for locality, bit2 metadata object, that is a tree, a chunklist or a snapshot object, bit3 spilled TLV payload. |
 | 58 | 1 | u8 | `hash_algo` | Multicodec code. |
 | 59 | 1 | u8 | `digest_len` | 32. |
 | 60 | 1 | u8 | `kind` | Object kind registry. |
 | 61 | 1 | u8 | `compression` | Compression id. |
 | 62 | 2 | u16 | `reserved_u16` | Zero. |
 
-A lookup is: read `fanout[b-1]` and `fanout[b]` for the first byte `b` of the
-id, then binary search that slice. With fixed 64-byte records the search is pure
-arithmetic. There is no parsing, and the container maps directly into memory.
+A lookup is: read `fanout[b-1]` and `fanout[b]` for the fan-out index `b` of
+the id, then binary search that slice. `fanout[-1]` is 0. With `fanout_bits`
+8, `b` is byte 0 of the 32-byte `content_id`. With `fanout_bits` 16, `b` is
+the big-endian u16 of bytes 0 and 1: `b = byte0 * 256 + byte1`. Big-endian
+here is a rule of arithmetic, not a stored field; it makes the fan-out order
+equal the unsigned bytewise record order. With fixed 64-byte records the
+search is pure arithmetic. There is no parsing, and the container maps
+directly into memory.
 
 A chunk in a bundle resolves in two steps: its record gives the bundle index,
 the `"BNDL"` table gives the bundle id, and the bundle's own record gives the
@@ -4465,11 +4897,11 @@ Split records are sorted by `chunklist_id`, then by `part_index`.
 
 Manifest sizes, informative:
 
-| Objects in the run | Manifest size | Share of a 25 GB disc |
+| Objects in the run | Manifest size | Share of that run's disc |
 |---:|---:|---:|
-| 6,000 (25 GB, P4) | 375 KiB | 0.0016% |
+| 6,000 (25 GB, P4) | 375 KiB | 0.0015% |
 | 24,000 (100 GB, P4) | 1.46 MiB | 0.0015% |
-| 48,000 (100 GB, P3) | 2.93 MiB | 0.003% |
+| 48,000 (100 GB, P3) | 2.93 MiB | 0.0031% |
 
 A writer must use a 16-bit fan-out (65536 entries, 256 KiB) once a run holds
 more than 1,000,000 objects. It removes 8 binary-search steps. It costs 256 KiB
@@ -4528,7 +4960,7 @@ Snapshot table record, 136 bytes, sorted by `generation` then by `snapshot_id`:
 | 104 | 8 | i64 | `time_sec` | Snapshot time. |
 | 112 | 8 | u64 | `object_count` | Objects reachable, as section 8.7 counts them. |
 | 120 | 8 | u64 | `first_run_seq` | The run that first held the snapshot object. |
-| 128 | 1 | u8 | `flags` | bit0 the snapshot is complete on this set. |
+| 128 | 1 | u8 | `flags` | bit0 the snapshot is complete on this set: the connectivity check of section 12.9 found every reachable object in this run or in an earlier run when the packer wrote this table. Clear when the check was not run or found a missing object. |
 | 129 | 1 | u8 | `hash_algo` | Multicodec code of `snapshot_id` and `root_tree`. |
 | 130 | 1 | u8 | `parent_hash_algo` | Multicodec code of `parent_id`. 0 for a root. |
 | 131 | 1 | u8 | `reserved_u8` | Zero. |
@@ -4557,9 +4989,18 @@ one container shape. Header, 64 bytes:
 | 64 | `record_count * record_size` | | `records` | Sorted, fixed-width. |
 
 Records are sorted, so a reader binary-searches them without an index. The
-snapshot table uses the record of this section, the ref table the ref record of
-section 8.8, the run table the record of section 12.5.2, and the disc
-directory the record of section 12.6.
+sort key of each table:
+
+| Table | Sort key, in order |
+|---|---|
+| Snapshot table | `generation` ascending, then `snapshot_id` bytes ascending. |
+| Ref table | `name` bytes ascending, unsigned, over `name_len` bytes; then `time_sec` ascending; then `snapshot_id` bytes ascending. Many records share one name. |
+| Run table | `run_seq` ascending. |
+| Disc directory | `disc_seq` ascending. |
+
+The snapshot table uses the record of this section, the ref table the ref
+record of section 8.8, the run table the record of section 12.5.2, and the
+disc directory the record of section 12.6.
 
 The replicated snapshot objects live in `catalog/snapobj/<name>`, one ordinary
 file per snapshot, named by the full multihash hex of the snapshot object. The
@@ -4620,11 +5061,18 @@ Record, 128 bytes, sorted by `run_seq`:
 | 104 | 24 | u8[24] | `reserved` | Zero. |
 
 The container header is the simple table container of section 12.5.1, with
-magic `"NART"` and `record_size` 128. The table has one record per run that
-was ever burned and verified, in every repository. A run whose burn failed
-never enters it. The record of a run is appended once and never changed; a
-later copy of the table differs from an earlier one only by the runs added
-at its end.
+magic `"NART"` and `record_size` 128. The table holds one record for every
+run whose burn was verified before the table was written, plus the record of
+the run that carries the table, which is written before that run is burned
+(section 10.5) and carries a zero `run_header_hash`. A `run_seq` is assigned
+by `pack` and is **never reused**: a run whose burn or verify fails leaves a
+hole in the sequence, its objects go back to STAGED or stay PACKED (section
+14.2), and the re-burn is a new plan with the next `run_seq`. A failed run
+therefore appears in at most one table, its own, and in no later table. A
+reader that finds a run in one table that a later table omits treats the
+earlier record as withdrawn. The record of a verified run is appended once
+and never changed; a later copy of the table differs from an earlier one only
+by the runs added at its end and by the withdrawal of a failed run.
 
 A reader that holds the run table and the disc directory knows, for every
 object it can locate through a manifest, the disc to ask for, the label to
@@ -4712,8 +5160,12 @@ that keeps zero manifests is still valid, because a filter negative is still a
 proof and the run's own manifest is outside the catalog.
 
 If priorities 1 to 4 alone exceed the cap, the writer does not drop them. It
-raises the reserve instead and reports the new figure, because losing the
-history would break the index-free promise.
+raises `catalog_bytes_per_run` of section 10.11 to their size plus one
+manifest, recomputes `catalog_growth`, and reports the new figure, because
+losing the history would break the index-free promise. On a new disc that
+value enters the superblock as part of `reserve_computed_sectors`. On an
+existing disc the superblock never changes; the packer lowers the data
+budget of the remaining runs by the difference and reports both figures.
 
 Manifests are **not** replicated for the whole repository. At 2,000 runs the
 cumulative manifest would be 2,000 x 375 KiB = 732 MiB. That is still only 3
@@ -4856,9 +5308,11 @@ Two rules are normative. Everything else in this subsection is informative.
 1. **Everything in the cache is derived from discs and is rebuildable.** A
    command must behave the same, apart from speed, with the cache deleted
    (section 13.4).
-2. **Never in the cache: anything that is not on a disc.** If losing the
-   cache loses data, the design is broken. Operator data such as shelf notes
-   lives in the repository (`<repo>/notes`, section 3.7), never here.
+2. **Never in the cache: anything whose loss loses archive data.** A cache
+   file is a copy of disc data, or a log that the next `verify` or `commit`
+   regenerates. If losing the cache loses data, the design is broken.
+   Operator data such as shelf notes lives in the repository
+   (`<repo>/notes.bin`, sections 3.7 and 14.6), never here.
 
 Informative: the default location is `$XDG_CACHE_HOME/noahsark/<repo-uuid>/`,
 which falls back to `~/.cache/noahsark/<repo-uuid>/`. The `--cache-dir` flag
@@ -4874,9 +5328,9 @@ implementation's; another layout that obeys the two rules conforms.
 | `refs.bin` | A copy of the ref table. |
 | `runs.bin` | A copy of the run table. |
 | `discs.bin` | A copy of the disc directory. |
-| `health.log` | Per-disc verification history, derived from the discs' checksum columns and the health records that `verify` writes. |
+| `health.log` | Per-disc verification history, derived from the discs' checksum columns and the health records that `verify` writes. The next scrub regenerates it, and the last verify date is also on disc in the disc directory. |
 | `xlate-<from>-<to>.bin` | Optional cross-algorithm side table (section 5.7). |
-| `pending-confirm.log` | Unconfirmed filter hits, with the runs that would confirm them. |
+| `pending-confirm.log` | Unconfirmed filter hits, with the runs that would confirm them. The next `commit` regenerates it; losing it wastes space, never data. |
 
 `index.bin` uses the manifest record layout with an added `run_seq`, and a
 256-entry or 65536-entry fan-out. Rebuilding it is a merge sort over the
@@ -4963,8 +5417,9 @@ staging/
     state.db                    append-only binary state log
 ```
 
-`state.db` is the only authoritative local state. Everything else in staging is
-either an object that also exists in the source, or derived data.
+`state.db` and the local ref log `<repo>/refs.bin` (section 14.6) are the
+only authoritative local state. Everything else in staging is either an
+object that also exists in the source, or derived data.
 
 **Staging must be on a local filesystem, or on NFS with `sync` semantics.**
 An SMB or CIFS mount is refused. The reasons are specific: `fsync` on SMB does
@@ -5016,9 +5471,12 @@ Rules:
    only when one is present.
 3. GC never deletes an object that is not CLEAN.
 4. GC is a separate command. Phase 1 runs it manually.
-5. A run that fails to burn returns its objects to STAGED.
-6. A run that fails verify keeps its objects PACKED and marks the run for
-   re-burn.
+5. A run that fails to burn returns its objects to STAGED, with reason 1.
+6. A run that fails verify keeps its objects PACKED, with reason 2, and marks
+   the run for re-burn.
+   In both cases the failed `run_seq` is never reused (section 12.5.2): the
+   next `pack` assigns the next `run_seq`, and the objects get a new PACKED
+   record that names it.
 7. An imported bundle object enters the machine at STAGED, exactly like a
    locally chunked object. `commit`, `import` and `verify --heal` are the
    only entry points.
@@ -5101,7 +5559,9 @@ never act before it has marked.
 ### 14.5 Concurrency and locking
 
 One repository is used by one process at a time for every command that writes
-local state. The rules:
+local state. The rules below are the requirement; the system calls named in
+them (`flock`, `O_EXCL`) are the Linux way to meet them and are informative,
+as in sections 18.4 and 18.8.
 
 1. **Repository lock.** `<repo>/lock` is the lock file. A command that writes
    the state log, the staging store, the config, or a burn plan takes an
@@ -5130,6 +5590,77 @@ local state. The rules:
    tail, exactly as section 14.3 states for a crash.
 
 The locks are advisory. They are not a security boundary.
+
+### 14.6 Local repository state: refs, the pending snapshot chain, and notes
+
+Three facts live only on the local machine between a commit and the verify
+of the run that carries them: the current value of every ref, the chain of
+snapshot objects that no verified run holds yet, and the operator's notes.
+This section defines where they live and how a command resolves them.
+
+**The local ref log.** `<repo>/refs.bin` is an append-only log with the
+header of the state log (section 14.3), magic `"NALR"`, `record_size` 128,
+and these records:
+
+| Offset | Size | Type | Name | Meaning |
+|---:|---:|---|---|---|
+| 0 | 96 | ref record | `ref` | The ref record of section 8.8, unchanged. `run_seq` is 0 while no run holds the snapshot; it is the run's `run_seq` from the moment `pack` puts the snapshot object into a run. |
+| 96 | 8 | u64 | `sequence` | Monotonic record number. |
+| 104 | 8 | u64 | `snapshot_generation` | `generation` of the snapshot named by `ref`. For a fast ancestry check. |
+| 112 | 12 | u8[12] | `reserved` | Zero. |
+| 124 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 123. |
+
+Rules:
+
+1. `commit` appends one record per moved ref, with `run_seq` 0, after it has
+   written the snapshot object into staging and recorded it STAGED.
+2. `pack` copies every local record whose `run_seq` is 0, and whose snapshot
+   object it puts into the run, into the run's `refs.bin` with `run_seq` set
+   to the run, and appends the same record to the local log.
+3. The current value of a ref is the newest local record for that name, by
+   `sequence`. When the log has no record for the name, the value comes from
+   the cache's copy of the ref table, and with no cache from the ref table
+   of the newest disc. The order is local log, then cache, then discs.
+4. A local record whose `run_seq` names a run that has reached CLEAN is
+   derivable from the discs; a writer may drop it when it compacts the log,
+   as section 14.3 allows for the state log. A record with `run_seq` 0, or
+   naming a run that is not yet CLEAN, is authoritative and is never
+   dropped.
+5. A record with a bad CRC ends the replay, as in section 14.3.
+6. `init --repo-uuid` on a recreated repository starts with an empty log;
+   `rebuild-cache` then supplies every ref from the discs.
+
+**The pending snapshot chain.** The chain is the set of snapshot objects in
+staging whose state is below CLEAN. Its head for a ref is the snapshot named
+by the newest local record. Every snapshot in the chain is reachable from a
+head by `parent` pointers, and every `parent` of a chain member is either
+another chain member or a snapshot that a verified run holds. `commit`
+resolves its parent by rule 3 and reads the snapshot object from staging
+when its state is below CLEAN, else from the cache or the discs. `log` and
+`ls` read the chain from staging before they read the snapshot table. A
+chain is never longer than the number of commits since the last verified
+run.
+
+**The notes file.** `<repo>/notes.bin` holds operator notes per disc. It is
+an append-only log with the header of the state log, magic `"NANT"`,
+`record_size` 256, and these records:
+
+| Offset | Size | Type | Name | Meaning |
+|---:|---:|---|---|---|
+| 0 | 16 | u8[16] | `disc_uuid` | The disc. |
+| 16 | 8 | i64 | `time_sec` | When the note was written. |
+| 24 | 4 | u32 | `time_nsec` | Nanoseconds. |
+| 28 | 2 | u16 | `label_len` | Byte length of `label`, 0 to 64. |
+| 30 | 2 | u16 | `shelf_len` | Byte length of `shelf`, 0 to 128. |
+| 32 | 64 | u8[64] | `label` | Local display label, UTF-8, zero-padded. |
+| 96 | 128 | u8[128] | `shelf` | Shelf note, UTF-8, zero-padded. |
+| 224 | 8 | u64 | `sequence` | Monotonic record number. |
+| 232 | 20 | u8[20] | `reserved` | Zero. |
+| 252 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 251. |
+
+The newest record per `disc_uuid`, by `sequence`, is the current note.
+`disc label` appends a record (section 19.22). The file is convenience data:
+losing it loses no archive data, and nothing in it reaches a disc.
 
 ---
 
@@ -5161,9 +5692,9 @@ attention on every future restore. On removable media, locality wins.
 
 The rules are ordered. A conflict is resolved by this order.
 
-1. **A file's chunks go in one run.** The only exceptions are a file larger than
-   the remaining capacity by more than `split.threshold` (default 25 percent of
-   a disc), and a file larger than a whole disc.
+1. **A file's chunks go in one run.** The only exceptions are the two cases
+   of section 15.7: a file larger than a whole disc, and a file that exceeds
+   the remaining capacity by more than `split.threshold` of a disc.
 2. **A directory's files go in one run** when the directory fits, in depth-first
    path order.
 3. **Siblings stay adjacent.** Objects are written in depth-first path order
@@ -5221,8 +5752,8 @@ Knobs:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `locality.max_source_runs` | 8 | Per 1 GiB segment of the incoming stream, reference at most this many older runs. Rewrite the rest. |
-| `locality.segment_size` | 1 GiB | The unit that capping is applied over. |
+| `locality.max_source_runs` | 8 | Per segment of the incoming stream, reference at most this many older runs. Rewrite the rest. |
+| `locality.segment_size` | 1 GiB | The unit that capping is applied over: a segment is the next `segment_size` bytes of file content in walk order, and it crosses file boundaries. The last segment of a commit may be shorter. |
 | `locality.rewrite_below_chunks` | 64 | Never keep a run as a source to save fewer than this many chunks from one segment. |
 | `locality.max_duplicate_bytes_per_file` | 64 MiB | Per-file hard cap on rewritten bytes. |
 | `locality.max_duplicate_ratio_per_file` | 0.05 | Per-file cap as a fraction of the file. |
@@ -5262,6 +5793,12 @@ Presets:
 | `locality` | 2 | A snapshot restores from at most 3 runs per segment. Good for one disc set per project. |
 | `standalone` | 0 | No cross-run references at all. Every disc set is readable with no other disc. Costs the most media and gives the strongest durability story. |
 
+`standalone` sets `max_source_runs` to 0 **and** lifts the three caps that
+rank above it: `max_duplicate_bytes_per_file`,
+`max_duplicate_ratio_per_file` and `disc_budget` become unlimited. Rank 1
+and rank 4 then never keep a cross-run reference, so the preset's promise
+holds. A user who sets `max_source_runs = 0` by hand without lifting the
+caps gets rank 1 behaviour: a file above a cap keeps its references.
 `standalone` also makes the filter chain purely informational. It is a
 legitimate archival choice and the design must not forbid it.
 
@@ -5300,13 +5837,17 @@ read it from the superblock of the target disc, not from the drive.
 
 ### 15.7 Split threshold
 
-A file is split across runs only when:
+A file is split across runs only when one of two conditions holds:
 
-- it is larger than one whole disc; or
-- it is larger than the remaining capacity by more than `split.threshold`,
-  default 0.25 of a disc.
+```
+file_size > data_budget * 2048                                 # larger than a disc
+file_size - free_now > split.threshold * data_budget * 2048    # too far over the rest
+```
 
-Otherwise the packer starts a new run for the file. Wasting a quarter of a disc
+`free_now` is the free part of the data budget of the current disc in
+bytes (section 15.6), `data_budget` is in sectors (section 10.11), and
+`split.threshold` defaults to 0.25. Otherwise the packer starts a new run
+for the file. Wasting a quarter of a disc
 is cheaper than adding a disc to every future restore of that file.
 
 When a split happens, the packer places the parts on discs that the plan will
@@ -5347,7 +5888,10 @@ coming instead of being surprised by a 40-disc burn request.
 
 ```
 0. Choose direct mode (section 16.3) or mirror mode (section 16.4).
-1. Resolve the source roots and the parent snapshot.
+1. Resolve the source roots and the parent snapshot. The parent is the
+   current value of the ref being moved, resolved in this order: the local
+   ref log, then the cache's ref table, then the ref table of the newest
+   disc (section 14.6). No parent means a root snapshot.
 2. Build the candidate file list:
      a. full scan when --full-scan or --checksum is given;
      b. otherwise the quick check of section 16.2 against the parent
@@ -5363,10 +5907,14 @@ coming instead of being surprised by a 40-disc burn request.
      b. build the TLV areas, sorted by type;
      c. spill any TLV area above the threshold;
      d. hash and write the tree object.
-5. Write the snapshot object with the root tree, the parent, the generation,
-   and the metadata TLVs.
-6. Append a ref record for the ref being moved, by default LATEST.
-7. Record every new object in the state log as STAGED.
+5. Compare the new root tree id with the parent's root tree id. When they
+   are equal, and --force is not given, stop here: write no snapshot object,
+   move no ref, and report "no change" with exit code 0. Otherwise write the
+   snapshot object with the root tree, the parent, the generation, and the
+   metadata TLVs.
+6. Record every new object in the state log as STAGED.
+7. Append a ref record with run_seq 0 to the local ref log for the ref
+   being moved, by default LATEST (section 14.6).
 ```
 
 A commit normally runs against a live source. Section 16.6 states how a file
@@ -5393,7 +5941,9 @@ three fields with the parent snapshot's tree entry:
 
 The three-field form is the default for a local source. A remote source uses
 size and mtime only (section 16.10), because ctime is not trustworthy there.
-`source.quick_check` selects the form.
+`source.quick_check` selects the form, and `metadata.ctime = false` (section
+20.10) also selects the two-field form, because a tree with no ctime cannot
+be compared on it.
 
 If all compared fields are equal, the file is unchanged. The walker reuses the entry's
 chunk list and never opens the file. If any one differs, the file is read,
@@ -5457,9 +6007,10 @@ The four steps of `sync`:
 
 ```
 1. Obtain a stat listing of the source: path, type, size, mtime, ctime,
-   mode, uid, gid.
+   mode, uid, gid, device number, inode number and link count.
      - local source:  a walk;
-     - remote source: one ssh command that prints the same listing.
+     - remote source: one ssh command that prints the same listing
+       (section 16.12 shows the `find` form).
 2. Diff the listing against the parent snapshot's trees.
      - present and equal in all three fields -> unchanged;
      - present and different, or absent from the parent -> changed;
@@ -5476,7 +6027,11 @@ Then `commit --from mirror --source-root /srv/data`:
 6. Reuse the parent tree entry, unchanged, for every unchanged path.
 7. Apply the deletions from the listing diff.
 8. Record /srv/data as the path in the snapshot, not the mirror path.
-9. Clear staging/mirror/ after the objects reach STAGED.
+9. Derive every hardlink group id from the source device and inode numbers
+   of the listing, never from the mirror copy (section 8.6). When the
+   listing has link counts but no device or inode numbers, use the path-set
+   rule of section 8.6 and set HARDLINK_BY_PATH.
+10. Clear staging/mirror/ after the objects reach STAGED.
 ```
 
 `--delete` is **not** used, because the mirror is not a full copy. Deletions come
@@ -5485,7 +6040,7 @@ from the listing diff, which is authoritative.
 | rsync option | Reason |
 |---|---|
 | `-a` | Archive mode: recursion, times, mode, owner, group, symlinks. |
-| `-H` | Preserve hard links, which the tree model records as groups. |
+| `-H` | Preserve hard links inside the mirror, so that the members of a group share one mirror inode. The group id itself comes from the source listing (section 8.6). |
 | `-A` | Preserve POSIX ACLs. |
 | `-X` | Preserve extended attributes. |
 | `--numeric-ids` | Never map ids through the local name service. |
@@ -5545,6 +6100,13 @@ directory. It holds one entry per source root, in root order:
 The rule holds with one root as well, so every snapshot has the same shape.
 `restore SNAPSHOT TARGET` creates `TARGET/<root path>` for each root, that is
 `TARGET/srv/data`, and `restore --include` names paths below a root. The
+intermediate directories on that path that no tree entry describes,
+`TARGET/srv` in the example, are created with mode 0700, the invoking
+user's uid and gid, and the restore time as mtime; an intermediate directory
+that already exists is left as it is. The restore reports every intermediate
+directory it created, once, in the loss report under the field
+`intermediate_directory` with reason `SYNTHESIZED`, and that alone does not
+change the exit code. The
 synthetic root tree costs one small object per commit and changes only when a
 root's own metadata or content changes.
 
@@ -5736,8 +6298,9 @@ A watcher is Phase 3. It will record changed paths with `fsnotify` and append
 them to a log, and `commit` will take the union of that log and the quick check.
 It will never commit by itself, because a commit needs a stable filesystem.
 
-Nothing has to change for it to arrive. `commit` is idempotent: committing an
-unchanged tree produces the same snapshot root and writes no new object. The
+Nothing has to change for it to arrive. `commit` is idempotent: a commit
+whose root tree equals the parent's root tree writes no new snapshot object
+and moves no ref, unless `--force` is given (section 16.1, step 5). The
 watcher is therefore an accelerator for step 2 of the commit flow, and it
 changes no format and no state.
 
@@ -5886,11 +6449,13 @@ few of them.
 Mode B runs one command on the data host, over ssh, to produce a stat listing:
 
 ```bash
-ssh nas "find /srv/data -printf '%y\t%s\t%T@\t%C@\t%m\t%U\t%G\t%p\n'"
+ssh nas "find /srv/data -printf '%y\t%s\t%T@\t%C@\t%m\t%U\t%G\t%D\t%i\t%n\t%p\n'"
 ```
 
-The listing is diffed against the parent snapshot's trees, exactly as `sync`
-does (section 16.4), and only the changed files are read over the mount. It
+`%D`, `%i` and `%n` are the device number, the inode number and the link
+count, which the hardlink rule of section 8.6 needs. The listing is diffed
+against the parent snapshot's trees, exactly as `sync` does (section 16.4),
+and only the changed files are read over the mount. It
 removes the per-file round trips of the walk, which is what makes mode A slow on
 a large tree. It needs no binary on the data host.
 
@@ -6023,6 +6588,38 @@ need".
 The plan must fail up front when a required disc is missing from the inventory.
 The operator must learn about a missing disc in second one, not in hour three.
 
+The plan is one JSON object with these fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | string | Always `noahsark-restore-plan`. |
+| `version` | integer | 1. |
+| `repo_uuid` | string | Hyphenated lowercase uuid. |
+| `snapshot` | string | Multihash text form of the snapshot. |
+| `target` | string | The restore target path. |
+| `include` | array of strings | The `--include` paths, absent when none. |
+| `files`, `objects` | integer | Files and distinct objects to restore. |
+| `bytes` | integer | Uncompressed bytes to restore. |
+| `peak_staging_bytes` | integer | Predicted peak of `staging/restore/`. |
+| `estimated_seconds` | integer | Section 17.5. |
+| `switches` | integer | Number of disc changes. |
+| `passes` | integer | 1, or more when the staging budget forces several passes (section 17.3). |
+| `discs` | array of objects | In plan order. |
+| `discs[].order` | integer | 0-based position. |
+| `discs[].pass` | integer | 0-based pass. |
+| `discs[].drive` | integer | 0-based drive under `--drives` above 1. |
+| `discs[].disc_uuid` | string | The disc. |
+| `discs[].disc_seq` | integer | 0-based. |
+| `discs[].label`, `discs[].shelf` | string | On-disc label; shelf note (section 14.6), absent when none. |
+| `discs[].health` | string | `healthy`, `degraded`, `critical`, `failed`, `unknown`. |
+| `discs[].runs` | array of integers | The `run_seq` values to read on this disc. |
+| `discs[].bytes_to_read`, `discs[].objects_to_read`, `discs[].files_completed` | integer | Counts. |
+| `discs[].estimated_seconds` | integer | Section 17.5. |
+| `missing_discs` | array of objects | `disc_uuid`, `disc_seq`, `label`, `objects` (integer). Non-empty means the plan failed. |
+| `degraded_runs` | array of objects | `run_seq`, `disc_uuid`, `lost_ids` (array of multihash text). |
+
+Informative example:
+
 ```json
 {
   "format": "noahsark-restore-plan",
@@ -6056,6 +6653,10 @@ The operator must learn about a missing disc in second one, not in hour three.
 ```
 
 ### 17.5 Time model
+
+The formula below is the requirement. The table is the set of default
+constants, which `restore.rate_mb_s` and `restore.switch_seconds` (section
+20.12) replace; it is informative.
 
 | Quantity | Value | Class |
 |---|---|---|
@@ -6211,7 +6812,8 @@ phased:
 | Symlink target | 1 |
 | Hardlink group | 1 |
 | User name and group name | 1 |
-| atime, ctime, birth time | 2 |
+| ctime | 1 |
+| atime, birth time | 2 |
 | Extended attributes | 2 |
 | POSIX ACL, access and default | 2 |
 | Linux chattr flags | 2 |
@@ -6220,6 +6822,10 @@ phased:
 
 A Phase 1 writer never emits a TLV that it does not implement. A Phase 1 reader
 preserves and reports an unknown non-critical TLV, and does not apply it.
+
+ctime is stored from Phase 1 because the quick check of section 16.2
+compares it. No platform restores it (section 18.5); it is never applied,
+only stored.
 
 The reason for inline metadata is read amplification. A separate node object
 would cost one object read per file instead of one per directory. On a medium
@@ -6232,7 +6838,7 @@ tree changes either way.
 | Item | Encoding | Reason |
 |---|---|---|
 | Time | `i64` seconds plus `u32` nanoseconds | A single `i64` of nanoseconds overflows on 2262-04-11 and cannot express dates before 1678. An archival format must outlive that. `struct timespec`, `utimensat` and Go's `time.Time` all use seconds plus nanoseconds, so there is no conversion and no rounding. |
-| Nanoseconds | Always in `[0, 999999999]` | A negative time is a negative seconds value with a non-negative nanosecond part, which is Go's normalization. |
+| Nanoseconds | Always in `[0, 999999999]` | A negative time is a negative seconds value with a non-negative nanosecond part. |
 | File type | `entry_type`, a u8 enum | Two encodings of the same fact, as in a combined `st_mode`, are a source of canonicalization bugs in a content-addressed format. |
 | Mode | `u32`, low 12 bits | Permission bits only. The type is not here. |
 | uid, gid | `u32`, `0xFFFFFFFF` means unknown | Numeric identity. |
@@ -6444,6 +7050,26 @@ field name `content_unstable`.
 
 ### 18.11 Loss report
 
+The loss report is one JSON object with these fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | string | Always `noahsark-metadata-report`. |
+| `version` | integer | 1. |
+| `snapshot` | string | Multihash text form. |
+| `target` | string | The restore target. |
+| `privileged` | boolean | Whether the restore ran with root or the needed capabilities. |
+| `source_flags` | array of strings | The names of the set `source_flags` bits of the snapshot (section 8.7). |
+| `summary` | array of objects | One per field kind. |
+| `summary[].field` | string | `owner`, `group`, `mode`, `setuid_setgid`, `device_node`, `fifo_socket`, `symlink`, `hardlink_degraded`, `xattr.user`, `xattr.security`, `xattr.trusted`, `acl`, `flags`, `times`, `windows_attrs`, `windows_sd`, `ads`, `unknown_tlv`, `content_unstable`, `intermediate_directory`. |
+| `summary[].count` | integer | Entries affected. |
+| `summary[].reason` | string | An errno name, `UNSTABLE`, `UNSUPPORTED`, `SYNTHESIZED`, or `DROPPED`. |
+| `summary[].examples` | array of strings | Up to 10 paths. |
+| `entries` | array of objects | Present under `-v`: every `{path, field, reason, errno}` record. |
+| `exit_code` | integer | 0, 1 or 2 (section 18.9). |
+
+Informative example:
+
 ```json
 {
   "format": "noahsark-metadata-report",
@@ -6538,7 +7164,7 @@ Exit: 0 on success, 2 when the directory already holds a repository.
 ### 19.2 `noahsark commit` (Phase 1)
 
 ```
-noahsark commit [SOURCE]... [-m MESSAGE] [--ref=NAME] [--checksum]
+noahsark commit [SOURCE]... [-m MESSAGE] [--ref=NAME] [--checksum] [--force]
                 [--exclude=PATTERN]... [--one-file-system=BOOL]
                 [--source=PATH] [--source-root=PATH] [--from=PATH]
                 [--copy-first] [--retry-unstable=N]
@@ -6553,6 +7179,7 @@ source roots.
 | `-m` | Commit message, stored as a snapshot TLV. |
 | `--ref` | The ref to move. Default `LATEST`. |
 | `--checksum` | Disable the quick check. Read and rehash every file. `--full-scan` is an alias. |
+| `--force` | Write a snapshot object and move the ref even when the root tree equals the parent's root tree (section 16.1, step 5). |
 | `--from` | Read changed files from this mirror directory. Unchanged paths come from the parent tree. Phase 2. |
 | `--source` | Read from this path, typically a filesystem snapshot mount. |
 | `--source-root` | The original path to record in the snapshot. Use it with `--source` or `--from`. |
@@ -6564,8 +7191,9 @@ source roots.
 | `--exclude` | Skip matching paths. The patterns are recorded in the snapshot. |
 | `--one-file-system` | Do not cross a mount point. Default true. |
 
-Exit: 0 on success, 1 when some files could not be read or were unstable, 2 on
-failure or when the repository lock is held.
+Exit: 0 on success, also when the tree is unchanged and no snapshot was
+written; 1 when some files could not be read or were unstable; 2 on failure
+or when the repository lock is held.
 
 The report lists every unstable path and says which branch was taken: `parent`
 when the parent entry was reused, or `flagged` when new content was stored with
@@ -6666,7 +7294,7 @@ and exits 1.
 |---|---|
 | `--disc` | Continue an existing disc. Without it, `pack` starts a new disc. |
 | `--media` | Media type for a new disc: any name, or the numeric id, from the media type registry of section 4.6, for example `BD-R SL 25`, `M-DISC BD DL 50`, `BD-RE SL 25`, `Mini BD SL 8 cm`, `image`, or `8`. A space in a name may be written as `-`. Default `disc.media`. |
-| `--capacity` | Forced capacity for a new disc (section 9.12). It must be at or below the reported capacity. It cannot be changed later. |
+| `--capacity` | Forced capacity for a new disc (section 9.12). A plain integer is bytes; an integer followed by `KiB`, `MiB` or `GiB` is scaled by 2^10, 2^20 or 2^30. It must be at or below the reported capacity. It cannot be changed later. |
 | `--reserve` | `disc.force_reserve` for this disc. Replaces the computed reserve. |
 | `--extra-reserve` | `disc.extra_reserve` for this disc. Added to the computed reserve. |
 | `--label` | Human label, printed on the disc. |
@@ -6826,6 +7454,10 @@ An entry with the `UNSTABLE` flag is restored, and a warning names the path.
 `--strict-unstable` refuses to write such an entry and reports it as missing
 (section 18.10).
 
+An intermediate directory between `TARGET` and a source root that no tree
+entry describes is created with mode 0700, the invoking user's ownership and
+the restore time, and is reported (section 16.5).
+
 Exit: 0 all applied, 1 data restored with metadata loss, 2 data restore failed,
 3 a required disc is missing.
 
@@ -6914,8 +7546,8 @@ noahsark disc mark-degraded UUID [--reason=TEXT]
 profile, reported capacity, forced capacity, used, run count, open or closed,
 health, RS margin, spare remaining, and last verify date.
 
-`label` sets a local display label and the shelf note for a disc in
-`<repo>/notes` (section 3.7). The on-disc label is written at burn time and
+`label` appends a record to `<repo>/notes.bin` (section 14.6) with a local
+display label and the shelf note for a disc. The on-disc label is written at burn time and
 never changes, and the cache holds only copies of disc data (section 13.1),
 so neither is touched. `list` and the restore plan show the shelf note next
 to the on-disc label.
@@ -6953,7 +7585,7 @@ Later-phase keys:
 
 | Phase | Keys |
 |---:|---|
-| 2 | `commit.copy_first`, `sync.*`, `fs.append_variant`, `disc.spare`, `disc.min_spare_ratio`, `disc.close_policy = when_full`, `disc.allow_raw_append`, `metadata.xattr`, `metadata.acl`, `metadata.windows` |
+| 2 | `commit.copy_first`, `sync.*`, `fs.append_variant`, `disc.spare`, `disc.min_spare_ratio`, `disc.close_policy = when_full`, `disc.allow_raw_append`, `metadata.atime`, `metadata.btime`, `metadata.xattr`, `metadata.acl`, `metadata.windows` |
 | 3 | `fec.disc_close_parity`, `fec.group_size`, `consolidate.*`, `restore.drives` above 1, `watch.*`, `mirror.*`, `reindex.*` |
 | Backlog | `commitbundle.*` |
 
@@ -6999,7 +7631,7 @@ structure.
 |---|---|---|
 | `fs.profile` | 0 | Disc filesystem profile: 0 one-shot (Phase 1, default), 1 UDF 2.01 POW (Phase 2), 2 ISO 9660:1999 level 4 POW (Phase 3). |
 | `fs.append_variant` | `1b` | Phase 2. Profile 1 append variant: `1a` kernel direct write, `1b` image mirror and block diff. |
-| `fs.fanout_levels` | 1 | Object fan-out depth. 2 is allowed under profile 1 and profile 0 only. |
+| `fs.fanout_levels` | 1 | Object fan-out depth. 2 is allowed under profile 0 and profile 1 only (section 5.5). |
 | `udf.revision` | `2.01` | UDF revision for profile 1. |
 | `disc.fill_ratio` | 0.95 | Fraction of the forced capacity that data may use. |
 | `disc.min_fill` | 0.90 | `pack` triggers when staging fills this fraction of a disc's data budget. |
@@ -7051,6 +7683,7 @@ structure.
 | `manifest.history_depth` | 8 | How many earlier runs' manifests every run carries. |
 | `filter.rollup_threshold` | 64 MiB | Merge old filters into super filters above this bundle size. Reserved. |
 | `catalog.max_bytes` | 512 MiB | Cap on one run's catalog (section 12.7.1). Only the manifest history is dropped to meet it. |
+| `catalog.table_reserve_bytes` | 614400 | Planning reserve, in bytes, for the snapshot objects and the four tables of one catalog copy; the `table_bytes` input of `catalog_growth` (section 10.11). |
 | `catalog.snapobj_pack_threshold` | 1000 | Above this snapshot count, pack the replicated snapshot objects into one container file. |
 
 ### 20.8 Sources and excludes
@@ -7079,7 +7712,7 @@ structure.
 | `sync.mirror_dir` | `<staging>/mirror` | Mirror root on the staging disk. Phase 2. |
 | `sync.clear_after_commit` | true | Delete the mirror contents once the objects reach STAGED. Phase 2. |
 | `sync.remote_stat_command` | built-in | The command used to obtain a stat listing from a remote source. Phase 2. |
-| `label.template` | `<repo-short-name>-<seq:04d> <YYYY-MM>` | Physical label text, mirrored into the disc directory. |
+| `label.template` | `<repo-short-name>-<seq:04d> <YYYY-MM>` | Physical label text, mirrored into the disc directory. `<seq:04d>` is `disc_seq`, 0-based, zero-padded to four digits; `<YYYY-MM>` is the first write month in local time. |
 | `repo.short_name` | from `repo.uuid` | Short name used in the label. Up to 16 characters. |
 
 ### 20.9 Locality and packing
@@ -7104,6 +7737,7 @@ structure.
 | Key | Default | Meaning |
 |---|---|---|
 | `metadata.user_group_names` | true | Store user and group names beside the numeric ids. |
+| `metadata.ctime` | true | Store ctime when the source reports it. The quick check of section 16.2 compares it. Setting it to false selects the `size_mtime` quick check. Phase 1. |
 | `metadata.atime` | false | Storing atime makes almost every tree change on every commit. Phase 2. |
 | `metadata.btime` | false | Store birth time when the source reports it. Linux cannot set it on restore, so it is informational there. Phase 2. |
 | `metadata.xattr` | false | Phase 2. |
@@ -7142,9 +7776,29 @@ structure.
 | Key | Default | Meaning |
 |---|---|---|
 | `scrub.first_check_hours` | 24 | First full verify after burning, on a second drive. |
-| `scrub.schedule` | `3m,12m,then 12m to 5y,then 6m` | The schedule of section 11.8. |
+| `scrub.schedule` | `3m,12m,then 12m to 5y,then 6m` | The schedule of section 11.8, in the grammar below. |
 | `scrub.degraded_interval` | 3 months | Interval for a degraded disc. |
 | `scrub.max_disc_age` | 10 years | Proactive re-burn age. |
+
+`scrub.schedule` grammar, in EBNF. Ages are measured from the burn time of
+the disc. Spaces are allowed around every token.
+
+```
+schedule = phase { "," phase } ;
+phase    = point | interval ;
+point    = duration ;                            (* one scrub at this age *)
+interval = "then" duration [ "to" duration ] ;   (* every d1 until age d2 *)
+duration = digits unit ;
+digits   = digit { digit } ;
+unit     = "d" | "w" | "m" | "y" ;               (* days, weeks, months, years *)
+```
+
+A `point` schedules one scrub at that age. An `interval` schedules a scrub
+every `d1` from the end of the previous phase until age `d2`; an interval
+with no `to` runs until `scrub.max_disc_age`. Phases are in ascending age
+order; a schedule that is not is refused. A month is 30 days and a year is
+365 days for this purpose. The default reads: at 3 months, at 12 months,
+then every 12 months until age 5 years, then every 6 months.
 
 ---
 
@@ -7267,7 +7921,7 @@ a writer.
 
 | # | Failure | Detected by | Immediate effect | Recovery | Data loss |
 |---:|---|---|---|---|---|
-| 1 | A burn fails midway | Non-zero exit from the burner, or a short read-back | The run is incomplete | Objects return to STAGED. Pack a new run onto a fresh disc. | None |
+| 1 | A burn fails midway | Non-zero exit from the burner, or a short read-back | The run is incomplete | Objects return to STAGED. Pack a new run, with a new `run_seq`, onto a fresh disc. | None |
 | 2 | Verify finds bad sectors | ddrescue mapfile, checksum column | The run is degraded | RS decode inside the run. | None while erasures are at or below `m` per stripe |
 | 3 | Erasures exceed `m` in a stripe | RS decode refuses | Some objects are unreadable on this disc | Content-addressed re-fetch, then cross-disc parity, then mirror, then the source. | None when another copy exists |
 | 4 | A whole disc is lost or destroyed | The disc is missing from the inventory | Every object unique to it is missing | Cross-disc parity group, mirror, or the source. Otherwise the loss is enumerable from the catalog. | Objects unique to that disc |
@@ -7275,7 +7929,7 @@ a writer.
 | 6 | The local cache is lost | The cache directory is absent | Dedup and planning are slower | Rebuild from the newest disc, level 1. Then level 3 lazily. | None |
 | 7 | The cache is wrong (uuid mismatch) | `disc_uuid` does not match the recorded `disc_seq` | The cache may give wrong answers | Refuse the cache. Rebuild. | None |
 | 8 | The state log is truncated by a crash | A record CRC fails | Some objects have an unknown state | Replay up to the bad record. Re-scan staging. Objects with no record are treated as STAGED. | None |
-| 9 | An object moved after an append | The LBA read-back differs from the layout table | The layout table would be wrong | Abort the append. Keep objects PACKED. Re-burn the run. | None |
+| 9 | An object moved after an append | The LBA read-back differs from the layout table | The layout table would be wrong | Abort the append. Keep objects PACKED. Re-burn as a new run with a new `run_seq`. | None |
 | 10 | The spare area is exhausted | A write error, or the health report below `disc.min_spare_ratio` | Filesystem updates fail | Raw append mode, profile 1 and Phase 2 only (section 9.11). Otherwise a fresh disc. | None |
 | 11 | The drive offers no POW | `GET CONFIGURATION` feature 0x38 absent | The disc cannot be appended | Use profile 0 sealed. | None |
 | 12 | A filter false positive is unconfirmed | The manifest is unavailable | A chunk may be a duplicate | Write the chunk again. Log it in `pending-confirm`. Section 12.8 gives the rate. | None. Space is wasted. |
@@ -7336,7 +7990,7 @@ drive. It does have `sudo`, so loop mounts work.
 | 21 | GC refuses to delete an object that is not CLEAN | The safety rule holds |
 | 22 | Burn plan refusal on a bad CRC or a misaligned seek | The plan is validated |
 | 23 | Forced capacity: the image, the budget and the FEC layout all shrink | The override reaches every consumer |
-| 24 | Reserve formula: the printed budget matches both worked examples of section 10.11, and `data_budget` is a whole number of stripes of `k` data sectors | The arithmetic is right |
+| 24 | Reserve formula: with the stated inputs, `catalog_growth` is 58,080 and 201,920 sectors, the printed budget matches every line of both worked examples of section 10.11, and `data_budget` is a whole number of stripes of `k` data sectors | The arithmetic is right |
 | 25 | Connectivity check reports a missing object with no disc mounted | A filter negative is a proof |
 | 26 | Quick check: a file whose size, mtime and ctime match is never read | The commit cost is proportional to the change set |
 | 27 | In-flight change: a file rewritten during the read gets the parent entry when one exists, and the `UNSTABLE` flag when it does not | No snapshot ever holds torn content without a flag |
@@ -7348,6 +8002,11 @@ drive. It does have `sudo`, so loop mounts work.
 | 33 | Profile 0 open image: the volume mounts with the anchor at LBA 256 alone | The tail-anchor limitation is real and tolerated |
 | 34 | `pack --close` image: the plan holds one write step whose `byte_len` equals the full-size image, and `udfinfo` finds three `type=ANCHOR` lines in that image | A sealed disc gets its tail anchors from the same growisofs call |
 | 35 | Run table: after three runs on two discs, with the third run appended to the first disc, the planner names the right disc for every run | Run order does not imply disc order |
+| 36 | Dedup confirmation: a filter hit with no manifest available writes the chunk again and logs it in `pending-confirm`; a confirmed hit drops it | Data is never dropped on a filter alone |
+| 37 | Capping: `max_source_runs` bounds the referenced runs per segment, the per-file caps outrank it, `disc_budget` stops rewriting, and the `standalone` preset produces no cross-run reference | The knobs apply in the rank of section 15.4 |
+| 38 | Unchanged commit: a second commit of an unchanged tree writes no snapshot object and moves no ref; `--force` writes one | Commit is idempotent |
+| 39 | Local ref log: the parent of a commit resolves from the local log before the cache, and a re-created repository recovers every ref from the discs | The pending chain is authoritative until CLEAN |
+| 40 | RS worked example: the `k = 3`, `m = 2` bytes of section 11.2.1 encode and decode as printed | The field and the matrix are the ones specified |
 
 ### 23.3 Composite action
 
@@ -7499,14 +8158,15 @@ names the section that defines it and the test of section 23.2 that proves it.
 | 12 | Every run carries `k = 231`, `m = 23` parity over its parity domain, which starts at LBA 0 for the first run, a checksum column whose sector `i` holds the data digests of stripe `i`, and `m + 2` header copies. | 11 | 6, 7, 8, 9 |
 | 13 | Every run carries its filter, its manifest with the seven mandatory chunks `FANO`, `RECS`, `BNDL`, `PREQ`, `SRCR`, `DUPS` and `SPLT`, and its catalog with `CATALOG.bin` and the run table. | 12 | 4, 5, 30, 35 |
 | 14 | The filter query rule of section 12.2 accepts every inserted key. | 12.2 | 4 |
-| 15 | A filter hit is confirmed against a manifest before data is dropped. | 12.8 | 12 (section 22) |
+| 15 | A filter hit is confirmed against a manifest before data is dropped. | 12.8 | 36 |
 | 16 | Every command works with the cache deleted; restore works from the newest image alone. | 13.4, 17.9 | 11 |
 | 17 | The state machine holds: `verify` is the only path to CLEAN, GC deletes only GC-ELIGIBLE. | 14.2, 14.4 | 20, 21, 29 |
 | 18 | The repository lock is taken as section 14.5 states. | 14.5 | - |
-| 19 | The packer applies rule 1 and the capping knobs in the rank of section 15.4. | 15 | 24 |
+| 19 | The packer applies rule 1 and the capping knobs in the rank of section 15.4. | 15 | 37 |
 | 20 | The restore plan is deterministic, disc-major, printed before any read, and fails up front on a missing disc. | 17 | 12 |
 | 21 | Phase 1 metadata is stored and restored in the order of section 18.4; the loss report and exit codes hold. | 18 | 13, 19 |
-| 22 | The quick check and the in-flight rule hold. | 16.2, 16.6 | 26, 27, 31 |
+| 22 | The quick check, the in-flight rule and the unchanged-commit rule hold. | 16.2, 16.6, 16.1 | 26, 27, 31, 38 |
+| 22a | The local ref log and the pending snapshot chain hold. | 14.6 | 39 |
 | 23 | Later-phase commands, options and config keys are refused with a message that names the phase. | 19, 20 | - |
 | 24 | `burn --print` never touches a device; `burn --exec` runs only the printed commands, on Linux only, and refuses an unpatched burner. | 10.7, 10.12 | 22 |
 | 25 | `README.txt` and `FORMAT.txt` are written with the content of sections 10.4.1 and 10.4.2. | 10.4 | 1 |
@@ -7540,7 +8200,8 @@ reproduce them. The vectors are:
 | Catalog container | Five stated entries. | The container bytes. |
 | Simple tables | Two stated records of each of the snapshot table, the ref table, the run table and the disc directory. | The container bytes. |
 | Checksum sector | The 231 stated data sectors of one stripe. | The 2048 bytes of the checksum sector. |
-| Parity | A stated stripe of `k + 1` information sectors. | The `m` parity sectors, and the recovery of the stripe after `m` stated erasures. |
+| Parity | A stated stripe of `k` data sectors. | The `m` parity sectors under the code of section 11.2.1, and the recovery of the stripe after `m` stated erasures. The `k = 3`, `m = 2` example of section 11.2.1 is the one vector that is printed in this document. |
+| Local ref log and notes file | Two stated records of each. | The file bytes (section 14.6). |
 | State log | Three stated records. | The log bytes, and the replay result after the last record is truncated. |
 | Burn plan | A stated plan with two steps. | The container bytes and the rendered command lines. |
 | Hardlink group id | A stated `repo_uuid`, `st_dev` and `st_ino`. | The u64. |
@@ -7555,15 +8216,16 @@ changed under a version; a format change adds a vector.
 
 ## 24. Implementation notes
 
-Items 1, 7, 10 and 11 are informative. The other items are requirements on
-any implementation that claims conformance (section 21.6).
+Items 1, 2, 5, 6, 7, 10 and 11 are informative; items 2, 5 and 6 are the
+reference project's house style. The other items are requirements on any
+implementation that claims conformance (section 21.6).
 
 1. **Language: Go, informative.** The reference implementation is written in
    Go: the standard library covers SHA-256, compression bindings are mature,
    and a single static binary suits a recovery tool. The format is defined
    by this document and by nothing in Go; a conforming implementation may use
    any language.
-2. **Code must explain itself.** Comments and commit messages must not cite
+2. **Code must explain itself, informative.** Comments and commit messages must not cite
    section numbers of this document. A comment carries only information that is
    related to the code beside it.
 3. **Vendor the frozen tables.** The Gear table and the mask constants are part
@@ -7572,11 +8234,11 @@ any implementation that claims conformance (section 21.6).
 4. **Pin external tools.** Check the versions of `growisofs`, `mkudffs`,
    `udfinfo`, `genisoimage` and `ddrescue` at startup. Refuse to burn with an
    unpatched dvd+rw-tools build.
-5. **One Go definition per binary structure**, with explicit encode and decode
+5. **One Go definition per binary structure, informative**, with explicit encode and decode
    functions. No reflection-based marshalling. No struct tags. The byte layout
    is written out by hand, field by field, in the order of the table in this
    document.
-6. **Golden files for every structure.** A test writes a structure with known
+6. **Golden files for every structure, informative.** A test writes a structure with known
    values and compares the bytes to a checked-in file, and reads that file back
    and compares the fields.
 7. **No hidden allocation in the hot path.** Informative: chunking and
@@ -7640,6 +8302,9 @@ Each term is defined once. The same word is used everywhere for the same thing.
 | Term | Definition |
 |---|---|
 | **Append** | Adding a run to a disc that already holds one. Phase 2. Section 10.2.2 is the normative home. |
+| **Metadata object** | A tree, a chunklist or a snapshot object: an object that holds references and no file content. Bit 2 of the layout extent flags and of the manifest record flags marks one. |
+| **Local ref log** | `<repo>/refs.bin`, the append-only log of ref values that section 14.6 defines. |
+| **Pending snapshot chain** | The snapshot objects in staging whose state is below CLEAN, reachable from the head named by the local ref log. |
 | **Bundle** | An object that holds many small chunks plus an index. |
 | **Burn plan** | The machine-readable file that `pack` writes and `burn` renders into command lines. |
 | **Capping** | Bounding the number of older runs that a new run may reference, to bound the restore plan. |
@@ -7669,7 +8334,7 @@ Each term is defined once. The same word is used everywhere for the same thing.
 | **Prerequisite** | An object that a run references but does not contain. |
 | **Raw append** | The degraded mode that writes a run past the next writable address without updating the filesystem directory. |
 | **Reserve** | The part of a disc's capacity that data must not use. |
-| **Run** | One write of a burn plan. The unit of packing, manifest, filter and parity. |
+| **Run** | One execution of one burn plan. The unit of packing, manifest, filter and parity. Its `run_seq` is never reused. |
 | **Run table** | The catalog table that maps every `run_seq` to its disc, its LBA range and its run header hash (section 12.5.2). |
 | **RS margin** | `m` minus the worst-stripe erasure count, as a percentage of `m`. The headline health metric. |
 | **Shard** | One 2048-byte sector, as seen by the FEC layer. |
@@ -7691,6 +8356,7 @@ states; every entry below is under format major 1.
 | Document version | Change |
 |---|---|
 | 2.0 | Complete redesign of the previous specification. Appendix D lists what it superseded and why. Section 25 summarizes it. |
+| 2.2 | Reed-Solomon code defined exactly: GF(2^8) with 0x11D, a Cauchy generator matrix over the `k` data columns, the checksum column outside the code, and a printed `k = 3`, `m = 2` example (section 11.2.1). Local repository state: the local ref log, the pending snapshot chain and the notes file (section 14.6); commit resolves its parent from the local log first (section 16.1). ctime stored from Phase 1 (sections 2.5, 18.1, 20.10). Ref table sort key (section 12.5.1). Exact integer `catalog_growth` formula, both worked examples recomputed (section 10.11). 16-bit fan-out index defined (section 12.3). A `run_seq` is never reused (sections 12.5.2, 10.12.1, 14.2). `pad.bin` always present (sections 10.4, 10.5). Profile 2 builds its images with genisoimage and burns them with growisofs (sections 10.3.4, 10.5, 10.8). `verify --image` column location and the raw-LBA definition (sections 11.8, 9.7.1). Burn plan path limits (section 10.7.1). `scrub.schedule` grammar (section 20.13). Metadata object defined. Intermediate restore directories (section 16.5). Hardlink ids in mirror mode from the source listing (section 8.6). Unchanged commit writes nothing without `--force` (section 16.1). CRC rule restated with a coverage table (sections 4.1, 4.10). One CRITICAL rule (section 11.9). Feature-bit reservation corrected (section 4.4). `standalone` preset lifts the per-file caps (section 15.4). Run table membership stated (section 12.5.2). Normative-home table for burn topics (section 10). Security summary (section 3.8), limits (section 4.11), JSON field tables for the burn plan, the restore plan, the loss report and the health report, snapshot metadata tags in Appendix B, references in Appendix F. Tests 36 to 40 added. |
 | 2.1 | Run table added to the catalog (section 12.5.2). Feature-bit assignment table (section 4.4) and hash coverage table (section 4.9) added. `header_len` limited to three structures; every other structure grows only by major version (section 4.7). Checksum column covers the data sectors of its own stripe (section 11.4). `k` and `m` fixed for version 1 (section 11.2). First run's parity domain starts at LBA 0 (section 9.3). One capacity formula with `data_budget` and `fill_limit_sectors` (section 10.11). Build passes with explicit placeholders and final order (section 10.5). Sealed path burns the full-size image (section 9.9.1). Bundle chunk payloads carry no object header (section 8.3). Exclude pattern language (section 16.5.1) and complete root name encoding (section 16.5). `verify --mapfile` (section 19.11). Healed objects enter STAGED (section 14.2). Reader and writer conformance (section 21.6). Snapshot table record 136 bytes with a u64 `first_run_seq` (section 12.5). Shelf notes moved from the cache to the repository (sections 3.7, 13.1). |
 
 ---
@@ -7833,6 +8499,8 @@ u32 value is the little-endian reading of those bytes.
 | `NABN` | 0x4E42414E | Commit bundle header. Backlog, reserved. | 16.11.1 |
 | `NABP` | 0x5042414E | Burn plan container | 10.7.1 |
 | `NABS` | 0x5342414E | Burn plan step | 10.7.1 |
+| `NALR` | 0x524C414E | Local ref log | 14.6 |
+| `NANT` | 0x544E414E | Notes file | 14.6 |
 
 An implementation must compute these constants from the ASCII bytes, not copy
 the hexadecimal column, and a test must assert that the two agree.
@@ -7928,6 +8596,24 @@ the hexadecimal column, and a test must assert that the two agree.
 
 **Tree TLV types**: see section 8.5.5.
 
+**Snapshot metadata TLV tags** (section 8.7)
+
+| Tag | Name | Value | Repeats |
+|---:|---|---|---|
+| 1 | author | UTF-8. | No. |
+| 2 | host | UTF-8 host name. | No. |
+| 3 | message | UTF-8, from `commit -m`. | No. |
+| 4 | source root | Raw path bytes of one source root. | One per root, in root order. |
+| 5 | exclude rules | UTF-8 pattern lines of section 16.5.1, one per line, in rule order, for the root of the preceding tag 4. | One per root, in root order. |
+| 6 | checksum commit | Empty. Present when the commit rehashed every file. | No. |
+| 7 to 0x7FFF | reserved | | |
+| 0x8000 to 0xBFFF | reserved critical | A reader refuses an unknown tag in this range. | |
+| 0xF000 to 0xFFFF | vendor | Never critical. | May repeat. |
+
+**Source flags** (section 8.7): bit 0 `NO_CTIME`, bit 1 `NO_HARDLINKS`,
+bit 2 `NO_SPARSE`, bit 3 `SYNTHETIC_IDS`, bit 4 `CASE_INSENSITIVE`,
+bit 5 `MTIME_SLACK`, bit 6 `HARDLINK_BY_PATH`.
+
 **Manifest TOC chunk ids**: `FANO`, `RECS`, `BNDL`, `PREQ`, `SRCR`, `DUPS`,
 `SPLT` (mandatory, in this order), then `BMAP` and `RIDX` (optional). See
 section 12.3.
@@ -7936,9 +8622,9 @@ section 12.3.
 
 | Id | Kind |
 |---:|---|
-| 1 | write image |
-| 2 | build and write from a tree |
-| 3 | append from a tree |
+| 1 | write image with `-Z` |
+| 2 | build an ISO 9660 image from a tree |
+| 3 | write image with `-M` |
 | 4 | mount read-write |
 | 5 | copy tree into the mount |
 | 6 | unmount |
@@ -7990,36 +8676,20 @@ udfinfo run.udf | grep -c 'type=ANCHOR'        # expect 3
 
 ### C.3 Burn
 
-```bash
-# Profile 0, default: POW-formatted, one run, disc left open.
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.udf
+This appendix holds no burn command line of its own. The normative command
+lines are:
 
-# Profile 0, sealed: no format, closed, full capacity, stable LBAs.
-growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty \
-          -Z /dev/sr0=run.udf
+| Case | Section |
+|---|---|
+| Profile 0, open (default) and sealed | 10.1.5 |
+| Profile 1 variant 1b, one seeking write per changed 32 KiB-aligned run | 10.2.4 |
+| Profile 2, build with genisoimage, first write, append and close | 10.3.4 |
+| The templates that `burn --print` renders | 10.8 |
 
-# Profile 1 append (Phase 2): one call per changed 32 KiB-aligned run.
-growisofs -speed=4 -use-the-force-luke=seek:${NWA},spare:min,tty \
-          -Z /dev/sr0=append.bin
-
-# Profile 2 (Phase 3): first write, then append, then close.
-growisofs -speed=4 -use-the-force-luke=spare:min,tty \
-          -Z /dev/sr0 -iso-level 4 -D -l -allow-limited-size \
-          -no-limit-pathtables -sort sortfile -V ARK-0001 /srv/ark
-growisofs -speed=4 -use-the-force-luke=spare:min,tty \
-          -M /dev/sr0 -iso-level 4 -D -l -allow-limited-size \
-          -no-limit-pathtables -sort sortfile -V ARK-0001 /srv/ark
-growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:min,tty \
-          -M /dev/sr0 -iso-level 4 -D -l -allow-limited-size \
-          -no-limit-pathtables -sort sortfile -V ARK-0001 /srv/ark
-
-# M-DISC: replace -speed=4 with -speed=2 in any of the above.
-# CI dry run: add -dry-run.
-# Safety assertion when appending: add -C 16,${NWA}.
-# -speed=4 and ARK-0001 are examples; burner.speed and label.template decide.
-# run.udf is the used prefix on the open path and the full image when sealed
-# (section 9.9.1).
-```
+Informative notes that apply to every case: M-DISC replaces `-speed=4` with
+`-speed=2`; a CI dry run adds `-dry-run`; a seeking append may add
+`-C 16,${NWA}` as a safety assertion; `-speed=4` and the labels in the
+examples are placeholders that `burner.speed` and `label.template` decide.
 
 Never pass `-overburn`. Never pass `-M` on a UDF disc. Never let the drive use
 BD-R Random Recording Mode.
@@ -8079,7 +8749,7 @@ udfinfo run.udf | grep -E 'start=|blocks=|type='
 
 ```bash
 growisofs -version 2>&1 | head -2
-dpkg -l dvd+rw-tools 2>/dev/null | tail -1     # section 10.12 gives the matrix
+dpkg -l dvd+rw-tools 2>/dev/null | tail -1     # section 10.12 and Appendix E
 mkudffs --help 2>&1 | head -1                  # expect udftools 2.3 or newer
 genisoimage -version                            # profile 2 only
 ddrescue --version | head -1
@@ -8392,5 +9062,65 @@ volume. Variant 1a lets the kernel write the disc directly. Variant 1b keeps a
 local mirror and pushes the changed blocks through growisofs. Neither adds a
 session, so the disc keeps `Number of Sessions: 1`.
 
-Profile 2 avoids UDF entirely and uses the ISO 9660 merge that growisofs already
-supports.
+Profile 2 avoids UDF entirely and uses the ISO 9660 merge that genisoimage
+already supports and that growisofs accepts as a `-M` image.
+
+**growisofs internals that the burn rules rest on.** This block is
+informative. It records where in the growisofs source each rule of section
+10.9 and section 10.10 comes from, so that a later reader can re-check it.
+
+| Rule | Where it comes from |
+|---|---|
+| A seeking write's byte offset and length must be multiples of 32768. | `poor_mans_pwrite64` rejects any other value with `EINVAL`. |
+| `seek:N` requires `N % 16 == 0`. | The `-use-the-force-luke=seek:` parser. |
+| One command line covers every media size. | `get_2k_capacity()` computes `nwa + free_blocks` from `READ TRACK INFORMATION`; there is no layer logic and no hardcoded sector count. |
+| A blank BD-R is formatted for POW unless `spare:none` is passed. | `bd_r_format()` forces the Format Subtype to SRM+POW. |
+| A POW BD-R is treated as rewritable. | `poor_man_rewritable()` classes `profile == 0x41 && bdr_plus_pow` as rewritable. |
+| Appends stay in one session. | `plusminus_r_C_parm()` takes `next_session` from the Next Writable Address and forces `prev_session = 0`. |
+
+**The two distribution patches that section 10.12 requires.** Upstream
+dvd+rw-tools 7.1 (2008-03-05) is broken for BD-R in two ways:
+
+| Patch | Bug | Effect without it |
+|---|---|---|
+| `ignore_pseudo_overwrite.patch`, 2011-03-07 | Debian #615978 | A POW-capable drive under-reports BD-R capacity and the disc cannot be filled. |
+| `fix_burning_bd-r_discs.patch`, 2015-02-20 | Debian #713016 | A blank BD-R fails to close with `CLOSE SESSION failed with SK=5h/INVALID FIELD IN CDB`. |
+
+Debian 7.1-14, Fedora 7.1-13 and Arch 7.1-13 carry both.
+
+---
+
+## Appendix F. References
+
+This appendix is informative. It names the external documents that the
+normative text relies on, so that a reader can check a claim at its source.
+Where this document and a reference disagree, this document wins for the
+on-disc format.
+
+| Topic | Reference |
+|---|---|
+| FastCDC | W. Xia et al., "The Design of Fast Content-Defined Chunking for Data Deduplication Based Storage Systems", IEEE Transactions on Parallel and Distributed Systems, 2020. Sections 6 and Appendix A. |
+| BinaryFuse filters | T. M. Graf and D. Lemire, "Binary Fuse Filters: Fast and Smaller Than Xor Filters", ACM Journal of Experimental Algorithmics, 2022. Section 12.2. |
+| Capping | M. Lillibridge, K. Eshghi and D. Bhagwat, "Improving Restore Speed for Backup Systems that Use Inline Chunk-Based Deduplication", USENIX FAST 2013. Section 15.4. |
+| Reed-Solomon codes | I. S. Reed and G. Solomon, "Polynomial Codes over Certain Finite Fields", Journal of SIAM, 1960. Section 11.2. |
+| Cauchy generator matrices | J. Blömer et al., "An XOR-Based Erasure-Resilient Coding Scheme", ICSI TR-95-048, 1995. Section 11.2.1. |
+| dvdisaster RS03 | dvdisaster documentation, the RS03 codec. Informative comparison in section 11.2. |
+| BLAKE3 | J. O'Connor, J.-P. Aumasson, S. Neves and Z. Wilcox-O'Hearn, "BLAKE3: one function, fast everywhere", 2020. Section 5.2. |
+| SHA-256 | NIST FIPS 180-4, Secure Hash Standard. Section 5.2. |
+| Multihash and multicodec | The multiformats specifications, multihash and the multicodec table. Sections 4.6 and 5.4. |
+| CRC-32C | G. Castagnoli, S. Bräuer and M. Herrmann, "Optimization of Cyclic Redundancy-Check Codes with 24 and 32 Parity Bits", IEEE Transactions on Communications, 1993; parameters as used by RFC 3720 (iSCSI). Section 4.1. |
+| zstd | RFC 8878, Zstandard Compression and the 'application/zstd' Media Type. Section 7. |
+| UDF 2.01 | OSTA Universal Disk Format Specification, revision 2.01, and ECMA-167, 3rd edition. Sections 10.1 and 10.2. |
+| ISO 9660:1999 | ISO 9660:1988 with the 1999 amendment (level 4), and ECMA-119. Section 10.3. |
+| Blu-ray error correction | Blu-ray Disc Association, "White Paper Blu-ray Disc Format, 1.A Physical Format Specifications for BD-RE", the LDC and BIS picket code. Section 11.1. |
+| dvd+rw-tools | growisofs and dvd+rw-mediainfo, upstream 7.1 with the Debian patch set. Sections 10.9, 10.12 and Appendix E. |
+| udftools | mkudffs and udfinfo, 2.3 or later. Section 10.1.2. |
+| GNU ddrescue | The ddrescue manual, the mapfile format. Sections 11.8 and C.5. |
+| Git multi-pack-index | Git technical documentation, "multi-pack-index format". Sections 12.3 and 13.1. |
+| Git partial clone | Git technical documentation, "partial clone", the promisor discipline. Section 12.4. |
+| GEFS | O. Read, GEFS, a content-addressed filesystem for Plan 9: hashed pointers and one root per snapshot. Sections 4.1 and 8.7. |
+| Duplicacy | The two-step fossil collection rule. Section 14.4. |
+| Bacula | The bootstrap file. Section 17.4. |
+| restic | The bundle (pack) shape and the Windows ACL inheritance defect. Sections 8.3 and 18.5. |
+| age | The separation of encryption from signing that section 8.9 reserves. |
+| Linux kernel | `fs/udf/super.c` for the write-once read-only rule, and the `openat2` and `RESOLVE_*` flags of section 18.8. |
