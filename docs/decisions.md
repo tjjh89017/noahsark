@@ -115,13 +115,60 @@ otherwise pinned by any other row).
 
 ## 8.2 Files at the volume root: README.txt and FORMAT.txt
 
-`internal/image`'s `Build` does not generate `/NOAHSARK/README.txt` or
-`/NOAHSARK/FORMAT.txt`. Their content is fixed, large, normative text
-(section 8.4 and 8.5) outside this change's scope; the task that added
-`internal/image` named the files it should produce and did not include
-these two. A disc `internal/image` writes today is not yet complete
-against section 8.2's file list; producing `README.txt` and `FORMAT.txt`
-is left for later work.
+`internal/image`'s `Build` writes `/NOAHSARK/README.txt` and
+`/NOAHSARK/FORMAT.txt` at the volume root, directly after `DISC.bin` and
+before `REFERENCE/decoder.py`, matching the fill order section 8.7
+states. `FORMAT.txt` is checked in as `internal/image/format.txt`, copied
+byte for byte from the Appendix A fenced text; a test compares it against
+that text freshly extracted from `FORMAT.md` on every run, so the two
+can never drift silently. `README.txt` is built from a template checked
+in the same way, `internal/image/readme_template.txt`, with every slot
+substituted at build time from the values `Build` writes into `DISC.bin`
+and the run header. Both rows carry their real `sha256` in the Files
+table and enter the FEC stream, as roles 4 and 5.
+
+## 8.4 README.txt: {hash_algo} and {chunker_profile} source, and {label} scope
+
+Section 8.4's substitution table says `{hash_algo}` and
+`{chunker_profile}` come from the superblock's `hash_algo` and
+`chunker_profile` fields, but the disc superblock (section 7.5) carries
+no such fields: only the run header does. `internal/image` reads this as
+the section 3 prose already states it, "hash algorithm of the first run"
+and "chunker profile of the first run", and substitutes the values the
+first run's header carries, `sha2-256` and `P4`, the only values a Phase
+1 writer ever produces. This does not change any byte the superblock or
+the run header carries; it only fixes which structure's field a reader
+of this document should have named.
+
+`{label}` substitutes the superblock's `label` bytes "as they are". A
+Phase 1 writer never stores more than the caller's label text, zero-
+padding the rest of the 64-byte field; `internal/image` substitutes only
+the meaningful, non-padding bytes rather than the full 64-byte field,
+since the padding is not part of the label and would otherwise read as a
+run of `?` characters. This does not change `label` or `label_len` on
+disc; it only fixes what a human-readable substitution should print.
+
+## 11.1 INDEX, Objects table: resolving an object row's file by file_index
+
+`internal/image`'s `StreamFiles`, used by both `Read`'s parity
+verification and `internal/restore`'s `Heal`, used to resolve an object
+row's (role 13) file path by sorting every candidate file under
+`objects/` and `snapshots/` by its own current `sha256` and matching
+that order position by position against the run's object rows, the same
+rule Build uses to order those rows at write time. That match only holds
+while every object file is intact: corrupting one file's bytes changes
+its `sha256` and so its sort position, which silently reassigns every
+row from that point on to the wrong file. The Objects table already
+carries `file_index`, "0-based row index into the Files table" (section
+11.1), naming each object's own row directly and requiring no hash of
+the file's current bytes at all. `StreamFiles` now builds an object's
+path from its `content_id` and reads `file_index` to place it, so
+resolving an object row's file no longer depends on that file being
+undamaged, which `internal/restore`'s `Heal` needs before it can even
+find the block to repair. A snapobj row (role 9) carries no such field
+in this version, so the sha256-sort match, and its intact-file
+assumption, still applies there; this does not change any byte on disc
+in either case, only how a reader locates the file a row describes.
 
 ## 8.1 Profiles a reader must know: filesystem overhead estimate
 

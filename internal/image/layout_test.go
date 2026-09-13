@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,50 @@ func TestBuildAndRead(t *testing.T) {
 	}
 	if rr.Disc.DiscUUID != opts.DiscUUID {
 		t.Fatal("disc uuid mismatch")
+	}
+}
+
+func TestBuildWritesReadmeAndFormatTxt(t *testing.T) {
+	stagingDir, snapID := stageFixture(t)
+	outDir := t.TempDir()
+	opts := testOpts(t, stagingDir, snapID, outDir)
+	if _, err := Build(opts); err != nil {
+		t.Fatal(err)
+	}
+
+	formatOnDisk, err := os.ReadFile(filepath.Join(outDir, "NOAHSARK", "FORMAT.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(formatOnDisk, FormatTxt) {
+		t.Fatal("FORMAT.txt on disk does not match the embedded fixed text")
+	}
+
+	readmeOnDisk, err := os.ReadFile(filepath.Join(outDir, "NOAHSARK", "README.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(readmeOnDisk)
+	if bytes.ContainsRune(readmeOnDisk, '{') {
+		t.Fatal("README.txt still has an unsubstituted slot")
+	}
+	wantDiscUUID := uuidText(opts.DiscUUID)
+	if !strings.Contains(readme, wantDiscUUID) {
+		t.Fatalf("README.txt does not contain disc uuid %s", wantDiscUUID)
+	}
+	if !strings.Contains(readme, "label: test-disc") {
+		t.Fatal("README.txt does not contain the disc label")
+	}
+	if !strings.Contains(readme, "k=231 data columns, m=23 parity columns") {
+		t.Fatal("README.txt does not contain the fec_k/fec_m substitution")
+	}
+
+	rr, err := Read(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rr.ObjectsVerified == 0 {
+		t.Fatal("expected at least one verified object")
 	}
 }
 

@@ -138,6 +138,11 @@ func Build(opts BuildOptions) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	var label [64]byte
+	labelLen := copy(label[:], opts.Label)
+	readmeBuf := buildReadme(opts, packTime, label[:labelLen])
+	readmeHash := sha256.Sum256(readmeBuf)
+	formatHash := sha256.Sum256(FormatTxt)
 	refsBuf, refsHash, err := buildRefs(opts)
 	if err != nil {
 		return nil, err
@@ -156,6 +161,8 @@ func Build(opts BuildOptions) (*Result, error) {
 	runRowIdx := len(rows)
 	rows = append(rows, fileRow{role: format.FileRoleRun, byteLen: RunFileLen, path: "NOAHSARK/runs/%RUNSEQ%/RUN.bin"})
 	rows = append(rows, fileRow{role: format.FileRoleDisc, byteLen: uint64(len(discBuf)), hash: discHash, data: discBuf, path: "NOAHSARK/DISC.bin", inStream: true})
+	rows = append(rows, fileRow{role: format.FileRoleReadme, byteLen: uint64(len(readmeBuf)), hash: readmeHash, data: readmeBuf, path: "NOAHSARK/README.txt", inStream: true})
+	rows = append(rows, fileRow{role: format.FileRoleFormat, byteLen: uint64(len(FormatTxt)), hash: formatHash, data: FormatTxt, path: "NOAHSARK/FORMAT.txt", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleReference, byteLen: uint64(len(DecoderPy)), hash: decoderHash, data: DecoderPy, path: "NOAHSARK/REFERENCE/decoder.py", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleRefs, byteLen: uint64(len(refsBuf)), hash: refsHash, data: refsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/REFS.bin", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleDiscs, byteLen: uint64(len(discsBuf)), hash: discsHash, data: discsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/DISCS.bin", inStream: true})
