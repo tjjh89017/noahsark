@@ -63,7 +63,11 @@ func walkListTree(base string, treeID object.ID, prefix string, out *[]ListEntry
 		return fmt.Errorf("image: tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range tree.Entries {
-		path := filepath.ToSlash(filepath.Join(prefix, string(e.Name)))
+		name := string(e.Name)
+		if prefix == "" {
+			name = unescapeRootName(name)
+		}
+		path := filepath.ToSlash(filepath.Join(prefix, name))
 		typeName := entryTypeNames[e.EntryType]
 		if typeName == "" {
 			typeName = fmt.Sprintf("type%d", e.EntryType)
@@ -76,6 +80,37 @@ func walkListTree(base string, treeID object.ID, prefix string, out *[]ListEntry
 		}
 	}
 	return nil
+}
+
+// unescapeRootName reverses the root entry name escape internal/object
+// applies: %2F back to '/', %5C back to '\', %00 back to NUL, %25 back
+// to '%'.
+func unescapeRootName(name string) string {
+	var b []byte
+	for i := 0; i < len(name); i++ {
+		if name[i] == '%' && i+2 < len(name) {
+			switch name[i : i+3] {
+			case "%2F":
+				b = append(b, '/')
+				i += 2
+				continue
+			case "%5C":
+				b = append(b, '\\')
+				i += 2
+				continue
+			case "%00":
+				b = append(b, 0)
+				i += 2
+				continue
+			case "%25":
+				b = append(b, '%')
+				i += 2
+				continue
+			}
+		}
+		b = append(b, name[i])
+	}
+	return string(b)
 }
 
 // SortedPaths returns entries' Path fields, sorted, for a
