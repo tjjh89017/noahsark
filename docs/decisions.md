@@ -254,17 +254,35 @@ this build.
 because no staging state log exists to age objects in. It instead takes
 the snapshot(s) to place explicitly, by `--ref` (default `LATEST`,
 resolved through the local ref file) or repeated `--snapshot`.
-`--capacity` accepts a bare integer as a sector count, or an integer
+`--capacity` accepts a bare integer as a sector count, an integer
 suffixed `GiB`/`MiB`/`KiB` (binary) or `GB`/`MB`/`KB` (decimal, the
 marketing convention optical media capacities like "25GB" are named
 in), converted to whole sectors at FORMAT.md's 2048-byte sector size,
-rounding up; it falls back to the config's `disc.force_capacity` and
+rounding up, or a preset name for the real, drive-reported sector count
+of common write-once media, since a marketing size is not the real
+capacity a drive reports:
+
+| Preset | Media | Sectors | Bytes |
+|---|---|---:|---:|
+| `dvd+r` | DVD+R | 2,295,104 | 4,700,372,992 |
+| `dvd-r` | DVD-R | 2,298,496 | 4,707,319,808 |
+| `bd25` | BD-R, 25 GB | 12,219,392 | 25,025,314,816 |
+| `bd50` | BD-R DL, 50 GB | 24,438,784 | 50,050,629,632 |
+| `bd100` | BD-R XL, 100 GB | 48,878,592 | 100,103,356,416 |
+| `bd128` | BD-R XL, 128 GB | 62,500,864 | 128,001,769,472 |
+
+`--capacity` falls back to the config's `disc.force_capacity` and
 refuses to run with neither set, per the fixed decision that every pack
-takes a capacity. `--disc` is refused by name: it means continuing an
-existing disc, Phase 2 append, which `internal/image`'s `Build` does
-not support. `--reserve`, `--extra-reserve`, `--preset`, `--now`,
-`--close` and `--dry-run` are not defined, since `Build` has no such
-options.
+takes a capacity. `--physical-capacity` takes the same forms (sectors,
+a preset, or a byte size) and sets the disc's physical capacity,
+`capacity_sectors` in the superblock, separately from `--capacity`,
+which sets the forced limit, `capacity_forced_sectors`; it defaults to
+`--capacity`, so a pack that does not force a smaller limit than the
+physical disc needs only `--capacity`. `--disc` is refused by name: it
+means continuing an existing disc, Phase 2 append, which
+`internal/image`'s `Build` does not support. `--reserve`,
+`--extra-reserve`, `--preset`, `--now`, `--close` and `--dry-run` are
+not defined, since `Build` has no such options.
 
 `image build` takes the packed tree directory directly, in place of
 OPERATIONS.md's `--run=SEQ`, because no run-sequence state exists to

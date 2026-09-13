@@ -39,7 +39,8 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	ref := fs.String("ref", "", "ref naming the snapshot to pack, default LATEST")
 	var snapshotFlags stringList
 	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
-	capacityStr := fs.String("capacity", "", "target capacity (sectors, or e.g. 25GB); falls back to the config default")
+	capacityStr := fs.String("capacity", "", "target capacity (sectors, a preset like bd25, or e.g. 25GB); falls back to the config default")
+	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity (sectors, a preset, or a byte size); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
 	label := fs.String("label", "", "human label for the disc")
 	media := fs.String("media", "BD-R-SL-25", "media type name")
 	outDir := fs.String("out", "", "output directory for the packed tree; default <repo>/staging/plans/1/tree")
@@ -71,6 +72,15 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity or set disc.force_capacity in the config")
 		return 2
+	}
+
+	physicalCapacitySectors := capacitySectors
+	if *physicalCapacityStr != "" {
+		physicalCapacitySectors, err = parseCapacity(*physicalCapacityStr)
+		if err != nil {
+			fmt.Fprintln(stderr, "noahsark: pack:", err)
+			return 2
+		}
 	}
 
 	mediaType, ok := mediaTypes[*media]
@@ -133,7 +143,7 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 		StagingDir:              cfg.StagingDir,
 		Snapshots:               snapshots,
 		TargetCapacitySectors:   capacitySectors,
-		PhysicalCapacitySectors: capacitySectors,
+		PhysicalCapacitySectors: physicalCapacitySectors,
 		OutputDir:               absOut,
 		RepoUUID:                repoUUID,
 		DiscUUID:                discUUID,
