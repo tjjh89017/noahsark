@@ -1,6 +1,6 @@
 # NoahsArk design notes
 
-Document version 0.4.1.
+Document version 0.4.2.
 
 Sections other than the change log and Deferred designs still describe
 document version 3.2 and are updated later.
@@ -415,24 +415,28 @@ second catches a decoder that silently tolerates one.
 
 Rule: FORMAT.md sections 3.1 to 3.7.
 
-The default algorithm for new objects is BLAKE3-256. SHA-256 is a fully
-supported alternative.
+SHA-256 is the only algorithm Phase 1 writes. blake3 and sha2-512-256 stay
+reserved in the multihash registry for a later version.
 
-Reasons for BLAKE3 as the default:
+Reasons for SHA-256 as the only Phase 1 algorithm:
 
-- It runs 2 to 10 times faster than SHA-256 without SHA-NI.
-- The gap is largest on the arm64 machines that people use for home archives.
-- It scales across cores.
-- Its internal Merkle tree localizes corruption inside a large chunk.
+- It ships in the Go standard library, so Phase 1 needs no external hash
+  dependency.
+- Modern hosts carry SHA hardware acceleration, so its throughput stays far
+  above the burn speed.
+- Thirty years of use, as FIPS 180-4, in TLS and in git, make it an algorithm
+  a future reader recognizes without a library.
+- The format's `hash_algo` field and its hash-epoch rules keep a later
+  algorithm change possible without an agility redesign now.
 
-Reason to keep SHA-256: it is standardized in FIPS 180-4 and a future reader
-can reproduce it with a shell one-liner and no library.
+`sha2-512-256` is the 32-byte SHA-512 variant, reserved for a 64-bit host
+without SHA extensions, where it outruns SHA-256.
 
 Rejected: **SHA-256-only ids with no agility mechanism**, as restic does. A
 30-year archive will outlive at least one hash transition, and a bare untagged
 digest gives a reader no way to fail loudly on an unknown algorithm. The
-replacement is multihash ids with a registry, BLAKE3 as the default, and hash
-epochs.
+replacement is multihash ids with a registry and hash epochs; SHA-256 is the
+current algorithm, and blake3 stays reserved for a later one.
 
 **The cost of an epoch change.** At an epoch boundary, dedup drops to zero by
 default. The same bytes hash to a different id, so no new object can match an
@@ -2525,6 +2529,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 0.4.2 | **SHA-256 only in Phase 1.** FORMAT.md's hash algorithm registry marks `sha2-256` as the code Phase 1 writes and every reader must read; `blake3` and a new reserved code, `sha2-512-256`, stay reserved for a later version, and a Phase 1 writer never emits either. Every digest stays 32 bytes; a longer digest needs a new major version. The chunking, checksum column and Gear table pseudocode that read `BLAKE3-256` now read `SHA-256`; the checksum record's `hash_algo` byte is `0x12`; DISC and RUN `hash_algo` fields state that Phase 1 writes `0x12`; the object file name prefix is `1220` for every file this version writes. A conforming reader reads `sha2-256` and refuses an object whose `hash_algo` it does not implement, naming the code, in place of the old "reads both algorithms" rule. FORMAT.md section 10.5's decode rule now states that a decoder facing more than `k` present blocks in a stripe uses the `k` with the lowest column index, so healing is deterministic. `FORMAT.txt` regenerated to match; it is now 23,388 bytes in 563 lines. NOTES.md's "Reasons for BLAKE3 as the default" became "Reasons for SHA-256 as the only Phase 1 algorithm". |
 | 0.4.1 | **BUNDLE deferred.** FORMAT.md section "Deferred designs" holds the reasoning. Phase 1 stores every object as its own file, one file per chunk, blob, tree or snapshot; no chunk bundling and no packed `snapobj.bin` remain. A probe on a loop-mounted UDF 2.01 image, built with `mkudffs` from udftools 2.3, measured an in-ICB embedding threshold around 1,800 bytes and a File Entry cost of about 2 KiB per file above it regardless of payload size, and a populate time of about 19 s for 100,000 small files under 256-way fanout directories against about 0.4 s for the same payload packed into 1,000 bundle files; a single flat 100,000-entry directory showed quadratic populate cost instead. The `BUNDLE` `magic_kind` and the INDEX file role that also names an object file stay reserved for a later version; a Phase 1 writer never emits a bundle and a reader refuses one. The INDEX Objects row keeps `file_index` and `offset` so a later version can add a container without a layout change: `offset` is always 0 and `file_index` names the object's own file in this version. `bundle_threshold` and `bundle_target` are removed from the chunker profile record. NOTES.md gains this Deferred designs subsection, covering the bundle, delta objects and tree slices. |
 | 0.4.0 | FORMAT.md redesigned. Every structure now begins with a 40-byte common header: the project magic `NOAHSARK`, an 8-byte kind name, `version_major`, `version_minor`, `header_len` and two feature masks; a `version_minor` bump may only append fields, and every reserved field is zero. The document version, the program version and each structure's own version are independent, and the format is not frozen before 1.0.0, so no disc burned under a 3.x-era design is supported. Structures go from fifteen to eleven: objects are CHUNK, BLOB, TREE and SNAPSHOT; BUNDLE is a container for any small object; DISC, RUN, INDEX, CHECKSUM and parity describe a run; REFS and DISCS are the catalog. The run layout table, the filter, `CATALOG.bin`, the snapshot table, the run table, the disc directory, the bundle trailer, split records, the DUPS chunk, the TLV spill rule and the XLATE table are removed. No LBA appears anywhere: FEC runs over the file stream INDEX defines, in 2048-byte blocks, and recovery from damaged filesystem metadata is by carving on the project magic. Every regular file has a BLOB object, and object roots are `objects/` and `snapshots/`. OPERATIONS.md and NOTES.md still described document version 3.2 as of this change. |
 | 3.2 | Four defects closed across the three documents, and one phase decision recorded. **`byte_len`**: redefined per extent, not per object; the first extent of an object carries the object header plus stored payload, and each later extent carries stored payload alone, so a reader concatenates the `byte_len` spans of increasing `extent_index` to reconstruct the object. `payload_bytes` restated to match: the sum still equals a fragmented object's header plus its whole stored payload, counted once. **Hardlinks**: Phase 1 stores and restores every hardlinked path as an independent tree entry; content dedup already stores the shared data once, so no disc space is lost, and link identity is not preserved. `hardlink_group` and `HARDLINK_MEMBER` stay reserved, written zero and clear, moved from the Phase 1 to the Phase 2 metadata set (NOTES.md section 2.14); the device-and-inode derivation rule and its source path-set fallback are removed until a later phase needs them. **Extended metadata reserved**: Phase 1 stores Unix permissions only, `mode`, `uid` and `gid`; the `XATTR`, `ACL_ACCESS`, `ACL_DEFAULT`, `ACL_NFS4`, `WIN_SD` and `WIN_ADS` TLV types stay in the registry with their type numbers reserved, a Phase 1 writer never emits them, a Phase 1 reader treats each as an unknown TLV, and a later phase defines each one's item layout with a `version_minor` bump. **`FORMAT.txt`**: regenerated to match every meaning-cell change above; it is now 41,097 bytes in 825 lines. No on-disc field changed width or offset. |

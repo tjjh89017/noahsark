@@ -1,6 +1,6 @@
 # NoahsArk on-disc format
 
-Format major version 1. Document version 0.4.1.
+Format major version 1. Document version 0.4.2.
 
 This document defines every byte that NoahsArk writes onto a disc and every
 rule a reader applies to those bytes. It covers the binary conventions, object
@@ -280,10 +280,14 @@ A registry id is assigned once. It is never reused and never renumbered.
 
 | Code | Name | Digest bytes | Status |
 |---:|---|---:|---|
-| 0x12 | `sha2-256` | 32 | Supported. Every implementation must read and write it. |
-| 0x1e | `blake3` | 32 | Supported. Default for new objects. |
+| 0x12 | `sha2-256` | 32 | Phase 1 writes it. Every reader must read it. |
+| 0x1e | `blake3` | 32 | Reserved for a later version. A Phase 1 writer never emits it. |
 | 0x13 | `sha2-512` | 64 | Reserved. Not used in version 1. |
+| 0x1020 | `sha2-512-256` | 32 | Reserved for a later version. A Phase 1 writer never emits it. |
 | 0xb220 | `blake2b-256` | 32 | Reserved. |
+
+A digest stays 32 bytes for every algorithm in this table. A future algorithm
+whose digest is longer needs a new major version.
 
 **Compression registry.**
 
@@ -404,7 +408,7 @@ is computed over a structure whose CRC is zeroed.
 | `content_id` | Object file name | The uncompressed payload only (section 3.1). Never the header. | Run's `hash_algo`. |
 | `content_id` | INDEX Objects row (section 11.1), Prereqs row | The referenced object, under the run's `hash_algo`. | Run's `hash_algo`. |
 | `file_hash` | INDEX Files row (section 11.1) | Every byte of the named file. | Run's `hash_algo`. |
-| Block digest | Checksum block (section 10.3) | The 2048 bytes of one data block as they lie in the FEC stream. | BLAKE3-256, the first 8 bytes of the 32-byte digest. |
+| Block digest | Checksum block (section 10.3) | The 2048 bytes of one data block as they lie in the FEC stream. | SHA-256, the first 8 bytes of the 32-byte digest. |
 
 Host-only structures carry hash fields of their own. None of those bytes
 reaches a disc, and the operations document holds their coverage table.
@@ -481,8 +485,7 @@ comparing the digest with the name. A mismatch is a hard error.
 
 ### 3.2 Hash algorithms
 
-The default algorithm for new objects is BLAKE3-256. SHA-256 is fully
-supported. Every implementation must read and write both.
+SHA-256 is the only algorithm this version writes.
 
 Digests are never truncated. A digest is 256 bits. The 8-byte digests of the
 checksum column are not content ids.
@@ -662,7 +665,7 @@ seed = "noahsark/gear/v1"                      # 16 ASCII bytes, no terminator
 
 for i in 0 .. 255:
     input      = seed || u8(i)                 # 17 bytes
-    digest     = BLAKE3-256(input)             # 32 bytes
+    digest     = SHA-256(input)                # 32 bytes
     Gear[i]    = little-endian u64 of digest[0 .. 7]
 ```
 
@@ -825,7 +828,7 @@ Object header, 32 bytes:
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
 | 0 | 1 | u8 | `kind` | Object kind registry, this section. |
-| 1 | 1 | u8 | `hash_algo` | Multicodec code. 0x12 sha2-256, 0x1e blake3. |
+| 1 | 1 | u8 | `hash_algo` | Multicodec code. 0x12 sha2-256 in version 1. |
 | 2 | 1 | u8 | `digest_len` | Digest length in bytes. 32 in version 1. |
 | 3 | 1 | u8 | `compression` | Compression registry. 0 none, 1 zstd, 2 lz4. |
 | 4 | 1 | u8 | `crypto` | 0 plaintext. Other values reserved. |
@@ -1463,7 +1466,7 @@ Fixed body, after the 40-byte common header (`magic_kind` `DISC`):
 | 140 | 4 | i32 | `tz_offset_sec` | Local zone offset at that pack time. |
 | 144 | 1 | u8 | `media_type` | Media type registry. |
 | 145 | 1 | u8 | `fs_profile` | Disc filesystem profile registry. |
-| 146 | 1 | u8 | `hash_algo` | Multicodec code of the first run, and of `prev_disc_super_hash`. |
+| 146 | 1 | u8 | `hash_algo` | Multicodec code of the first run, and of `prev_disc_super_hash`. Phase 1 writes 0x12. |
 | 147 | 1 | u8 | `digest_len` | 32. |
 | 148 | 1 | u8 | `chunker_profile` | Chunker profile of the first run. |
 | 149 | 1 | u8 | `compression` | Default compression of the first run. |
@@ -1545,7 +1548,7 @@ magic and the `magic_kind` `RUN`, section 7.10.
 | 90 | 2 | u16 | `fec_m` | Parity columns. 23 in version 1. |
 | 92 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
 | 93 | 1 | u8 | `checksum_column` | Column index of the checksum column in the FEC stream. Equals `fec_k`. |
-| 94 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. |
+| 94 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. Phase 1 writes 0x12. |
 | 95 | 1 | u8 | `digest_len` | 32. |
 | 96 | 1 | u8 | `chunker_profile` | Profile id. |
 | 97 | 1 | u8 | `compression` | Default compression id. |
@@ -1849,7 +1852,7 @@ the text is substituted, wherever it appears.** The substitution rules are:
 | `{label}` | The `label` bytes of the superblock, as they are, with every byte outside 0x20 to 0x7E replaced by `?`. |
 | `{media_type}` | The name from the media type registry of section 2.6. |
 | `{fs_profile}` | The name from the disc filesystem profile registry of section 2.6. |
-| `{hash_algo}` | `blake3` or `sha2-256`, from the superblock `hash_algo`. |
+| `{hash_algo}` | `sha2-256`, from the superblock `hash_algo`. |
 | `{chunker_profile}` | `P3`, `P4` or `P5`, from the superblock `chunker_profile`. |
 | `{created}` | `created_sec` and `tz_offset_sec` of the superblock, as `YYYY-MM-DDTHH:MM:SS+HH:MM`. |
 | `{fanout_levels}` | 1 or 2, in decimal. |
@@ -1907,8 +1910,9 @@ newest catalog. Read that one.
 The name of an object is the hash of its uncompressed payload bytes and
 nothing else. The kind, the chunker profile, the compression and the object
 header do not enter the name. The name on disc is the lowercase hex of the
-multihash: two prefix bytes then the digest. 1e20 means BLAKE3-256 and 1220
-means SHA-256, so the name is 68 hex characters. <ab> is the first two hex
+multihash: two prefix bytes then the digest, following `hash_algo`. 1220
+means SHA-256, the prefix on every object this version writes, so the name
+is 68 hex characters. <ab> is the first two hex
 characters of the digest, which is characters 5 and 6 of the file name.
 
 5. HOW TO READ AN OBJECT
@@ -2262,7 +2266,7 @@ can be located before the code is applied.
 Block `i` of the checksum column holds the digests of the `k` data blocks of
 stripe `i`, and of no other block. There is no offset and no wrap.
 
-The digest is the first 8 bytes of the 32-byte BLAKE3-256 digest of the
+The digest is the first 8 bytes of the 32-byte SHA-256 digest of the
 block, computed over the 2048 bytes of the FEC stream at that position.
 
 Every block of `checksum.bin` is a self-delimiting record of 2048 bytes,
@@ -2277,7 +2281,7 @@ own:
 | 8 | 4 | u32 | `stripe_index` | `i`, the stripe whose data digests follow. Equals the block's own index inside the column. |
 | 12 | 2 | u16 | `digest_count` | `k`. 231 in version 1. |
 | 14 | 1 | u8 | `digest_bytes` | 8. |
-| 15 | 1 | u8 | `hash_algo` | 0x1e, BLAKE3. |
+| 15 | 1 | u8 | `hash_algo` | 0x12, sha2-256. |
 | 16 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 15. |
 | 20 | 1848 | u8[1848] | `digests` | `k` digests, in data column order 0 to `k - 1`. |
 | 1868 | 180 | u8[180] | `reserved` | Zero. |
@@ -2319,6 +2323,10 @@ Take the `k` rows of `[I_k ; C]` that correspond to `k` surviving shards,
 invert that `k x k` matrix over the field, and multiply it by the surviving
 shard bytes at each byte offset. The result is every data shard. The missing
 parity shards are then re-encoded.
+
+When more than `k` blocks of a stripe are present, the decoder uses the `k`
+present blocks with the lowest column index. This choice is normative, so
+that healing the same damaged stripe always reproduces the same output.
 
 A stripe with more than `m` erasures is not decodable, and the decoder must say
 so.
@@ -2706,8 +2714,9 @@ A conforming reader of format major 1:
 
 1. reads every structure of this document at `version_major` 1 and any
    `version_minor`, by the rules of section 12.1;
-2. reads objects under both hash algorithms of section 3.2, and under
-   compression ids 0 and 1; it may refuse id 2, `lz4`, and must then name the
+2. reads objects whose `hash_algo` is `sha2-256`, and refuses an object
+   whose `hash_algo` it does not implement, naming the code; it reads
+   compression ids 0 and 1, may refuse id 2, `lz4`, and must then name the
    id;
 3. reads a disc of profile 0 and of profile 1, which share one filesystem; it
    may refuse profile 2 and must then name the profile;
@@ -2727,8 +2736,8 @@ A conforming writer of format major 1:
 1. writes every structure exactly as its byte-offset table states, with
    `version_major` 1, `version_minor` 0, reserved fields zero, and the feature
    bits of section 2.4 and no other;
-2. writes BLAKE3-256 or SHA-256 content ids over the uncompressed payload,
-   and FastCDC cut points by section 4.2;
+2. writes SHA-256 content ids over the uncompressed payload, and FastCDC cut
+   points by section 4.2;
 3. writes every run with `k = 231`, `m = 23`, the checksum column of section
    10.3, `m + 2` header copies, the fill order of section 8.6 and the catalog
    copies of section 11.4;
@@ -2750,7 +2759,7 @@ A registry id is never reused and never renumbered.
 
 | Change | Mechanism | Old reader does | New reader does |
 |---|---|---|---|
-| New hash algorithm | New id in the hash registry. | Refuses an object whose `hash_algo` it does not know, and says the code. Old discs stay readable. | Reads both. Writes the new default. |
+| New hash algorithm | New id in the hash registry. | Refuses an object whose `hash_algo` it does not know, and says the code. Old discs stay readable. | Reads `sha2-256`. Refuses an object whose `hash_algo` it does not implement, and says the code. Writes `sha2-256`. |
 | Chunker profile change | New id in the chunker registry. | Unaffected. A reader never needs the profile. | Uses the new profile for new runs. Old runs keep theirs. |
 | Gear table change | New `gear_table_id` and a new profile name. | Unaffected. | Must never reuse an existing profile name with a different table. |
 | New compression algorithm | New id in the compression registry. | Refuses an object whose `compression` it does not know. The object is unreadable, not misread. | Reads it. |
@@ -2796,7 +2805,7 @@ By algorithm and registry id:
 
 | Written with | Reader that knows it | Reader that does not |
 |---|---|---|
-| BLAKE3-256 or SHA-256 ids | Y. Both are mandatory for a conforming reader. | Not possible at major 1. |
+| SHA-256 ids | Y. Mandatory for a conforming reader. | Not possible at major 1. |
 | A new hash algorithm id | Y | N. Refuses the object and names the multicodec code. Older discs stay readable. |
 | compression 0 or 1 | Y | Not possible at major 1. |
 | compression 2, `lz4` | Y | N, permitted. Refuses the object and names the id. |
@@ -2872,7 +2881,7 @@ The golden vectors cover them.
 | Masks | The rule of section 4.9 |
 | Cut points, per profile | A fixed 256 MiB pseudo-random file, generated from a stated seed by a stated generator, and a fixed 3 MiB file |
 | Zero chunk | 16 MiB, 8 MiB and 32 MiB of zero bytes |
-| Multihash text form | One digest under each algorithm |
+| Multihash text form | One digest under sha2-256 |
 | Common header and object header | One chunk of stated bytes, stored with zstd level 3 under the frame parameters of section 5.3 and a named `tool_version`, and stored uncompressed |
 | Blob | 100 stated chunk ids and lengths |
 | Tree | A directory with a regular file, addressed through its blob object, a subdirectory, a symlink with its TLV target, two entries sharing one source inode and stored as independent entries, a device node, and one xattr TLV, with stated metadata |
@@ -2882,7 +2891,7 @@ The golden vectors cover them.
 | Run header | Stated geometry and counts |
 | INDEX | Ten stated Files rows, ten stated Objects rows, and two stated Prereqs rows across one source run |
 | README.txt | The identity values of the disc superblock vector |
-| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 23,241 bytes long in 562 lines; a writer that produces a different length for minor 0 has a defect. |
+| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 23,388 bytes long in 563 lines; a writer that produces a different length for minor 0 has a defect. |
 | Burn step tree listing | A stated tree of five files, one in a subdirectory |
 | REFS and DISCS | Two stated rows of each table |
 | Checksum block | The 231 stated data blocks of one stripe |
@@ -2941,9 +2950,10 @@ Hash algorithm registry
 -----------------------
 
 Code	Name	Digest bytes	Status
-0x12	sha2-256	32	Supported. Every implementation must read and write it.
-0x1e	blake3	32	Supported. Default for new objects.
+0x12	sha2-256	32	Phase 1 writes it. Every reader must read it.
+0x1e	blake3	32	Reserved for a later version. A Phase 1 writer never emits it.
 0x13	sha2-512	64	Reserved. Not used in version 1.
+0x1020	sha2-512-256	32	Reserved for a later version. A Phase 1 writer never emits it.
 0xb220	blake2b-256	32	Reserved.
 
 Compression registry
@@ -3079,7 +3089,7 @@ Object header
 
 offset	size	type	name	meaning
 0	1	u8	kind	Object kind registry.
-1	1	u8	hash_algo	Multicodec code. 0x12 sha2-256, 0x1e blake3.
+1	1	u8	hash_algo	Multicodec code. 0x12 sha2-256 in version 1.
 2	1	u8	digest_len	Digest length in bytes. 32 in version 1.
 3	1	u8	compression	Compression registry. 0 none, 1 zstd, 2 lz4.
 4	1	u8	crypto	0 plaintext. Other values reserved.
@@ -3232,7 +3242,7 @@ offset	size	type	name	meaning
 140	4	i32	tz_offset_sec	Local zone offset at that pack time.
 144	1	u8	media_type	Media type registry.
 145	1	u8	fs_profile	Disc filesystem profile registry.
-146	1	u8	hash_algo	Multicodec code of the first run, and of prev_disc_super_hash.
+146	1	u8	hash_algo	Multicodec code of the first run, and of prev_disc_super_hash. Phase 1 writes 0x12.
 147	1	u8	digest_len	32.
 148	1	u8	chunker_profile	Chunker profile of the first run.
 149	1	u8	compression	Default compression of the first run.
@@ -3266,7 +3276,7 @@ offset	size	type	name	meaning
 90	2	u16	fec_m	Parity columns. 23 in version 1.
 92	1	u8	fec_scheme	FEC scheme registry.
 93	1	u8	checksum_column	Column index of the checksum column in the FEC stream. Equals fec_k.
-94	1	u8	hash_algo	Multicodec code of every id in this run.
+94	1	u8	hash_algo	Multicodec code of every id in this run. Phase 1 writes 0x12.
 95	1	u8	digest_len	32.
 96	1	u8	chunker_profile	Profile id.
 97	1	u8	compression	Default compression id.
@@ -3399,7 +3409,7 @@ offset	size	type	name	meaning
 8	4	u32	stripe_index	i, the stripe whose data digests follow.
 12	2	u16	digest_count	k. 231 in version 1.
 14	1	u8	digest_bytes	8.
-15	1	u8	hash_algo	0x1e, BLAKE3.
+15	1	u8	hash_algo	0x12, sha2-256.
 16	4	u32	header_crc32c	CRC-32C over bytes 0 to 15.
 20	1848	u8[1848]	digests	k digests, in data column order 0 to k - 1.
 1868	180	u8[180]	reserved	Zero.
@@ -3432,7 +3442,7 @@ seed = "noahsark/gear/v1"                      # 16 ASCII bytes, no terminator
 
 for i in 0 .. 255:
     input      = seed || u8(i)                 # 17 bytes
-    digest     = BLAKE3-256(input)             # 32 bytes
+    digest     = SHA-256(input)                # 32 bytes
     Gear[i]    = little-endian u64 of digest[0 .. 7]
 
 Mask generation rule
