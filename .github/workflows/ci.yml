@@ -6,23 +6,6 @@ on:
   pull_request:
 
 jobs:
-  # TODO: remove once lint, unit and e2e below are green on main;
-  # .github/actions/test is being replaced by .github/actions/lint,
-  # .github/actions/unit and .github/actions/e2e.
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Run tests
-        uses: ./.github/actions/test
-
   lint:
     name: Lint
     runs-on: ubuntu-latest
