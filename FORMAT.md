@@ -1,6 +1,6 @@
 # NoahsArk on-disc format
 
-Format major version 1. Document version 0.4.0.
+Format major version 1. Document version 0.4.1.
 
 This document defines every byte that NoahsArk writes onto a disc and every
 rule a reader applies to those bytes. It covers the binary conventions, object
@@ -20,11 +20,11 @@ rationale and local state live in other documents and are not repeated here.
 - [3. Identity and hashing](#3-identity-and-hashing)
   [3.1](#31-the-content-id-rule) · [3.2](#32-hash-algorithms) · [3.3](#33-digest-fields-in-records) · [3.4](#34-text-form) · [3.5](#35-fan-out-on-disc) · [3.6](#36-hash-epochs-and-cross-epoch-references)
 - [4. Chunking](#4-chunking)
-  [4.1](#41-algorithm) · [4.2](#42-cut-point-rule) · [4.3](#43-chunker-profiles) · [4.4](#44-profile-recording-and-change) · [4.5](#45-bundle-threshold) · [4.6](#46-zero-regions-and-sparse-files) · [4.7](#47-determinism) · [4.8](#48-gear-table) · [4.9](#49-mask-constants)
+  [4.1](#41-algorithm) · [4.2](#42-cut-point-rule) · [4.3](#43-chunker-profiles) · [4.4](#44-profile-recording-and-change) · [4.6](#46-zero-regions-and-sparse-files) · [4.7](#47-determinism) · [4.8](#48-gear-table) · [4.9](#49-mask-constants)
 - [5. Compression](#5-compression)
   [5.1](#51-order-of-operations) · [5.2](#52-header-fields) · [5.3](#53-algorithm-and-frame-parameters) · [5.4](#54-minimum-gain) · [5.5](#55-compression-and-identity) · [5.6](#56-what-is-never-compressed)
 - [6. Objects](#6-objects)
-  [6.1](#61-object-kinds-and-the-object-header) · [6.2](#62-chunk) · [6.3](#63-bundle) · [6.4](#64-blob) · [6.5](#65-tree) · [6.6](#66-tree-entry-fixed-header) · [6.7](#67-entry-flags) · [6.8](#68-variable-areas-and-the-content-area) · [6.9](#69-extension-tlv-record) · [6.10](#610-tlv-type-registry) · [6.11](#611-name-validation) · [6.12](#612-what-is-never-stored) · [6.13](#613-hardlinks) · [6.14](#614-snapshot) · [6.15](#615-the-root-tree) · [6.16](#616-exclude-pattern-language) · [6.17](#617-ref) · [6.18](#618-reserved-crypto-fields) · [6.19](#619-canonical-ordering)
+  [6.1](#61-object-kinds-and-the-object-header) · [6.2](#62-chunk) · [6.4](#64-blob) · [6.5](#65-tree) · [6.6](#66-tree-entry-fixed-header) · [6.7](#67-entry-flags) · [6.8](#68-variable-areas-and-the-content-area) · [6.9](#69-extension-tlv-record) · [6.10](#610-tlv-type-registry) · [6.11](#611-name-validation) · [6.12](#612-what-is-never-stored) · [6.13](#613-hardlinks) · [6.14](#614-snapshot) · [6.15](#615-the-root-tree) · [6.16](#616-exclude-pattern-language) · [6.17](#617-ref) · [6.18](#618-reserved-crypto-fields) · [6.19](#619-canonical-ordering)
 - [7. Disc and run model](#7-disc-and-run-model)
   [7.1](#71-the-physical-disc) · [7.2](#72-disc-filesystem-profile) · [7.3](#73-the-run-and-the-fec-terms) · [7.4](#74-what-the-parity-does-and-does-not-cover) · [7.5](#75-disc-superblock) · [7.6](#76-run-header) · [7.7](#77-the-run-chain) · [7.8](#78-run-header-copies) · [7.9](#79-what-an-append-overwrites) · [7.10](#710-recovery-by-carving) · [7.11](#711-close-state) · [7.12](#712-raw-append) · [7.13](#713-forced-capacity) · [7.14](#714-how-a-lifecycle-state-is-recorded)
 - [8. Filesystem profiles and the volume tree](#8-filesystem-profiles-and-the-volume-tree)
@@ -58,13 +58,12 @@ structures and no raw areas outside the filesystem.
         checksum.bin             the checksum column of the FEC stream
         parity/pNNNN.bin         one file per parity column
         RUN2.bin                 run header copy, the last file copied in the run
-    objects/<ab>/<name>          chunks, blobs, trees and bundles, shared by every run on the disc
+    objects/<ab>/<name>          chunks, blobs and trees, shared by every run on the disc
     snapshots/<name>             snapshot objects
 ```
 
 `<ab>` is the first two hex digits of the digest. `<name>` is the full
-68-character multihash hex, or, for a bundle, the text form of its file hash
-(section 3.5).
+68-character multihash hex (section 3.5).
 
 A run is the unit of packing, of the object index, of the Reed-Solomon parity
 and of the catalog copy.
@@ -92,7 +91,7 @@ Every sentence in this document is a rule. There are no informative blocks.
    zero into every reserved field and every padding byte.
 4. Every structure begins with the 40-byte common header of section 2.3.
 5. A structure is a file-level container or an object payload header. A
-   record inside a structure, a tree entry, a TLV, a bundle entry, an INDEX
+   record inside a structure, a tree entry, a TLV, an INDEX
    table row, a REFS or DISCS row, is a record, not a structure. A record
    never carries the common header. A record carries a magic only where its
    own table states one.
@@ -166,7 +165,7 @@ mismatch in a trailing zero byte is as final as a mismatch in a letter.
 | `BLOB\0\0\0\0` | Blob object | 6.4 |
 | `TREE\0\0\0\0` | Tree object | 6.5 |
 | `SNAPSHOT` | Snapshot object | 6.14 |
-| `BUNDLE\0\0` | Bundle container | 6.3 |
+| `BUNDLE\0\0` | Bundle container | reserved for a later version; a Phase 1 writer never emits it; a reader refuses it |
 | `DISC\0\0\0\0` | Disc superblock | 7.5 |
 | `RUN\0\0\0\0\0` | Run header | 7.6 |
 | `INDEX\0\0\0` | Run index | 11.1 |
@@ -232,7 +231,7 @@ sections 2.8, 2.9 and 12.1; this section states the shape only.
 | Bit | Half | Name | Meaning |
 |---:|---|---|---|
 | 0 | required | `FEAT_COMPRESSION` | The structure may hold compressed payloads. |
-| 1 | required | `FEAT_BUNDLES` | Chunk ids may resolve into a bundle. |
+| 1 | required | `FEAT_BUNDLES` | Reserved for a later version; a Phase 1 writer never sets it; a reader refuses an unknown structure that sets it. |
 | 2 | required | `FEAT_BLOB` | Trees may reference a blob object. |
 | 3 | required | reserved | Never set by a version 1 writer. Earlier document versions gave this bit to a TLV spill mechanism, since removed: a TLV payload is always inline. |
 | 4 | required | `FEAT_CRYPTO` | Objects are encrypted. Not used in version 1. |
@@ -260,7 +259,7 @@ A version 1 writer sets exactly these bits and no other:
 | INDEX (section 11.1) | `FEAT_FAN16` | The Objects table fan-out is 16-bit. |
 | Run header (section 7.6) | `OPT_DISC_PARITY` | `run_kind` is 3, a disc-close parity run. Phase 3. |
 
-`FEAT_CRYPTO` and `OPT_BITMAPS` are never set by a version 1 writer.
+`FEAT_BUNDLES`, `FEAT_CRYPTO` and `OPT_BITMAPS` are never set by a version 1 writer.
 
 ### 2.5 Strings
 
@@ -415,7 +414,6 @@ reaches a disc, and the operations document holds their coverage table.
 | Structure | Field | Covers |
 |---|---|---|
 | Object header (section 6.1) | `header_crc32c` | The common header plus the object header. |
-| Bundle (section 6.3) | `header_crc32c`, `body_crc32c` | The common header plus the fixed body up to that field; the index table. A bundle carries no content id: its file bytes are covered by `file_hash` in the INDEX Files table, and each member's payload is covered by the member's own content id. |
 | Blob, tree and snapshot payloads (sections 6.4, 6.5, 6.14) | none | The content id covers the whole payload, records included. |
 | Disc superblock (section 7.5) | `super_crc32c` | Every byte before the field. |
 | Run header (section 7.6) | `header_crc32c` | Every byte before the field. |
@@ -511,21 +509,16 @@ Object files use a hex fan-out over the digest, not over the multihash prefix.
 `d0` and `d1` are the first two hex digits of the digest.
 
 ```
-/NOAHSARK/objects/<d0><d1>/<full 68-character text form>     chunks, blobs, trees, bundles
+/NOAHSARK/objects/<d0><d1>/<full 68-character text form>     chunks, blobs, trees
 /NOAHSARK/snapshots/<full 68-character text form>            snapshots
 ```
 
-There are two object roots: `objects/` for chunks, blobs, trees and bundles,
+There are two object roots: `objects/` for chunks, blobs and trees,
 and `snapshots/` for snapshots. A snapshot is split out on its own because a
 reader locates one by name through REFS before it holds any other object.
 
-A bundle carries no content id of its own (section 6.3), so its file name
-under `objects/` is the text form of its `file_hash`, the hash of the whole
-bundle file that INDEX's Files table records, not a payload content id.
-
-The file name is the full 68-character multihash hex, or, for a bundle, the
-68-character text form of its `file_hash`. It is never stripped, never
-shortened and never split.
+The file name is the full 68-character multihash hex. It is never stripped,
+never shortened and never split.
 
 Fan-out is one level by default. Two levels are allowed under filesystem
 profile 0 and profile 1 only, as `objects/<d0><d1>/<d2><d3>/<id>`. Profile 2
@@ -534,7 +527,7 @@ allows one level only.
 The superblock records the choice in `fanout_levels`.
 
 Metadata objects, that is blobs, trees and snapshots, are written before data
-objects, that is chunks and bundles, inside a run (section 8.6). That
+objects, that is chunks, inside a run (section 8.6). That
 ordering is a writer rule about fill order, not a rule about which directory
 a kind lives in: every non-snapshot object shares the one `objects/` root.
 
@@ -624,7 +617,7 @@ P4 is the default chunker profile.
 ### 4.4 Profile recording and change
 
 Every run header records the profile by name and by full value: id, min, avg,
-max, NC level, Gear table id, bundle threshold and bundle target.
+max, NC level and Gear table id.
 
 A reader never needs the profile. A reader follows content ids only.
 
@@ -634,12 +627,6 @@ new profile name.
 
 There is no rechunk operation. New runs use a new profile. Old discs keep
 theirs.
-
-### 4.5 Bundle threshold
-
-Any chunk whose uncompressed payload is below the configured bundle threshold
-goes into a bundle. A chunk at or above the threshold is stored as its own
-file.
 
 ### 4.6 Zero regions and sparse files
 
@@ -805,9 +792,6 @@ settings produce identical ids for identical data.
 - INDEX.
 - REFS and DISCS.
 - `README.txt`.
-- The bundle file itself. A bundle's members are compressed one by one, by
-  the rule of section 5.4; the bundle file that frames them is never
-  compressed as a whole.
 
 ---
 
@@ -824,7 +808,7 @@ body, variable data.
 
 | Id | Kind | Payload | References | Stored as |
 |---:|---|---|---|---|
-| 1 | `chunk` | Opaque bytes. | None. | One file, or a slice of a bundle. |
+| 1 | `chunk` | Opaque bytes. | None. | One file. |
 | 2 | `blob` | Ordered chunk ids and lengths. | Chunks, and other blobs. | One file. |
 | 3 | `tree` | One directory. | Trees, blobs, chunks. | One file. |
 | 4 | `snapshot` | Root tree, parent, generation, text. | Root tree, parent snapshot. | One file. |
@@ -877,97 +861,6 @@ bytes.
 
 Reader checks. Verify the header CRC, decompress `stored_len` into
 `payload_len` bytes, and verify the content id.
-
-### 6.3 Bundle
-
-Purpose: one container file that holds many small objects with an index, so
-that a directory of small files costs few filesystem entries and few seeks. A
-bundle may hold any small object of any kind: a chunk, a blob, a tree or a
-snapshot, whichever is small enough to be worth packing. A bundle is not an
-object kind: it carries no content id of its own, and a tree entry never
-references a bundle id, only the object ids inside it.
-
-```
- [ common header, magic_kind = "BUNDLE" ]
- [ bundle header, fixed body            ]
- [ object payload 0 ][ object payload 1 ] ...  each 8-byte aligned
- [ index table: entry_count * 64 bytes  ]
-```
-
-An object payload inside a bundle carries no object header of its own. The
-index entry is its header. Each object inside a bundle is compressed on its
-own by the rule of section 5.4, so one bundle may mix compressed and
-uncompressed members.
-
-Every object payload inside a bundle starts 8-byte aligned from the start of
-the bundle's data area, never sector aligned: a bundle packs many small
-payloads, and sector alignment inside it would waste most of the space it
-exists to save.
-
-A bundle is filled in path order, which is the depth-first order of section
-8.6. A bundle may span sibling files and sibling directories.
-
-The writer closes the open bundle before the next object when adding that
-object's `stored_len` would make `data_len` exceed the configured bundle
-target size, and then opens a new bundle for that object. Nothing else closes
-a bundle: not a file boundary, not a directory boundary, not the member
-count. The last bundle of a run closes when the run's object stream ends. A
-bundle holding exactly one member whose `stored_len` already exceeds the
-target is legal.
-
-`data_len` counts stored bytes, not uncompressed bytes, and excludes the
-bundle header and the index.
-
-A bundle must not hold a delta.
-
-Bundle header, fixed body after the common header:
-
-| Offset | Size | Type | Name | Meaning |
-|---:|---:|---|---|---|
-| 0 | 4 | u32 | `entry_count` | Number of objects in this bundle. |
-| 4 | 2 | u16 | `entry_size` | 64. A reader strides by this value. |
-| 6 | 1 | u8 | `hash_algo` | Multicodec code of the entry ids. |
-| 7 | 1 | u8 | `digest_len` | 32. |
-| 8 | 8 | u64 | `index_off` | Offset of the index table from the start of this fixed body. |
-| 16 | 8 | u64 | `data_off` | Offset of the first object payload from the start of this fixed body. |
-| 24 | 8 | u64 | `data_len` | Total bytes of all object payloads. |
-| 32 | 4 | u32 | `body_crc32c` | CRC-32C over the index table. |
-| 36 | 4 | u32 | `header_crc32c` | CRC-32C over the common header and bytes 0 to 35 of this fixed body. |
-
-Bundle index entry, 64 bytes, sorted ascending by `content_id`:
-
-| Offset | Size | Type | Name | Meaning |
-|---:|---:|---|---|---|
-| 0 | 32 | u8[32] | `content_id` | The member object's id. |
-| 32 | 8 | u64 | `offset` | Byte offset from `data_off`. |
-| 40 | 8 | u64 | `stored_len` | Bytes stored for this member. |
-| 48 | 8 | u64 | `payload_len` | Uncompressed bytes. |
-| 56 | 1 | u8 | `compression` | Compression id for this member. |
-| 57 | 1 | u8 | `hash_algo` | Multicodec code. |
-| 58 | 1 | u8 | `digest_len` | 32. |
-| 59 | 1 | u8 | `kind` | Object kind registry, section 6.1: the member's kind. |
-| 60 | 4 | u32 | `reserved_u32` | Zero. |
-
-Field rules. Bundle index entries are sorted ascending by `content_id`.
-`entry_size` is 64 and a reader strides by it. `index_off` and `data_off` are
-measured from the first byte of the bundle header's fixed body. `offset` in
-an index entry is measured from `data_off`.
-
-Hash and CRC coverage. The common header's `header_crc32c` (carried the same
-way as every structure, section 2.9) covers the common header and the fixed
-body up to that field. `body_crc32c` covers the index table. There is no
-trailer: the index table is the last thing in the file, and INDEX (section
-11.1) records the bundle file's own length and hash like any other file.
-
-Reader checks. Verify the header CRC. Read the index at `index_off`. Verify
-each member payload against the `content_id` of its index entry after
-decompressing `stored_len` bytes into `payload_len` bytes.
-
-A tree entry references a chunk id or a blob id, never a bundle id. INDEX's
-Objects table maps a bundled object's id to a bundle file and an offset
-(section 11.1), the same way whether that member is a chunk or a blob. The
-Objects row for a bundled member holds no stored length of its own; the
-bundle's index supplies it.
 
 ### 6.4 Blob
 
@@ -1241,7 +1134,7 @@ Snapshot payload, after the common header and the object header:
 | 80 | 4 | u32 | `time_nsec` | Nanoseconds. |
 | 84 | 4 | i32 | `tz_offset_sec` | Local zone offset at snapshot time. |
 | 88 | 8 | u64 | `total_size` | Sum of `payload_len` over the distinct objects that `reachable_object_count` counts, that is over the distinct chunks, blobs and trees reachable from `root_tree`. A chunk that several files share is counted once. It is not the sum of the file sizes. For planning. |
-| 96 | 8 | u64 | `reachable_object_count` | Distinct content ids reachable from `root_tree`: chunks, blobs and trees, the root tree included. Bundles are not counted, and the snapshot itself is not counted. This is a logical reachability count; it is not comparable to INDEX's `object_count` (section 11.1), which is a physical count that includes bundles. |
+| 96 | 8 | u64 | `reachable_object_count` | Distinct content ids reachable from `root_tree`: chunks, blobs and trees, the root tree included. The snapshot itself is not counted. This is a logical reachability count; it is not comparable to INDEX's `object_count` (section 11.1), which is a physical count. |
 | 104 | 1 | u8 | `hash_algo` | Multicodec code of `root_tree` and of every id below it. |
 | 105 | 1 | u8 | `chunker_profile` | Chunker profile id used to produce it. |
 | 106 | 2 | u16 | `meta_count` | Number of TLV records that follow. |
@@ -1258,9 +1151,9 @@ Field rules. `generation` is 1 + the parent generation, and 1 for a root.
 `reachable_object_count` counts. It is not the sum of the file sizes.
 
 `reachable_object_count` counts distinct content ids reachable from
-`root_tree`: chunks, blobs and trees, the root tree included. Bundles are
-not counted and the snapshot itself is not counted. It is a logical count and
-is not comparable to INDEX's physical `object_count`.
+`root_tree`: chunks, blobs and trees, the root tree included. The snapshot
+itself is not counted. It is a logical count and is not comparable to
+INDEX's physical `object_count`.
 
 Metadata TLV record:
 
@@ -1439,7 +1332,6 @@ below is mandatory.
 | TLV records | `tlv_type` ascending, then payload bytes ascending. |
 | Xattr items inside a TLV | Name bytes ascending. |
 | Blob entries | File offset ascending. |
-| Bundle index entries | Content id ascending. |
 | INDEX Objects rows | Content id ascending. |
 
 Every "ascending" in this table, and everywhere else in this document, is an
@@ -1663,7 +1555,7 @@ magic and the `magic_kind` `RUN`, section 7.10.
 | 101 | 1 | u8 | `reserved_u8` | Zero. |
 | 102 | 2 | u16 | `reserved_u16` | Zero. Keeps `object_count` aligned. |
 | 104 | 8 | u64 | `object_count` | Objects in this run. Equals the Objects row count of INDEX. |
-| 112 | 8 | u64 | `payload_bytes` | Stored object bytes in this run: the sum of `stored_len` over INDEX's Objects rows for objects this run stores as its own file, plus their object headers, a bundle counted once, not per member. |
+| 112 | 8 | u64 | `payload_bytes` | Stored object bytes in this run: the sum of `stored_len` over INDEX's Objects rows for objects this run stores as its own file, plus their object headers. |
 | 120 | 8 | u64 | `duplicate_bytes` | Bytes written again for locality. |
 | 128 | 8 | u64 | `index_bytes` | Byte length of `INDEX.bin`. |
 | 136 | 32 | u8[32] | `index_hash` | Hash of `INDEX.bin`'s bytes. |
@@ -1696,7 +1588,7 @@ names both values and names the run seq.
 `created_sec` is pack time, never burn time.
 
 `payload_bytes` sums stored bytes over the objects this run stores as its own
-file, header included, each object and each bundle counted once.
+file, header included, each object counted once.
 
 `snapshot_count` counts only snapshot objects under `/NOAHSARK/snapshots/`.
 
@@ -1913,11 +1805,11 @@ under every profile.
 | `/NOAHSARK/runs/<seq>/INDEX.bin` | File order, the Objects table, the Prereqs table (section 11.1). | With its run, first file of the FEC stream. |
 | `/NOAHSARK/runs/<seq>/catalog/REFS.bin` | The ref table (section 11.2). | With its run. |
 | `/NOAHSARK/runs/<seq>/catalog/DISCS.bin` | The disc directory table (section 11.3). | With its run. |
-| `/NOAHSARK/runs/<seq>/catalog/snapobj/<name>` | The complete snapshot object of every snapshot, one file each, or one packed `snapobj.bin`. | With its run. |
+| `/NOAHSARK/runs/<seq>/catalog/snapobj/<name>` | The complete snapshot object of every snapshot, one file each. | With its run. |
 | `/NOAHSARK/runs/<seq>/checksum.bin` | The checksum column, `L` blocks. | Last file of the FEC stream. |
 | `/NOAHSARK/runs/<seq>/parity/pNNNN.bin` | One file per parity column, `L + 1` blocks. Block 0 is a run header copy; blocks 1 to `L` are the column. | After `checksum.bin`, in column order. Outside the FEC stream. |
 | `/NOAHSARK/runs/<seq>/RUN2.bin` | Run header copy. | Last file of its run. Outside the FEC stream. |
-| `/NOAHSARK/objects/<ab>/<name>` | Chunks, blobs, trees and bundles. Shared by every run on the disc. | In fill order, inside the FEC stream. |
+| `/NOAHSARK/objects/<ab>/<name>` | Chunks, blobs and trees. Shared by every run on the disc. | In fill order, inside the FEC stream. |
 | `/NOAHSARK/snapshots/<name>` | Snapshot objects. | In fill order, before every other object, inside the FEC stream. |
 
 `<seq>` is the run sequence number, zero-padded to 10 decimal digits, so that
@@ -2003,7 +1895,7 @@ parity geometry: k={fec_k} data columns, m={fec_m} parity columns
 /NOAHSARK/runs/<seq>/checksum.bin   per-block digests
 /NOAHSARK/runs/<seq>/parity/        one file per parity column
 /NOAHSARK/runs/<seq>/RUN2.bin   run header copy, last file of the run
-/NOAHSARK/objects/<ab>/<name>   chunks, blobs, trees and bundles
+/NOAHSARK/objects/<ab>/<name>   chunks, blobs, trees
 /NOAHSARK/snapshots/<name>      snapshot objects
 
 <seq> is the run number, ten decimal digits, zero padded. The run directory
@@ -2017,9 +1909,7 @@ nothing else. The kind, the chunker profile, the compression and the object
 header do not enter the name. The name on disc is the lowercase hex of the
 multihash: two prefix bytes then the digest. 1e20 means BLAKE3-256 and 1220
 means SHA-256, so the name is 68 hex characters. <ab> is the first two hex
-characters of the digest, which is characters 5 and 6 of the file name. A
-bundle has no content id of its own; its file name is the hash of the whole
-bundle file instead.
+characters of the digest, which is characters 5 and 6 of the file name.
 
 5. HOW TO READ AN OBJECT
 ------------------------
@@ -2041,8 +1931,7 @@ snapshot object. Its header names a root tree id. Read that tree object: it
 is a list of directory entries, each with a name, the POSIX metadata, and
 either a tree id for a subdirectory or a blob id for a file. Read the blob
 object: it holds the ordered chunk ids of that file. Concatenate the chunk
-payloads in order and the file is restored. A small object may live inside a
-bundle object; INDEX says which bundle and at which byte offset.
+payloads in order and the file is restored.
 
 7. HOW TO REPAIR
 ----------------
@@ -2113,7 +2002,7 @@ The writer places files in this order under every profile:
 3. `INDEX.bin`.
 4. The catalog files, in the entry order of section 11.1's Files table.
 5. Snapshot objects, then tree and blob objects, contiguous.
-6. Bundles and chunks, in path order.
+6. Chunks, in path order.
 7. `checksum.bin`, the checksum column.
 8. The parity files, in column order.
 9. `RUN2.bin`, the run header copy.
@@ -2143,9 +2032,7 @@ Step 5 emits, in walk order:
 Step 6 emits, for each regular-file entry in entry order, that file's chunks
 in the order its blob object lists them.
 
-An object is emitted once, at its first occurrence in the walk. A bundle is
-placed at the position of its first member, and the whole bundle file is
-written there.
+An object is emitted once, at its first occurrence in the walk.
 
 An object that this run does not store, because it is a prerequisite or
 because the target disc already holds it, is not emitted and does not move
@@ -2541,11 +2428,11 @@ File role registry:
 | 10 | `checksum.bin` |
 | 11 | a parity file |
 | 12 | `RUN2.bin` |
-| 13 | an object or bundle file under `/NOAHSARK/objects/` or `/NOAHSARK/snapshots/` |
+| 13 | an object file under `/NOAHSARK/objects/` or `/NOAHSARK/snapshots/`. Reserved for a later version: a container's role stays 13 too. |
 
 Field rules. Rows are in FEC stream order (section 7.3): `INDEX.bin` itself
 first, then the fixed-name files by role in the order the table above lists,
-then every object and bundle file, role 13, by `file_hash` ascending. This
+then every object file, role 13, by `file_hash` ascending. This
 order is authoritative: it is the order the writer laid the files in, and a
 reader relies on it instead of sorting.
 
@@ -2555,7 +2442,7 @@ of the run, but not in stream order relative to the stream's own rows —
 they follow every stream row, in the fixed order roles 10, 11, 12 give.
 
 File names are not stored. A reader derives a fixed-name file's path from its
-role, and an object or bundle file's name from the content id or the
+role, and an object file's name from the content id or the
 `file_hash`, section 3.5.
 
 **Objects table**, 72 bytes per row, sorted ascending by `content_id`:
@@ -2563,9 +2450,9 @@ role, and an object or bundle file's name from the content id or the
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
 | 0 | 32 | u8[32] | `content_id` | The object id. |
-| 32 | 4 | u32 | `file_index` | 0-based row index into the Files table: the file that holds this object's stored bytes. |
+| 32 | 4 | u32 | `file_index` | 0-based row index into the Files table. In this version, always the object's own file. |
 | 36 | 4 | u32 | `reserved` | Zero. |
-| 40 | 8 | u64 | `offset` | Byte offset, from the start of the named file, to this object's stored payload bytes. For an object stored as its own file, the byte just after that file's common header and object header. For an object stored inside a bundle, the byte offset the bundle's own index entry gives (section 6.3). |
+| 40 | 8 | u64 | `offset` | In this version, always 0: an object's stored payload bytes start at the fixed offset just after its own file's common header and object header (section 6.1). A later version's container gives this field the byte offset of a member's payload inside `file_index`'s file. |
 | 48 | 8 | u64 | `stored_len` | Bytes stored at `offset`. |
 | 56 | 8 | u64 | `payload_len` | Uncompressed payload bytes. |
 | 64 | 1 | u8 | `kind` | Object kind registry, section 6.1. |
@@ -2575,10 +2462,7 @@ role, and an object or bundle file's name from the content id or the
 
 A row is self-sufficient: `file_index`, `offset`, `stored_len`,
 `payload_len` and `compression` are enough to read and verify the object
-without opening a bundle's own index first, whether the named file is that
-object's own file or a bundle holding it among other members. A blob inside
-a bundle resolves through this row exactly as a chunk inside a bundle does;
-`kind` says which it is.
+directly from its own file.
 
 **Prereqs table**, 40 bytes per row, sorted ascending by `content_id`:
 
@@ -2727,18 +2611,9 @@ There is no manifest history and no filter history to carry: proof of
 absence (section 11.6) works from every run's own INDEX, which every disc
 already holds a copy path to through DISCS.
 
-A writer may pack the snapshot objects into one `catalog/snapobj.bin`.
-`snapobj.bin` is an ordinary bundle, and each index entry's `content_id` is
-the content id of the snapshot object whose payload that entry names. The
-members of `snapobj.bin` are laid out in ascending `content_id` order, which
-is the order of its own index entries, and every index entry carries
-`compression` 0. Section 6.3's path order does not apply, because a snapshot
-object has no path. Two conforming writers with the same snapshot set
-therefore produce the same `snapobj.bin` bytes.
-
-`catalog/snapobj/<name>` or the member inside `snapobj.bin` is the complete
-object file, byte for byte as `/NOAHSARK/snapshots/<name>` holds it,
-including the common header and the object header.
+`catalog/snapobj/<name>` is the complete object file, byte for byte as
+`/NOAHSARK/snapshots/<name>` holds it, including the common header and the
+object header.
 
 ### 11.5 Dedup rule
 
@@ -2853,7 +2728,7 @@ A conforming writer of format major 1:
    `version_major` 1, `version_minor` 0, reserved fields zero, and the feature
    bits of section 2.4 and no other;
 2. writes BLAKE3-256 or SHA-256 content ids over the uncompressed payload,
-   FastCDC cut points by section 4.2, and bundles by section 6.3;
+   and FastCDC cut points by section 4.2;
 3. writes every run with `k = 231`, `m = 23`, the checksum column of section
    10.3, `m + 2` header copies, the fill order of section 8.6 and the catalog
    copies of section 11.4;
@@ -2955,8 +2830,6 @@ not license to change a setting silently.
 | Current hash algorithm | The multihash algorithm of every new object id. |
 | Chunker profile | The cut points of every new chunk, hence the chunk boundaries in every new tree and blob. |
 | Gear table id | The Gear table version, which changes every cut point under a profile name. |
-| Bundle threshold | Which small objects are bundled instead of stored as their own file. |
-| Bundle target size | The size, and therefore the member count, of every new bundle. |
 | Compression algorithm and level | The stored bytes of every new chunk payload. |
 | Compression minimum gain | Whether a chunk is stored compressed or raw. |
 | Filesystem profile | The disc filesystem. Fixed per disc at its first burn. |
@@ -2969,7 +2842,6 @@ not license to change a setting silently.
 | Forced capacity, `disc.force_capacity` | `capacity_forced_sectors` in the superblock and in DISCS, hence every run's budget on the disc (section 7.13). |
 | FEC scheme and geometry, `fec.scheme`, `fec.k` and `fec.m` | The stripe shape, the column count, the parity file set and the checksum column, hence the FEC stream layout of every run (sections 10.1 and 10.2). Version 1 fixes `k` 231 and `m` 23 and refuses any other value. |
 | Fan-out bits | The width of INDEX's fan-out table. |
-| Snapshot-object pack threshold | Whether snapshot objects are replicated as loose files or as one `snapobj.bin`. |
 | Optional metadata switches | Which optional metadata fields are present in every new tree entry. |
 | Source type, `source.type` | The `source_type` and `source_flags` bytes of every new snapshot payload, hence its content id (section 6.14). |
 | Exclude rules, `sources.exclude` and `sources.ignore_file` | Which paths the walk keeps, and the exclude-rule bytes that snapshot metadata tag 5 stores (sections 6.16 and 6.14). |
@@ -3002,16 +2874,15 @@ The golden vectors cover them.
 | Zero chunk | 16 MiB, 8 MiB and 32 MiB of zero bytes |
 | Multihash text form | One digest under each algorithm |
 | Common header and object header | One chunk of stated bytes, stored with zstd level 3 under the frame parameters of section 5.3 and a named `tool_version`, and stored uncompressed |
-| Bundle | Three stated small objects of mixed kind, including one blob, each with its own `kind` byte |
 | Blob | 100 stated chunk ids and lengths |
 | Tree | A directory with a regular file, addressed through its blob object, a subdirectory, a symlink with its TLV target, two entries sharing one source inode and stored as independent entries, a device node, and one xattr TLV, with stated metadata |
 | Snapshot | A stated root tree, parent, generation, times and TLVs |
 | Ref record | A stated name, snapshot id, time and run seq |
 | Disc superblock | Stated identity, capacity and profile values |
 | Run header | Stated geometry and counts |
-| INDEX | Ten stated Files rows, ten stated Objects rows including two in a bundle, and two stated Prereqs rows across one source run |
+| INDEX | Ten stated Files rows, ten stated Objects rows, and two stated Prereqs rows across one source run |
 | README.txt | The identity values of the disc superblock vector |
-| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 24,127 bytes long in 590 lines; a writer that produces a different length for minor 0 has a defect. |
+| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 23,241 bytes long in 562 lines; a writer that produces a different length for minor 0 has a defect. |
 | Burn step tree listing | A stated tree of five files, one in a subdirectory |
 | REFS and DISCS | Two stated rows of each table |
 | Checksum block | The 231 stated data blocks of one stripe |
@@ -3043,7 +2914,7 @@ NoahsArk format major 1 minor 0
 2. Only fixed-width types are used: u8, u16, u32, u64, i32, i64. No varint appears inside a fixed header.
 3. Every structure is packed with manual alignment. Every gap is a named reserved field. A writer writes zero into every reserved field and every padding byte. A reader does not interpret a reserved field and does not reject a nonzero value in one. A golden test checks that the writer wrote zero into every reserved field and every padding byte.
 4. Every structure begins with the 40-byte common header.
-5. A structure is a file-level container or an object payload header. A record inside a structure, a tree entry, a TLV, a bundle entry, an INDEX table row, a REFS or DISCS row, is a record, not a structure. A record never carries the common header. A record carries a magic only where its own table states one.
+5. A structure is a file-level container or an object payload header. A record inside a structure, a tree entry, a TLV, an INDEX table row, a REFS or DISCS row, is a record, not a structure. A record never carries the common header. A record carries a magic only where its own table states one.
 6. A reader refuses an unknown version_major. A reader accepts an unknown version_minor and ignores the fields it does not know.
 7. Every structure carries required_feat (u64) and optional_feat (u64) in its common header. A reader refuses an unknown required_feat bit. A reader ignores an unknown optional_feat bit.
 8. A checksum covers only bytes the writer finalized before computing it. A structure with no separate body ends with one CRC over every byte before it. A container with a header and a body carries header_crc32c and body_crc32c at the end of its header: body_crc32c sits in the header and covers the body. The body becomes final first, then the header is written last, so each CRC covers bytes that were already final.
@@ -3128,7 +2999,7 @@ Id	Role
 10	checksum.bin
 11	a parity file
 12	RUN2.bin
-13	an object or bundle file under /NOAHSARK/objects/ or /NOAHSARK/snapshots/
+13	an object file under /NOAHSARK/objects/ or /NOAHSARK/snapshots/. Reserved for a later version: a container's role stays 13 too.
 
 Disc filesystem profile registry
 --------------------------------
@@ -3218,34 +3089,6 @@ offset	size	type	name	meaning
 16	8	u64	stored_len	Bytes on the medium after this header.
 24	4	u32	header_crc32c	CRC-32C over the common header and bytes 0 to 23 of this header.
 28	4	u32	reserved_u32	Zero.
-
-Bundle header
--------------
-
-offset	size	type	name	meaning
-0	4	u32	entry_count	Number of objects in this bundle.
-4	2	u16	entry_size	64. A reader strides by this value.
-6	1	u8	hash_algo	Multicodec code of the entry ids.
-7	1	u8	digest_len	32.
-8	8	u64	index_off	Offset of the index table from the start of this fixed body.
-16	8	u64	data_off	Offset of the first object payload from the start of this fixed body.
-24	8	u64	data_len	Total bytes of all object payloads.
-32	4	u32	body_crc32c	CRC-32C over the index table.
-36	4	u32	header_crc32c	CRC-32C over the common header and bytes 0 to 35 of this fixed body.
-
-Bundle index entry
--------------------
-
-offset	size	type	name	meaning
-0	32	u8[32]	content_id	The member object's id.
-32	8	u64	offset	Byte offset from data_off.
-40	8	u64	stored_len	Bytes stored for this member.
-48	8	u64	payload_len	Uncompressed bytes.
-56	1	u8	compression	Compression id for this member.
-57	1	u8	hash_algo	Multicodec code.
-58	1	u8	digest_len	32.
-59	1	u8	kind	Object kind registry: the member's kind.
-60	4	u32	reserved_u32	Zero.
 
 Blob payload header
 --------------------
@@ -3493,9 +3336,9 @@ INDEX Objects row
 
 offset	size	type	name	meaning
 0	32	u8[32]	content_id	The object id.
-32	4	u32	file_index	0-based row index into the Files table.
+32	4	u32	file_index	0-based row index into the Files table. In this version, always the object's own file.
 36	4	u32	reserved	Zero.
-40	8	u64	offset	Byte offset, from the start of the named file, to this object's stored payload bytes.
+40	8	u64	offset	In this version, always 0. A later version's container gives this field a member's payload offset.
 48	8	u64	stored_len	Bytes stored at offset.
 56	8	u64	payload_len	Uncompressed payload bytes.
 64	1	u8	kind	Object kind registry.
@@ -3569,7 +3412,7 @@ CHUNK\0\0\0	Chunk object
 BLOB\0\0\0\0	Blob object
 TREE\0\0\0\0	Tree object
 SNAPSHOT	Snapshot object
-BUNDLE\0\0	Bundle container
+BUNDLE\0\0	Reserved for a later version; a Phase 1 writer never emits it; a reader refuses it
 DISC\0\0\0\0	Disc superblock
 RUN\0\0\0\0\0	Run header
 INDEX\0\0\0	Run index
