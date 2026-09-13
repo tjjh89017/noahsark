@@ -9,8 +9,12 @@ Run with:
     python3 -m unittest reference/decoder_test.py
 """
 
+import contextlib
+import io
 import os
+import shutil
 import sys
+import tempfile
 import types
 import unittest
 
@@ -329,13 +333,61 @@ class Scheme0FixtureTest(unittest.TestCase):
         self.assertEqual(run["fec_scheme"], 0)
 
     def test_no_checksum_or_parity_files(self):
-        run_dir = decoder.run_dir(os.path.join(SCHEME0_FIXTURE, "NOAHSARK"), 1)
+        names = decoder.NameCache()
+        run_dir = decoder.run_dir(os.path.join(SCHEME0_FIXTURE, "NOAHSARK"), 1, names)
         self.assertFalse(os.path.exists(os.path.join(run_dir, "checksum.bin")))
         self.assertFalse(os.path.exists(os.path.join(run_dir, "parity")))
 
     def test_verify_passes_by_content_id_and_file_hash_alone(self):
         args = types.SimpleNamespace(disc_root=SCHEME0_FIXTURE)
         self.assertEqual(decoder.cmd_verify(args), 0)
+
+
+def fold_tree_to_lower(src: str, dst: str):
+    """Copies every file and directory under src into dst, folding every
+    path segment to lowercase. This mirrors what plain ISO 9660 level 4,
+    with no Rock Ridge, does to every name on a real burn."""
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dst if rel == "." else os.path.join(dst, *(p.lower() for p in rel.split(os.sep)))
+        os.makedirs(target_root, exist_ok=True)
+        for name in files:
+            shutil.copyfile(os.path.join(root, name), os.path.join(target_root, name.lower()))
+
+
+class CaseFoldedFixtureTest(unittest.TestCase):
+    """A plain ISO 9660 level 4 image with no Rock Ridge folds every
+    fixed name to lowercase: NOAHSARK becomes noahsark, DISC.bin becomes
+    disc.bin, and so on. This checks that decoder.py accepts that layout
+    and agrees with the original, correctly-cased tree."""
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.folded = os.path.join(tmp, "folded")
+        fold_tree_to_lower(SCHEME0_FIXTURE, self.folded)
+
+    def test_repo_finds_root_and_run(self):
+        want = decoder.Repo(SCHEME0_FIXTURE)
+        got = decoder.Repo(self.folded)
+        self.assertEqual(got.run_seqs, want.run_seqs)
+        self.assertEqual(got.disc["disc_uuid"], want.disc["disc_uuid"])
+        self.assertEqual(got.snapshot_names(), want.snapshot_names())
+
+    def test_verify_passes_on_folded_tree(self):
+        args = types.SimpleNamespace(disc_root=self.folded)
+        self.assertEqual(decoder.cmd_verify(args), 0)
+
+    def test_list_matches_original_tree(self):
+        def listing(root):
+            args = types.SimpleNamespace(disc_root=root, snapshot="LATEST")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = decoder.cmd_list(args)
+            self.assertEqual(code, 0)
+            return buf.getvalue()
+
+        self.assertEqual(listing(self.folded), listing(SCHEME0_FIXTURE))
 
 
 if __name__ == "__main__":

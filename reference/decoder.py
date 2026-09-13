@@ -919,19 +919,51 @@ def parse_checksum_record(buf: bytes, where: str):
 # Repository layout helpers: files at the volume root, and fan-out on disc.
 
 
-def find_noahsark_root(path: str) -> str:
-    if os.path.basename(os.path.normpath(path)) == "NOAHSARK" and os.path.isfile(
-        os.path.join(path, "DISC.bin")
-    ):
-        return path
-    candidate = os.path.join(path, "NOAHSARK")
-    if os.path.isfile(os.path.join(candidate, "DISC.bin")):
+class NameCache:
+    """Resolves a fixed on-disc name inside a directory case-
+    insensitively, so a reader accepts a burner's output that folds
+    every name to lowercase (plain ISO 9660 level 4, no Rock Ridge)
+    alongside the exact case FORMAT.md defines. Caches each directory's
+    own listing so repeated lookups do not rescan it."""
+
+    def __init__(self):
+        self._listings = {}
+
+    def resolve(self, dir_path: str, want: str) -> str:
+        if os.path.exists(os.path.join(dir_path, want)):
+            return want
+        names = self._listings.get(dir_path)
+        if names is None:
+            names = {}
+            try:
+                for entry in os.listdir(dir_path):
+                    names[entry.lower()] = entry
+            except OSError:
+                pass
+            self._listings[dir_path] = names
+        return names.get(want.lower(), want)
+
+    def join(self, dir_path: str, *parts: str) -> str:
+        cur = dir_path
+        for part in parts:
+            cur = os.path.join(cur, self.resolve(cur, part))
+        return cur
+
+
+def find_noahsark_root(path: str, names: NameCache) -> str:
+    base = os.path.normpath(path)
+    disc_name = names.resolve(base, "DISC.bin")
+    if os.path.isfile(os.path.join(base, disc_name)):
+        return base
+    candidate = os.path.join(base, names.resolve(base, "NOAHSARK"))
+    disc_name = names.resolve(candidate, "DISC.bin")
+    if os.path.isfile(os.path.join(candidate, disc_name)):
         return candidate
     raise FormatError(f"{path}: no /NOAHSARK/DISC.bin found under this path")
 
 
-def list_run_seqs(root: str):
-    runs_dir = os.path.join(root, "runs")
+def list_run_seqs(root: str, names: NameCache):
+    runs_dir = names.join(root, "runs")
     if not os.path.isdir(runs_dir):
         return []
     seqs = []
@@ -941,8 +973,8 @@ def list_run_seqs(root: str):
     return sorted(seqs)
 
 
-def run_dir(root: str, seq: int) -> str:
-    return os.path.join(root, "runs", f"{seq:010d}")
+def run_dir(root: str, seq: int, names: NameCache) -> str:
+    return names.join(root, "runs", f"{seq:010d}")
 
 
 def text_form(id_hex: str) -> str:
@@ -957,17 +989,22 @@ def text_form(id_hex: str) -> str:
     raise FormatError(f"not a 32-byte digest or a multihash text form: {id_hex!r}")
 
 
-def object_path(root: str, content_id_hex: str, fanout_levels: int, under: str = "objects") -> str:
+def object_path(
+    root: str, content_id_hex: str, fanout_levels: int, names: NameCache, under: str = "objects"
+) -> str:
     """The path of an object file under objects/ or snapshots/, the fan-out
-    on disc rule."""
+    on disc rule. The fan-out directory and the object's own file name are
+    exact-match lowercase; only the objects/snapshots root name is
+    resolved through names."""
     name = text_form(content_id_hex)
     if under == "snapshots":
-        return os.path.join(root, "snapshots", name)
+        return os.path.join(names.join(root, "snapshots"), name)
+    objects_dir = names.join(root, "objects")
     d0d1 = name[4:6]  # digest starts after the 4-hex multihash prefix
     if fanout_levels >= 2:
         d2d3 = name[6:8]
-        return os.path.join(root, "objects", d0d1, d2d3, name)
-    return os.path.join(root, "objects", d0d1, name)
+        return os.path.join(objects_dir, d0d1, d2d3, name)
+    return os.path.join(objects_dir, d0d1, name)
 
 
 # ---------------------------------------------------------------------------
@@ -976,45 +1013,52 @@ def object_path(root: str, content_id_hex: str, fanout_levels: int, under: str =
 
 class Repo:
     def __init__(self, path: str):
-        self.root = find_noahsark_root(path)
-        with open(os.path.join(self.root, "DISC.bin"), "rb") as f:
+        self.names = NameCache()
+        self.root = find_noahsark_root(path, self.names)
+        disc_name = self.names.resolve(self.root, "DISC.bin")
+        with open(os.path.join(self.root, disc_name), "rb") as f:
             self.disc = parse_disc(f.read(), "DISC.bin")
-        self.run_seqs = list_run_seqs(self.root)
+        self.run_seqs = list_run_seqs(self.root, self.names)
         if not self.run_seqs:
             raise FormatError(f"{self.root}: no runs found under runs/")
         self.newest_seq = self.run_seqs[-1]
 
     def run_header(self, seq: int):
-        path = os.path.join(run_dir(self.root, seq), "RUN.bin")
+        d = run_dir(self.root, seq, self.names)
+        path = os.path.join(d, self.names.resolve(d, "RUN.bin"))
         with open(path, "rb") as f:
             return parse_run(f.read(), path)
 
     def index(self, seq: int):
-        path = os.path.join(run_dir(self.root, seq), "INDEX.bin")
+        d = run_dir(self.root, seq, self.names)
+        path = os.path.join(d, self.names.resolve(d, "INDEX.bin"))
         with open(path, "rb") as f:
             return parse_index(f.read(), path)
 
     def refs(self, seq: int = None):
         seq = seq or self.newest_seq
-        path = os.path.join(run_dir(self.root, seq), "catalog", "REFS.bin")
+        d = self.names.join(run_dir(self.root, seq, self.names), "catalog")
+        path = os.path.join(d, self.names.resolve(d, "REFS.bin"))
         with open(path, "rb") as f:
             return parse_refs(f.read(), path)
 
     def discs(self, seq: int = None):
         seq = seq or self.newest_seq
-        path = os.path.join(run_dir(self.root, seq), "catalog", "DISCS.bin")
+        d = self.names.join(run_dir(self.root, seq, self.names), "catalog")
+        path = os.path.join(d, self.names.resolve(d, "DISCS.bin"))
         with open(path, "rb") as f:
             return parse_discs(f.read(), path)
 
     def snapshot_names(self, seq: int = None):
         seq = seq or self.newest_seq
-        snapobj_dir = os.path.join(run_dir(self.root, seq), "catalog", "snapobj")
+        catalog_dir = self.names.join(run_dir(self.root, seq, self.names), "catalog")
+        snapobj_dir = os.path.join(catalog_dir, self.names.resolve(catalog_dir, "snapobj"))
         if not os.path.isdir(snapobj_dir):
             return []
         return sorted(os.listdir(snapobj_dir))
 
     def read_object(self, content_id_hex: str, under: str = "objects", report: Report = None):
-        path = object_path(self.root, content_id_hex, self.disc["fanout_levels"], under)
+        path = object_path(self.root, content_id_hex, self.disc["fanout_levels"], self.names, under)
         return read_object_file(path, report)
 
     def read_snapshot(self, name: str, report: Report = None):
@@ -1208,7 +1252,8 @@ def cmd_verify(args):
             report.fail(f"run {seq}", str(e))
             continue
 
-        index_path = os.path.join(run_dir(repo.root, seq), "INDEX.bin")
+        run_directory = run_dir(repo.root, seq, repo.names)
+        index_path = os.path.join(run_directory, repo.names.resolve(run_directory, "INDEX.bin"))
         with open(index_path, "rb") as f:
             index_bytes = f.read()
         if sha256(index_bytes).digest() != run["index_hash"]:
