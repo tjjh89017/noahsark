@@ -43,6 +43,43 @@ sudo umount /mnt/noahsark
 Both restores should match the original source: healing repairs the
 corrupted blocks before the second restore reads them.
 
+## Packing a disc sequence and restoring across discs
+
+`commit` stages every object once. Each `pack` call then selects as
+many STAGED objects as fit the given capacity, in one run, and reports
+what is still staged afterward. Running `pack` again, against the same
+repository, packs the next run: objects already packed onto an earlier
+disc are never copied again, and the new run's `INDEX` names them as
+prerequisites of the earlier disc instead.
+
+```sh
+./noahsark commit --repo=repo /path/to/big/source
+./noahsark pack --repo=repo --capacity=dvd+r --out=tree0
+./noahsark pack --repo=repo --capacity=bd25  --out=tree1
+./noahsark pack --repo=repo --capacity=10GB  --out=tree2
+```
+
+`pack` exits 0 once nothing is left staged, and 1 while objects remain;
+either way it prints the remaining object count and byte total.
+
+`restore` reads from one disc root by default:
+
+```sh
+./noahsark restore tree0 SNAPSHOT-ID restored
+```
+
+A snapshot that spans several discs restores by repeating `--disc`, or
+by naming a directory whose immediate subdirectories are mounted disc
+roots with `--discs-dir`:
+
+```sh
+./noahsark restore --disc=tree0 --disc=tree1 --disc=tree2 SNAPSHOT-ID restored
+./noahsark restore --discs-dir=/mnt/noahsark-discs SNAPSHOT-ID restored
+```
+
+A disc root missing from the list fails the restore with an error
+naming that disc's uuid and the objects on it the restore needed.
+
 ## Disc capacity
 
 Marketing sizes are not the real capacity. A "25 GB" BD-R actually holds

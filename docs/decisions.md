@@ -357,3 +357,95 @@ each and folds the count into the same nonzero-exit check. A read that
 fails for any other reason (permission denied, an I/O error) still
 aborts the commit and returns an error, since that is not a vanished
 path and not a reason to keep partial or torn content.
+
+## 4. Staging state machine
+
+OPERATIONS.md names the states (STAGED, PACKED, BURNED, CLEAN,
+GC-ELIGIBLE, DELETED) and the transitions, and gives `state.db` an
+append-only role, but no byte layout. This build has no burn step and no
+verify-after-burn step, so it implements only the Phase 1 part of the
+machine: STAGED at commit, PACKED once a run includes an object, and the
+run and disc that hold it. BURNED, CLEAN, GC-ELIGIBLE and DELETED, and
+every GC rule, are out of scope until a burn command exists.
+
+`internal/stage` picks the simplest deterministic record: fixed-width,
+70 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
+crc32c), append-only, one record per transition. A reader replays from
+the start and stops at the first record whose CRC fails, exactly
+matching the "truncated log" rule; a record after a bad one is ignored.
+The newest record per content id, by file order (equivalently by
+`sequence`), is that object's current state. `EnsureStaged` never
+overwrites an existing record, so a re-commit of already-packed content
+can never resurrect it to STAGED.
+
+`cmd_commit` calls `internal/image.CollectReachable` after a commit and
+marks every object it returns STAGED, rather than having `Writer` itself
+own state.db; this keeps the object writer free of a staging-state
+dependency, at the cost of re-walking the tree once per commit.
+
+## 8. Packing and locality, and 11.1 INDEX Prereqs
+
+`pack` no longer requires the caller to name which snapshot to pack in
+full; it always processes the whole STAGED pool across every snapshot
+the repository has ever committed, since FORMAT.md requires every
+snapshot object on every disc regardless of any other object's state.
+`--ref`/`--snapshot` still choose only which named refs this run's
+`REFS` table carries.
+
+Selection order is a post-order (children before parent) walk of every
+repository snapshot's tree: a directory's chunks, then its file blobs,
+then its own tree object, then the snapshot object last. A straight
+prefix of this order, filtered to STAGED objects, is always
+dependency-closed: any object a prefix includes has every one of its
+direct children either also in the prefix or already PACKED on an
+earlier run (never STAGED-and-excluded), because a staged child cannot
+occur after its parent in post order. `pack` greedily grows this prefix
+while a trial `CheckCapacity` still passes, and stops at the first
+object that would not fit; nothing past that point is tried, since a
+prefix cut is the only shape locality asks for ("keep together where
+possible"), not a bin-packing search over subsets.
+
+Because the selected set is always dependency-closed, Prereqs
+construction is exact and needs no search: for every selected tree,
+blob or snapshot, a direct child absent from the selected set is
+necessarily already PACKED (by construction), and its recorded run_seq
+from the state log is the Prereqs row's `run_seq`.
+
+## 11.3 DISCS and 12. Disc lifecycle, closing and appending
+
+This build keeps a local ledger of every disc it has packed,
+`<repo>/staging/discs.bin`, reusing `DISCS.bin`'s own container format
+unchanged. There is no burn or read-back step to recover this
+information from a drive, so the ledger is the authoritative source for
+DISCS's earlier rows the next `pack` call writes. Unlike a real disc's
+copy, the ledger's own row for a finished disc always carries the real
+`run_hash` immediately (computed from that disc's own `RUN.bin` right
+after it is built) rather than staying zero until a later run fills it
+in; FORMAT.md's state-transition rule for `run_hash` (zero, then filled,
+never changed) still holds for every row this build ever writes to an
+actual disc tree, since a disc's own row is always written zero and the
+ledger's filled value is only ever copied forward from the next disc
+onward.
+
+Phase 1 keeps one run per disc, so `run_seq` and `disc_seq` are derived
+directly from the ledger's length: `run_seq` is the ledger's row count
+plus one, `disc_seq` equals the row count. `--disc` (continuing an
+existing disc) stays refused, unchanged from the existing reduction.
+
+## 14. Restore, spanning discs
+
+`internal/restore.RestoreMulti` takes several disc roots and looks up
+each needed object directly by its canonical on-disc path on every
+provided root; a snapshot object is also looked for under each
+provided run's `catalog/snapobj`, since that copy is replicated on
+every disc while the canonical `/NOAHSARK/snapshots/<id>` copy exists
+only on the one disc that packed it. When an object is on none of the
+provided roots, `RestoreMulti` resolves the disc that must hold it from
+whichever provided run's `INDEX` names it (its own Objects row, or a
+Prereqs row pointing at it) plus that run's `DISCS` table, and keeps
+walking every other reachable branch instead of stopping at the first
+miss, so one `*MissingDiscError` at the end names every missing disc's
+uuid and every object needed from it. `cmd/noahsark`'s `restore` keeps
+its single positional `DISC-ROOT` form; a multi-disc restore instead
+repeats `--disc`, or names `--discs-dir`, a directory whose immediate
+subdirectories are disc roots.
