@@ -102,7 +102,7 @@ Phase 1 commands:
   pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]
   image build --out=FILE [--capacity=N] TREE-DIR
   verify  --image=PATH [--heal] [--out=DIR]
-  restore DISC-ROOT SNAPSHOT OUT-DIR
+  restore DISC-ROOT [--include=PATH]... SNAPSHOT OUT-DIR
 
 Every command also accepts --progress, --no-progress and --quiet (-q),
 which control the progress line a long-running command writes to

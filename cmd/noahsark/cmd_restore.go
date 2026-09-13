@@ -33,6 +33,8 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to restore from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
+	var includeFlags stringList
+	fs.Var(&includeFlags, "include", "restore only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -42,13 +44,13 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	switch {
 	case multi:
 		if fs.NArg() != 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore --disc=ROOT [--disc=ROOT]... SNAPSHOT OUT-DIR")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore --disc=ROOT [--disc=ROOT]... [--include=PATH]... SNAPSHOT OUT-DIR")
 			return 2
 		}
 		positional = fs.Args()
 	default:
 		if fs.NArg() != 3 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore DISC-ROOT SNAPSHOT OUT-DIR")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore DISC-ROOT [--include=PATH]... SNAPSHOT OUT-DIR")
 			return 2
 		}
 		positional = fs.Args()[1:]
@@ -67,7 +69,8 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	if err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog); err != nil {
+	opts := []restore.Option{restore.WithInclude(includeFlags)}
+	if err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
