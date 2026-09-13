@@ -41,12 +41,13 @@ func Read(root string) (*ReadResult, error) {
 // every object and, when the run carries FEC, the checksum column and
 // parity, through prog. A nil prog reports nothing.
 func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error) {
-	base, err := FindNoahsark(root)
+	cache := NewNameCache()
+	base, err := FindNoahsark(root, cache)
 	if err != nil {
 		return nil, err
 	}
 
-	discBuf, err := os.ReadFile(filepath.Join(base, "DISC.bin"))
+	discBuf, err := os.ReadFile(filepath.Join(base, cache.Resolve(base, "DISC.bin")))
 	if err != nil {
 		return nil, fmt.Errorf("image: DISC.bin: %w", err)
 	}
@@ -55,12 +56,13 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		return nil, fmt.Errorf("image: DISC.bin: %w", err)
 	}
 
-	runDir, err := NewestRunDir(filepath.Join(base, "runs"))
+	runsDir := filepath.Join(base, cache.Resolve(base, "runs"))
+	runDir, err := NewestRunDir(runsDir)
 	if err != nil {
 		return nil, err
 	}
 
-	runBuf, err := os.ReadFile(filepath.Join(runDir, "RUN.bin"))
+	runBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
 	if err != nil {
 		return nil, fmt.Errorf("image: RUN.bin: %w", err)
 	}
@@ -72,7 +74,7 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		return nil, fmt.Errorf("image: RUN.bin: %w", err)
 	}
 
-	run2Buf, err := os.ReadFile(filepath.Join(runDir, "RUN2.bin"))
+	run2Buf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
 	if err != nil {
 		return nil, fmt.Errorf("image: RUN2.bin: %w", err)
 	}
@@ -82,7 +84,7 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 	}
 	runCopies++
 
-	indexBuf, err := os.ReadFile(filepath.Join(runDir, "INDEX.bin"))
+	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
 	if err != nil {
 		return nil, fmt.Errorf("image: INDEX.bin: %w", err)
 	}
@@ -94,7 +96,8 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		return nil, fmt.Errorf("image: RUN.bin index_hash does not match INDEX.bin")
 	}
 
-	refsBuf, err := os.ReadFile(filepath.Join(runDir, "catalog", "REFS.bin"))
+	catalogDir := cache.Join(runDir, "catalog")
+	refsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "REFS.bin")))
 	if err != nil {
 		return nil, fmt.Errorf("image: REFS.bin: %w", err)
 	}
@@ -103,7 +106,7 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		return nil, fmt.Errorf("image: REFS.bin: %w", err)
 	}
 
-	discsBuf, err := os.ReadFile(filepath.Join(runDir, "catalog", "DISCS.bin"))
+	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "DISCS.bin")))
 	if err != nil {
 		return nil, fmt.Errorf("image: DISCS.bin: %w", err)
 	}
@@ -118,8 +121,10 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 	// here and no checksum column or parity to recompute below: verify
 	// checks content ids and file hashes only.
 	if run.FECScheme == format.FECSchemeRS255GF8 {
+		parityDir := cache.Join(runDir, "parity")
 		for j := range fec.M {
-			path := filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
+			name := fmt.Sprintf("p%04d.bin", fec.K+1+j)
+			path := filepath.Join(parityDir, cache.Resolve(parityDir, name))
 			f, err := os.Open(path)
 			if err != nil {
 				return nil, fmt.Errorf("image: parity column %d: %w", j, err)
@@ -137,12 +142,12 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		}
 	}
 
-	if err := verifyObjects(base, &idx, prog); err != nil {
+	if err := verifyObjects(base, &idx, prog, cache); err != nil {
 		return nil, err
 	}
 
 	if run.FECScheme == format.FECSchemeRS255GF8 {
-		if err := verifyFEC(base, runDir, prog); err != nil {
+		if err := verifyFEC(base, runDir, prog, cache); err != nil {
 			return nil, err
 		}
 	}
@@ -154,13 +159,14 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 }
 
 // FindNoahsark returns root if it already holds DISC.bin, or
-// root/NOAHSARK otherwise.
-func FindNoahsark(root string) (string, error) {
-	if _, err := os.Stat(filepath.Join(root, "DISC.bin")); err == nil {
+// root/NOAHSARK otherwise, resolving both names case-insensitively
+// through cache.
+func FindNoahsark(root string, cache *NameCache) (string, error) {
+	if _, err := os.Stat(filepath.Join(root, cache.Resolve(root, "DISC.bin"))); err == nil {
 		return root, nil
 	}
-	nested := filepath.Join(root, "NOAHSARK")
-	if _, err := os.Stat(filepath.Join(nested, "DISC.bin")); err == nil {
+	nested := filepath.Join(root, cache.Resolve(root, "NOAHSARK"))
+	if _, err := os.Stat(filepath.Join(nested, cache.Resolve(nested, "DISC.bin"))); err == nil {
 		return nested, nil
 	}
 	return "", fmt.Errorf("image: no DISC.bin under %s or %s", root, nested)
@@ -200,20 +206,22 @@ func NewestRunDir(runsDir string) (string, error) {
 // into the hash, never holding a whole object file, or a decompressed
 // payload, in memory: an object can be as large as the maximum chunk
 // size, so this bound must hold whatever the object's own size is.
-func verifyObjects(base string, idx *format.Index, prog *progress.Reporter) error {
+func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cache *NameCache) error {
 	headerLen := int64(format.CommonHeaderLen + format.ObjectHeaderLen)
 	var total int64
 	for _, row := range idx.Objects {
 		total += int64(row.StoredLen)
 	}
+	objectsDir := cache.Join(base, "objects")
+	snapshotsDir := cache.Join(base, "snapshots")
 	prog.Start("verify: objects hashed", total)
 	for _, row := range idx.Objects {
 		id := object.ID(row.ContentID)
 		var path string
 		if row.Kind == format.ObjectKindSnapshot {
-			path = filepath.Join(base, "snapshots", id.TextForm())
+			path = filepath.Join(snapshotsDir, id.TextForm())
 		} else {
-			path = filepath.Join(base, "objects", id.FanoutByte(), id.TextForm())
+			path = filepath.Join(objectsDir, id.FanoutByte(), id.TextForm())
 		}
 		if err := verifyOneObject(path, id, row.Offset, row.StoredLen, row.Compression, headerLen); err != nil {
 			return err
@@ -263,7 +271,13 @@ func verifyOneObject(path string, id object.ID, offset, storedLen uint64, compre
 // order position by position against the run's consecutive rows of that
 // role.
 func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *format.Index, err error) {
-	indexBuf, err := os.ReadFile(filepath.Join(runDir, "INDEX.bin"))
+	return StreamFilesWithCache(base, runDir, NewNameCache())
+}
+
+// StreamFilesWithCache is StreamFiles, resolving every fixed name
+// through cache instead of a fresh, single-use one.
+func StreamFilesWithCache(base, runDir string, cache *NameCache) (paths []string, sizes []uint64, idx *format.Index, err error) {
+	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -272,19 +286,22 @@ func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *form
 		return nil, nil, nil, err
 	}
 
-	snapobjPaths, err := idSortedFiles(filepath.Join(runDir, "catalog", "snapobj"))
+	catalogDir := cache.Join(runDir, "catalog")
+	snapobjPaths, err := idSortedFiles(cache.Join(catalogDir, "snapobj"))
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
+	objectsDir := cache.Join(base, "objects")
+	snapshotsDir := cache.Join(base, "snapshots")
 	objectPathByFileIndex := make(map[int]string, len(decoded.Objects))
 	for _, row := range decoded.Objects {
 		id := object.ID(row.ContentID)
 		var p string
 		if row.Kind == format.ObjectKindSnapshot {
-			p = filepath.Join(base, "snapshots", id.TextForm())
+			p = filepath.Join(snapshotsDir, id.TextForm())
 		} else {
-			p = filepath.Join(base, "objects", id.FanoutByte(), id.TextForm())
+			p = filepath.Join(objectsDir, id.FanoutByte(), id.TextForm())
 		}
 		objectPathByFileIndex[int(row.FileIndex)] = p
 	}
@@ -307,7 +324,7 @@ func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *form
 			}
 			path, inStream = p, true
 		default:
-			path, inStream = filesRowPath(base, runDir, row.Role)
+			path, inStream = filesRowPath(base, runDir, row.Role, cache)
 		}
 		if !inStream {
 			continue
@@ -322,8 +339,8 @@ func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *form
 // own files, in INDEX's Files table order, and compares them to what is
 // on disc, one stripe at a time. It never holds the stream, the whole
 // checksum column or a whole parity file in memory.
-func verifyFEC(base, runDir string, prog *progress.Reporter) error {
-	streamPaths, streamSizes, _, err := StreamFiles(base, runDir)
+func verifyFEC(base, runDir string, prog *progress.Reporter, cache *NameCache) error {
+	streamPaths, streamSizes, _, err := StreamFilesWithCache(base, runDir, cache)
 	if err != nil {
 		return err
 	}
@@ -346,16 +363,19 @@ func verifyFEC(base, runDir string, prog *progress.Reporter) error {
 		return err
 	}
 
-	runBuf, err := os.ReadFile(filepath.Join(runDir, "RUN.bin"))
+	runBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
 	if err != nil {
 		return err
 	}
 
+	parityDir := cache.Join(runDir, "parity")
 	parityPaths := make([]string, fec.M)
 	for j := range fec.M {
-		parityPaths[j] = filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
+		name := fmt.Sprintf("p%04d.bin", fec.K+1+j)
+		parityPaths[j] = filepath.Join(parityDir, cache.Resolve(parityDir, name))
 	}
-	return compareFEC(sources, layout, runBuf, filepath.Join(runDir, "checksum.bin"), parityPaths, prog)
+	checksumPath := filepath.Join(runDir, cache.Resolve(runDir, "checksum.bin"))
+	return compareFEC(sources, layout, runBuf, checksumPath, parityPaths, prog)
 }
 
 // compareFEC recomputes the checksum column and the m parity files over
@@ -481,22 +501,22 @@ func idSortedFiles(dir string) ([]string, error) {
 // its role, and whether that role's rows enter the FEC stream. A role
 // this function does not list is either outside the stream (RUN, RUN2,
 // checksum, parity) or resolved by the caller instead (snapobj, object).
-func filesRowPath(base, runDir string, role uint8) (string, bool) {
+func filesRowPath(base, runDir string, role uint8, cache *NameCache) (string, bool) {
 	switch role {
 	case format.FileRoleIndex:
-		return filepath.Join(runDir, "INDEX.bin"), true
+		return filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")), true
 	case format.FileRoleDisc:
-		return filepath.Join(base, "DISC.bin"), true
+		return filepath.Join(base, cache.Resolve(base, "DISC.bin")), true
 	case format.FileRoleReadme:
-		return filepath.Join(base, "README.txt"), true
+		return filepath.Join(base, cache.Resolve(base, "README.txt")), true
 	case format.FileRoleFormat:
-		return filepath.Join(base, "FORMAT.txt"), true
+		return filepath.Join(base, cache.Resolve(base, "FORMAT.txt")), true
 	case format.FileRoleReference:
-		return filepath.Join(base, "REFERENCE", "decoder.py"), true
+		return cache.Join(base, "REFERENCE", "decoder.py"), true
 	case format.FileRoleRefs:
-		return filepath.Join(runDir, "catalog", "REFS.bin"), true
+		return cache.Join(runDir, "catalog", "REFS.bin"), true
 	case format.FileRoleDiscs:
-		return filepath.Join(runDir, "catalog", "DISCS.bin"), true
+		return cache.Join(runDir, "catalog", "DISCS.bin"), true
 	default:
 		return "", false
 	}

@@ -60,8 +60,9 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 		out = append(out, ReachableObject{ID: id, Kind: kind, Bytes: data, ByteLen: byteLen})
 	}
 
-	objectsRoot := filepath.Join(stagingDir, "objects")
-	snapshotsRoot := filepath.Join(stagingDir, "snapshots")
+	cache := NewNameCache()
+	objectsRoot := cache.Join(stagingDir, "objects")
+	snapshotsRoot := cache.Join(stagingDir, "snapshots")
 
 	var walkTree func(id object.ID) error
 	walkTree = func(id object.ID) error {

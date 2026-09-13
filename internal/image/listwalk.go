@@ -34,11 +34,13 @@ var entryTypeNames = map[uint8]string{
 // pre-order walk the fill order inside a run defines, and returns one
 // ListEntry per tree entry.
 func ListSnapshot(root string, snapID object.ID) ([]ListEntry, error) {
-	base, err := FindNoahsark(root)
+	cache := NewNameCache()
+	base, err := FindNoahsark(root, cache)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(base, "snapshots", snapID.TextForm()))
+	snapshotsDir := cache.Join(base, "snapshots")
+	data, err := os.ReadFile(filepath.Join(snapshotsDir, snapID.TextForm()))
 	if err != nil {
 		return nil, err
 	}
@@ -46,15 +48,16 @@ func ListSnapshot(root string, snapID object.ID) ([]ListEntry, error) {
 	if _, err := snap.Decode(data); err != nil {
 		return nil, err
 	}
+	objectsDir := cache.Join(base, "objects")
 	var out []ListEntry
-	if err := walkListTree(base, object.ID(snap.RootTree), "", &out); err != nil {
+	if err := walkListTree(objectsDir, object.ID(snap.RootTree), "", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func walkListTree(base string, treeID object.ID, prefix string, out *[]ListEntry) error {
-	data, err := os.ReadFile(filepath.Join(base, "objects", treeID.FanoutByte(), treeID.TextForm()))
+func walkListTree(objectsDir string, treeID object.ID, prefix string, out *[]ListEntry) error {
+	data, err := os.ReadFile(filepath.Join(objectsDir, treeID.FanoutByte(), treeID.TextForm()))
 	if err != nil {
 		return fmt.Errorf("image: tree %s: %w", treeID.TextForm(), err)
 	}
@@ -74,7 +77,7 @@ func walkListTree(base string, treeID object.ID, prefix string, out *[]ListEntry
 		}
 		*out = append(*out, ListEntry{Type: typeName, Size: e.Size, Mode: e.Mode, Path: path})
 		if e.EntryType == format.EntryTypeDirectory {
-			if err := walkListTree(base, object.ID(e.ContentID), path, out); err != nil {
+			if err := walkListTree(objectsDir, object.ID(e.ContentID), path, out); err != nil {
 				return err
 			}
 		}
