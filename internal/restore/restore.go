@@ -14,6 +14,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // Restore reads snapshotID's tree from discRoot and writes it under
@@ -23,6 +24,14 @@ import (
 // using its bytes; a chunk, blob, tree or snapshot that does not verify
 // is a hard error.
 func Restore(discRoot string, snapshotID object.ID, outDir string) error {
+	return RestoreWithProgress(discRoot, snapshotID, outDir, nil)
+}
+
+// RestoreWithProgress is Restore, reporting bytes written through prog.
+// A nil prog reports nothing. The total is the sum of every regular
+// file's recorded size in the snapshot's tree, found by a pass over the
+// tree objects alone, before any file content is read or written.
+func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter) error {
 	base, err := findNoahsark(discRoot)
 	if err != nil {
 		return err
@@ -53,12 +62,47 @@ func Restore(discRoot string, snapshotID object.ID, outDir string) error {
 		return fmt.Errorf("restore: tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
+	var total uint64
 	for _, e := range rootTree.Entries {
-		if err := restoreRootEntry(base, absOut, e); err != nil {
+		if e.EntryType == format.EntryTypeDirectory {
+			total += sumRegularSizes(base, object.ID(e.ContentID))
+		}
+	}
+	prog.Start("restore: bytes written", int64(total))
+	defer prog.Done()
+
+	for _, e := range rootTree.Entries {
+		if err := restoreRootEntry(base, absOut, e, prog); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sumRegularSizes recursively sums every regular file entry's recorded
+// size under treeID, reading only tree objects, never file content. A
+// tree that fails to read or decode contributes zero rather than failing
+// the whole progress total: the real restore below is what reports any
+// such error properly.
+func sumRegularSizes(base string, treeID object.ID) uint64 {
+	raw, _, err := readVerified(base, treeID, false)
+	if err != nil {
+		return 0
+	}
+	var t format.Tree
+	if _, err := t.Decode(raw); err != nil {
+		return 0
+	}
+	var total uint64
+	for _, e := range t.Entries {
+		switch e.EntryType {
+		case format.EntryTypeDirectory:
+			total += sumRegularSizes(base, object.ID(e.ContentID))
+		case format.EntryTypeRegular:
+			total += e.Size
+		}
+	}
+	return total
 }
 
 // restoreRootEntry restores one entry of the synthetic root tree. Its
@@ -66,7 +110,7 @@ func Restore(discRoot string, snapshotID object.ID, outDir string) error {
 // entry's root-path TLV, joined under outDir; its content is the
 // entry's own directory tree, restored directly into that destination
 // rather than one level below it.
-func restoreRootEntry(base, outDir string, e format.TreeEntry) error {
+func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter) error {
 	if e.EntryType != format.EntryTypeDirectory {
 		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
 	}
@@ -86,7 +130,7 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry) error {
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
-	if err := restoreDirContents(base, object.ID(e.ContentID), dest); err != nil {
+	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog); err != nil {
 		return err
 	}
 	applyMetadata(dest, e)
@@ -95,7 +139,7 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry) error {
 
 // restoreDirContents decodes the tree at treeID and restores every entry
 // as a child of dest, which already exists.
-func restoreDirContents(base string, treeID object.ID, dest string) error {
+func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter) error {
 	raw, _, err := readVerified(base, treeID, false)
 	if err != nil {
 		return err
@@ -105,7 +149,7 @@ func restoreDirContents(base string, treeID object.ID, dest string) error {
 		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
-		if err := restoreEntry(base, dest, e); err != nil {
+		if err := restoreEntry(base, dest, e, prog); err != nil {
 			return err
 		}
 	}
@@ -113,7 +157,7 @@ func restoreDirContents(base string, treeID object.ID, dest string) error {
 }
 
 // restoreEntry writes one tree entry as a child of dir.
-func restoreEntry(base, dir string, e format.TreeEntry) error {
+func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -124,13 +168,13 @@ func restoreEntry(base, dir string, e format.TreeEntry) error {
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			return err
 		}
-		if err := restoreDirContents(base, object.ID(e.ContentID), child); err != nil {
+		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		if err := restoreFile(base, child, object.ID(e.ContentID)); err != nil {
+		if err := restoreFile(base, child, object.ID(e.ContentID), prog); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
@@ -156,7 +200,7 @@ func restoreEntry(base, dir string, e format.TreeEntry) error {
 
 // restoreFile reassembles blobID's chunks into dest, in blob entry order,
 // verifying every chunk's content id before writing its bytes.
-func restoreFile(base, dest string, blobID object.ID) error {
+func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter) error {
 	raw, _, err := readVerified(base, blobID, false)
 	if err != nil {
 		return err
@@ -187,6 +231,7 @@ func restoreFile(base, dest string, blobID object.ID) error {
 		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
 			return err
 		}
+		prog.Add(int64(len(payload)))
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // MissingDiscError reports that restoring a snapshot needs a disc this
@@ -66,6 +67,12 @@ type multiSource struct {
 // every needed object once the walk finishes, instead of stopping at the
 // first miss.
 func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string) error {
+	return RestoreMultiWithProgress(discRoots, snapshotID, outDir, nil)
+}
+
+// RestoreMultiWithProgress is RestoreMulti, reporting bytes written
+// through prog. A nil prog reports nothing.
+func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter) error {
 	if len(discRoots) == 0 {
 		return fmt.Errorf("restore: at least one disc root is required")
 	}
@@ -100,8 +107,16 @@ func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string) error
 		return fmt.Errorf("restore: tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
+	// Unlike the single-disc Restore, this does not pre-sum an expected
+	// total: summing would mean an extra read pass through src, and a
+	// miss during that pass would double-count itself into the eventual
+	// MissingDiscError. Progress here reports bytes written and
+	// throughput only, with no percentage or ETA.
+	prog.Start("restore: bytes written", 0)
+	defer prog.Done()
+
 	for _, e := range rootTree.Entries {
-		if err := src.restoreRootEntry(absOut, e); err != nil {
+		if err := src.restoreRootEntry(absOut, e, prog); err != nil {
 			return err
 		}
 	}
@@ -244,7 +259,7 @@ func (src *multiSource) finalError() error {
 
 // restoreRootEntry mirrors restoreRootEntry, reading through src instead
 // of one fixed base.
-func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry) error {
+func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog *progress.Reporter) error {
 	if e.EntryType != format.EntryTypeDirectory {
 		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
 	}
@@ -264,14 +279,14 @@ func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry) erro
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
-	if err := src.restoreDirContents(object.ID(e.ContentID), dest); err != nil {
+	if err := src.restoreDirContents(object.ID(e.ContentID), dest, prog); err != nil {
 		return err
 	}
 	applyMetadata(dest, e)
 	return nil
 }
 
-func (src *multiSource) restoreDirContents(treeID object.ID, dest string) error {
+func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *progress.Reporter) error {
 	raw, _, ok := src.read(treeID, false)
 	if !ok {
 		// This whole subtree is unreachable without a missing disc;
@@ -284,14 +299,14 @@ func (src *multiSource) restoreDirContents(treeID object.ID, dest string) error 
 		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
-		if err := src.restoreEntry(dest, e); err != nil {
+		if err := src.restoreEntry(dest, e, prog); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (src *multiSource) restoreEntry(dir string, e format.TreeEntry) error {
+func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progress.Reporter) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -302,13 +317,13 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry) error {
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			return err
 		}
-		if err := src.restoreDirContents(object.ID(e.ContentID), child); err != nil {
+		if err := src.restoreDirContents(object.ID(e.ContentID), child, prog); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		if err := src.restoreFile(child, object.ID(e.ContentID)); err != nil {
+		if err := src.restoreFile(child, object.ID(e.ContentID), prog); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
@@ -332,7 +347,7 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry) error {
 	}
 }
 
-func (src *multiSource) restoreFile(dest string, blobID object.ID) error {
+func (src *multiSource) restoreFile(dest string, blobID object.ID, prog *progress.Reporter) error {
 	raw, _, ok := src.read(blobID, false)
 	if !ok {
 		// The blob itself is unreachable; record it (already done by
@@ -367,6 +382,7 @@ func (src *multiSource) restoreFile(dest string, blobID object.ID) error {
 		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
 			return err
 		}
+		prog.Add(int64(len(payload)))
 	}
 	if !complete {
 		// Leave the partially written file in place; the missing-disc

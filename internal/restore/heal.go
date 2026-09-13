@@ -10,6 +10,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // StripeReport describes the repair Heal made to one stripe of the FEC
@@ -43,6 +44,12 @@ type StripeReport struct {
 // the copy there, leaving discRoot untouched — the path to use when
 // discRoot is a read-only mount.
 func Heal(discRoot, outDir string) ([]StripeReport, error) {
+	return HealWithProgress(discRoot, outDir, nil)
+}
+
+// HealWithProgress is Heal, reporting stripes checked and repaired
+// through prog. A nil prog reports nothing.
+func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]StripeReport, error) {
 	work := discRoot
 	if outDir != "" {
 		if err := copyTree(discRoot, outDir); err != nil {
@@ -115,6 +122,7 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 	}
 
 	var reports []StripeReport
+	prog.Start("heal: stripes checked", int64(L))
 	for stripe := range L {
 		rep, err := healStripe(streamFiles, sizes, layout, checksumFile, parityFiles, codec, stripe, L)
 		if err != nil {
@@ -123,7 +131,9 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 		if rep != nil {
 			reports = append(reports, *rep)
 		}
+		prog.Add(1)
 	}
+	prog.Done()
 	return reports, nil
 }
 
