@@ -154,8 +154,7 @@ func buildDiscs(opts BuildOptions, packTime time.Time) ([]byte, [32]byte, error)
 
 	row := format.DiscsRow{
 		RunSeq: buildRunSeq, DiscSeq: buildDiscSeq, DiscUUID: opts.DiscUUID,
-		// RunHash is zero: this table is carried by the run it describes,
-		// section 11.3.
+		// RunHash is zero: DISCS is carried by the run it describes.
 		CreatedSec: packTime.Unix(), LastVerifySec: 0,
 		CapacitySectors: opts.PhysicalCapacitySectors, UsedSectors: 0,
 		RunStatus: 2, Health: 6, RsMarginPercent: 100,

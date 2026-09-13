@@ -89,7 +89,7 @@ class Report:
 
 
 # ---------------------------------------------------------------------------
-# Magic values, section 2.2.
+# Magic values.
 
 PROJECT_MAGIC = b"NOAHSARK"
 
@@ -136,7 +136,7 @@ TLV_ROOT_PATH = 0x0004
 
 
 # ---------------------------------------------------------------------------
-# Common header and object header, section 2.3 and section 6.1.
+# Common header and object header.
 
 COMMON_HEADER_LEN = 32
 OBJECT_HEADER_LEN = 32
@@ -299,7 +299,7 @@ def decode_object_bytes(
     else:
         raise FormatError(f"{where}: unsupported compression id {compression}")
 
-    text_form = "1220" + sha256(payload).hexdigest()  # section 3.4
+    text_form = "1220" + sha256(payload).hexdigest()  # the text form
     return ObjectFile(common, obj_header, payload, text_form)
 
 
@@ -327,7 +327,7 @@ def read_object_file(path: str, report: Report = None) -> ObjectFile:
 
 
 # ---------------------------------------------------------------------------
-# Blob, section 6.4.
+# Blob.
 
 BLOB_ENTRY_LEN = 48
 
@@ -362,7 +362,7 @@ def parse_blob(payload: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# Tree, tree entry and TLV, sections 6.5 to 6.11.
+# Tree, tree entry and TLV.
 
 TREE_ENTRY_HEADER_LEN = 112
 
@@ -465,7 +465,7 @@ def parse_tree(payload: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# Snapshot, section 6.14.
+# Snapshot.
 
 SNAPSHOT_FIXED_LEN = 112
 
@@ -538,7 +538,7 @@ def parse_snapshot(payload: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# Disc superblock, section 7.5. 2048 bytes, never compressed, no object
+# Disc superblock. 2048 bytes, never compressed, no object
 # header: it carries only the common header before its own fixed body.
 
 DISC_LEN = 2048
@@ -587,7 +587,7 @@ def parse_disc(buf: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# Run header, section 7.6. 512 bytes of structure inside a 2048-byte file;
+# Run header. 512 bytes of structure inside a 2048-byte file;
 # bytes 512 to 2047 are zero padding, not part of the structure.
 
 RUN_LEN = 512
@@ -642,7 +642,7 @@ def parse_run(buf: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# INDEX, section 11.1.
+# INDEX.
 
 INDEX_FIXED_BODY_LEN = 48
 INDEX_HEADER_LEN = COMMON_HEADER_LEN + INDEX_FIXED_BODY_LEN
@@ -733,7 +733,7 @@ def parse_index(buf: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# REFS, section 11.2 and section 6.17.
+# REFS, and the Ref object.
 
 REFS_FIXED_BODY_LEN = 40
 REFS_HEADER_LEN = COMMON_HEADER_LEN + REFS_FIXED_BODY_LEN
@@ -787,7 +787,8 @@ def parse_refs(buf: bytes, where: str):
 
 def latest_ref(records, name: str):
     """The newest on-disc ref record for name: highest run_seq, then
-    highest time_sec, then highest time_nsec, section 6.17."""
+    highest time_sec, then highest time_nsec, the Ref object's ordering
+    rule."""
     matches = [r for r in records if r["name"] == name and r["run_seq"] != 0]
     if not matches:
         return None
@@ -795,7 +796,7 @@ def latest_ref(records, name: str):
 
 
 # ---------------------------------------------------------------------------
-# DISCS, section 11.3.
+# DISCS.
 
 DISCS_FIXED_BODY_LEN = 40
 DISCS_HEADER_LEN = COMMON_HEADER_LEN + DISCS_FIXED_BODY_LEN
@@ -869,7 +870,7 @@ def parse_discs(buf: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# Checksum column record, section 10.3. The decoder does not use this
+# Checksum column record. The decoder does not use this
 # structure for verify or restore; it is parsed for completeness, since a
 # scrub tool would need it to find a damaged block.
 
@@ -914,7 +915,7 @@ def parse_checksum_record(buf: bytes, where: str):
 
 
 # ---------------------------------------------------------------------------
-# Repository layout helpers, section 8.2 and section 3.5.
+# Repository layout helpers: files at the volume root, and fan-out on disc.
 
 
 def find_noahsark_root(path: str) -> str:
@@ -944,8 +945,8 @@ def run_dir(root: str, seq: int) -> str:
 
 
 def text_form(id_hex: str) -> str:
-    """Normalizes a content id to its 68-character multihash text form,
-    section 3.4. A digest field inside a record is the raw 32-byte digest,
+    """Normalizes a content id to its 68-character multihash text form.
+    A digest field inside a record is the raw 32-byte digest,
     64 hex characters; an on-disk file name already carries the 4-character
     sha2-256 multihash prefix "1220" and is 68 characters."""
     if len(id_hex) == 68:
@@ -956,7 +957,8 @@ def text_form(id_hex: str) -> str:
 
 
 def object_path(root: str, content_id_hex: str, fanout_levels: int, under: str = "objects") -> str:
-    """The path of an object file under objects/ or snapshots/, section 3.5."""
+    """The path of an object file under objects/ or snapshots/, the fan-out
+    on disc rule."""
     name = text_form(content_id_hex)
     if under == "snapshots":
         return os.path.join(root, "snapshots", name)
@@ -1033,12 +1035,14 @@ class Repo:
 
 
 # ---------------------------------------------------------------------------
-# Walking a snapshot tree, section 8.7's walk order: pre-order, tree-entry
-# order, descending into a directory before the next sibling entry.
+# Walking a snapshot tree, the fill order inside a run's walk order:
+# pre-order, tree-entry order, descending into a directory before the
+# next sibling entry.
 
 
 def unescape_root_name(name: bytes) -> str:
-    """Reverses the four-byte escape of section 6.15: %2F, %5C, %00, %25."""
+    """Reverses the four-byte escape the root tree defines: %2F, %5C, %00,
+    %25."""
     out = bytearray()
     i = 0
     while i < len(name):
@@ -1083,7 +1087,7 @@ def walk_tree(repo: Repo, tree_id_hex: str, path_prefix: str, report: Report, vi
 def iter_file_chunks(repo: Repo, blob_id_hex: str, report: Report):
     """Yields (content_id_hex, length, file_offset) leaf chunk entries of a
     file's blob, following level-1 nested blobs. Phase 1 never writes
-    level 1, but a reader must still follow it, section 6.4."""
+    level 1, but a reader must still follow it, the Blob rule."""
     obj = repo.read_object(blob_id_hex, under="objects", report=report)
     if obj.payload is None:
         report.fail(blob_id_hex, "blob could not be decompressed")
@@ -1290,9 +1294,9 @@ def cmd_restore(args):
     os.makedirs(args.out, exist_ok=True)
 
     def visit(path, entry):
-        # A root entry's decoded name is the source's absolute path
-        # (section 6.15); strip its leading '/' so it joins under --out
-        # instead of replacing it.
+        # A root entry's decoded name is the source's absolute path (the
+        # root tree's escape); strip its leading '/' so it joins under
+        # --out instead of replacing it.
         dest = os.path.join(args.out, path.lstrip("/"))
         entry_type = entry["entry_type"]
         if entry_type == 2:  # directory

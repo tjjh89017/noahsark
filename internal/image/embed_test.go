@@ -58,8 +58,8 @@ func TestFormatTxtMatchesFormatMD(t *testing.T) {
 }
 
 // TestReadmeTemplateMatchesFormatMD checks that the embedded README.txt
-// template is exactly the fenced text in FORMAT.md section 8.4, slots
-// and all.
+// template is exactly the fenced text in FORMAT.md's README.txt section,
+// slots and all.
 func TestReadmeTemplateMatchesFormatMD(t *testing.T) {
 	formatMD, err := os.ReadFile("../../FORMAT.md")
 	if err != nil {
@@ -67,6 +67,6 @@ func TestReadmeTemplateMatchesFormatMD(t *testing.T) {
 	}
 	want := fencedBlock(t, string(formatMD), "### 8.4 README.txt")
 	if want != readmeTemplate {
-		t.Fatal("internal/image/readme_template.txt is out of date with FORMAT.md section 8.4")
+		t.Fatal("internal/image/readme_template.txt is out of date with FORMAT.md's README.txt section")
 	}
 }

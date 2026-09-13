@@ -60,8 +60,9 @@ const ciEnvVar = "NOAHSARK_CI"
 // to mount, copy and unmount. Outside CI it builds the empty image and
 // returns, so a build with no root still exercises the mkudffs step.
 //
-// Reading: docs/decisions.md, "10.1 Profile 0 image build" records why
-// this is the chosen path over a from-scratch Go UDF writer.
+// Reading: docs/decisions.md, "Profile 0 image build: how the volume is
+// populated" records why this is the chosen path over a from-scratch Go
+// UDF writer.
 func MakeImage(dir, imagePath string, sectors uint64) error {
 	if _, err := CheckTools(); err != nil {
 		return err

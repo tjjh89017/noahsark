@@ -107,8 +107,8 @@ func Build(opts BuildOptions) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Sort object rows by their whole-file hash, the order section 11.1
-	// gives for role 13 rows.
+	// Sort object rows by their whole-file hash, the order INDEX's Files
+	// table gives for role 13 rows.
 	type hashedObject struct {
 		reachableObject
 		hash [32]byte
