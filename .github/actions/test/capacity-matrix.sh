@@ -15,16 +15,23 @@ BIN="$3"
 MOUNT_POPULATE="$ACTION_PATH/mount-populate.sh"
 UMOUNT_IF_MOUNTED="$ACTION_PATH/umount-if-mounted.sh"
 
-# Data set sizes, in GiB of file content. SMALL_GB fits well under the
-# DVD preset's real capacity. BD_GB fits well under the BD preset's real
-# capacity but is kept above FORCED_GB, so the same data set both packs
-# at the full BD capacity and is refused at the forced limit. DVD_OVER_GB
-# is kept clear of the DVD preset's real capacity either way, so pack
-# refuses it regardless of FEC and filesystem overhead.
-SMALL_GB=3
-BD_GB=12
-DVD_OVER_GB=6
-FORCED_LIMIT="10GB"
+# Data set sizes, in MiB of file content. A run on this project's CI
+# runner measured the parity encoder (BenchmarkEncodeStripe) at under
+# 10 MB/s, single-threaded and serial per run; a 12 GB data set at that
+# rate alone would need over 20 minutes to encode, before any other
+# step. These sizes are scaled down from that measurement to keep the
+# whole matrix well under the job's time budget, while every case stays
+# above 1 GB and keeps the same relationships: SMALL_MB fits well under
+# the DVD preset's real capacity; BD_MB fits well under the BD preset's
+# real capacity but is kept above FORCED_LIMIT, so the same data set
+# both packs at the full BD capacity and is refused at the forced
+# limit; DVD_OVER_MB is kept clear of the DVD preset's real capacity
+# either way, so pack refuses it regardless of FEC and filesystem
+# overhead.
+SMALL_MB=1200
+BD_MB=3200
+DVD_OVER_MB=5200
+FORCED_LIMIT="2GB"
 
 DVD_PRESET="dvd+r"
 BD_PRESET="bd25"
@@ -41,11 +48,16 @@ log() {
 }
 
 # gen_fixture writes BYTES deterministic, incompressible bytes to PATH.
+# head closes its input once it has read enough bytes, so openssl exits
+# on a broken pipe; pipefail must stay off around this one pipeline, or
+# that expected SIGPIPE would end the matrix.
 gen_fixture() {
 	local path="$1" bytes="$2"
 	mkdir -p "$(dirname "$path")"
+	set +o pipefail
 	openssl enc -aes-256-ctr -K "$FIXTURE_KEY" -iv "$FIXTURE_IV" -in /dev/zero 2>/dev/null \
 		| head -c "$bytes" > "$path"
+	set -o pipefail
 }
 
 # run_timed LABEL CMD... runs CMD, prints LABEL's wall time, and fails
@@ -146,8 +158,8 @@ case_dvd() {
 	local mnt="$WORK/cap1-mnt"
 	local restored="$WORK/cap1-restored"
 
-	gen_fixture "$small_src/data.bin" "$((SMALL_GB * 1024 * 1024 * 1024))"
-	gen_fixture "$over_src/data.bin" "$((DVD_OVER_GB * 1024 * 1024 * 1024))"
+	gen_fixture "$small_src/data.bin" "$((SMALL_MB * 1024 * 1024))"
+	gen_fixture "$over_src/data.bin" "$((DVD_OVER_MB * 1024 * 1024))"
 
 	run_timed "case 1: init" "$BIN" init --repo="$repo" --capacity="$DVD_PRESET"
 
@@ -175,7 +187,7 @@ case_dvd() {
 	free_space "case 1 (after cleanup)"
 }
 
-# case_bd: a data set of about BD_GB packs and images at the BD preset's
+# case_bd: a data set of about BD_MB packs and images at the BD preset's
 # real capacity. Check the empty image is sparse. Mount, verify, restore,
 # compare.
 case_bd() {
@@ -189,7 +201,7 @@ case_bd() {
 	local mnt="$WORK/cap2-mnt"
 	local restored="$WORK/cap2-restored"
 
-	gen_fixture "$src/data.bin" "$((BD_GB * 1024 * 1024 * 1024))"
+	gen_fixture "$src/data.bin" "$((BD_MB * 1024 * 1024))"
 
 	run_timed "case 2: init" "$BIN" init --repo="$repo" --capacity="$BD_PRESET"
 
@@ -210,11 +222,11 @@ case_bd() {
 
 	rm -rf "$repo" "$tree" "$image" "$mnt" "$restored"
 	# src is kept on disk: case_bd_forced reuses this same big fixture
-	# instead of generating another BD_GB data set.
+	# instead of generating another BD_MB data set.
 	free_space "case 2 (after cleanup)"
 }
 
-# case_bd_forced: the BD_GB data set is refused at a FORCED_LIMIT forced
+# case_bd_forced: the BD_MB data set is refused at a FORCED_LIMIT forced
 # capacity. A small data set packs with the BD preset's physical capacity
 # and the forced limit. Mount the image and check DISC's capacity fields
 # through verify's output.
@@ -231,9 +243,9 @@ case_bd_forced() {
 	local restored="$WORK/cap3-restored"
 
 	if [ ! -f "$big_src/data.bin" ]; then
-		gen_fixture "$big_src/data.bin" "$((BD_GB * 1024 * 1024 * 1024))"
+		gen_fixture "$big_src/data.bin" "$((BD_MB * 1024 * 1024))"
 	fi
-	gen_fixture "$small_src/data.bin" "$((SMALL_GB * 1024 * 1024 * 1024))"
+	gen_fixture "$small_src/data.bin" "$((SMALL_MB * 1024 * 1024))"
 
 	run_timed "case 3: init" "$BIN" init --repo="$repo" --capacity="$BD_PRESET"
 
@@ -256,7 +268,7 @@ case_bd_forced() {
 	local verify_out
 	verify_out="$("$BIN" verify --image="$mnt")"
 	echo "$verify_out"
-	echo "$verify_out" | grep -qE 'disc capacity: 12219392 sectors, forced 4882813 sectors, capacity_is_forced=1' \
+	echo "$verify_out" | grep -qE 'disc capacity: 12219392 sectors, forced 976563 sectors, capacity_is_forced=1' \
 		|| { echo "case 3: verify did not report the expected forced capacity fields" >&2; exit 1; }
 	"$BIN" restore "$mnt" "$snap" "$restored"
 	diff -rq "$restored$small_src" "$small_src"
