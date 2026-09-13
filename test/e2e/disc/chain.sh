@@ -140,8 +140,16 @@ chain_pack_one() {
 
 	"$BIN" image build --out="$image" "--capacity=$imagecap" "$tree"
 	mount_populate "$image" "$tree" "$mnt"
+	# Unmount whether verify passes or fails: a failure must not leave
+	# the mount busy for the runner's own cleanup.
+	set +e
 	"$BIN" verify --image="$mnt"
+	code=$?
+	set -e
 	umount_if_mounted "$mnt"
+	if [ "$code" -ne 0 ]; then
+		fail "chain: verify disc $n: exit $code"
+	fi
 	rm -rf "$tree"
 	df -h
 }
