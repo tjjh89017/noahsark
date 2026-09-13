@@ -51,6 +51,19 @@ build_fixture() {
 # and check a different one need real data in both.
 MULTI_STRIPE_BYTES=1200000
 
+# pack_rate_line LABEL BYTES T0 T1 logs "LABEL took Xs, N MB/s", timing a
+# pack call between the date +%s.%N timestamps T0 and T1 against BYTES of
+# packed data.
+pack_rate_line() {
+	local label="$1" bytes="$2" t0="$3" t1="$4"
+	awk -v label="$label" -v bytes="$bytes" -v t0="$t0" -v t1="$t1" \
+		'BEGIN {
+			d = t1 - t0
+			if (d <= 0) d = 0.000001
+			printf "[disc-e2e] %s took %.2fs, %.1f MB/s\n", label, d, bytes / 1000000 / d
+		}'
+}
+
 scenario_corrupt_heal() {
 	local work="$WORK/ch"
 	local out tree image src mnt
@@ -228,12 +241,13 @@ media_image_capacity() {
 # this to keep FEC on, every other caller leaves it at the default, off.
 scenario_media() {
 	local media="$1" fec="${2:-}" work="$WORK/media"
-	local repo small_src tree image mnt restored
+	local repo small_src small_src2 tree image mnt restored
 	local capflag physflag small_mb apparent packfec
 	packfec=""
 	[ -n "$fec" ] && packfec="--fec"
 	repo="$work/repo"
 	small_src="$work/small"
+	small_src2="$work/small2"
 	tree="$work/tree"
 	image="$work/run.img"
 	mnt="$work/mnt"
@@ -263,7 +277,41 @@ scenario_media() {
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
 
+	local bytes t0 t1
+	bytes=$((small_mb * 1024 * 1024))
+
+	t0=$(date +%s.%N)
 	"$BIN" pack --repo="$repo" --ref=SMALL "$capflag" $physflag $packfec --out="$tree"
+	t1=$(date +%s.%N)
+	if [ -n "$fec" ]; then
+		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
+	else
+		pack_rate_line "media/$media: pack (fec off)" "$bytes" "$t0" "$t1"
+
+		# A second, --fec pack, timed the same way, into its own output
+		# directory, so its timing does not touch the tree image build
+		# continues with. It packs a second, same-sized fixture under
+		# its own ref, not ref SMALL again: the first pack already
+		# moved ref SMALL's objects to state PACKED, so a second pack
+		# of the same ref finds nothing left to pack. Both the second
+		# fixture and tree_fec are deleted right after, so this timing
+		# run does not add to the cell's disk use.
+		local tree_fec parity_dir checksum_file commit_out2
+		tree_fec="$work/tree-fec"
+		gen_fixture2 "$small_src2/data.bin" "$bytes"
+		commit_out2="$("$BIN" commit --repo="$repo" --ref=SMALL2 "$small_src2")"
+		echo "$commit_out2"
+
+		t0=$(date +%s.%N)
+		"$BIN" pack --repo="$repo" --ref=SMALL2 "$capflag" $physflag --fec --out="$tree_fec"
+		t1=$(date +%s.%N)
+		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
+
+		parity_dir="$(find "$tree_fec" -type d -name parity -print -quit)"
+		checksum_file="$(find "$tree_fec" -type f -name checksum.bin -print -quit)"
+		log "media/$media: parity size $(du -sh "$parity_dir" | cut -f1), checksum size $(du -sh "$checksum_file" | cut -f1)"
+		rm -rf "$tree_fec" "$small_src2"
+	fi
 
 	"$BIN" image build --out="$image" --capacity="$(media_image_capacity "$media")" "$tree"
 	assert_sparse "$image" "$apparent"

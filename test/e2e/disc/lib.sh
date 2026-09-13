@@ -121,6 +121,13 @@ media_over_mb() {
 FIXTURE_KEY="000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e"
 FIXTURE_IV="000102030405060708090a0b0c0d0e0f"
 
+# FIXTURE_IV2 differs from FIXTURE_IV in its first byte, giving a second
+# fixture a keystream, and so content, distinct from the first. A pack
+# that needs its own real, un-deduped objects (the media cells' second,
+# --fec timing pack) commits under this IV, not FIXTURE_IV: content that
+# pack already carried in a run is not staged again.
+FIXTURE_IV2="100102030405060708090a0b0c0d0e0f"
+
 # gen_fixture PATH BYTES writes BYTES deterministic, incompressible bytes
 # to PATH.
 gen_fixture() {
@@ -128,6 +135,17 @@ gen_fixture() {
 	mkdir -p "$(dirname "$path")"
 	set +o pipefail
 	openssl enc -aes-256-ctr -K "$FIXTURE_KEY" -iv "$FIXTURE_IV" -in /dev/zero 2>/dev/null \
+		| head -c "$bytes" >"$path"
+	set -o pipefail
+}
+
+# gen_fixture2 PATH BYTES is gen_fixture with FIXTURE_IV2, for a second
+# fixture that must not dedup against one gen_fixture already wrote.
+gen_fixture2() {
+	local path="$1" bytes="$2"
+	mkdir -p "$(dirname "$path")"
+	set +o pipefail
+	openssl enc -aes-256-ctr -K "$FIXTURE_KEY" -iv "$FIXTURE_IV2" -in /dev/zero 2>/dev/null \
 		| head -c "$bytes" >"$path"
 	set -o pipefail
 }
