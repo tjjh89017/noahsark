@@ -17,20 +17,49 @@ import (
 // call was not given, and which objects on it are needed.
 type MissingDiscError struct {
 	// ByDisc maps a needed disc's uuid to the object ids on it a
-	// complete restore would need.
+	// complete restore would need. Set only when at least one provided
+	// disc's Prereqs row names the disc a missing object lives on.
 	ByDisc map[[16]byte][]object.ID
+	// UnnamedCount is the number of needed objects that no provided
+	// disc's INDEX or Prereqs names. Set only when ByDisc is empty.
+	UnnamedCount int
+	// Candidates lists discs named by a provided disc's DISCS table
+	// that were not themselves provided. It is the best guess at which
+	// disc to insert when no Prereqs row names the disc. Set only when
+	// ByDisc is empty.
+	Candidates []DiscCandidate
+}
+
+// DiscCandidate is one disc named by a DISCS table but not provided to
+// a restore.
+type DiscCandidate struct {
+	UUID  [16]byte
+	Label string
 }
 
 func (e *MissingDiscError) Error() string {
 	var s strings.Builder
-	s.WriteString("restore: missing disc(s):")
-	uuids := make([][16]byte, 0, len(e.ByDisc))
-	for u := range e.ByDisc {
-		uuids = append(uuids, u)
+	if len(e.ByDisc) > 0 {
+		s.WriteString("restore: missing disc(s):")
+		uuids := make([][16]byte, 0, len(e.ByDisc))
+		for u := range e.ByDisc {
+			uuids = append(uuids, u)
+		}
+		sort.Slice(uuids, func(i, j int) bool { return uuidText(uuids[i]) < uuidText(uuids[j]) })
+		for _, u := range uuids {
+			_, _ = fmt.Fprintf(&s, " disc %s holds %d needed object(s)", uuidText(u), len(e.ByDisc[u]))
+		}
+		return s.String()
 	}
-	sort.Slice(uuids, func(i, j int) bool { return uuidText(uuids[i]) < uuidText(uuids[j]) })
-	for _, u := range uuids {
-		_, _ = fmt.Fprintf(&s, " disc %s holds %d needed object(s)", uuidText(u), len(e.ByDisc[u]))
+	_, _ = fmt.Fprintf(&s, "restore: %d object(s) not found on any provided disc and named by no provided disc's INDEX", e.UnnamedCount)
+	if len(e.Candidates) > 0 {
+		s.WriteString("; earlier disc(s) not provided, that may hold them:")
+		for _, c := range e.Candidates {
+			_, _ = fmt.Fprintf(&s, " disc %s", uuidText(c.UUID))
+			if c.Label != "" {
+				_, _ = fmt.Fprintf(&s, " (%s)", c.Label)
+			}
+		}
 	}
 	return s.String()
 }
@@ -56,6 +85,8 @@ type multiSource struct {
 	missingByDisc  map[[16]byte][]object.ID
 	missingUnknown []object.ID // needed but no disc could be identified
 	names          *image.NameCache
+	provided       map[[16]byte]bool   // uuids of the discs RestoreMulti was given
+	discLabels     map[[16]byte]string // every disc uuid named by any provided disc's DISCS table, with its label
 }
 
 // RestoreMulti reads snapshotID's tree from whichever of discRoots holds
@@ -134,6 +165,8 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		contentToRun:  make(map[object.ID]uint64),
 		missingByDisc: make(map[[16]byte][]object.ID),
 		names:         image.NewNameCache(),
+		provided:      make(map[[16]byte]bool),
+		discLabels:    make(map[[16]byte]string),
 	}
 	for _, root := range discRoots {
 		base, err := findNoahsark(root, src.names)
@@ -153,6 +186,7 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 			return nil, err
 		}
 		src.bases = append(src.bases, discSource{base: base, runDir: runDir, uuid: disc.DiscUUID})
+		src.provided[disc.DiscUUID] = true
 		idxBuf, err := os.ReadFile(filepath.Join(runDir, src.names.Resolve(runDir, "INDEX.bin")))
 		if err != nil {
 			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
@@ -182,9 +216,19 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		}
 		for _, row := range discs.Rows {
 			src.runSeqToUUID[row.RunSeq] = row.DiscUUID
+			if _, ok := src.discLabels[row.DiscUUID]; !ok {
+				src.discLabels[row.DiscUUID] = discLabelText(row)
+			}
 		}
 	}
 	return src, nil
+}
+
+// discLabelText trims a DISCS row's fixed-width label field to its
+// stored length.
+func discLabelText(row format.DiscsRow) string {
+	n := min(int(row.LabelLen), len(row.Label))
+	return string(row.Label[:n])
 }
 
 // read looks for id directly on every provided disc root, and returns
@@ -230,7 +274,15 @@ func (src *multiSource) finalError() error {
 	if len(src.missingByDisc) > 0 {
 		return &MissingDiscError{ByDisc: src.missingByDisc}
 	}
-	return fmt.Errorf("restore: %d object(s) not found on any provided disc and named by no provided disc's INDEX", len(src.missingUnknown))
+	var candidates []DiscCandidate
+	for uuid, label := range src.discLabels {
+		if src.provided[uuid] {
+			continue
+		}
+		candidates = append(candidates, DiscCandidate{UUID: uuid, Label: label})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return uuidText(candidates[i].UUID) < uuidText(candidates[j].UUID) })
+	return &MissingDiscError{UnnamedCount: len(src.missingUnknown), Candidates: candidates}
 }
 
 // restoreRootEntry mirrors restoreRootEntry, reading through src instead

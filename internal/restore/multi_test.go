@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,4 +170,125 @@ func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 		t.Fatal("expected at least one named missing disc")
 	}
 	t.Logf("missing disc error: %v", missing)
+}
+
+// TestRestoreMultiUnnamedMissingListsDiscsTableCandidate covers the case
+// where the missing object is not named by any provided disc's Prereqs
+// row, because no provided disc's snapshot ever referenced it. The only
+// clue left is the DISCS table: disc 2 lists disc 1, even though disc
+// 2's own INDEX never mentions disc 1's objects. Restoring from disc 2
+// alone must still name disc 1 as a candidate.
+func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two unrelated commits into the same staging store: disc 1's
+	// snapshot and disc 2's snapshot share no objects.
+	firstSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(firstSrc, "a.bin"), bytes.Repeat([]byte{1}, 500_000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w1 := object.NewWriter(stagingDir)
+	w1.Now = multiFixedClock
+	snap1, _, err := w1.Commit(firstSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs1, err := image.CollectReachable(stagingDir, []object.ID{snap1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range objs1 {
+		if err := l.EnsureStaged(o.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disc1Dir := t.TempDir()
+	disc1Sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
+	if _, err := image.Pack(image.PackOptions{
+		StagingDir:              stagingDir,
+		Snapshots:               []image.SnapshotRef{{Name: "ONE", ID: snap1, Time: multiFixedClock()}},
+		TargetCapacitySectors:   disc1Sectors,
+		PhysicalCapacitySectors: disc1Sectors,
+		OutputDir:               disc1Dir,
+		RepoUUID:                [16]byte{9, 9, 9},
+		DiscUUID:                [16]byte{1},
+		Label:                   "disc-one",
+		FECEnabled:              true,
+		Now:                     multiFixedClock,
+		StageLog:                l,
+	}); err != nil {
+		t.Fatalf("pack disc 1: %v", err)
+	}
+
+	secondSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secondSrc, "b.bin"), bytes.Repeat([]byte{2}, 500_000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w2 := object.NewWriter(stagingDir)
+	w2.Now = multiFixedClock
+	snap2, _, err := w2.Commit(secondSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs2, err := image.CollectReachable(stagingDir, []object.ID{snap2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range objs2 {
+		if err := l.EnsureStaged(o.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	disc2Dir := t.TempDir()
+	disc2Sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
+	if _, err := image.Pack(image.PackOptions{
+		StagingDir:              stagingDir,
+		Snapshots:               []image.SnapshotRef{{Name: "TWO", ID: snap2, Time: multiFixedClock()}},
+		TargetCapacitySectors:   disc2Sectors,
+		PhysicalCapacitySectors: disc2Sectors,
+		OutputDir:               disc2Dir,
+		RepoUUID:                [16]byte{9, 9, 9},
+		DiscUUID:                [16]byte{2},
+		Label:                   "disc-two",
+		FECEnabled:              true,
+		Now:                     multiFixedClock,
+		StageLog:                l,
+	}); err != nil {
+		t.Fatalf("pack disc 2: %v", err)
+	}
+
+	// Restore snap1 (disc 1's snapshot) from disc 2 alone. Disc 2's
+	// INDEX and Prereqs never reference snap1's objects, so the only
+	// way to name disc 1 is disc 2's DISCS table.
+	outDir := t.TempDir()
+	err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
+	if err == nil {
+		t.Fatal("expected a missing-disc error")
+	}
+	missing, ok := err.(*MissingDiscError)
+	if !ok {
+		t.Fatalf("expected *MissingDiscError, got %T: %v", err, err)
+	}
+	if len(missing.ByDisc) != 0 {
+		t.Fatalf("expected no Prereqs-named disc, got ByDisc=%v", missing.ByDisc)
+	}
+	if missing.UnnamedCount == 0 {
+		t.Fatal("expected a nonzero UnnamedCount")
+	}
+	found := false
+	for _, c := range missing.Candidates {
+		if c.UUID == ([16]byte{1}) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected disc 1's uuid among candidates, got %v", missing.Candidates)
+	}
+	if !strings.Contains(missing.Error(), uuidText([16]byte{1})) {
+		t.Fatalf("expected the error text to name disc 1, got %q", missing.Error())
+	}
 }
