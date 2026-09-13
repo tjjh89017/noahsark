@@ -476,3 +476,21 @@ uuid and every object needed from it. `cmd/noahsark`'s `restore` keeps
 its single positional `DISC-ROOT` form; a multi-disc restore instead
 repeats `--disc`, or names `--discs-dir`, a directory whose immediate
 subdirectories are disc roots.
+
+## 10. Forward error correction
+
+`internal/fec.Codec` encodes and decodes with the
+`github.com/klauspost/reedsolomon` backend, built with
+`reedsolomon.WithCauchyMatrix()` for the configured k and m. That option
+is required and must never change: klauspost's default matrix (a
+Vandermonde matrix) does not match the Cauchy matrix FORMAT.md's rule
+defines, so switching away from `WithCauchyMatrix()` would silently
+change every disc's parity bytes. Before adopting the library, a
+cross-check confirmed the backend produces byte-identical parity to a
+pure Go implementation of FORMAT.md's GF(2^8) arithmetic for k=231,
+m=23 over several hundred random stripes, and recovers identically for
+random erasure sets up to m=23; measured on the development machine,
+the backend ran at 792 MB/s (SSSE3) against the pure Go arithmetic's
+11.7 MB/s. `docs/fec-reference.md` writes up that arithmetic by hand,
+so an implementer who does not want the library can still reproduce
+the parity bytes.
