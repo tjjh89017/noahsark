@@ -214,3 +214,87 @@ from-scratch Go UDF writer was not attempted, since `udftools`'s own
 `mkudffs` plus a root-only mount-and-copy step, run in CI where `sudo` is
 available, is the simplest path that reaches conforming UDF bytes with no
 new binary format code to maintain.
+
+## 16. CLI reference
+
+`cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
+`pack`, `image build`, `verify` and `restore`. Every command below keeps
+OPERATIONS.md's name; a flag is reduced or renamed only when the Go
+packages this build calls have no way to honour it yet, since no state
+log, ref log, catalog, cache, locality planner or burn plan exists in
+this build.
+
+`init` accepts only `--repo` and `--capacity`. `--hash`, `--chunker`,
+`--fs-profile` and `--preset` choose among alternatives the fixed
+decisions already collapse to one value; `--repo-uuid`,
+`--next-run-seq`, `--next-disc-seq` and `--scan-discs` recover sequence
+numbers from existing discs, which no multi-disc state exists yet to
+scan. `init` writes a flat `key = value` config file, the simplest
+format the standard library parses without a third-party dependency,
+holding only `repo.uuid`, `staging.dir` and `disc.force_capacity`
+(section 17.1, 17.5 and 17.12): every other Phase 1 key needs behaviour
+(hash choice, chunker profile, excludes, locality, metadata policy)
+this build does not implement, so the config loader refuses any other
+key by name rather than accept and ignore it.
+
+`commit` accepts a source path and `--ref`. `--from` and `--copy-first`
+are Phase 2 and refused by name; `--out` and `--catalog` are Backlog and
+refused by name. `-m`, `--checksum`/`--full-scan`, `--force`,
+`--source`, `--source-root`, `--exclude`, `--one-file-system`,
+`--source-type` and `--retry-unstable` are Phase 1 but need the quick
+check, metadata TLVs, or exclude rules `internal/object`'s `Writer`
+does not implement (see the "6.14 Snapshot" entry above); they are not
+defined, so passing one is a plain usage error naming the flag. Commit
+records the new snapshot under the given ref (default `LATEST`) in a
+flat local ref file, `<repo>/refs.txt`, standing in for the local ref
+log of section 2.1 and 5.1, since no ref history or state log exists in
+this build.
+
+`pack` cannot select objects by `disc.min_fill` or `disc.max_wait`,
+because no staging state log exists to age objects in. It instead takes
+the snapshot(s) to place explicitly, by `--ref` (default `LATEST`,
+resolved through the local ref file) or repeated `--snapshot`.
+`--capacity` accepts a bare integer as a sector count, or an integer
+suffixed `GiB`/`MiB`/`KiB` (binary) or `GB`/`MB`/`KB` (decimal, the
+marketing convention optical media capacities like "25GB" are named
+in), converted to whole sectors at FORMAT.md's 2048-byte sector size,
+rounding up; it falls back to the config's `disc.force_capacity` and
+refuses to run with neither set, per the fixed decision that every pack
+takes a capacity. `--disc` is refused by name: it means continuing an
+existing disc, Phase 2 append, which `internal/image`'s `Build` does
+not support. `--reserve`, `--extra-reserve`, `--preset`, `--now`,
+`--close` and `--dry-run` are not defined, since `Build` has no such
+options.
+
+`image build` takes the packed tree directory directly, in place of
+OPERATIONS.md's `--run=SEQ`, because no run-sequence state exists to
+resolve a run number against; the tree directory is what `pack --out`
+already printed. `--capacity` is required for the same reason `pack`
+requires it: `MakeImage` needs an explicit sector length, and there is
+no stored run capacity to default to.
+
+`verify --image=PATH` repurposes `--image` to mean a mounted disc path
+or an unpacked NOAHSARK tree, the root `internal/image`'s `Read` and
+`internal/restore`'s `Heal` already accept, rather than a raw image
+file plus `--mapfile`: mounting an image file needs root, which this
+build never assumes outside CI. `--level`, `--drive`, `--report`,
+`--disc` and `--run` are not defined, since no drive or repository
+state exists for them to select among.
+
+`restore` takes `DISC-ROOT SNAPSHOT OUT-DIR` positionally, in place of
+OPERATIONS.md's `restore SNAPSHOT TARGET`, because resolving `SNAPSHOT`
+through a repository's catalog and cache needs both, and neither exists
+in this build; the caller instead names the disc root directly, the
+same root `internal/restore`'s `Restore` already takes. `--no-xattr`
+and `--no-acl` are Phase 2 and refused by name; `--translate-acl` is
+Phase 2 and refused by name. Every other restore flag
+(`--plan`, `--include`, `--drives`, `--staging-budget`, `--interactive`,
+`--no-eject`, `--overwrite`, `--no-owner`, `--numeric-owner`,
+`--no-flags`, `--no-times`, `--no-hardlinks`, `--metadata-strict`,
+`--report`, `--report-replay`, `--strict-unstable`) is Phase 1 but not
+defined, since `Restore` takes no such option today.
+
+None of these reductions change any byte a conforming writer puts on a
+disc or a conforming reader accepts; they change only which command-line
+surface reaches the same Go calls the rest of this implementation
+already exposes.
