@@ -299,15 +299,17 @@ files of a run, not the catalog tables' own kinds, which section 2.2's
 
 **Media type registry.**
 
-| Id | Name | Sectors | Bytes | Status |
-|---:|---|---:|---:|---|
-| 1 | `BD-R SL 25` | 12,219,392 | 25,025,314,816 | **Default. Phase 1.** |
-| 2-255 | reserved | | | |
+| Id | Name | Status |
+|---:|---|---|
+| 1 | `BD-R SL 25 GB` | **Default. Phase 1.** |
+| 2 | `BD-R DL 50 GB` | Phase 1. |
+| 3 | `BD-R XL 100 GB` | Phase 1. |
+| 4 | `BD-R XL 128 GB` | Phase 1. |
+| 5-255 | reserved | |
 
-The `Sectors` column states the medium's own physical unit, a fact of the
-media, not a NoahsArk on-disc address. The tool must take the true capacity
-from `growisofs -F`. The tool must not use a hardcoded number for a burn. The
-field is for planning and for labels.
+`media_type` is informational. A reader never rejects a value it does not
+know, and no rule depends on it. Capacity comes from `capacity_sectors` and
+`capacity_forced_sectors`.
 
 **FEC scheme registry.**
 
@@ -1417,7 +1419,7 @@ Fixed body, after the 32-byte common header (`magic_kind` `DISC`):
 | 120 | 8 | i64 | `created_sec` | Pack time of the first run, seconds: the moment `pack` finalized that run's image. Not the burn time, which is unknown when these bytes are hashed (section 7.6). |
 | 128 | 4 | u32 | `created_nsec` | Nanoseconds. |
 | 132 | 4 | i32 | `tz_offset_sec` | Local zone offset at that pack time. |
-| 136 | 1 | u8 | `media_type` | Media type registry. |
+| 136 | 1 | u8 | `media_type` | Media type registry. Informational only; never gates reading. |
 | 137 | 1 | u8 | `fs_profile` | Disc filesystem profile registry. |
 | 138 | 1 | u8 | `fanout_levels` | 1 by default. 2 is allowed under profile 1 and profile 0 only. |
 | 139 | 1 | u8 | `capacity_is_forced` | 1 when `capacity_forced_sectors` is below `capacity_sectors`. |
@@ -1642,6 +1644,9 @@ the reported capacity. It applies from the first write of the disc and must
 not change afterwards. `capacity_is_forced` is 1 when
 `capacity_forced_sectors` is below `capacity_sectors`, and DISCS sets
 `state_flags` bit 3.
+
+A writer sets `capacity_forced_sectors` to the limit the run was packed for,
+and a burner refuses a disc whose physical capacity is below that limit.
 
 ### 7.14 How a lifecycle state is recorded
 
@@ -2826,7 +2831,7 @@ The golden vectors cover them.
 | Run header | Stated geometry and counts |
 | INDEX | Ten stated Files rows, ten stated Objects rows, and two stated Prereqs rows across one source run |
 | README.txt | The identity values of the disc superblock vector |
-| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 21,469 bytes long in 526 lines; a writer that produces a different length for minor 0 has a defect. |
+| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 21,718 bytes long in 533 lines; a writer that produces a different length for minor 0 has a defect. |
 | Burn step tree listing | A stated tree of five files, one in a subdirectory |
 | REFS and DISCS | Two stated rows of each table |
 | Checksum block | The 231 stated data blocks of one stripe |
@@ -2957,9 +2962,16 @@ Id	Name	Filesystem	Append mechanism	Status
 Media type registry
 -------------------
 
-Id	Name	Sectors	Bytes	Status
-1	BD-R SL 25	12,219,392	25,025,314,816	Default. Phase 1.
-2-255	reserved	-	-	-
+Id	Name	Status
+1	BD-R SL 25 GB	Default. Phase 1.
+2	BD-R DL 50 GB	Phase 1.
+3	BD-R XL 100 GB	Phase 1.
+4	BD-R XL 128 GB	Phase 1.
+5-255	reserved	-
+
+media_type is informational. A reader never rejects a value it does not know,
+and no rule depends on it. Capacity comes from capacity_sectors and
+capacity_forced_sectors.
 
 Source type registry
 --------------------
@@ -3163,7 +3175,7 @@ offset	size	type	name	meaning
 120	8	i64	created_sec	Pack time of the first run, seconds.
 128	4	u32	created_nsec	Nanoseconds.
 132	4	i32	tz_offset_sec	Local zone offset at that pack time.
-136	1	u8	media_type	Media type registry.
+136	1	u8	media_type	Media type registry. Informational only; never gates reading.
 137	1	u8	fs_profile	Disc filesystem profile registry.
 138	1	u8	fanout_levels	1 by default. 2 is allowed under profile 1 and profile 0 only.
 139	1	u8	capacity_is_forced	1 when capacity_forced_sectors is below capacity_sectors.

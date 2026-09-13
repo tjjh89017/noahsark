@@ -37,14 +37,16 @@ Use this table to find a topic, by document and heading, not by number
 | Hashing, multihash, and hash epochs | FORMAT.md | "3. Identity and hashing" |
 | Chunking algorithm and profiles | FORMAT.md | "4. Chunking" |
 | Compression rules | FORMAT.md | "5. Compression" |
-| Chunk, bundle, chunklist, tree, snapshot, ref | FORMAT.md | "6. Objects" |
+| Chunk, blob, tree, snapshot, ref | FORMAT.md | "6. Objects" |
 | Disc, run, and append behaviour (on-disc) | FORMAT.md | "7. Disc and run model" |
 | Disc, run, and append behaviour (host-side) | OPERATIONS.md | "12. Disc lifecycle, closing and appending" |
+| Recovery by carving | FORMAT.md | "7.10 Recovery by carving" |
 | Disc filesystem profiles (on-disc layout) | FORMAT.md | "8. Filesystem profiles and the volume tree" |
+| The reference decoder | FORMAT.md | "8.6 Reference decoder" |
 | Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burn plan and burning" |
 | Reed-Solomon parity (on-disc layout) | FORMAT.md | "10. Forward error correction" |
 | Self-healing, scrub, and verify (host-side) | OPERATIONS.md | "13. Verify, scrub and heal" |
-| Filters, manifests, and the catalog | FORMAT.md | "11. Filters, manifests and the catalog" |
+| The run index and the catalog | FORMAT.md | "11. The run index and the catalog" |
 | Local cache | OPERATIONS.md | "2.4 Local cache layout" |
 | Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
 | Packing and locality | OPERATIONS.md | "8. Packing and locality" |
@@ -60,7 +62,7 @@ Use this table to find a topic, by document and heading, not by number
 | What changed from the old design | NOTES.md | "2.19 Design changes from the superseded design" |
 | Term definitions | NOTES.md | "8. Glossary" |
 | The Gear table generation rule | FORMAT.md | "4.8 Gear table" |
-| Magic numbers and registries | FORMAT.md | "2.2 Magic values" and "2.6 Registries" |
+| Magic numbers and registries | FORMAT.md | "2.2 Magic values" and "2.5 Registries" |
 | Burning-host command reference | OPERATIONS.md | "24. Burning-host command reference" |
 | Rejected designs and why | NOTES.md | "2.18 Rejected and superseded alternatives" |
 
@@ -145,19 +147,15 @@ starts. Confirm it with the user before creating it, and adjust as the design
 needs.
 
 ```
-cmd/noahsark        CLI entry point
-internal/format     binary structures: encode, decode, golden tests
-internal/chunker     FastCDC chunking, Gear table, profiles
-internal/object      chunk, bundle, chunklist, tree, snapshot, ref
-internal/staging     staging store, state machine, GC
-internal/pack        packing, locality, burn plan
-internal/fec         Reed-Solomon parity, heal, scrub
-internal/catalog     filters, manifests, snapshot table, ref table
-internal/restore     restore planner, restore pipeline
-internal/burn        burner wrapper, command templates
-internal/udf         disc filesystem profile handling
-.github/actions      composite test action, probe actions
-.github/workflows    CI workflow definitions
+cmd/noahsark          CLI
+internal/format       structures, encode, decode, golden tests, carving reader
+internal/chunker      Gear table, FastCDC
+internal/object       chunk, blob, tree, snapshot writers over a source tree
+internal/fec          GF(2^8), Reed-Solomon, checksum column, stream mapping
+internal/image        lay out one run, INDEX, RUN, DISC, REFS, DISCS, parity; mkudffs image build
+internal/restore      walk a snapshot from a mounted image, write files
+reference/decoder.py  the on-disc reference decoder
+.github/actions       composite test action, probe actions
 ```
 
 ## How to work on this repo
