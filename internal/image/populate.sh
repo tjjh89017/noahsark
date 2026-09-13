@@ -18,6 +18,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mount -o loop -t udf "$IMAGE" "$MNT"
+# noadinicb stops the kernel udf driver from embedding a small file's data
+# inside its File Entry block, so every file keeps its own sector-aligned
+# data extent, matching the sector-boundary rule every file the format
+# writes must follow.
+mount -o loop,noadinicb -t udf "$IMAGE" "$MNT"
 cp -a "$TREE_DIR"/NOAHSARK "$MNT"/
 sync
