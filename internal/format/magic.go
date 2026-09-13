@@ -108,5 +108,10 @@ const (
 // FECScheme is the FEC scheme registry.
 type FECScheme uint8
 
-// FECSchemeRS255GF8 is the default and only Phase 1 scheme.
+// FECSchemeNone is the default Phase 1 scheme: no checksum column and no
+// parity. Burning two identical discs is the primary redundancy; FEC is
+// a reserve feature a run opts into.
+const FECSchemeNone FECScheme = 0
+
+// FECSchemeRS255GF8 is the Reed-Solomon scheme, opt-in.
 const FECSchemeRS255GF8 FECScheme = 1
