@@ -31,7 +31,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	rest := args[1:]
 
 	if phase, ok := laterPhaseCommands[cmd]; ok {
-		fmt.Fprintf(stderr, "noahsark: %s is a %s command; not available in Phase 1\n", cmd, phase)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s is a %s command; not available in Phase 1\n", cmd, phase)
 		return 2
 	}
 
@@ -49,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "restore":
 		return cmdRestore(rest, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "noahsark: unknown command %q\n", cmd)
+		_, _ = fmt.Fprintf(stderr, "noahsark: unknown command %q\n", cmd)
 		printUsage(stderr)
 		return 2
 	}
@@ -95,7 +95,7 @@ func refuseLaterPhaseFlags(cmd string, args []string, stderr io.Writer) bool {
 			name = a[:i]
 		}
 		if phase, ok := table[name]; ok {
-			fmt.Fprintf(stderr, "noahsark: %s: %s is a %s option; not available in Phase 1\n", cmd, name, phase)
+			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is a %s option; not available in Phase 1\n", cmd, name, phase)
 			return true
 		}
 	}
