@@ -84,7 +84,7 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer checksumFile.Close()
+	defer func() { _ = checksumFile.Close() }()
 
 	parityFiles := make([]*os.File, fec.M)
 	for j := 0; j < fec.M; j++ {
@@ -311,7 +311,7 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -319,7 +319,9 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	defer func() { _ = out.Close() }()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }

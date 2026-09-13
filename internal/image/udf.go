@@ -79,7 +79,7 @@ func MakeImage(dir, imagePath string, sectors uint64) error {
 		return err
 	}
 	if err := f.Truncate(int64(size)); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {

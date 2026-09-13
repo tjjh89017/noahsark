@@ -190,7 +190,7 @@ func (w *Writer) commitFile(path string, sum *Summary) (ID, int64, error) {
 	if err != nil {
 		return ID{}, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	ck := chunker.New(f, w.Profile)
 	var entries []format.BlobEntry
@@ -421,16 +421,16 @@ func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return false, err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return false, err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return false, err
 	}
 	return true, nil
