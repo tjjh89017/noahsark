@@ -103,19 +103,19 @@ func Build(opts BuildOptions) (*Result, error) {
 	for i, s := range opts.Snapshots {
 		snapIDs[i] = s.ID
 	}
-	reachable, err := collectReachable(opts.StagingDir, snapIDs)
+	reachable, err := CollectReachable(opts.StagingDir, snapIDs)
 	if err != nil {
 		return nil, err
 	}
 	// Sort object rows by their whole-file hash, the order INDEX's Files
 	// table gives for role 13 rows.
 	type hashedObject struct {
-		reachableObject
+		ReachableObject
 		hash [32]byte
 	}
 	hashed := make([]hashedObject, len(reachable))
 	for i, r := range reachable {
-		hashed[i] = hashedObject{reachableObject: r, hash: sha256.Sum256(r.Bytes)}
+		hashed[i] = hashedObject{ReachableObject: r, hash: sha256.Sum256(r.Bytes)}
 	}
 	sort.Slice(hashed, func(i, j int) bool {
 		return lessBytes(hashed[i].hash[:], hashed[j].hash[:])
@@ -134,7 +134,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		}
 	}
 
-	discBuf, discHash, err := buildDisc(opts, packTime)
+	discBuf, discHash, err := buildDisc(opts, packTime, buildDiscSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	discsBuf, discsHash, err := buildDiscs(opts, packTime)
+	discsBuf, discsHash, err := buildDiscs(opts, packTime, buildRunSeq, buildDiscSeq, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +281,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
 
-	runBuf, err := buildRun(opts, packTime, indexBuf, indexHash, streamBytesTotal, uint64(objectCount))
+	runBuf, err := buildRun(opts, packTime, indexBuf, indexHash, streamBytesTotal, uint64(objectCount), buildRunSeq, buildDiscSeq)
 	if err != nil {
 		return nil, err
 	}

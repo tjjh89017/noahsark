@@ -9,9 +9,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// reachableObject is one object a run must store: its id, its kind, and
+// ReachableObject is one object a run must store: its id, its kind, and
 // the whole encoded file bytes as staged.
-type reachableObject struct {
+type ReachableObject struct {
 	ID    object.ID
 	Kind  format.ObjectKind
 	Bytes []byte
@@ -30,20 +30,20 @@ func readObjectFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// collectReachable walks every snapshot in snapshotIDs from stagingDir and
+// CollectReachable walks every snapshot in snapshotIDs from stagingDir and
 // returns the full set of objects a run over exactly those snapshots must
 // store: the snapshot objects themselves, and every tree, blob and chunk
 // object reachable from their root trees. Objects are deduplicated by id.
-func collectReachable(stagingDir string, snapshotIDs []object.ID) ([]reachableObject, error) {
+func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableObject, error) {
 	seen := make(map[object.ID]bool)
-	var out []reachableObject
+	var out []ReachableObject
 
 	add := func(id object.ID, kind format.ObjectKind, data []byte) {
 		if seen[id] {
 			return
 		}
 		seen[id] = true
-		out = append(out, reachableObject{ID: id, Kind: kind, Bytes: data})
+		out = append(out, ReachableObject{ID: id, Kind: kind, Bytes: data})
 	}
 
 	objectsRoot := filepath.Join(stagingDir, "objects")
