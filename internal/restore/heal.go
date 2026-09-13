@@ -76,7 +76,7 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("restore: heal: %s: %w", p, err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		streamFiles[i] = f
 	}
 
@@ -87,13 +87,13 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 	defer func() { _ = checksumFile.Close() }()
 
 	parityFiles := make([]*os.File, fec.M)
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		p := filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
 		f, err := os.OpenFile(p, os.O_RDWR, 0)
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		parityFiles[j] = f
 	}
 
@@ -103,7 +103,7 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 	}
 
 	var reports []StripeReport
-	for stripe := uint64(0); stripe < L; stripe++ {
+	for stripe := range L {
 		rep, err := healStripe(streamFiles, sizes, layout, checksumFile, parityFiles, codec, stripe, L)
 		if err != nil {
 			return reports, err
@@ -132,7 +132,7 @@ func healStripe(
 	}
 
 	dataBlocks := make([][]byte, fec.K)
-	for c := 0; c < fec.K; c++ {
+	for c := range fec.K {
 		b, err := readStreamBlock(streamFiles, sizes, layout, uint64(c)*L+stripe)
 		if err != nil {
 			return nil, fmt.Errorf("restore: heal: stripe %d: data column %d: %w", stripe, c, err)
@@ -140,7 +140,7 @@ func healStripe(
 		dataBlocks[c] = b
 	}
 	parityBlocks := make([][]byte, fec.M)
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		buf := make([]byte, fec.BlockSize)
 		if _, err := parityFiles[j].ReadAt(buf, int64(1+stripe)*fec.BlockSize); err != nil {
 			return nil, fmt.Errorf("restore: heal: stripe %d: parity column %d: %w", stripe, j, err)
@@ -162,12 +162,12 @@ func healStripe(
 
 	attempt := func(excludeParity int) (data, parity [][]byte, ok bool) {
 		shards := make(map[int][]byte, fec.K+fec.M)
-		for c := 0; c < fec.K; c++ {
+		for c := range fec.K {
 			if !inBad[c] {
 				shards[c] = dataBlocks[c]
 			}
 		}
-		for j := 0; j < fec.M; j++ {
+		for j := range fec.M {
 			if j == excludeParity {
 				continue
 			}
@@ -204,7 +204,7 @@ func healStripe(
 		}
 		report.DataColumns = append(report.DataColumns, c)
 	}
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		if bytes.Equal(parityBlocks[j], recParity[j]) {
 			continue
 		}

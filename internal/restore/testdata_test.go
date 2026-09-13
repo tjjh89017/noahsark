@@ -102,25 +102,11 @@ func streamLayout(t *testing.T, treeDir string) (paths []string, sizes []uint64,
 	return paths, sizes, layout
 }
 
-// corruptDataBlock flips one byte of the FEC stream's data block at
-// (column, stripe), by writing directly into the underlying file layout
-// maps it to. It fails the test if that block falls in a file's virtual
-// zero padding, since there is nothing real there to corrupt.
-//
-// It resolves the stream layout itself, from treeDir's current INDEX.bin
-// and RUN.bin, so a caller corrupting several blocks in a row must make
-// sure none of the earlier corruption touched INDEX.bin or RUN.bin
-// itself; use corruptDataBlockAt with a layout resolved once up front to
-// avoid that.
-func corruptDataBlock(t *testing.T, treeDir string, column, stripe uint64) {
-	t.Helper()
-	paths, sizes, layout := streamLayout(t, treeDir)
-	corruptDataBlockAt(t, paths, sizes, layout, column, stripe)
-}
-
-// corruptDataBlockAt is corruptDataBlock against an already-resolved
-// stream layout, so repeated corruption does not re-decode a possibly
-// already-corrupted INDEX.bin.
+// corruptDataBlockAt flips one byte of the FEC stream's data block at
+// (column, stripe), by writing directly into the underlying file the
+// given, already-resolved stream layout maps it to. It fails the test
+// if that block falls in a file's virtual zero padding, since there is
+// nothing real there to corrupt.
 func corruptDataBlockAt(t *testing.T, paths []string, sizes []uint64, layout *fec.StreamLayout, column, stripe uint64) {
 	t.Helper()
 	block := column*layout.StripeCount() + stripe
@@ -161,7 +147,7 @@ func flipByte(t *testing.T, path string, off int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var b [1]byte
 	if _, err := f.ReadAt(b[:], off); err != nil {
 		t.Fatal(err)

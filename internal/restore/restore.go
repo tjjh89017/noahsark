@@ -173,7 +173,7 @@ func restoreFile(base, dest string, blobID object.ID) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	for _, be := range entries {
 		_, payload, err := readVerified(base, object.ID(be.ContentID), false)
