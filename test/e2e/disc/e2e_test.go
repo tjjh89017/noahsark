@@ -28,9 +28,10 @@ var scenarios = map[string]bool{
 	"corrupt-max":    true,
 	"corrupt-over":   true,
 	"cli":            true,
+	"chain":          true,
 }
 
-func requireHarness(t *testing.T) (scenario, media string) {
+func requireHarness(t *testing.T) (scenario, media, order string) {
 	t.Helper()
 	if os.Getenv("NOAHSARK_E2E") != "1" {
 		t.Skip("set NOAHSARK_E2E=1 to run the disc e2e suite")
@@ -40,6 +41,7 @@ func requireHarness(t *testing.T) (scenario, media string) {
 	}
 	scenario = os.Getenv("NOAHSARK_E2E_SCENARIO")
 	media = os.Getenv("NOAHSARK_E2E_MEDIA")
+	order = os.Getenv("NOAHSARK_E2E_ORDER")
 	if scenario == "" {
 		t.Fatal("NOAHSARK_E2E_SCENARIO is required when NOAHSARK_E2E=1")
 	}
@@ -49,6 +51,9 @@ func requireHarness(t *testing.T) (scenario, media string) {
 	if scenario == "media" && media == "" {
 		t.Fatal("NOAHSARK_E2E_MEDIA is required for the media scenario")
 	}
+	if scenario == "chain" && order == "" {
+		t.Fatal("NOAHSARK_E2E_ORDER is required for the chain scenario")
+	}
 	if os.Geteuid() != 0 {
 		t.Skip("requires root (loop mount)")
 	}
@@ -57,20 +62,40 @@ func requireHarness(t *testing.T) (scenario, media string) {
 			t.Skipf("%s not in PATH", bin)
 		}
 	}
-	return scenario, media
+	return scenario, media, order
 }
 
 // TestDisc runs the scenario named by NOAHSARK_E2E_SCENARIO (and, for
-// the media scenario, the media preset named by NOAHSARK_E2E_MEDIA)
+// the media scenario, the media preset named by NOAHSARK_E2E_MEDIA, or
+// for the chain scenario, the disc order named by NOAHSARK_E2E_ORDER)
 // through run.sh. run.sh carries the scenario logic; this test is the
 // harness's skip guard and its entry point from `go test`.
 func TestDisc(t *testing.T) {
-	scenario, media := requireHarness(t)
+	scenario, media, order := requireHarness(t)
 
-	cmd := exec.Command("bash", "./run.sh", scenario, media)
+	cmd := exec.Command("bash", "./run.sh", scenario, media, order)
 	out, err := cmd.CombinedOutput()
-	t.Logf("run.sh %s %s:\n%s", scenario, media, out)
+	t.Logf("run.sh %s %s %s:\n%s", scenario, media, order, out)
 	if err != nil {
-		t.Fatalf("scenario %s (media %q) failed: %v", scenario, media, err)
+		t.Fatalf("scenario %s (media %q, order %q) failed: %v", scenario, media, order, err)
+	}
+}
+
+// TestChainSmall runs the chain scenario at a small, fast fixture size,
+// with tiny forced capacities in place of the real media presets, so
+// the chain flow gets exercised on every push without an hours-long
+// full-size run. It rides in the cli cell instead of its own matrix
+// entry: it only runs when that cell's NOAHSARK_E2E_SCENARIO is "cli".
+func TestChainSmall(t *testing.T) {
+	scenario, _, _ := requireHarness(t)
+	if scenario != "cli" {
+		t.Skip("chain-small rides in the cli e2e cell")
+	}
+
+	cmd := exec.Command("bash", "./run.sh", "chain-small", "", "dvd-bd25-bd10")
+	out, err := cmd.CombinedOutput()
+	t.Logf("run.sh chain-small:\n%s", out)
+	if err != nil {
+		t.Fatalf("chain-small failed: %v", err)
 	}
 }

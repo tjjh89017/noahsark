@@ -4,17 +4,21 @@
 # (loop mount) and udftools (mkudffs). See lib.sh for the shared setup
 # and assert.sh for the shared assertions.
 #
-# Usage: run.sh SCENARIO [MEDIA]
+# Usage: run.sh SCENARIO [MEDIA] [ORDER]
 #   SCENARIO  media | corrupt-heal | corrupt-parity | corrupt-max |
-#             corrupt-over | cli
+#             corrupt-over | cli | chain | chain-small
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
 #             fixture at dvd+r's real sector counts
+#   ORDER     dvd-bd25-bd10 | bd25-bd10-dvd; required for chain and
+#             chain-small, unused by every other scenario
 set -euo pipefail
 
 HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 # shellcheck source=test/e2e/disc/lib.sh
 . "$HERE/lib.sh"
+# shellcheck source=test/e2e/disc/chain.sh
+. "$HERE/chain.sh"
 
 # FIXED_MEDIA is the media preset every scenario but media builds its
 # fixture at: real, but small enough that fixture size never depends on
@@ -271,8 +275,9 @@ scenario_media() {
 }
 
 main() {
-	local scenario="${1:?usage: run.sh SCENARIO [MEDIA]}"
+	local scenario="${1:?usage: run.sh SCENARIO [MEDIA] [ORDER]}"
 	local media="${2:-}"
+	local order="${3:-}"
 	case "$scenario" in
 	media)
 		[ -n "$media" ] || fail "the media scenario needs a MEDIA argument"
@@ -283,6 +288,14 @@ main() {
 	corrupt-max) scenario_corrupt_max ;;
 	corrupt-over) scenario_corrupt_over ;;
 	cli) scenario_cli ;;
+	chain)
+		[ -n "$order" ] || fail "the chain scenario needs an ORDER argument"
+		scenario_chain "$order"
+		;;
+	chain-small)
+		[ -n "$order" ] || fail "the chain-small scenario needs an ORDER argument"
+		scenario_chain_small "$order"
+		;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac
 }
