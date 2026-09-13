@@ -1,0 +1,132 @@
+package restore
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/object"
+)
+
+// Source resolves tree and snapshot objects across the disc roots it was
+// given, the same way RestoreMulti locates the objects a restore needs.
+// It never writes anything; ls and log use it as a read-only view over
+// one or more mounted disc roots.
+type Source struct {
+	src *multiSource
+}
+
+// OpenSource resolves every disc root in discRoots, the same way
+// RestoreMulti does: it reads each root's DISC.bin, INDEX.bin and
+// DISCS.bin, so a later miss can name the disc a needed object lives on.
+func OpenSource(discRoots []string) (*Source, error) {
+	src, err := newMultiSource(discRoots)
+	if err != nil {
+		return nil, err
+	}
+	return &Source{src: src}, nil
+}
+
+// Tree reads and decodes the tree object id, trying every provided disc
+// root in turn. A tree that lives only on a disc not provided is
+// reported as a *MissingDiscError, the same one Restore would report.
+func (s *Source) Tree(id object.ID) (*format.Tree, error) {
+	raw, _, ok := s.src.read(id, false)
+	if !ok {
+		return nil, s.src.finalError()
+	}
+	var t format.Tree
+	if _, err := t.Decode(raw); err != nil {
+		return nil, fmt.Errorf("tree %s: %w", id.TextForm(), err)
+	}
+	return &t, nil
+}
+
+// Snapshot reads and decodes the snapshot object id, the same way Tree
+// resolves a tree object.
+func (s *Source) Snapshot(id object.ID) (*format.Snapshot, error) {
+	raw, _, ok := s.src.read(id, true)
+	if !ok {
+		return nil, s.src.finalError()
+	}
+	var snap format.Snapshot
+	if _, err := snap.Decode(raw); err != nil {
+		return nil, fmt.Errorf("snapshot %s: %w", id.TextForm(), err)
+	}
+	return &snap, nil
+}
+
+// Refs reads REFS, the repository-wide table of named pointers to
+// snapshots. REFS is replicated in full on every run, so the first
+// provided disc's copy already names every ref every provided disc
+// knows.
+func (s *Source) Refs() (*format.RefsTable, error) {
+	b := s.src.bases[0]
+	catalogDir := s.src.names.Join(b.runDir, "catalog")
+	buf, err := os.ReadFile(filepath.Join(catalogDir, s.src.names.Resolve(catalogDir, "REFS.bin")))
+	if err != nil {
+		return nil, fmt.Errorf("restore: %s: %w", catalogDir, err)
+	}
+	var refs format.RefsTable
+	if _, err := refs.Decode(buf); err != nil {
+		return nil, fmt.Errorf("restore: %s: %w", catalogDir, err)
+	}
+	return &refs, nil
+}
+
+// SnapshotIDs returns the content id of every snapshot object the
+// provided discs know, deduplicated. A snapshot's canonical copy is
+// written only to the disc that packed it, but its catalog/snapobj copy
+// is replicated in full on every run, so scanning every provided disc's
+// catalog/snapobj directory finds every snapshot without needing the
+// disc that packed each one.
+func (s *Source) SnapshotIDs() ([]object.ID, error) {
+	seen := make(map[object.ID]bool)
+	var ids []object.ID
+	for _, b := range s.src.bases {
+		dir := s.src.names.Join(b.runDir, "catalog", "snapobj")
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("restore: %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			id, err := object.ParseID(e.Name())
+			if err != nil {
+				continue
+			}
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
+	return ids, nil
+}
+
+// ParseSnapshotArg resolves arg as a snapshot id: either a multihash text
+// id, or a name found in REFS. A ref that does not resolve, or a
+// malformed id, is reported as an error naming arg.
+func (s *Source) ParseSnapshotArg(arg string) (object.ID, error) {
+	if id, err := object.ParseID(arg); err == nil {
+		return id, nil
+	}
+	refs, err := s.Refs()
+	if err != nil {
+		return object.ID{}, err
+	}
+	for _, r := range refs.Records {
+		if string(r.Name[:r.NameLen]) == arg {
+			return object.ID(r.SnapshotID), nil
+		}
+	}
+	return object.ID{}, fmt.Errorf("%q is neither a snapshot id nor a known ref name", arg)
+}
