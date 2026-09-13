@@ -18,21 +18,25 @@ const (
 	MinUDFToolsMinor = 3
 )
 
-var udfToolsVersionRe = regexp.MustCompile(`(\d+)\.(\d+)`)
+// udfToolsVersionRe matches the "mkudffs from udftools X.Y" banner
+// mkudffs prints to stderr on every invocation, including an invalid one.
+// mkudffs has no --version option, so CheckTools reads this banner
+// instead.
+var udfToolsVersionRe = regexp.MustCompile(`udftools (\d+)\.(\d+)`)
 
-// CheckTools runs mkudffs and parses its reported udftools version. It
-// refuses a version below MinUDFToolsMajor.MinUDFToolsMinor.
+// CheckTools runs mkudffs and parses its reported udftools version from
+// its startup banner. It refuses a version below
+// MinUDFToolsMajor.MinUDFToolsMinor.
 func CheckTools() (string, error) {
-	out, err := exec.Command("mkudffs", "--version").CombinedOutput()
-	if err != nil {
-		// Some udftools builds only print the version banner and exit
-		// nonzero for --version; fall back to that output if present.
-		if len(out) == 0 {
-			return "", fmt.Errorf("image: mkudffs --version: %w", err)
-		}
-	}
+	// mkudffs prints its banner and a usage message, then exits nonzero,
+	// when it is run with no device argument. That is the only reliable
+	// way to read its version: it has no --version option.
+	out, runErr := exec.Command("mkudffs").CombinedOutput()
 	m := udfToolsVersionRe.FindStringSubmatch(string(out))
 	if m == nil {
+		if runErr != nil && len(out) == 0 {
+			return "", fmt.Errorf("image: mkudffs: %w", runErr)
+		}
 		return "", fmt.Errorf("image: could not parse mkudffs version from: %s", strings.TrimSpace(string(out)))
 	}
 	major, _ := strconv.Atoi(m[1])
