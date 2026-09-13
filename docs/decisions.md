@@ -494,3 +494,10 @@ the backend ran at 792 MB/s (SSSE3) against the pure Go arithmetic's
 11.7 MB/s. `docs/fec-reference.md` writes up that arithmetic by hand,
 so an implementer who does not want the library can still reproduce
 the parity bytes.
+
+The pure Go reference implementation was then removed from
+`internal/fec` on the user's decision, now that `docs/fec-reference.md`
+records it and the cross-check has passed. The klauspost/reedsolomon
+library is the sole implementation from here on; the worked example
+from FORMAT.md (k=3, m=2, p0=0xE0, p1=0xAD) stays as a test in
+`internal/fec` to confirm the library still matches the spec.
