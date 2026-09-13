@@ -44,7 +44,7 @@ func dirBytes(t *testing.T, dir string) uint64 {
 // capacity: pack's own budget must hold for the tree it actually
 // writes, not just for the numbers it predicted while selecting.
 func TestPackStaysWithinCapacity(t *testing.T) {
-	capacities := []uint64{2_500_000, 3_500_000, 4_800_000, 8_000_000, 16_000_000}
+	capacities := []uint64{8_000_000, 10_000_000, 14_000_000, 20_000_000, 32_000_000}
 	for _, mb := range capacities {
 		t.Run(fmt.Sprintf("%dbytes", mb), func(t *testing.T) {
 			stagingDir, snapID := packFixture(t)
@@ -63,7 +63,7 @@ func TestPackStaysWithinCapacity(t *testing.T) {
 			}
 
 			treeBytes := dirBytes(t, outDir)
-			overhead := EstimateFilesystemOverhead(res.FileCount)
+			overhead := EstimateFilesystemOverhead(res.FileCount, capSectors)
 			limit := capSectors * SectorSize
 			if treeBytes+overhead > limit {
 				t.Fatalf("tree %d bytes + estimated overhead %d bytes = %d, exceeds capacity %d bytes",
@@ -97,7 +97,7 @@ func TestPackedTreeFitsRealUDFImage(t *testing.T) {
 	}
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
-	capSectors := sectorsFor(4_800_000)
+	capSectors := sectorsFor(14_000_000)
 	outDir := t.TempDir()
 	opts := packOpts(stagingDir, snapID, outDir, capSectors, 1, l)
 	if _, err := Pack(opts); err != nil {

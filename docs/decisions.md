@@ -193,14 +193,37 @@ in either case, only how a reader locates the file a row describes.
 ## 8.1 Profiles a reader must know: filesystem overhead estimate
 
 FORMAT.md gives the `mkudffs` options and the anchor placement rule but no
-numeric UDF overhead budget. `internal/image`'s `CheckCapacity` takes the
-simplest deterministic reading available from the project's own
-measurements: the `probe-udf-small-files` action found small-file overhead
-close to one logical block per file. `EstimateFilesystemOverhead` charges
-one 2048-byte sector per file plus a fixed 1 MiB base cost for the volume
-and partition descriptors, the anchors and the space bitmap. This is an
-estimate used only to refuse an over-target pack before spending time
-building it; it does not change any on-disc byte.
+numeric UDF overhead budget. The first version of this estimate, one
+2048-byte sector per file plus a fixed 1 MiB base cost, proved too
+optimistic: on a real dvd+r image, pack selected a run that left only
+about 140 sectors of unmodelled slack, and populating the built image
+with `cp -a` failed with "No space left on device". A smaller pack on
+the same image, with about 70,000 sectors of slack, populated fine.
+
+`EstimateFilesystemOverhead` now charges four terms, checked against a
+real mkudffs UDF 2.01 image, loop-mounted and measured with `df`:
+
+- A fixed base: the space bitmap (one bit per partition sector, rounded
+  up to whole blocks) plus a flat 4 MiB margin for the partition
+  reservations, the anchors, and allocation descriptors this estimate
+  does not itemise.
+- Two blocks per file: a File Entry plus a share of its parent
+  directory's FID space. A real image measured 4096 bytes (2 blocks)
+  per file once the object fanout directories already exist, rising a
+  little past that as directories grow past their first block; the flat
+  2-block charge plus the margin below covers the difference.
+- Two blocks per directory, bounded by the run tree's own layout: at
+  most one directory per `objects/<ab>` fanout prefix (256 of them)
+  plus the tree's fixed top-level directories, whatever the file count.
+- A proportional margin of 0.1% of capacity, for costs that scale with
+  the volume rather than the file count.
+
+At dvd+r capacity the fixed 4 MiB margin plus the proportional 0.1% term
+alone add up to about 8.5 MiB of slack beyond the itemised bitmap,
+per-file and per-directory costs, guarded by a test so a regression back
+toward a thin margin fails. This is still an estimate used only to
+refuse an over-target pack before spending time building it; it does not
+change any on-disc byte.
 
 ## 8.1 Profiles a reader must know: keeping files out of the ICB
 
