@@ -3,7 +3,12 @@
 // NOAHSARK tree from it, and builds a UDF image from that tree with
 // mkudffs, so an e2e scenario has a real disc image to loop-mount.
 //
-// Usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS] [CONTENT-BYTES]
+// Usage: ci-fixture [-fec] WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS] [CONTENT-BYTES]
+//
+// -fec builds the run with Reed-Solomon FEC (fec_scheme 1). Without it
+// the run carries no FEC (fec_scheme 0), the default. A scenario that
+// corrupts and heals a disc needs -fec; there is nothing to heal
+// otherwise.
 //
 // TARGET-SECTORS and PHYSICAL-SECTORS default to 512 MiB, comfortably
 // above the small fixture tree; a scenario testing one media preset
@@ -23,6 +28,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -39,11 +45,20 @@ func fixedClock() time.Time {
 }
 
 func main() {
-	if len(os.Args) < 2 || len(os.Args) > 5 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS] [CONTENT-BYTES]")
+	fs := flag.NewFlagSet("ci-fixture", flag.ExitOnError)
+	fec := fs.Bool("fec", false, "build the run with Reed-Solomon FEC (fec_scheme 1)")
+	fs.Usage = func() {
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture [-fec] WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS] [CONTENT-BYTES]")
+	}
+	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
-	workDir := os.Args[1]
+	args := fs.Args()
+	if len(args) < 1 || len(args) > 4 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	workDir := args[0]
 	srcDir := filepath.Join(workDir, "src")
 	stagingDir := filepath.Join(workDir, "staging")
 	treeDir := filepath.Join(workDir, "tree")
@@ -51,18 +66,18 @@ func main() {
 
 	const defaultSectors = 1 << 18 // 512 MiB
 	targetSectors := uint64(defaultSectors)
-	if len(os.Args) >= 3 {
-		targetSectors = mustSectors(os.Args[2])
+	if len(args) >= 2 {
+		targetSectors = mustSectors(args[1])
 	}
 	physicalSectors := targetSectors
-	if len(os.Args) >= 4 {
-		physicalSectors = mustSectors(os.Args[3])
+	if len(args) >= 3 {
+		physicalSectors = mustSectors(args[2])
 	}
 	var contentBytes int
-	if len(os.Args) == 5 {
-		n, err := strconv.Atoi(os.Args[4])
+	if len(args) == 4 {
+		n, err := strconv.Atoi(args[3])
 		if err != nil || n < 0 {
-			_, _ = fmt.Fprintln(os.Stderr, "ci-fixture: bad content byte count:", os.Args[4])
+			_, _ = fmt.Fprintln(os.Stderr, "ci-fixture: bad content byte count:", args[3])
 			os.Exit(2)
 		}
 		contentBytes = n
@@ -89,6 +104,7 @@ func main() {
 		RepoUUID:                [16]byte{0xaa, 0xbb, 0xcc, 0xdd},
 		DiscUUID:                [16]byte{0x11, 0x22, 0x33, 0x44},
 		Label:                   "ci-fixture",
+		FECEnabled:              *fec,
 		Now:                     fixedClock,
 	}
 	_, err = image.Build(opts)
