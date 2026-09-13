@@ -8,6 +8,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 func sha256sum(b []byte) [32]byte { return sha256.Sum256(b) }
@@ -108,8 +109,9 @@ func (c *columnCursor) closeCurrent() error {
 // checksumPath and parityPaths, one stripe at a time. It holds at most
 // one stripe of k data blocks and the m parity blocks in memory, never
 // the stream itself. runHeaderCopy is the 2048-byte run header copy
-// every parity file starts with.
-func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy []byte, checksumPath string, parityPaths []string) error {
+// every parity file starts with. prog reports stripes encoded; a nil
+// prog reports nothing.
+func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy []byte, checksumPath string, parityPaths []string, prog *progress.Reporter) error {
 	codec, err := fec.NewCodec(fec.K, fec.M)
 	if err != nil {
 		return err
@@ -153,6 +155,7 @@ func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderC
 	}
 	recBuf := make([]byte, format.ChecksumRecordLen)
 
+	prog.Start("pack: fec stripes encoded", int64(L))
 	for i := range L {
 		for c := range fec.K {
 			if err := cols[c].readBlock(data[c]); err != nil {
@@ -175,7 +178,9 @@ func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderC
 				return err
 			}
 		}
+		prog.Add(1)
 	}
+	prog.Done()
 
 	if err := checksumW.Flush(); err != nil {
 		return err

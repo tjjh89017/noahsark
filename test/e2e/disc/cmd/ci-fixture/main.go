@@ -110,7 +110,7 @@ func main() {
 	_, err = image.Build(opts)
 	must(err)
 
-	must(image.MakeImage(treeDir, imagePath, physicalSectors))
+	must(image.MakeImage(treeDir, imagePath, physicalSectors, nil))
 
 	fmt.Println(treeDir)
 	fmt.Println(imagePath)

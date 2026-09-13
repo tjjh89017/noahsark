@@ -11,6 +11,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -51,6 +52,10 @@ type PackOptions struct {
 	// select STAGED objects and appends a Packed record for every
 	// object this run stores.
 	StageLog *stage.Log
+	// Progress reports bytes of object content placed into the run's
+	// tree, and FEC stripes encoded when FECEnabled. A nil Progress
+	// reports nothing.
+	Progress *progress.Reporter
 }
 
 // PackResult summarizes one Pack call: the run it built, plus what is
@@ -324,7 +329,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows[run2RowIdx].data = runBuf
 	plan.rows = rows
 
-	if err := writeRunTree(opts.OutputDir, runSeq, plan, runBuf); err != nil {
+	if err := writeRunTree(opts.OutputDir, runSeq, plan, runBuf, opts.Progress); err != nil {
 		return nil, err
 	}
 

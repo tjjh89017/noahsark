@@ -1,7 +1,10 @@
 package image
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // MinUDFToolsMajor and MinUDFToolsMinor are the pinned minimum udftools
@@ -59,11 +64,12 @@ const ciEnvVar = "NOAHSARK_CI"
 // CI (ciEnvVar set) MakeImage shells out to populate.sh, which uses sudo
 // to mount, copy and unmount. Outside CI it builds the empty image and
 // returns, so a build with no root still exercises the mkudffs step.
+// prog reports bytes copied during populate; a nil prog reports nothing.
 //
 // Reading: docs/decisions.md, "Profile 0 image build: how the volume is
 // populated" records why this is the chosen path over a from-scratch Go
 // UDF writer.
-func MakeImage(dir, imagePath string, sectors uint64) error {
+func MakeImage(dir, imagePath string, sectors uint64, prog *progress.Reporter) error {
 	if _, err := CheckTools(); err != nil {
 		return err
 	}
@@ -105,18 +111,64 @@ func MakeImage(dir, imagePath string, sectors uint64) error {
 	if os.Getenv(ciEnvVar) == "" {
 		return nil
 	}
-	return populateImageCI(dir, imagePath)
+	return populateImageCI(dir, imagePath, prog)
 }
 
 // populateImageCI mounts imagePath with sudo, copies dir's tree onto it
-// as /NOAHSARK, and unmounts. It runs only under CI.
-func populateImageCI(dir, imagePath string) error {
+// as /NOAHSARK file by file, and unmounts. It runs only under CI. prog
+// reports bytes copied, using populate.sh's "COPIED <bytes>" line for
+// each regular file it finishes; the total is dir's own regular-file
+// byte sum, computed before the script runs.
+func populateImageCI(dir, imagePath string, prog *progress.Reporter) error {
+	total := regularFileBytesUnder(filepath.Join(dir, "NOAHSARK"))
+
 	_, thisFile, _, _ := runtime.Caller(0)
 	scriptPath := filepath.Join(filepath.Dir(thisFile), "populate.sh")
 	cmd := exec.Command("sudo", "bash", scriptPath, imagePath, dir)
-	out, err := cmd.CombinedOutput()
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("image: populate: %w: %s", err, out)
+		return fmt.Errorf("image: populate: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("image: populate: %w", err)
+	}
+
+	prog.Start("image build: populate", total)
+	var captured bytes.Buffer
+	sc := bufio.NewScanner(io.TeeReader(stdout, &captured))
+	for sc.Scan() {
+		var n int64
+		if _, err := fmt.Sscanf(sc.Text(), "COPIED %d", &n); err == nil {
+			prog.Add(n)
+		}
+	}
+	prog.Done()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("image: populate: %w: %s%s", err, captured.String(), stderr.String())
 	}
 	return nil
+}
+
+// regularFileBytesUnder sums the size of every regular file under root.
+// A missing or unreadable root sums to zero rather than failing the
+// caller: it feeds a progress total, not a correctness check.
+func regularFileBytesUnder(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return total
 }

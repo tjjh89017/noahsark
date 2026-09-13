@@ -26,7 +26,7 @@ func TestMakeImageBuildsEmptyImage(t *testing.T) {
 	}
 
 	imagePath := filepath.Join(t.TempDir(), "run.img")
-	if err := MakeImage(outDir, imagePath, opts.TargetCapacitySectors); err != nil {
+	if err := MakeImage(outDir, imagePath, opts.TargetCapacitySectors, nil); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(imagePath)

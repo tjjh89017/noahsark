@@ -11,6 +11,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // SnapshotRef binds a name to a snapshot id, for one REFS record. Name is
@@ -50,6 +51,10 @@ type BuildOptions struct {
 	FECEnabled bool
 	// Now returns the pack time. Defaults to time.Now.
 	Now func() time.Time
+	// Progress reports bytes of object content placed into the run's
+	// tree, and FEC stripes encoded when FECEnabled. A nil Progress
+	// reports nothing.
+	Progress *progress.Reporter
 }
 
 // Result summarizes one Build call.
@@ -297,7 +302,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows[run2RowIdx].data = runBuf
 	plan.rows = rows
 
-	if err := writeRunTree(opts.OutputDir, buildRunSeq, plan, runBuf); err != nil {
+	if err := writeRunTree(opts.OutputDir, buildRunSeq, plan, runBuf, opts.Progress); err != nil {
 		return nil, err
 	}
 
@@ -401,11 +406,21 @@ func appendFECRows(rows []fileRow, fecEnabled bool) (fecPlan, error) {
 // outputDir (runRowIdx and run2RowIdx's bytes must already be set in
 // rows), skipping the checksum and parity rows, then, when the run
 // carries FEC, computes the checksum column and the parity straight to
-// disk from the files just written.
-func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte) error {
+// disk from the files just written. prog reports bytes of object rows
+// placed, and, when the run carries FEC, stripes encoded; a nil prog
+// reports nothing.
+func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, prog *progress.Reporter) error {
 	rows := plan.rows
 	seqDir := fmt.Sprintf("%010d", runSeq)
 	finalPaths := make([]string, len(rows))
+
+	var objectBytesTotal int64
+	for _, r := range rows {
+		if r.role == format.FileRoleObject {
+			objectBytesTotal += int64(r.byteLen)
+		}
+	}
+	prog.Start("pack: objects placed", objectBytesTotal)
 	for i, r := range rows {
 		path := filepath.FromSlash(replaceRunSeq(r.path, seqDir))
 		full := filepath.Join(outputDir, path)
@@ -423,7 +438,11 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte) 
 		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
 			return err
 		}
+		if r.role == format.FileRoleObject {
+			prog.Add(int64(r.byteLen))
+		}
 	}
+	prog.Done()
 
 	if plan.layout == nil {
 		return nil
@@ -446,7 +465,7 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte) 
 	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
 		return err
 	}
-	return buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths)
+	return buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths, prog)
 }
 
 func padLen(n int) int {
