@@ -22,7 +22,7 @@ jobs:
         uses: ./.github/actions/lint
 
   unit:
-    name: Unit
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
@@ -37,13 +37,16 @@ jobs:
         uses: ./.github/actions/unit
 
   # One matrix cell per scenario (and, for the media scenario, per media
-  # preset). Runs in parallel with lint and unit, not after them: every
-  # cell runs to the end regardless of the others' outcome (fail-fast is
-  # off), and each cell uploads its own log and result so e2e-required
-  # can report on all of them even when some fail.
+  # preset). Runs after lint and unit pass; every cell then runs to the
+  # end regardless of the others' outcome (fail-fast is off), and each
+  # cell uploads its own log and result so e2e-required can report on
+  # all of them even when some fail.
   e2e:
     name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
+    needs:
+      - lint
+      - unit
     strategy:
       fail-fast: false
       matrix:
