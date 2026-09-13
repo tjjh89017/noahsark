@@ -128,10 +128,10 @@ class SnapshotTest(unittest.TestCase):
     def test_snapshot_golden(self):
         # The snapshot_test.go fixture leaves ObjectHeader.PayloadLen and
         # StoredLen at zero: it round-trips the fixed body and the meta
-        # records only, not the header_crc32c or payload-length fields a
-        # real writer fills in (writeSnapshot in internal/object does).
-        # So this checks field decoding directly on the payload bytes,
-        # the same slice a real writer's stored_len would have named.
+        # records only, not the payload-length fields a real writer fills
+        # in (writeSnapshot in internal/object does). So this checks field
+        # decoding directly on the payload bytes, the same slice a real
+        # writer's stored_len would have named.
         buf = golden("snapshot.golden")
         common = decoder.decode_common_header(buf, "t")
         self.assertEqual(common["magic_kind"], decoder.MAGIC_SNAPSHOT)
@@ -159,10 +159,7 @@ class SnapshotTest(unittest.TestCase):
 
 class DiscTest(unittest.TestCase):
     def test_disc_golden(self):
-        # The Go Disc.Encode writes SuperCRC32C as given rather than
-        # computing it, and the fixture sets a placeholder value; this
-        # checks field decoding only, not that CRC.
-        d = decoder.parse_disc(golden("disc.golden"), "t", verify_crc=False)
+        d = decoder.parse_disc(golden("disc.golden"), "t")
         self.assertEqual(d["disc_uuid"], bytes(i + 1 for i in range(16)))
         self.assertEqual(d["repo_uuid"], bytes(i + 101 for i in range(16)))
         self.assertEqual(d["disc_seq"], 0)
@@ -183,10 +180,7 @@ class DiscTest(unittest.TestCase):
 
 class RunTest(unittest.TestCase):
     def test_run_golden(self):
-        # The Go Run.Encode writes HeaderCRC32C as given rather than
-        # computing it, and the fixture sets a placeholder value; this
-        # checks field decoding only, not that CRC.
-        r = decoder.parse_run(golden("run.golden"), "t", verify_crc=False)
+        r = decoder.parse_run(golden("run.golden"), "t")
         self.assertEqual(r["disc_uuid"], bytes(i + 1 for i in range(16)))
         self.assertEqual(r["repo_uuid"], bytes(i + 101 for i in range(16)))
         self.assertEqual(r["run_seq"], 1)

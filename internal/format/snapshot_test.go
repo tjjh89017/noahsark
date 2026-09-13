@@ -90,6 +90,16 @@ func TestSnapshotDecodeRejectsBadMagic(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodeRejectsBadCRC(t *testing.T) {
+	golden := readGolden(t, "snapshot.golden")
+	buf := append([]byte(nil), golden...)
+	buf[objectHeaderCRCOffset] ^= 0xFF
+	var s Snapshot
+	if _, err := s.Decode(buf); err != ErrCRC {
+		t.Fatalf("decode bad crc: got %v, want %v", err, ErrCRC)
+	}
+}
+
 func TestSnapshotDecodeRejectsShort(t *testing.T) {
 	golden := readGolden(t, "snapshot.golden")
 	var s Snapshot

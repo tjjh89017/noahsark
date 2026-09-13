@@ -34,6 +34,8 @@ type Disc struct {
 }
 
 // Encode writes d into buf[0:DiscLen]. buf must be at least DiscLen bytes.
+// Encode computes super_crc32c itself, over bytes 0 to 2043; any value in
+// d.SuperCRC32C is overwritten.
 func (d *Disc) Encode(buf []byte) error {
 	if len(buf) < DiscLen {
 		return ErrShort
@@ -61,12 +63,14 @@ func (d *Disc) Encode(buf []byte) error {
 	binary.LittleEndian.PutUint32(buf[212:216], d.ToolVersion)
 	binary.LittleEndian.PutUint32(buf[216:220], d.ReservedU32)
 	copy(buf[220:2044], d.Reserved[:])
-	binary.LittleEndian.PutUint32(buf[2044:2048], d.SuperCRC32C)
+	crc := crc32c(buf[0:2044])
+	d.SuperCRC32C = crc
+	binary.LittleEndian.PutUint32(buf[2044:2048], crc)
 	return nil
 }
 
 // Decode reads a Disc from buf. It rejects a short buffer, a magic_kind
-// mismatch, and a nonzero reserved field.
+// mismatch, a nonzero reserved field, and a super_crc32c mismatch.
 func (d *Disc) Decode(buf []byte) error {
 	if len(buf) < DiscLen {
 		return ErrShort
@@ -111,5 +115,8 @@ func (d *Disc) Decode(buf []byte) error {
 		}
 	}
 	d.SuperCRC32C = binary.LittleEndian.Uint32(buf[2044:2048])
+	if crc32c(buf[0:2044]) != d.SuperCRC32C {
+		return ErrCRC
+	}
 	return nil
 }

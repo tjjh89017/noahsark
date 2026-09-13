@@ -544,7 +544,7 @@ def parse_snapshot(payload: bytes, where: str):
 DISC_LEN = 2048
 
 
-def parse_disc(buf: bytes, where: str, verify_crc: bool = True):
+def parse_disc(buf: bytes, where: str):
     if len(buf) < DISC_LEN:
         raise FormatError(f"{where}: short disc superblock")
     common = decode_common_header(buf, where)
@@ -563,7 +563,7 @@ def parse_disc(buf: bytes, where: str, verify_crc: bool = True):
     label = buf[148 : 148 + min(label_len, 64)]
     tool_version = struct.unpack_from("<I", buf, 212)[0]
     super_crc32c = struct.unpack_from("<I", buf, 2044)[0]
-    if verify_crc and crc32c(buf[0:2044]) != super_crc32c:
+    if crc32c(buf[0:2044]) != super_crc32c:
         raise FormatError(f"{where}: super_crc32c mismatch")
     return {
         "disc_uuid": disc_uuid,
@@ -593,7 +593,7 @@ def parse_disc(buf: bytes, where: str, verify_crc: bool = True):
 RUN_LEN = 512
 
 
-def parse_run(buf: bytes, where: str, verify_crc: bool = True):
+def parse_run(buf: bytes, where: str):
     if len(buf) < RUN_LEN:
         raise FormatError(f"{where}: short run header")
     common = decode_common_header(buf, where)
@@ -615,7 +615,7 @@ def parse_run(buf: bytes, where: str, verify_crc: bool = True):
     disc_object_count = struct.unpack_from("<Q", buf, 192)[0]
     disc_run_index = struct.unpack_from("<I", buf, 200)[0]
     header_crc32c = struct.unpack_from("<I", buf, 504)[0]
-    if verify_crc and crc32c(buf[0:504]) != header_crc32c:
+    if crc32c(buf[0:504]) != header_crc32c:
         raise FormatError(f"{where}: run header_crc32c mismatch")
     return {
         "disc_uuid": disc_uuid,

@@ -138,7 +138,8 @@ func (s *Snapshot) EncodedLen() int {
 }
 
 // Encode writes s into buf and returns the number of bytes written,
-// EncodedLen().
+// EncodedLen(). Encode computes header_crc32c itself; any value in
+// s.Object.HeaderCRC32C is overwritten.
 func (s *Snapshot) Encode(buf []byte) (int, error) {
 	n := s.EncodedLen()
 	if len(buf) < n {
@@ -167,6 +168,10 @@ func (s *Snapshot) Encode(buf []byte) (int, error) {
 	body[110] = byte(s.ParentHashAlgo)
 	body[111] = s.ReservedU8
 
+	crc := crc32c(buf[0:objectHeaderCRCOffset])
+	s.Object.HeaderCRC32C = crc
+	binary.LittleEndian.PutUint32(buf[objectHeaderCRCOffset:objectHeaderCRCOffset+4], crc)
+
 	off := CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen
 	for i := range s.Meta {
 		if err := s.Meta[i].Encode(buf[off:]); err != nil {
@@ -178,8 +183,8 @@ func (s *Snapshot) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Snapshot from the start of buf and returns the number of
-// bytes it consumed. It rejects a short buffer, a magic_kind mismatch, and
-// a nonzero reserved field.
+// bytes it consumed. It rejects a short buffer, a magic_kind mismatch, a
+// header_crc32c mismatch, and a nonzero reserved field.
 func (s *Snapshot) Decode(buf []byte) (int, error) {
 	if len(buf) < CommonHeaderLen+ObjectHeaderLen+SnapshotFixedLen {
 		return 0, ErrShort
@@ -192,6 +197,9 @@ func (s *Snapshot) Decode(buf []byte) (int, error) {
 	}
 	if err := s.Object.Decode(buf[CommonHeaderLen : CommonHeaderLen+ObjectHeaderLen]); err != nil {
 		return 0, err
+	}
+	if crc32c(buf[0:objectHeaderCRCOffset]) != s.Object.HeaderCRC32C {
+		return 0, ErrCRC
 	}
 	body := buf[CommonHeaderLen+ObjectHeaderLen:]
 	copy(s.RootTree[:], body[0:32])

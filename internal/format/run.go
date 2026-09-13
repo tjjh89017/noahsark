@@ -54,6 +54,8 @@ type Run struct {
 }
 
 // Encode writes r into buf[0:RunLen]. buf must be at least RunLen bytes.
+// Encode computes header_crc32c itself, over bytes 0 to 503; any value in
+// r.HeaderCRC32C is overwritten.
 func (r *Run) Encode(buf []byte) error {
 	if len(buf) < RunLen {
 		return ErrShort
@@ -87,13 +89,15 @@ func (r *Run) Encode(buf []byte) error {
 	binary.LittleEndian.PutUint32(buf[200:204], r.DiscRunIndex)
 	binary.LittleEndian.PutUint32(buf[204:208], r.ReservedU32b)
 	copy(buf[208:504], r.Reserved[:])
-	binary.LittleEndian.PutUint32(buf[504:508], r.HeaderCRC32C)
+	crc := crc32c(buf[0:504])
+	r.HeaderCRC32C = crc
+	binary.LittleEndian.PutUint32(buf[504:508], crc)
 	copy(buf[508:512], r.ReservedFinal[:])
 	return nil
 }
 
 // Decode reads a Run from buf. It rejects a short buffer, a magic_kind
-// mismatch, and a nonzero reserved field.
+// mismatch, a nonzero reserved field, and a header_crc32c mismatch.
 func (r *Run) Decode(buf []byte) error {
 	if len(buf) < RunLen {
 		return ErrShort
@@ -145,6 +149,9 @@ func (r *Run) Decode(buf []byte) error {
 		}
 	}
 	r.HeaderCRC32C = binary.LittleEndian.Uint32(buf[504:508])
+	if crc32c(buf[0:504]) != r.HeaderCRC32C {
+		return ErrCRC
+	}
 	copy(r.ReservedFinal[:], buf[508:512])
 	for _, b := range r.ReservedFinal {
 		if b != 0 {

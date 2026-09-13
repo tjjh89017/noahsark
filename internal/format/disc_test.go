@@ -24,7 +24,7 @@ func testDisc() Disc {
 		Sealed:                1,
 		LabelLen:              14,
 		ToolVersion:           0x01000001,
-		SuperCRC32C:           0xCAFEBABE,
+		SuperCRC32C:           0xF9BA7142,
 	}
 	for i := range d.DiscUUID {
 		d.DiscUUID[i] = byte(i + 1)
@@ -75,6 +75,16 @@ func TestDiscDecodeRejectsBadMagic(t *testing.T) {
 	var d Disc
 	if err := d.Decode(buf); err != ErrBadMagic {
 		t.Fatalf("decode bad magic: got %v, want %v", err, ErrBadMagic)
+	}
+}
+
+func TestDiscDecodeRejectsBadCRC(t *testing.T) {
+	golden := readGolden(t, "disc.golden")
+	buf := append([]byte(nil), golden...)
+	buf[64] ^= 0xFF
+	var d Disc
+	if err := d.Decode(buf); err != ErrCRC {
+		t.Fatalf("decode bad crc: got %v, want %v", err, ErrCRC)
 	}
 }
 

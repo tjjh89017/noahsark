@@ -29,7 +29,7 @@ func testRun() Run {
 		ToolVersion:     0x01000001,
 		DiscObjectCount: 1000,
 		DiscRunIndex:    0,
-		HeaderCRC32C:    0xDEADC0DE,
+		HeaderCRC32C:    0x17AF43B4,
 	}
 	for i := range r.DiscUUID {
 		r.DiscUUID[i] = byte(i + 1)
@@ -88,6 +88,16 @@ func TestRunDecodeRejectsBadMagic(t *testing.T) {
 	var r Run
 	if err := r.Decode(buf); err != ErrBadMagic {
 		t.Fatalf("decode bad magic: got %v, want %v", err, ErrBadMagic)
+	}
+}
+
+func TestRunDecodeRejectsBadCRC(t *testing.T) {
+	golden := readGolden(t, "run.golden")
+	buf := append([]byte(nil), golden...)
+	buf[64] ^= 0xFF
+	var r Run
+	if err := r.Decode(buf); err != ErrCRC {
+		t.Fatalf("decode bad crc: got %v, want %v", err, ErrCRC)
 	}
 }
 
