@@ -140,11 +140,9 @@ Write this file, code comments, and commit messages in ASD-STE100 style:
 short sentences, active voice, one instruction per sentence. FORMAT.md,
 OPERATIONS.md, and NOTES.md already follow this style; match it.
 
-## Proposed directory layout
+## Directory layout
 
-No Go module exists yet. This layout is a proposal for when implementation
-starts. Confirm it with the user before creating it, and adjust as the design
-needs.
+This is the layout in use.
 
 ```
 cmd/noahsark          CLI
@@ -152,10 +150,11 @@ internal/format       structures, encode, decode, golden tests, carving reader
 internal/chunker      Gear table, FastCDC
 internal/object       chunk, blob, tree, snapshot writers over a source tree
 internal/fec          GF(2^8), Reed-Solomon, checksum column, stream mapping
-internal/image        lay out one run, INDEX, RUN, DISC, REFS, DISCS, parity; mkudffs image build
+internal/image        lay out /NOAHSARK for one run, INDEX, RUN, DISC, REFS,
+                      DISCS, decoder.py, parity; mkudffs image build
 internal/restore      walk a snapshot from a mounted image, write files
 reference/decoder.py  the on-disc reference decoder
-.github/actions       composite test action, probe actions
+.github/actions/test  composite action
 ```
 
 ## How to work on this repo
