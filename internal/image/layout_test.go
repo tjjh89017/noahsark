@@ -2,6 +2,7 @@ package image
 
 import (
 	"bytes"
+	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,38 @@ func stageFixture(t *testing.T) (string, object.ID) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("content of b, a bit longer so it is worth chunking on its own"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stagingDir := t.TempDir()
+	w := object.NewWriter(stagingDir)
+	w.Now = fixedClock
+	snapID, _, err := w.Commit(srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stagingDir, snapID
+}
+
+// stageMultiChunkFixture commits a source tree with a multi-megabyte
+// pseudo-random file, large enough to split into several chunk objects
+// and to cross more than one FEC stripe, plus a second file that
+// duplicates a slice of the first so dedup is exercised too.
+func stageMultiChunkFixture(t *testing.T, contentBytes int) (string, object.ID) {
+	t.Helper()
+	srcDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content of a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, contentBytes)
+	mrand.New(mrand.NewSource(42)).Read(big)
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), big[:200000], 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,6 +199,36 @@ func TestBuildRefusesTooSmallCapacity(t *testing.T) {
 	if _, err := Build(opts); err == nil {
 		t.Fatal("expected an error for a too-small target capacity")
 	}
+}
+
+// TestBuildStreamsMultiChunkContent builds a run over a fixture whose
+// data crosses several chunk objects and several FEC stripes, streamed
+// object by object rather than concatenated in memory, and checks Build
+// twice over the same staged objects still produces byte-identical
+// output, and that Read verifies the result.
+func TestBuildStreamsMultiChunkContent(t *testing.T) {
+	stagingDir, snapID := stageMultiChunkFixture(t, 3*1024*1024)
+
+	outDir1 := t.TempDir()
+	opts1 := testOpts(t, stagingDir, snapID, outDir1)
+	opts1.TargetCapacitySectors = 1 << 22
+	opts1.PhysicalCapacitySectors = 1 << 22
+	if _, err := Build(opts1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(outDir1); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	outDir2 := t.TempDir()
+	opts2 := testOpts(t, stagingDir, snapID, outDir2)
+	opts2.TargetCapacitySectors = 1 << 22
+	opts2.PhysicalCapacitySectors = 1 << 22
+	if _, err := Build(opts2); err != nil {
+		t.Fatal(err)
+	}
+
+	compareTrees(t, outDir1, outDir2)
 }
 
 func TestBuildIsDeterministic(t *testing.T) {
