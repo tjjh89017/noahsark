@@ -45,7 +45,13 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	label := fs.String("label", "", "human label for the disc")
 	media := fs.String("media", "BD-R-SL-25", "media type name")
 	outDir := fs.String("out", "", "output directory for the packed tree; default <repo>/staging/plans/1/tree")
+	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
+	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *fecOn && *fecOff {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --fec and --no-fec are mutually exclusive")
 		return 2
 	}
 
@@ -146,6 +152,13 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	fecEnabled := cfg.FECEnabled
+	if *fecOn {
+		fecEnabled = true
+	} else if *fecOff {
+		fecEnabled = false
+	}
+
 	opts := image.PackOptions{
 		StagingDir:              cfg.StagingDir,
 		Snapshots:               snapshots,
@@ -156,6 +169,7 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 		DiscUUID:                discUUID,
 		Label:                   *label,
 		MediaType:               mediaType,
+		FECEnabled:              fecEnabled,
 		StageLog:                stageLog,
 	}
 	result, err := image.Pack(opts)
@@ -164,6 +178,11 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if fecEnabled {
+		_, _ = fmt.Fprintf(stdout, "fec: on, budget used: %d stream blocks across %d stripes\n", result.StreamBlocks, result.StripeCount)
+	} else {
+		_, _ = fmt.Fprintf(stdout, "fec: off, budget used: %d stream blocks\n", result.StreamBlocks)
+	}
 	_, _ = fmt.Fprintf(stdout, "packed run %d on disc %d into %s\n", result.RunSeq, result.DiscSeq, absOut)
 	_, _ = fmt.Fprintf(stdout, "objects: %d, files: %d, stream blocks: %d, stripes: %d\n",
 		result.ObjectCount, result.FileCount, result.StreamBlocks, result.StripeCount)

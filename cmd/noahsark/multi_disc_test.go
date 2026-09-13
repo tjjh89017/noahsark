@@ -63,7 +63,7 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir)
+		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir)
 		wantCode := 1
 		if i == len(capacities)-1 {
 			wantCode = 0
@@ -111,7 +111,7 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir); code != 0 && i != len(capacities)-1 {
+		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
 			// exit 1 is expected for the first two, checked above; this
 			// branch only guards against a hard failure (exit 2).
 			if code == 2 {

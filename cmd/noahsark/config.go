@@ -29,6 +29,11 @@ type repoConfig struct {
 	// RetryUnstable is commit.retry_unstable. Defaults to
 	// object.defaultRetryUnstable's value.
 	RetryUnstable int
+	// FECEnabled is fec.scheme != "none": whether pack writes a
+	// Reed-Solomon checksum column and parity. Defaults false: burning
+	// two identical discs is the primary redundancy; FEC is a reserve
+	// feature a repository opts into.
+	FECEnabled bool
 }
 
 // laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
@@ -67,6 +72,7 @@ var knownConfigKeys = map[string]bool{
 	"disc.force_capacity":      true,
 	"commit.restat_after_read": true,
 	"commit.retry_unstable":    true,
+	"fec.scheme":               true,
 }
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
@@ -140,6 +146,15 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: commit.retry_unstable: %w", err)
 			}
 			c.RetryUnstable = n
+		case "fec.scheme":
+			switch value {
+			case "none":
+				c.FECEnabled = false
+			case "rs255-gf8":
+				c.FECEnabled = true
+			default:
+				return repoConfig{}, fmt.Errorf("config: fec.scheme: unknown value %q, want none or rs255-gf8", value)
+			}
 		}
 	}
 	if err := sc.Err(); err != nil {
