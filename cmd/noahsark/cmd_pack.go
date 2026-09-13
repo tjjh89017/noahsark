@@ -11,6 +11,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -29,7 +30,7 @@ var mediaTypes = map[string]format.MediaType{
 // this build, so pack instead takes the snapshot(s) to place explicitly,
 // by --ref (default LATEST) or repeated --snapshot. See
 // docs/decisions.md, "16. CLI reference".
-func cmdPack(args []string, stdout, stderr io.Writer) int {
+func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if refuseLaterPhaseFlags("pack", args, stderr) {
 		return 2
 	}
@@ -171,6 +172,7 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 		MediaType:               mediaType,
 		FECEnabled:              fecEnabled,
 		StageLog:                stageLog,
+		Progress:                prog,
 	}
 	result, err := image.Pack(opts)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
@@ -15,7 +16,7 @@ import (
 // image.Read and restore.Heal already accept, instead of OPERATIONS.md's
 // raw image file plus --mapfile. See docs/decisions.md,
 // "16. CLI reference".
-func cmdVerify(args []string, stdout, stderr io.Writer) int {
+func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	imagePath := fs.String("image", "", "mounted disc path or unpacked NOAHSARK tree")
@@ -31,7 +32,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 
 	target := *imagePath
 	if *heal {
-		reports, err := restore.Heal(*imagePath, *healOut)
+		reports, err := restore.HealWithProgress(*imagePath, *healOut, prog)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
 			return 1
@@ -45,7 +46,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	rr, err := image.Read(target)
+	rr, err := image.ReadWithProgress(target, prog)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return 1

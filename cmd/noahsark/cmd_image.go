@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // cmdImage implements "noahsark image build". OPERATIONS.md's
@@ -13,7 +14,7 @@ import (
 // state this build does not keep; instead it takes the packed tree
 // directory directly, the one pack's --out already printed. See
 // docs/decisions.md, "16. CLI reference".
-func cmdImage(args []string, stdout, stderr io.Writer) int {
+func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
 		return 2
@@ -51,7 +52,7 @@ func cmdImage(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := image.MakeImage(treeDir, *out, sectors); err != nil {
+	if err := image.MakeImage(treeDir, *out, sectors, prog); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: image build:", err)
 		return 1
 	}

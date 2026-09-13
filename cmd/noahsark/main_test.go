@@ -241,3 +241,31 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 		t.Fatalf("-h: exit %d, output %q", code, out)
 	}
 }
+
+// TestProgressFlags checks commit's progress line appears by default,
+// disappears under --no-progress and --quiet, and that --progress and
+// --no-progress together is a usage error.
+func TestProgressFlags(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 || !strings.Contains(out, "commit:") {
+		t.Fatalf("default: exit %d, expected a commit progress line, got %q", code, out)
+	}
+
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--no-progress", src); code != 0 || strings.Contains(out, "commit:") {
+		t.Fatalf("--no-progress: exit %d, expected no commit progress line, got %q", code, out)
+	}
+
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--quiet", src); code != 0 || strings.Contains(out, "commit:") {
+		t.Fatalf("--quiet: exit %d, expected no commit progress line, got %q", code, out)
+	}
+
+	if code, _ := runCmd(t, "commit", "--repo="+repo, "--progress", "--no-progress", src); code != 2 {
+		t.Fatalf("--progress --no-progress: exit %d, want 2", code)
+	}
+}

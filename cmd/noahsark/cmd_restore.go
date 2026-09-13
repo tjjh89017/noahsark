@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
@@ -22,7 +23,7 @@ import (
 // repeats --disc, or names a directory of mounted discs with
 // --discs-dir; either way SNAPSHOT and OUT-DIR are then the only
 // positional arguments.
-func cmdRestore(args []string, stdout, stderr io.Writer) int {
+func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if refuseLaterPhaseFlags("restore", args, stderr) {
 		return 2
 	}
@@ -66,7 +67,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if err := restore.RestoreMulti(discRoots, snapID, outDir); err != nil {
+	if err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}

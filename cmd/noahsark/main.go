@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 func main() {
@@ -35,24 +37,60 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	rest, prog, err := extractProgressFlags(rest, stderr)
+	if err != nil {
+		return 2
+	}
+
 	switch cmd {
 	case "init":
 		return cmdInit(rest, stdout, stderr)
 	case "commit":
-		return cmdCommit(rest, stdout, stderr)
+		return cmdCommit(rest, stdout, stderr, prog)
 	case "pack":
-		return cmdPack(rest, stdout, stderr)
+		return cmdPack(rest, stdout, stderr, prog)
 	case "image":
-		return cmdImage(rest, stdout, stderr)
+		return cmdImage(rest, stdout, stderr, prog)
 	case "verify":
-		return cmdVerify(rest, stdout, stderr)
+		return cmdVerify(rest, stdout, stderr, prog)
 	case "restore":
-		return cmdRestore(rest, stdout, stderr)
+		return cmdRestore(rest, stdout, stderr, prog)
 	default:
 		_, _ = fmt.Fprintf(stderr, "noahsark: unknown command %q\n", cmd)
 		printUsage(stderr)
 		return 2
 	}
+}
+
+// extractProgressFlags pulls --progress, --no-progress and --quiet out of
+// args, wherever they appear, and returns the remaining arguments plus
+// the Reporter to use: nil when progress reporting is off. Progress is
+// on by default, writing to stderr; --no-progress and --quiet turn it
+// off, and --progress forces it on even when stderr is not a terminal.
+// --progress and --no-progress are mutually exclusive.
+func extractProgressFlags(args []string, stderr io.Writer) ([]string, *progress.Reporter, error) {
+	var forceOn, forceOff, quiet bool
+	remaining := make([]string, 0, len(args))
+	for _, a := range args {
+		switch a {
+		case "--progress":
+			forceOn = true
+		case "--no-progress":
+			forceOff = true
+		case "--quiet", "-q":
+			quiet = true
+		default:
+			remaining = append(remaining, a)
+		}
+	}
+	if forceOn && forceOff {
+		_, _ = fmt.Fprintln(stderr, "noahsark: --progress and --no-progress are mutually exclusive")
+		return nil, nil, fmt.Errorf("mutually exclusive flags")
+	}
+	if quiet || forceOff {
+		return remaining, nil, nil
+	}
+	return remaining, progress.New(stderr), nil
 }
 
 func printUsage(w io.Writer) {
@@ -65,6 +103,10 @@ Phase 1 commands:
   image build --out=FILE [--capacity=N] TREE-DIR
   verify  --image=PATH [--heal] [--out=DIR]
   restore DISC-ROOT SNAPSHOT OUT-DIR
+
+Every command also accepts --progress, --no-progress and --quiet (-q),
+which control the progress line a long-running command writes to
+stderr. Progress is on by default.
 
 Run "noahsark <command> -h" for a command's own flags.
 `)

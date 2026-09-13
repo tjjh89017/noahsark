@@ -7,6 +7,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -19,7 +20,7 @@ var newWriter = object.NewWriter
 // source-type override, mirror mode and commit bundles all need a config
 // or state layer this build does not have. See docs/decisions.md,
 // "16. CLI reference".
-func cmdCommit(args []string, stdout, stderr io.Writer) int {
+func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if refuseLaterPhaseFlags("commit", args, stderr) {
 		return 2
 	}
@@ -51,6 +52,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer) int {
 	w := newWriter(cfg.StagingDir)
 	w.RestatAfterRead = cfg.RestatAfterRead
 	w.RetryUnstable = cfg.RetryUnstable
+	w.Progress = prog
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
