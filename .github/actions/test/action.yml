@@ -171,3 +171,19 @@ runs:
       if: always()
       shell: bash
       run: "${{ github.action_path }}/umount-if-mounted.sh \"${{ runner.temp }}/noahsark-ci/cli-mnt\""
+
+    - name: "Capacity matrix: DVD, BD, and BD forced to a smaller limit"
+      shell: bash
+      run: |
+        bash "${{ github.action_path }}/capacity-matrix.sh" \
+          "${{ github.action_path }}" \
+          "${{ runner.temp }}/noahsark-ci-capacity" \
+          "${{ runner.temp }}/noahsark-ci/noahsark"
+
+    - name: Unmount any capacity matrix image left mounted
+      if: always()
+      shell: bash
+      run: |
+        for m in cap1-mnt cap2-mnt cap3-mnt; do
+          "${{ github.action_path }}/umount-if-mounted.sh" "${{ runner.temp }}/noahsark-ci-capacity/$m"
+        done
