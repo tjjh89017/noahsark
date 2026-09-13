@@ -6,9 +6,16 @@
 # restore checks the other scenarios run against a UDF mount. It also
 # builds a second, Joliet-only ISO to prove README.md's warning against
 # Joliet: Joliet truncates the 68-character object names, so an object
-# lookup on that mount must fail. See lib.sh for build_binary and the
-# media_* helpers, and assert.sh for assert_dirs_equal and
-# assert_listing_matches.
+# lookup on that mount must fail.
+#
+# This scenario builds README.md's "Burning without UDF" convenience
+# path (Rock Ridge, not FORMAT.md's Phase 3 profile 2), because this
+# runner's genisoimage folds every name to lowercase under plain ISO
+# 9660:1999 level 4 without Rock Ridge, which would rename NOAHSARK,
+# README.txt, FORMAT.txt and DISC.bin and break iso_assert_fixed_files;
+# see the task report for the exact commands that showed this. See
+# lib.sh for build_binary and the media_* helpers, and assert.sh for
+# assert_dirs_equal and assert_listing_matches.
 set -euo pipefail
 
 # ISO_CONTENT_BYTES sizes iso.sh's own fixture: a few hundred MiB of
@@ -55,20 +62,35 @@ iso_gen_fixture() {
 }
 
 # iso_assert_object_names MOUNT TREE fails unless every object file name
-# under MOUNT's NOAHSARK/objects is 68 characters, and unless the mount
-# and the packed tree hold the same count of object files.
+# under MOUNT's NOAHSARK/objects is a 68-character lowercase hex name
+# (so plain ISO 9660 level 4 neither truncated nor case-folded it),
+# unless every such name still sits under its fan-out directory (the
+# first two hex digits of the digest, which starts after the 4-character
+# sha2-256 multihash prefix "1220"), and unless the mount and the packed
+# tree hold the same count of object files.
+#
+# find's own output is captured into a plain variable before any awk
+# scan of it: an awk pattern that "exit"s after the first match would
+# otherwise close a live pipe from find while find still has more lines
+# queued to write, and find dies of SIGPIPE under this suite's pipefail,
+# aborting the script before the match is ever checked.
 iso_assert_object_names() {
-	local mnt="$1" tree="$2" bad mnt_count tree_count
-	bad="$(find "$mnt/NOAHSARK/objects" -type f -printf '%f\n' | awk 'length($0) != 68 { print; exit }')"
+	local mnt="$1" tree="$2" listing bad mismatched mnt_count tree_count
+	listing="$(find "$mnt/NOAHSARK/objects" -type f -printf '%P\n')"
+	bad="$(awk -F/ '$2 !~ /^[0-9a-f]{68}$/ { print; exit }' <<<"$listing")"
 	if [ -n "$bad" ]; then
-		fail "iso: object name on the mount is not 68 characters: $bad"
+		fail "iso: object name on the mount is not a 68-character lowercase hex name: $bad"
+	fi
+	mismatched="$(awk -F/ 'substr($2, 5, 2) != $1 { print; exit }' <<<"$listing")"
+	if [ -n "$mismatched" ]; then
+		fail "iso: object on the mount is not nested under its fan-out directory: $mismatched"
 	fi
 	mnt_count="$(find "$mnt/NOAHSARK/objects" -type f | wc -l)"
 	tree_count="$(find "$tree/NOAHSARK/objects" -type f | wc -l)"
 	if [ "$mnt_count" -ne "$tree_count" ]; then
 		fail "iso: object count on the mount ($mnt_count) does not match the packed tree ($tree_count)"
 	fi
-	log "iso: $mnt_count object files, all 68 characters"
+	log "iso: $mnt_count object files, all 68-character lowercase hex names, correctly nested"
 }
 
 # iso_assert_fixed_files MOUNT TREE fails unless README.txt, FORMAT.txt
@@ -99,8 +121,12 @@ iso_joliet_negative_check() {
 	# these commands must still reach the umount_if_mounted call below,
 	# the same way chain_pack_one guards its own verify call.
 	set +e
-	local truncated
-	truncated="$(find "$joliet_mnt/NOAHSARK/objects" -type f -printf '%f\n' 2>/dev/null | awk 'length($0) != 68 { print; exit }')"
+	# find's output is captured before the awk scan, not piped straight
+	# into it: an "exit"-on-match awk would otherwise close the pipe
+	# while find still has lines queued, and find dies of SIGPIPE.
+	local listing truncated
+	listing="$(find "$joliet_mnt/NOAHSARK/objects" -type f -printf '%f\n' 2>/dev/null)"
+	truncated="$(awk 'length($0) != 68 { print; exit }' <<<"$listing")"
 
 	local verify_code=0
 	"$BIN" verify --image="$joliet_mnt" >"$work/joliet-verify.log" 2>&1
