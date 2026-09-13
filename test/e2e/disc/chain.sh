@@ -172,12 +172,18 @@ chain_object_ids() {
 	find "$1/NOAHSARK/objects" -type f -printf '%f\n' 2>/dev/null | sort
 }
 
-# chain_assert_missing_disc SNAP OUT DISC... restores from the given
-# disc roots, expecting a nonzero exit and a message naming a missing
-# disc's uuid.
+# chain_assert_missing_disc SNAP OUT MISSING_DISC_ROOT DISC... restores
+# from the given disc roots (MISSING_DISC_ROOT itself left out),
+# expecting a nonzero exit and a message naming MISSING_DISC_ROOT's uuid.
+# The message can take either form the restore package prints: a
+# Prereqs-named "disc UUID holds N needed" line, or, when no provided
+# disc's INDEX or Prereqs names the missing objects, the DISCS-table
+# candidate line; either way the omitted disc's uuid must appear.
 chain_assert_missing_disc() {
-	local snap="$1" out="$2"
-	shift 2
+	local snap="$1" out="$2" missing_root="$3"
+	shift 3
+	local missing_uuid
+	missing_uuid="$(run_tool ci-disc-uuid "$missing_root")"
 	local args=(restore)
 	local d
 	for d in "$@"; do
@@ -193,10 +199,10 @@ chain_assert_missing_disc() {
 	if [ "$code" -eq 0 ]; then
 		fail "chain: restore with a disc missing exited 0, want nonzero"
 	fi
-	if ! echo "$result" | grep -qE 'disc [0-9a-f-]+ holds [0-9]+ needed'; then
-		fail "chain: restore-with-a-disc-missing did not name the missing disc's uuid"
+	if ! echo "$result" | grep -qF "$missing_uuid"; then
+		fail "chain: restore-with-a-disc-missing did not name the missing disc's uuid ($missing_uuid)"
 	fi
-	log "chain: missing-disc restore refused as expected: $(echo "$result" | grep -oE 'disc [0-9a-f-]+ holds [0-9]+ needed[^"]*' | head -1)"
+	log "chain: missing-disc restore refused as expected, naming disc $missing_uuid: $(echo "$result" | grep -F "$missing_uuid" | head -1)"
 }
 
 # chain_commit_fixture LABEL WORK REPO NAME HALF_BYTES SEED builds and
@@ -332,8 +338,11 @@ chain_run() {
 	# disc 1 from the very first pack call. Disc 1 is therefore always
 	# among the discs it needs, whatever ENFORCE_BAND or the media sizes
 	# do to how far past disc 1 it spreads; omitting disc 1 is the one
-	# choice guaranteed to break its restore.
-	chain_assert_missing_disc "$snap" "$work/restored-missing" "${discroots[1]}" "${discroots[2]}"
+	# choice guaranteed to break its restore. In this scenario the winner
+	# can fit entirely on disc 1, so discs 2 and 3 never name it in
+	# Prereqs; the restore package then falls back to disc 2 or 3's DISCS
+	# table to name disc 1 as a candidate instead.
+	chain_assert_missing_disc "$snap" "$work/restored-missing" "${discroots[0]}" "${discroots[1]}" "${discroots[2]}"
 
 	for r in "${discroots[@]}"; do
 		umount_if_mounted "$r"

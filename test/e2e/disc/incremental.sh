@@ -128,7 +128,7 @@ scenario_incremental() {
 	run_tool ci-incremental-fixture check "$restored_next$src" "$hashes_next"
 	log "incremental: NEXT restored from both discs matches"
 
-	chain_assert_missing_disc "$snap2" "$work/restored-next-missing" "$mnt2"
+	chain_assert_missing_disc "$snap2" "$work/restored-next-missing" "$mnt1" "$mnt2"
 
 	umount_if_mounted "$mnt1"
 	umount_if_mounted "$mnt2"
