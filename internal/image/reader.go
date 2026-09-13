@@ -12,6 +12,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // ReadResult holds every structure Read decoded from one disc tree, and
@@ -33,6 +34,13 @@ type ReadResult struct {
 // run header copy is byte-identical, and recomputes the checksum column
 // and the parity to verify them against the run's actual FEC stream.
 func Read(root string) (*ReadResult, error) {
+	return ReadWithProgress(root, nil)
+}
+
+// ReadWithProgress is Read, reporting bytes hashed while it verifies
+// every object and, when the run carries FEC, the checksum column and
+// parity, through prog. A nil prog reports nothing.
+func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error) {
 	base, err := FindNoahsark(root)
 	if err != nil {
 		return nil, err
@@ -129,12 +137,12 @@ func Read(root string) (*ReadResult, error) {
 		}
 	}
 
-	if err := verifyObjects(base, &idx); err != nil {
+	if err := verifyObjects(base, &idx, prog); err != nil {
 		return nil, err
 	}
 
 	if run.FECScheme == format.FECSchemeRS255GF8 {
-		if err := verifyFEC(base, runDir); err != nil {
+		if err := verifyFEC(base, runDir, prog); err != nil {
 			return nil, err
 		}
 	}
@@ -192,8 +200,13 @@ func NewestRunDir(runsDir string) (string, error) {
 // into the hash, never holding a whole object file, or a decompressed
 // payload, in memory: an object can be as large as the maximum chunk
 // size, so this bound must hold whatever the object's own size is.
-func verifyObjects(base string, idx *format.Index) error {
+func verifyObjects(base string, idx *format.Index, prog *progress.Reporter) error {
 	headerLen := int64(format.CommonHeaderLen + format.ObjectHeaderLen)
+	var total int64
+	for _, row := range idx.Objects {
+		total += int64(row.StoredLen)
+	}
+	prog.Start("verify: objects hashed", total)
 	for _, row := range idx.Objects {
 		id := object.ID(row.ContentID)
 		var path string
@@ -205,7 +218,9 @@ func verifyObjects(base string, idx *format.Index) error {
 		if err := verifyOneObject(path, id, row.Offset, row.StoredLen, row.Compression, headerLen); err != nil {
 			return err
 		}
+		prog.Add(int64(row.StoredLen))
 	}
+	prog.Done()
 	return nil
 }
 
@@ -307,7 +322,7 @@ func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *form
 // own files, in INDEX's Files table order, and compares them to what is
 // on disc, one stripe at a time. It never holds the stream, the whole
 // checksum column or a whole parity file in memory.
-func verifyFEC(base, runDir string) error {
+func verifyFEC(base, runDir string, prog *progress.Reporter) error {
 	streamPaths, streamSizes, _, err := StreamFiles(base, runDir)
 	if err != nil {
 		return err
@@ -340,13 +355,13 @@ func verifyFEC(base, runDir string) error {
 	for j := range fec.M {
 		parityPaths[j] = filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
 	}
-	return compareFEC(sources, layout, runBuf, filepath.Join(runDir, "checksum.bin"), parityPaths)
+	return compareFEC(sources, layout, runBuf, filepath.Join(runDir, "checksum.bin"), parityPaths, prog)
 }
 
 // compareFEC recomputes the checksum column and the m parity files over
 // sources and compares each stripe against the checksum and parity files
 // already on disk, one stripe at a time.
-func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy []byte, checksumPath string, parityPaths []string) error {
+func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy []byte, checksumPath string, parityPaths []string, prog *progress.Reporter) error {
 	codec, err := fec.NewCodec(fec.K, fec.M)
 	if err != nil {
 		return err
@@ -395,6 +410,7 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 	wantParity := make([]byte, fec.BlockSize)
 	gotParity := make([]byte, fec.BlockSize)
 
+	prog.Start("verify: fec stripes checked", int64(L))
 	for i := range L {
 		for c := range fec.K {
 			if err := cols[c].readBlock(data[c]); err != nil {
@@ -425,7 +441,9 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 				return fmt.Errorf("image: parity column %d does not match the recomputed parity", j)
 			}
 		}
+		prog.Add(1)
 	}
+	prog.Done()
 	return nil
 }
 
