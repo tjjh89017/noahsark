@@ -123,6 +123,16 @@ roots with `--discs-dir`:
 A disc root missing from the list fails the restore with an error
 naming that disc's uuid and the objects on it the restore needed.
 
+`--include=PATH`, repeatable, restores only the named snapshot-relative
+paths (the source root's path plus the entry path within it) instead of
+the whole snapshot; a path naming a directory restores everything under
+it. A multi-disc restore then asks only for the objects those paths
+need, so a disc holding none of them can stay out of the drive:
+
+```sh
+./noahsark restore tree0 --include=srv/data/etc SNAPSHOT-ID restored
+```
+
 ## Disc capacity
 
 Marketing sizes are not the real capacity. A "25 GB" BD-R actually holds
