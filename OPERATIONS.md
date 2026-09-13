@@ -1,6 +1,6 @@
 # NoahsArk operations
 
-**Document version 3.1.** Format major 1.
+**Document version 3.2.** Format major 1.
 
 This document defines everything a NoahsArk implementation does on the host
 that is not an on-disc byte. It covers the local repository and its files, the
@@ -848,8 +848,8 @@ hours.
 6. Reuse the parent tree entry, unchanged, for every unchanged path.
 7. Apply the deletions from the listing diff.
 8. Record the original source root path in the snapshot, not the mirror path.
-9. Derive every hardlink group id from the source device and inode numbers
-   of the listing, never from the mirror copy.
+9. Commit every path as an independent tree entry. Phase 1 does not group
+   hardlinked paths; see FORMAT.md section 6.14.
 10. Clear staging/mirror/ after the objects reach STAGED.
 ```
 
@@ -958,9 +958,9 @@ untrusted for metadata.
 | ctime | Reliable | Server-dependent | Not reliable | `source.quick_check` defaults to `size_mtime` for a remote root. `NO_CTIME` is set. |
 | mtime granularity | 1 ns | 1 ns to 1 s | 1 s to 2 s | A difference below `source.mtime_slack` counts as equal. `MTIME_SLACK` is set. |
 | Hole detection | Supported | Usually supported | Often unsupported | Fall back to reading the whole file. `NO_SPARSE` is set. |
-| Link count | Exact | Usually exact | Often not exposed | A mount that exposes neither link counts nor inode numbers detects no group. `NO_HARDLINKS` is set. |
+| Link count | Exact | Usually exact | Often not exposed | Not used in Phase 1: every hardlinked path is stored as an independent entry regardless of link count (see 7.4 and FORMAT.md section 6.14). |
 | uid, gid, mode | Real | Real with matching id maps | Often synthesized | Recorded as seen. `SYNTHETIC_IDS` is set, and `restore` warns once. |
-| Extended attributes and ACLs | Full | Partial | Rarely | Recorded when readable. Absent otherwise, and reported in the loss report. |
+| Extended attributes and ACLs | Full | Partial | Rarely | Phase 2. Recorded when readable. Absent otherwise, and reported in the loss report. |
 | Name case | Distinguished | Distinguished | Often not distinguished | Names are stored as `readdir` returned them. `CASE_INSENSITIVE` is set. |
 | In-flight change | Detected | Detected | Detected | The rule of section 7.6 is unchanged. |
 
@@ -2456,7 +2456,7 @@ reason is the requirement. The system calls named at each step are
 
 1. Create the object: `openat`, `mkdirat`, `symlinkat`, `mknodat`.
 2. Write the content.
-3. Set xattrs and ACLs.
+3. Set xattrs and ACLs. Phase 2.
 4. `fchownat(AT_SYMLINK_NOFOLLOW)`. chown clears setuid and setgid on Linux, so
    it must come before chmod.
 5. `fchmodat`. It must follow chown to restore setuid and setgid.
@@ -2470,17 +2470,15 @@ reason is the requirement. The system calls named at each step are
 
 ### 15.3 Hardlinks
 
-FORMAT.md section 6.14 gives the group id rules and the membership rules.
+FORMAT.md section 6.14 gives the current rule. Phase 1 stores every
+hardlinked path as an independent tree entry, and the restorer creates an
+independent file for each one. Link identity is not preserved: two files that
+were one inode on the source become two separate inodes after restore.
+Content dedup already stores the shared data once, so no disc space is lost.
 
-The restorer keeps a map from `hardlink_group` to the first restored
-`(directory, name)`. On a second member it creates a hard link to that first
-member, by directory descriptor and name, never by a path string. On failure it
-writes the content again and records a `hardlink_degraded` event.
-
-Hard links are created with flags that do not follow a symlink.
-
-In mirror mode the hardlink group ids come from the source listing's device and
-inode numbers, never from the mirror copy.
+Restoring the source's hard links, so that a group of source paths shares one
+inode again after restore, is Phase 2. `hardlink_group` and `HARDLINK_MEMBER`
+stay reserved on disc for it (FORMAT.md section 6.14).
 
 ### 15.4 Failure policy
 
@@ -2534,7 +2532,8 @@ invariant with its own calls.
 3. Create symlinks with `symlinkat`. Do not validate or rewrite the target.
 4. With `--overwrite`, unlink the existing path first and then create. Never
    open an existing path for truncation.
-5. Create hardlinks with `linkat` and flags 0, never `AT_SYMLINK_FOLLOW`.
+5. Phase 2: create hardlinks with `linkat` and flags 0, never
+   `AT_SYMLINK_FOLLOW`.
 6. On Windows, open with `FILE_FLAG_OPEN_REPARSE_POINT`, and reject reserved
    device names and trailing dots or spaces.
 7. Apply directory times in the deferred pass with the retained descriptor.
@@ -2956,12 +2955,13 @@ Runs the restore pipeline of section 14.7.
 | `--interactive` | Prompt on every disc, not only on a mismatch. |
 | `--no-eject` | Do not eject after each disc. |
 | `--overwrite` | Unlink an existing path first and then create it. |
-| `--no-owner`, `--no-xattr`, `--no-acl`, `--no-flags`, `--no-times` | Skip that metadata field. |
+| `--no-owner`, `--no-flags`, `--no-times` | Skip that metadata field. |
+| `--no-xattr`, `--no-acl` | Skip that metadata field. Phase 2. |
 | `--numeric-owner` | Always use the stored numeric ids. |
-| `--xattr-exclude` | Skip extended attributes whose name matches. |
-| `--no-hardlinks` | Write each hardlink member as its own file. |
+| `--xattr-exclude` | Skip extended attributes whose name matches. Phase 2. |
+| `--no-hardlinks` | No effect in Phase 1: every hardlink member already restores as its own file. Reserved for the later phase that restores hardlink groups (FORMAT.md section 6.14). |
 | `--metadata-strict` | Turn every metadata failure into a hard error. |
-| `--translate-acl` | Translate between ACL models. Never grants more access than the source entry did. |
+| `--translate-acl` | Translate between ACL models. Never grants more access than the source entry did. Phase 2. |
 | `--report` | Write the loss report of section 15.9 to this file. |
 | `--report-replay` | Write a replay plan a privileged user can run afterwards. |
 | `--strict-unstable` | Refuse to write an `UNSTABLE` entry and report it as missing. |
@@ -3503,7 +3503,7 @@ file first. Physical burns are a manual checklist, not CI.
 | 10 | Append LBA stability: every earlier object keeps its LBA | OPS | 11 | Cache-less restore from the newest image alone | OPS | 12 | Restore plan determinism | OPS |
 | 13 | Metadata restore matrix as a non-root user | OPS | 14 | Sparse round-trip: holes in, holes out | FORMAT | 15 | Compression heuristic: a low-gain chunk is stored uncompressed | FORMAT |
 | 16 | Tree canonical order: two identical directories hash identically | FORMAT | 17 | Name validation: every illegal name is refused at parse time | FORMAT | 18 | Symlink redirection attack: a planted symlink does not escape | OPS |
-| 19 | Hardlink group: restoring one member gives a correct file | OPS | 20 | State log replay after a truncated write | OPS | 21 | GC refuses to delete an object that is not CLEAN | OPS |
+| 19 | Hardlinked source paths restore as independent, correct files; dedup stores the data once | OPS | 20 | State log replay after a truncated write | OPS | 21 | GC refuses to delete an object that is not CLEAN | OPS |
 | 22 | Burn plan refusal on a bad CRC or a misaligned seek | OPS | 23 | Forced capacity: the image, the budget and the FEC layout all shrink | OPS | 24 | Reserve estimator: the worked examples and the invariant identities | OPS |
 | 25 | Connectivity check reports a missing object with no disc mounted | OPS | 26 | Quick check: a matching file is never read | OPS | 27 | In-flight change: parent entry reused, else `UNSTABLE` set | OPS |
 | 28 | Mirror mode: `sync` transfers only changed paths and the snapshot matches direct mode | OPS | 29 | BURNED objects stay in staging until `verify` succeeds | OPS | 30 | Catalog cap: the manifest history shrinks and the snapshot objects stay | FORMAT |
@@ -3515,7 +3515,7 @@ file first. Physical burns are a manual checklist, not CI.
 | 46 | Probable coverage: marked in the plan, confirmed at read time | OPS | 47 | Partial `pack`: no valid `burn.bin`; the next `pack` recovers | OPS | 48 | A version 1 writer emits no `"BMAP"` and no `"RIDX"`; a reader skips unknown chunk ids | FORMAT |
 | 49 | Kind 6 is refused in a manifest, layout and state log record | FORMAT | 50 | Fill order: two writers produce the same step 5 and step 6 order | FORMAT | 51 | Prerequisites: one edge deep; `"SRCR"` equals the distinct run seqs of `"PREQ"` | FORMAT |
 | 52 | Bundle boundary: the close rule is exact and reproducible | FORMAT | 53 | Tree entry layout: area order, alignment and padding | FORMAT | 54 | TLV spill: largest first, ties by lowest `tlv_type`, loop stops at the threshold | FORMAT |
-| 55 | Hardlink membership depends on the snapshot alone | FORMAT | 56 | Close state: `run_flags` bit 0 and `state_flags` bit 0 set, `sealed` unchanged, append refused | FORMAT | 57 | Withdrawn run: catalog copies stay; dedup, planner, prerequisites and refs exclude it | FORMAT |
+| 55 | `hardlink_group` is always 0 and `HARDLINK_MEMBER` always clear in a Phase 1 tree | FORMAT | 56 | Close state: `run_flags` bit 0 and `state_flags` bit 0 set, `sealed` unchanged, append refused | FORMAT | 57 | Withdrawn run: catalog copies stay; dedup, planner, prerequisites and refs exclude it | FORMAT |
 | 58 | Run table completion: only `run_status` and `run_header_hash` ever change | FORMAT | 59 | `FORMAT.txt` equals the normative text byte for byte | FORMAT |  |  |  |
 
 ---

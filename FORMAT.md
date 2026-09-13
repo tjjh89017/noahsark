@@ -1,6 +1,6 @@
 # NoahsArk on-disc format
 
-Format major version 1. Document version 3.1.
+Format major version 1. Document version 3.2.
 
 This document defines every byte that NoahsArk writes onto a disc and every
 rule a reader applies to those bytes. It covers the binary conventions, object
@@ -1075,7 +1075,7 @@ name at parse time by section 6.12.
 | 6 | 1 | u8 | `entry_type` | 1 regular, 2 directory, 3 symlink, 4 chardev, 5 blockdev, 6 fifo, 7 socket. 0 is invalid. |
 | 7 | 1 | u8 | `entry_flags` | See section 6.7. |
 | 8 | 8 | u64 | `size` | Regular files only. 0 otherwise. |
-| 16 | 8 | u64 | `hardlink_group` | 0 = not a member of a hardlink group. |
+| 16 | 8 | u64 | `hardlink_group` | Reserved for a later phase. A Phase 1 writer writes 0. See section 6.14. |
 | 24 | 8 | i64 | `mtime_sec` | Seconds since 1970-01-01 UTC. |
 | 32 | 8 | i64 | `atime_sec` | Valid only when `ATIME_ABSENT` is clear. |
 | 40 | 8 | i64 | `ctime_sec` | Valid only when `CTIME_ABSENT` is clear. |
@@ -1115,7 +1115,7 @@ only. The type is not in the mode.
 
 | Bit | Name | Meaning |
 |---:|---|---|
-| 0 | `HARDLINK_MEMBER` | The entry belongs to a hardlink group. Redundant with a non-zero `hardlink_group`, kept for a cheap test. |
+| 0 | `HARDLINK_MEMBER` | Reserved for a later phase. A Phase 1 writer clears this bit. See section 6.14. |
 | 1 | `ATIME_ABSENT` | `atime_sec` and `atime_nsec` carry no information. |
 | 2 | `CTIME_ABSENT` | `ctime_sec` and `ctime_nsec` carry no information. A writer sets it when the `metadata.ctime` configuration key is false, and when that key is true and the source reported no ctime. |
 | 3 | `BTIME_ABSENT` | `btime_sec` and `btime_nsec` carry no information. |
@@ -1206,24 +1206,24 @@ a u64 uncompressed length. The id names a chunk, or a chunklist when
 | 0x0002 | `USER_NAME` | no | UTF-8 bytes. |
 | 0x0003 | `GROUP_NAME` | no | UTF-8 bytes. |
 | 0x0004 | `ROOT_PATH` | no | Raw bytes of a source root's absolute path. Only on an entry of the root tree; source roots are defined in the operations document. |
-| 0x0010 | `XATTR` | no | `u32 count`, then `count` items of `{u32 name_len, u32 value_len, name, value}`. Each item as a whole is zero-padded to a multiple of 4 bytes after `value`; `name` and `value` are not padded separately. Sorted by name bytes. |
-| 0x0011 | `ACL_ACCESS` | no | `u32 count`, then `{u16 tag, u16 perm, u32 id}`. `tag`: 1 user_obj, 2 user, 3 group_obj, 4 group, 5 mask, 6 other. |
-| 0x0012 | `ACL_DEFAULT` | no | Same shape. Directories only. |
-| 0x0013 | `ACL_NFS4` | no | `u32 count`, then `{u16 type, u16 who_kind, u32 flags, u32 mask, u32 who_id}`. |
+| 0x0010 | `XATTR` | no | Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a `version_minor` bump. A Phase 1 reader treats it as an unknown TLV. |
+| 0x0011 | `ACL_ACCESS` | no | Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a `version_minor` bump. A Phase 1 reader treats it as an unknown TLV. |
+| 0x0012 | `ACL_DEFAULT` | no | Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a `version_minor` bump. A Phase 1 reader treats it as an unknown TLV. |
+| 0x0013 | `ACL_NFS4` | no | Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a `version_minor` bump. A Phase 1 reader treats it as an unknown TLV. |
 | 0x0020 | `LINUX_ATTR` | no | `u32` `FS_IOC_GETFLAGS` bitmask. |
 | 0x0021 | `BSD_FLAGS` | no | `u32` `st_flags`. |
 | 0x0030 | `WIN_ATTRS` | no | `u32` `FILE_ATTRIBUTE_*` bitmask. |
-| 0x0031 | `WIN_SD` | no | Opaque self-relative `SECURITY_DESCRIPTOR`. Inheritance flags preserved exactly. |
-| 0x0032 | `WIN_ADS` | no | `u32 count`, then `{u16 name_len_bytes, UTF-16LE name, u64 size, u32 hash_count, 32-byte ids}`. |
+| 0x0031 | `WIN_SD` | no | Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a `version_minor` bump. A Phase 1 reader treats it as an unknown TLV. |
+| 0x0032 | `WIN_ADS` | no | Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a `version_minor` bump. A Phase 1 reader treats it as an unknown TLV. |
 | 0x8000-0xBFFF | reserved critical | yes | Future critical extensions. |
 | 0xF000-0xFFFF | vendor | no | Never critical. |
 
-POSIX ACLs are stored in the portable binary form of this registry. A writer
-must not store the Linux `system.posix_acl_access` blob and must not store the
-text form.
-
-macOS resource forks and Finder info are plain xattrs and use TLV `XATTR`. They
-have no special field.
+Phase 1 stores Unix permissions only: `mode`, `uid` and `gid` in the tree
+entry fixed header. `XATTR`, `ACL_ACCESS`, `ACL_DEFAULT`, `ACL_NFS4`, `WIN_SD`
+and `WIN_ADS` are reserved TLV types that carry extended attributes or an
+access control list. A Phase 1 reader does not implement any of their item
+layouts, so it applies the unknown-TLV rule above to each: keep it on copy and
+report it on restore.
 
 `SYMLINK_TARGET` is mandatory when `entry_type` is 3 and is never validated as
 UTF-8.
@@ -1249,9 +1249,10 @@ a chunk spill reference. More than one chunk gives a chunklist object, and the
 TLV sets `SPILL_IS_CHUNKLIST` as well as `SPILLED`. The u64 length is the
 uncompressed payload length in both cases.
 
-Eligible for spill: `XATTR`, `ACL_ACCESS`, `ACL_DEFAULT`, `ACL_NFS4`, `WIN_SD`,
-`WIN_ADS`. Never spilled: the name, `SYMLINK_TARGET`, `USER_NAME`,
-`GROUP_NAME`.
+`XATTR`, `ACL_ACCESS`, `ACL_DEFAULT`, `ACL_NFS4`, `WIN_SD` and `WIN_ADS` are
+reserved in Phase 1, so a Phase 1 writer never spills them; a later phase
+defines their spill eligibility with their item layout. Never spilled: the
+name, `SYMLINK_TARGET`, `USER_NAME`, `GROUP_NAME`.
 
 ### 6.12 Name validation
 
@@ -1267,42 +1268,21 @@ Inode numbers, source filesystem device ids and link counts are never stored.
 
 ### 6.14 Hardlinks
 
-Every member of a hardlink group carries the same `hardlink_group` id. Every
-member carries the full content reference. No member is a master. Directories
-never have a hardlink group.
+Phase 1 stores every hardlinked path as an independent tree entry. Content
+dedup already stores the shared data once, so each entry carries its own full
+content reference. A Phase 1 writer writes `hardlink_group` as 0 on every
+entry, and clears `HARDLINK_MEMBER`. A Phase 1 reader treats an entry as an
+independent file whenever it finds `hardlink_group` 0, and it treats an entry
+as an independent file even if it finds a non-zero value: Phase 1 does not
+group entries.
 
-The id is derived once per source inode:
+`hardlink_group` and `HARDLINK_MEMBER` stay reserved for a later phase. A
+later phase may define a non-zero `hardlink_group` and a grouping rule, with a
+`version_minor` bump.
 
-```
-hardlink_group = u64le( BLAKE3-256( repo_uuid || u64le(st_dev) || u64le(st_ino) )[0 .. 7] )
-if hardlink_group == 0: hardlink_group = 1
-```
-
-A file gets a non-zero `hardlink_group` when, and only when, the walk of the
-commit sees two or more entries with the same source device and inode number
-inside the source roots, after the exclude rules have been applied. A source
-link count above 1 is not enough on its own. A file whose other links are all
-invisible to the walk is stored with `hardlink_group` 0 and `HARDLINK_MEMBER`
-clear. Hardlink membership therefore depends on the snapshot alone.
-
-`st_dev` and `st_ino` are those of the source file, never of a mirror copy.
-When the source does not report link counts, no group is formed.
-
-When a listing reports link counts but no device or inode numbers, the writer
-derives the id from the source path set of the group instead:
-
-```
-paths          = the source paths of the group, sorted by raw bytes, each
-                 followed by one NUL byte
-hardlink_group = u64le( BLAKE3-256( repo_uuid || 0x01 || paths )[0 .. 7] )
-if hardlink_group == 0: hardlink_group = 1
-```
-
-The `0x01` byte separates this rule from the device-and-inode rule. A path-set
-id changes when a member is added or removed, and the writer then re-emits
-every member of the group with the new id, so that all members of one group in
-one snapshot carry one id. The snapshot sets `source_flags` bit 6,
-`HARDLINK_BY_PATH`.
+Restore in Phase 1 does not recreate the source's hardlinks. Each stored entry
+is restored as its own file, with its own inode. Link identity is not
+preserved.
 
 
 ### 6.15 Snapshot
@@ -1396,12 +1376,12 @@ too. A root with no rule gives `len` 0.
 | Bit | Name | Meaning |
 |---:|---|---|
 | 0 | `NO_CTIME` | ctime was not trusted, so the quick check used size and mtime only. |
-| 1 | `NO_HARDLINKS` | The source did not report link counts, so hardlink groups were not detected. |
+| 1 | reserved | Zero in Phase 1. Phase 1 does not detect hardlink groups; see section 6.14. |
 | 2 | `NO_SPARSE` | `SEEK_HOLE` was unavailable, so holes were found by reading. |
 | 3 | `SYNTHETIC_IDS` | uid, gid or mode may have been synthesized by the mount. |
 | 4 | `CASE_INSENSITIVE` | The source did not distinguish names by case. |
 | 5 | `MTIME_SLACK` | An mtime slack was applied in the quick check. |
-| 6 | `HARDLINK_BY_PATH` | Hardlink group ids were derived from source path sets, not from device and inode numbers (section 6.14). |
+| 6 | reserved | Zero in Phase 1. See section 6.14. |
 | 7 | reserved | Zero. |
 
 A remote source root records its limits in `source_type` and `source_flags`. A
@@ -1784,7 +1764,7 @@ bytes only, never the 1536 zero bytes.
 | 124 | 4 | u32 | `bundle_threshold` | Bytes. |
 | 128 | 8 | u64 | `bundle_target` | Bytes. |
 | 136 | 8 | u64 | `object_count` | Objects in this run. Equals `record_count` of the manifest. |
-| 144 | 8 | u64 | `payload_bytes` | Stored object bytes in this run: the sum of `byte_len` over the extent records of `layout.bin` whose `file_role` is 0. Object headers are included, a fragmented object is counted once over all its extents, and a bundle is counted once, not per chunk. |
+| 144 | 8 | u64 | `payload_bytes` | Stored object bytes in this run: the sum of `byte_len` over the extent records of `layout.bin` whose `file_role` is 0. Each extent's `byte_len` is the bytes that extent carries, so a fragmented object's extents sum to its header plus its whole stored payload, counted once, and a bundle is counted once, not per chunk. |
 | 152 | 8 | u64 | `duplicate_bytes` | Bytes written again for locality. |
 | 160 | 8 | u64 | `manifest_lba` | LBA of the manifest container. |
 | 168 | 8 | u64 | `manifest_sectors` | Length in sectors. |
@@ -1835,8 +1815,9 @@ both values and names the run seq.
 `created_sec` is pack time, never burn time.
 
 `payload_bytes` is the sum of `byte_len` over the layout extent records whose
-`file_role` is 0. Object headers are included, a fragmented object is counted
-once over all its extents, and a bundle is counted once.
+`file_role` is 0. Each extent's `byte_len` is the bytes that extent carries,
+so summing a fragmented object's extents yields its header plus its whole
+stored payload, counted once over all its extents; a bundle is counted once.
 
 `snapshot_count` counts only snapshot objects under `/NOAHSARK/snapshots/`, so
 it equals the number of manifest records with `kind` 5.
@@ -1939,7 +1920,7 @@ Extent record, 64 bytes:
 |---:|---:|---|---|---|
 | 0 | 32 | u8[32] | `content_id` | Object id, or bundle id for a bundle extent. For a fixed-name file, the hash of the file bytes under `hash_algo`. All zero for file roles 1, 5, 10, 11 and 12: the header copies, `layout.bin` itself, `checksum.bin` and the parity files. Their bytes become final only after this table is written (section 8.6); each has its own CRC, and the parity covers them. |
 | 32 | 8 | u64 | `start_lba` | Absolute LBA of the first sector. |
-| 40 | 8 | u64 | `byte_len` | Bytes of the object header plus stored payload. |
+| 40 | 8 | u64 | `byte_len` | Bytes this extent carries: object header plus stored payload for the first extent of an object, stored payload alone for a later extent. |
 | 48 | 4 | u32 | `sector_count` | Sectors this extent covers. |
 | 52 | 4 | u32 | `byte_off` | Byte offset inside the first sector. |
 | 56 | 2 | u16 | `extent_index` | 0 for the first extent of an object. |
@@ -1956,7 +1937,10 @@ itself.
 
 A fragmented file produces several records with the same `content_id` and
 increasing `extent_index`. The record with `extent_flags` bit 0 set is the
-last.
+last. A reader reconstructs the object's bytes by reading these records in
+increasing `extent_index` order and concatenating their `byte_len` spans; the
+first extent's `byte_len` includes the object header, and each later extent's
+`byte_len` is stored payload only.
 
 `content_id` is all zero for file roles 1, 5, 10, 11 and 12, whose bytes become
 final only after the table is written.
@@ -2329,7 +2313,7 @@ writer writes those bytes and no others, apart from the minor version slot
 `<N>` on the first line.
 
 `FORMAT.txt` is plain ASCII with LF line endings, tab bytes as the only column
-separator, and at most 64 KiB. The major 1 minor 0 text is 40,485 bytes long in
+separator, and at most 64 KiB. The major 1 minor 0 text is 41,097 bytes long in
 825 lines. A writer that produces a different length for minor 0 has a defect.
 
 `FORMAT.txt` holds seven parts in a fixed order: FORMAT RULES, REGISTRIES with
@@ -3660,7 +3644,7 @@ The golden vectors cover them.
 | Common object header | One chunk of stated bytes, stored with zstd level 3 under the frame parameters of section 5.3 and a named `tool_version`, and stored uncompressed |
 | Bundle | Three stated small chunks |
 | Chunklist | 100 stated chunk ids and lengths |
-| Tree | A directory with a regular file, a subdirectory, a symlink, a hardlink pair, a device node, one xattr and one spilled TLV, with stated metadata |
+| Tree | A directory with a regular file, a subdirectory, a symlink, two entries sharing one source inode and stored as independent entries, a device node, one xattr and one spilled TLV, with stated metadata |
 | Snapshot | A stated root tree, parent, generation, times and TLVs |
 | Ref record | A stated name, snapshot id, time and run seq |
 | Disc superblock | Stated identity, capacity, profile and reserve values |
@@ -3678,7 +3662,6 @@ The golden vectors cover them.
 | Local ref log and notes file | Two stated records of each |
 | State log | Three stated records, plus a truncated-replay result |
 | Burn plan | A stated plan with two steps |
-| Hardlink group id | A stated repository uuid, `st_dev` and `st_ino` |
 | Root tree name encoding | `/srv/data`, `/a%b/c`, `/x\y` |
 | Exclude patterns | A stated tree and a stated rule set |
 | CRC-32C | The 9-byte string `123456789` |
@@ -3691,7 +3674,7 @@ The text below is the exact content of `/NOAHSARK/FORMAT.txt`. A writer writes
 these bytes and no others. The first line is the one substitution slot: it
 carries the `version_minor` of the superblock in decimal, which is 0 here.
 
-The text is 40,485 bytes long in 825 lines, as section 8.5 states.
+The text is 41,097 bytes long in 825 lines, as section 8.5 states.
 
 ```
 NoahsArk format major 1 minor 0
@@ -3824,15 +3807,15 @@ Type	Name	Critical	Payload
 0x0002	USER_NAME	no	UTF-8 bytes.
 0x0003	GROUP_NAME	no	UTF-8 bytes.
 0x0004	ROOT_PATH	no	Raw bytes of a source root's absolute path. Only on an entry of the root tree; source roots are defined in the operations document.
-0x0010	XATTR	no	u32 count, then count items of {u32 name_len, u32 value_len, name, value}. Each item as a whole is zero-padded to a multiple of 4 bytes after value; name and value are not padded separately. Sorted by name bytes.
-0x0011	ACL_ACCESS	no	u32 count, then {u16 tag, u16 perm, u32 id}. tag: 1 user_obj, 2 user, 3 group_obj, 4 group, 5 mask, 6 other.
-0x0012	ACL_DEFAULT	no	Same shape. Directories only.
-0x0013	ACL_NFS4	no	u32 count, then {u16 type, u16 who_kind, u32 flags, u32 mask, u32 who_id}.
+0x0010	XATTR	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
+0x0011	ACL_ACCESS	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
+0x0012	ACL_DEFAULT	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
+0x0013	ACL_NFS4	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
 0x0020	LINUX_ATTR	no	u32 FS_IOC_GETFLAGS bitmask.
 0x0021	BSD_FLAGS	no	u32 st_flags.
 0x0030	WIN_ATTRS	no	u32 FILE_ATTRIBUTE_* bitmask.
-0x0031	WIN_SD	no	Opaque self-relative SECURITY_DESCRIPTOR. Inheritance flags preserved exactly.
-0x0032	WIN_ADS	no	u32 count, then {u16 name_len_bytes, UTF-16LE name, u64 size, u32 hash_count, 32-byte ids}.
+0x0031	WIN_SD	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
+0x0032	WIN_ADS	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
 0x8000-0xBFFF	reserved critical	yes	Future critical extensions.
 0xF000-0xFFFF	vendor	no	Never critical.
 
@@ -3970,7 +3953,7 @@ offset	size	type	name	meaning
 6	1	u8	entry_type	1 regular, 2 directory, 3 symlink, 4 chardev, 5 blockdev, 6 fifo, 7 socket. 0 is invalid.
 7	1	u8	entry_flags	See section 6.7.
 8	8	u64	size	Regular files only. 0 otherwise.
-16	8	u64	hardlink_group	0 = not a member of a hardlink group.
+16	8	u64	hardlink_group	Reserved for a later phase. A Phase 1 writer writes 0. See section 6.14.
 24	8	i64	mtime_sec	Seconds since 1970-01-01 UTC.
 32	8	i64	atime_sec	Valid only when ATIME_ABSENT is clear.
 40	8	i64	ctime_sec	Valid only when CTIME_ABSENT is clear.
@@ -4138,7 +4121,7 @@ offset	size	type	name	meaning
 124	4	u32	bundle_threshold	Bytes.
 128	8	u64	bundle_target	Bytes.
 136	8	u64	object_count	Objects in this run. Equals record_count of the manifest.
-144	8	u64	payload_bytes	Stored object bytes in this run: the sum of byte_len over the extent records of layout.bin whose file_role is 0. Object headers are included, a fragmented object is counted once over all its extents, and a bundle is counted once, not per chunk.
+144	8	u64	payload_bytes	Stored object bytes in this run: the sum of byte_len over the extent records of layout.bin whose file_role is 0. Each extent's byte_len is the bytes that extent carries, so a fragmented object's extents sum to its header plus its whole stored payload, counted once, and a bundle is counted once, not per chunk.
 152	8	u64	duplicate_bytes	Bytes written again for locality.
 160	8	u64	manifest_lba	LBA of the manifest container.
 168	8	u64	manifest_sectors	Length in sectors.
@@ -4211,7 +4194,7 @@ Layout extent record
 offset	size	type	name	meaning
 0	32	u8[32]	content_id	Object id, or bundle id for a bundle extent. For a fixed-name file, the hash of the file bytes under hash_algo. All zero for file roles 1, 5, 10, 11 and 12: the header copies, layout.bin itself, checksum.bin and the parity files. Their bytes become final only after this table is written (section 8.6); each has its own CRC, and the parity covers them.
 32	8	u64	start_lba	Absolute LBA of the first sector.
-40	8	u64	byte_len	Bytes of the object header plus stored payload.
+40	8	u64	byte_len	Bytes this extent carries: object header plus stored payload for the first extent of an object, stored payload alone for a later extent.
 48	4	u32	sector_count	Sectors this extent covers.
 52	4	u32	byte_off	Byte offset inside the first sector.
 56	2	u16	extent_index	0 for the first extent of an object.
