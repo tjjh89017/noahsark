@@ -435,58 +435,92 @@ func (opts PackOptions) asBuildOptions() BuildOptions {
 	}
 }
 
+// selectRunMaxIterations bounds the fixed-point search selectRun runs
+// over the run's own file count: the filesystem overhead estimate
+// shrinks the data budget as more objects are selected, and a smaller
+// budget can select fewer objects in turn. Each round only moves the
+// object count by a handful, so a handful of rounds always settles;
+// the bound is only a backstop against an unbroken back-and-forth.
+const selectRunMaxIterations = 20
+
 // selectRun walks candidates in dependency order and greedily takes the
-// longest prefix that fits opts.TargetCapacitySectors, given the run's
-// fixed (non-object, non-index) block cost and file count. It returns
-// the selected units and the set of external ids they reference that
-// this run does not store.
+// longest prefix whose stream blocks (the run's fixed files, the INDEX,
+// and every selected object, each padded to a whole fec.BlockSize
+// block) stay within the run's data budget: the whole FEC stripes that
+// fit opts.TargetCapacitySectors once the filesystem overhead of the
+// run's own file count is set aside. See OPERATIONS.md's capacity
+// estimator. Because the file count that sets the overhead is itself
+// the count of objects selected, selectRun iterates to a fixed point.
+// It returns the selected units and the set of external ids they
+// reference that this run does not store.
 func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uint64, fixedFileCount int) ([]packUnit, map[object.ID]bool, error) {
+	// sizeKnown and blocks cache each candidate's staged byte length and
+	// block count the first time a round reaches it, so a later round
+	// never re-stats a candidate and a candidate past every round's
+	// stopping point is never stat'd at all.
+	sizeKnown := make([]bool, len(candidates))
+	blocks := make([]uint64, len(candidates))
+
+	stripeWidth := fec.K + fec.M + 1
+
 	var selected []packUnit
-	selectedSet := make(map[object.ID]bool)
 	prereqSet := make(map[object.ID]bool)
-	var selectedBlocks uint64
+	objectCount := 0
+	for range selectRunMaxIterations {
+		fileCount := fixedFileCount + objectCount + 1 + fec.M + 1
+		dataBudget := DataBudgetBlocks(opts.TargetCapacitySectors, fileCount, fec.K, stripeWidth)
 
-	for _, cand := range candidates {
-		size, err := objectByteLen(opts.StagingDir, cand)
-		if err != nil {
-			return nil, nil, err
-		}
-		candBlocks := blockCount(size)
+		var round []packUnit
+		selectedSet := make(map[object.ID]bool)
+		roundPrereqs := make(map[object.ID]bool)
+		var selectedBlocks uint64
 
-		var newPrereqs []object.ID
-		for _, c := range cand.Children {
-			if !selectedSet[c] && !prereqSet[c] {
-				newPrereqs = append(newPrereqs, c)
+		for i, cand := range candidates {
+			if !sizeKnown[i] {
+				size, err := objectByteLen(opts.StagingDir, cand)
+				if err != nil {
+					return nil, nil, err
+				}
+				candidates[i].ByteLen = size
+				blocks[i] = blockCount(size)
+				sizeKnown[i] = true
 			}
+			cand.ByteLen = candidates[i].ByteLen
+			candBlocks := blocks[i]
+
+			var newPrereqs []object.ID
+			for _, c := range cand.Children {
+				if !selectedSet[c] && !roundPrereqs[c] {
+					newPrereqs = append(newPrereqs, c)
+				}
+			}
+
+			trialObjectCount := len(round) + 1
+			trialPrereqCount := len(roundPrereqs) + len(newPrereqs)
+			trialFileCount := fixedFileCount + trialObjectCount + 1 + fec.M + 1
+			trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
+				trialObjectCount*format.IndexObjectRecordLen + trialPrereqCount*format.IndexPrereqRecordLen
+			trialIndexBlocks := blockCount(uint64(trialIndexLen))
+			trialTotalBlocks := fixedBlocksExclIndex + trialIndexBlocks + selectedBlocks + candBlocks
+
+			if trialTotalBlocks > dataBudget {
+				break
+			}
+
+			round = append(round, cand)
+			selectedSet[cand.ID] = true
+			for _, p := range newPrereqs {
+				roundPrereqs[p] = true
+			}
+			selectedBlocks += candBlocks
 		}
 
-		trialObjectCount := len(selected) + 1
-		trialPrereqCount := len(prereqSet) + len(newPrereqs)
-		trialFileCount := fixedFileCount + trialObjectCount + 1 + fec.M + 1
-		trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
-			trialObjectCount*format.IndexObjectRecordLen + trialPrereqCount*format.IndexPrereqRecordLen
-		trialIndexBlocks := blockCount(uint64(trialIndexLen))
-		trialTotalBlocks := fixedBlocksExclIndex + trialIndexBlocks + selectedBlocks + candBlocks
-
-		L := uint64(0)
-		if trialTotalBlocks > 0 {
-			L = (trialTotalBlocks + uint64(fec.K) - 1) / uint64(fec.K)
-		}
-		checksumLen := L * fec.BlockSize
-		parityFileLen := (L + 1) * fec.BlockSize
-		streamBytesTotal := trialTotalBlocks * fec.BlockSize
-
-		if err := CheckCapacity(streamBytesTotal, checksumLen, uint64(fec.M)*parityFileLen, 2*RunFileLen, trialFileCount, opts.TargetCapacitySectors); err != nil {
+		selected = round
+		prereqSet = roundPrereqs
+		if len(round) == objectCount {
 			break
 		}
-
-		cand.ByteLen = size
-		selected = append(selected, cand)
-		selectedSet[cand.ID] = true
-		for _, p := range newPrereqs {
-			prereqSet[p] = true
-		}
-		selectedBlocks += candBlocks
+		objectCount = len(round)
 	}
 	return selected, prereqSet, nil
 }
