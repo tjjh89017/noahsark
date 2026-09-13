@@ -55,6 +55,27 @@ chain_media_order() {
 	esac
 }
 
+# chain_media_pack_flags MEDIA prints the pack --capacity (and, for a
+# forced media, --physical-capacity) flags for one real disc, trimmed
+# about 3% below media_sectors' raw target: a real UDF filesystem's own
+# descriptors and extents need some of a disc's declared sectors too, on
+# top of every byte pack's own accounting already reserves, and this
+# scenario's packs otherwise fill a run to within a few thousand sectors
+# of the raw target. media_capacity_flags' preset names leave no room
+# to trim, so this builds the flags from media_sectors' numbers instead;
+# image build still images the disc at its full, untrimmed preset.
+chain_media_pack_flags() {
+	local media="$1" target physical margin reduced
+	read -r target physical <<<"$(media_sectors "$media")"
+	margin=$((target / 33))
+	reduced=$((target - margin))
+	case "$media" in
+	dvd+r | bd25) echo "--capacity=$reduced" ;;
+	bd25-forced-10g) echo "--capacity=$reduced --physical-capacity=$physical" ;;
+	*) fail "unknown chain media: $media" ;;
+	esac
+}
+
 # chain_small_kind_flags KIND prints "PACKFLAGS" then "IMAGECAP" for one
 # of scenario_chain_small's three tiny, distinctly-sized stand-ins for
 # dvd+r, bd25 and a forced-capacity BD: small, but shaped the same way
@@ -313,11 +334,11 @@ scenario_chain() {
 	read -r media1 media2 media3 <<<"$(chain_media_order "$order")"
 
 	local flags1 flags2 flags3 cap1 cap2 cap3
-	flags1="$(media_capacity_flags "$media1")"
+	flags1="$(chain_media_pack_flags "$media1")"
 	cap1="$(media_image_capacity "$media1")"
-	flags2="$(media_capacity_flags "$media2")"
+	flags2="$(chain_media_pack_flags "$media2")"
 	cap2="$(media_image_capacity "$media2")"
-	flags3="$(media_capacity_flags "$media3")"
+	flags3="$(chain_media_pack_flags "$media3")"
 	cap3="$(media_image_capacity "$media3")"
 
 	chain_run "chain/$order" "$work" "$CHAIN_HALF_BYTES" "yes" \
