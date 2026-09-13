@@ -22,6 +22,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"math/rand"
 	"os"
@@ -71,9 +72,7 @@ func main() {
 	must(os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content of a, for the CI fixture disc"), 0o644))
 	must(os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("content of b, also for the CI fixture disc, a bit longer"), 0o644))
 	if contentBytes > 0 {
-		big := make([]byte, contentBytes)
-		rand.New(rand.NewSource(1)).Read(big)
-		must(os.WriteFile(filepath.Join(srcDir, "sub", "big.bin"), big, 0o644))
+		must(writeRandomFile(filepath.Join(srcDir, "sub", "big.bin"), contentBytes))
 	}
 
 	w := object.NewWriter(stagingDir)
@@ -100,6 +99,33 @@ func main() {
 	fmt.Println(treeDir)
 	fmt.Println(imagePath)
 	fmt.Println(srcDir)
+}
+
+// writeRandomFile streams n deterministic pseudo-random bytes to path, one
+// fixed-size buffer at a time, so a large fixture never sits in memory
+// whole.
+func writeRandomFile(path string, n int) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	r := rand.New(rand.NewSource(1))
+	const bufSize = 1 << 20
+	buf := make([]byte, bufSize)
+	w := bufio.NewWriter(f)
+	for remaining := n; remaining > 0; {
+		chunk := min(remaining, bufSize)
+		r.Read(buf[:chunk])
+		if _, err := w.Write(buf[:chunk]); err != nil {
+			return err
+		}
+		remaining -= chunk
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func mustSectors(s string) uint64 {
