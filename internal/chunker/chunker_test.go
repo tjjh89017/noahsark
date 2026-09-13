@@ -112,6 +112,25 @@ func chunkAll(t *testing.T, r io.Reader, p Profile) [][]byte {
 	}
 }
 
+// TestAllZeroInputCutsAtMax checks the zero-region rule: an all-zero
+// input of several times Max cuts into chunks of exactly Max bytes. The
+// chunker code has no special case for this; the property comes from the
+// gear table and mask alone, so it holds for the production profile too.
+func TestAllZeroInputCutsAtMax(t *testing.T) {
+	for _, p := range []Profile{testProfile, DefaultProfile} {
+		data := make([]byte, 5*p.Max)
+		chunks := chunkAll(t, bytes.NewReader(data), p)
+		if len(chunks) != 5 {
+			t.Fatalf("profile max=%d: got %d chunks, want 5", p.Max, len(chunks))
+		}
+		for i, chunk := range chunks {
+			if len(chunk) != p.Max {
+				t.Errorf("profile max=%d: chunk %d length %d, want %d", p.Max, i, len(chunk), p.Max)
+			}
+		}
+	}
+}
+
 func TestLargeRandomInput(t *testing.T) {
 	data := make([]byte, 200*testProfile.Max)
 	rand.New(rand.NewSource(42)).Read(data)
