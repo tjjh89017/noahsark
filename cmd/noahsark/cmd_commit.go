@@ -26,36 +26,36 @@ func cmdCommit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: noahsark commit SOURCE [--repo=PATH] [--ref=NAME]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit SOURCE [--repo=PATH] [--ref=NAME]")
 		return 2
 	}
 	source := fs.Arg(0)
 
 	repoDir, err := discoverRepo(*repoFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: commit:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
 	}
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: commit:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
 	}
 
 	w := object.NewWriter(cfg.StagingDir)
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: commit:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 
 	if err := updateRef(repoDir, *ref, snapID); err != nil {
-		fmt.Fprintln(stderr, "noahsark: commit:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
-	fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
-	fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
+	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
+	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
+	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
 	return 0
 }

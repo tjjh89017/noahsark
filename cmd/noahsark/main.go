@@ -56,7 +56,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `usage: noahsark <command> [arguments]
+	_, _ = fmt.Fprint(w, `usage: noahsark <command> [arguments]
 
 Phase 1 commands:
   init    SOURCE-less setup of a repository directory
