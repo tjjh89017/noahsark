@@ -25,13 +25,19 @@ var (
 
 // getEncoder returns the shared zstd encoder, built once with the frame
 // parameters this project's writer must emit: a single segment, the
-// content size present, no checksum, no dictionary.
+// content size present, no checksum, no dictionary. It runs with one
+// encoder goroutine and the encoder's low-memory mode, so its own held
+// buffers stay a fixed, small cost instead of scaling with GOMAXPROCS;
+// neither option changes the compression level or the frame bytes a
+// given input encodes to.
 func getEncoder() *zstd.Encoder {
 	encoderOnce.Do(func() {
 		enc, err := zstd.NewWriter(nil,
 			zstd.WithEncoderLevel(zstdLevel),
 			zstd.WithEncoderCRC(false),
 			zstd.WithSingleSegment(true),
+			zstd.WithEncoderConcurrency(1),
+			zstd.WithLowerEncoderMem(true),
 		)
 		if err != nil {
 			// The option set above is always valid; a failure here is a
