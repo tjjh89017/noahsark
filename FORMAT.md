@@ -1,6 +1,6 @@
 # NoahsArk on-disc format
 
-Format major version 1. Document version 0.4.2.
+Format major version 1. Document version 0.4.3.
 
 This document defines every byte that NoahsArk writes onto a disc and every
 rule a reader applies to those bytes. It covers the binary conventions, object
@@ -16,7 +16,7 @@ rationale and local state live in other documents and are not repeated here.
 
 - [1. Scope and conventions](#1-scope-and-conventions)
 - [2. Binary format rules](#2-binary-format-rules)
-  [2.1](#21-the-format-rules) · [2.2](#22-magic-values) · [2.3](#23-common-header) · [2.4](#24-feature-flag-registry) · [2.5](#25-strings) · [2.6](#26-registries) · [2.7](#27-version-policy) · [2.8](#28-hash-coverage-per-structure) · [2.9](#29-crc-coverage-per-structure) · [2.10](#210-limits) · [2.11](#211-trust-boundaries-and-safety-invariants)
+  [2.1](#21-the-format-rules) · [2.2](#22-magic-values) · [2.3](#23-common-header) · [2.4](#24-strings) · [2.5](#25-registries) · [2.6](#26-version-policy) · [2.7](#27-hash-coverage-per-structure) · [2.8](#28-crc-coverage-per-structure) · [2.9](#29-limits) · [2.10](#210-trust-boundaries-and-safety-invariants)
 - [3. Identity and hashing](#3-identity-and-hashing)
   [3.1](#31-the-content-id-rule) · [3.2](#32-hash-algorithms) · [3.3](#33-digest-fields-in-records) · [3.4](#34-text-form) · [3.5](#35-fan-out-on-disc) · [3.6](#36-hash-epochs-and-cross-epoch-references)
 - [4. Chunking](#4-chunking)
@@ -28,7 +28,7 @@ rationale and local state live in other documents and are not repeated here.
 - [7. Disc and run model](#7-disc-and-run-model)
   [7.1](#71-the-physical-disc) · [7.2](#72-disc-filesystem-profile) · [7.3](#73-the-run-and-the-fec-terms) · [7.4](#74-what-the-parity-does-and-does-not-cover) · [7.5](#75-disc-superblock) · [7.6](#76-run-header) · [7.7](#77-the-run-chain) · [7.8](#78-run-header-copies) · [7.9](#79-what-an-append-overwrites) · [7.10](#710-recovery-by-carving) · [7.11](#711-close-state) · [7.12](#712-raw-append) · [7.13](#713-forced-capacity) · [7.14](#714-how-a-lifecycle-state-is-recorded)
 - [8. Filesystem profiles and the volume tree](#8-filesystem-profiles-and-the-volume-tree)
-  [8.1](#81-profiles-a-reader-must-know) · [8.2](#82-files-at-the-volume-root) · [8.3](#83-run-directory-naming) · [8.4](#84-readmetxt) · [8.5](#85-formattxt) · [8.6](#86-fill-order-inside-a-run) · [8.7](#87-name-and-path-budget)
+  [8.1](#81-profiles-a-reader-must-know) · [8.2](#82-files-at-the-volume-root) · [8.3](#83-run-directory-naming) · [8.4](#84-readmetxt) · [8.5](#85-formattxt) · [8.6](#86-reference-decoder) · [8.7](#87-fill-order-inside-a-run) · [8.8](#88-name-and-path-budget)
 - [9. Capacity invariants](#9-capacity-invariants)
 - [10. Forward error correction](#10-forward-error-correction)
   [10.1](#101-parity-layout) · [10.2](#102-the-code) · [10.3](#103-checksum-column) · [10.4](#104-header-replication-and-parity-files) · [10.5](#105-decode-rule) · [10.6](#106-the-append-bound) · [10.7](#107-health-status-values)
@@ -89,7 +89,7 @@ Every sentence in this document is a rule. There are no informative blocks.
    padding byte. A reader does not interpret a reserved field and does not
    reject a nonzero value in one. A golden test checks that the writer wrote
    zero into every reserved field and every padding byte.
-4. Every structure begins with the 40-byte common header of section 2.3.
+4. Every structure begins with the 32-byte common header of section 2.3.
 5. A structure is a file-level container or an object payload header. A
    record inside a structure, a tree entry, a TLV, an INDEX
    table row, a REFS or DISCS row, is a record, not a structure. A record
@@ -97,9 +97,10 @@ Every sentence in this document is a rule. There are no informative blocks.
    own table states one.
 6. A reader refuses an unknown `version_major`. A reader accepts an unknown
    `version_minor` and ignores the fields it does not know.
-7. Every structure carries `required_feat` (u64) and `optional_feat` (u64) in
-   its common header. A reader refuses an unknown `required_feat` bit. A
-   reader ignores an unknown `optional_feat` bit.
+7. A `version_minor` bump may only append fields to the end of the fixed
+   body, and an old reader must be able to read the structure correctly
+   while ignoring them. Any change an old reader cannot ignore is a
+   `version_major` bump, and an old reader refuses it.
 8. A checksum covers only bytes the writer finalized before computing it. A
    structure with no separate body ends with one CRC over every byte before
    it. A container with a header and a body carries `header_crc32c` and
@@ -178,7 +179,7 @@ copies a hexadecimal column. A test asserts the two agree.
 
 A parity file carries one RUN header copy in its block 0 and no other
 structure of its own; a reader identifies it by that copy's `magic_kind`
-`RUN\0\0\0\0\0` and by the fill-order position section 8.6 and section 10.1
+`RUN\0\0\0\0\0` and by the fill-order position section 8.7 and section 10.1
 state.
 
 Six further magics name host-only structures whose bytes never reach a disc:
@@ -188,80 +189,45 @@ and no value in either list is ever reused.
 
 ### 2.3 Common header
 
-Purpose: the 40-byte header that begins every structure of this document. It
-carries identity, versioning and feature gating in one place, so that a tool
-recovering a damaged disc can scan the raw medium for the project magic and
-read enough to find the structure's own end.
+Purpose: the 32-byte header that begins every structure of this document. It
+carries identity and versioning in one place, so that a tool recovering a
+damaged disc can scan the raw medium for the project magic and read enough
+to find the structure's own end.
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
 | 0 | 8 | u8[8] | `magic_project` | ASCII `"NOAHSARK"`. |
 | 8 | 8 | u8[8] | `magic_kind` | ASCII kind name, zero-padded to 8 bytes, section 2.2. Compared as all 8 bytes. |
 | 16 | 2 | u16 | `version_major` | Refuse an unknown value. |
-| 18 | 2 | u16 | `version_minor` | Ignore an unknown value. |
-| 20 | 2 | u16 | `header_len` | Common header plus the fixed body. A reader reads `min(header_len, known length)` and skips the rest. |
+| 18 | 2 | u16 | `version_minor` | Accept an unknown value; read `min(header_len, known length)`. |
+| 20 | 2 | u16 | `header_len` | Common header plus the fixed body. |
 | 22 | 2 | u16 | `reserved_u16` | Zero. |
-| 24 | 8 | u64 | `required_feat` | Refuse on an unknown bit. |
-| 32 | 8 | u64 | `optional_feat` | Ignore an unknown bit. |
+| 24 | 8 | u64 | `reserved_u64` | Zero. |
 
 Field rules. `header_len` is the common header plus the structure's fixed
-body, that is at least 40. A reader computes the end of the fixed body from
+body, that is at least 32. A reader computes the end of the fixed body from
 `header_len`, never from its own compiled size, and skips `header_len -
 known_len` bytes when `header_len` is larger than the reader knows.
 
-`version_major` changes when an old reader would misread the structure. A
-version_minor bump may only append fields to the end of the fixed body: it
-never reorders, widens, or changes the meaning of an existing field. Only a
-`version_major` bump may re-lay out a body. A field that an old reader must
-understand to read the structure correctly takes a `required_feat` bit, not
-only a minor bump.
+Evolution rule. A `version_minor` bump may only append fields to the end of
+the fixed body, and an old reader must be able to read the structure
+correctly while ignoring them. Any change an old reader cannot ignore is a
+`version_major` bump, and an old reader refuses it. This is the whole
+compatibility mechanism: a minor bump duplicates nothing a major bump does
+not already cover, and a major bump duplicates nothing a minor bump does not
+already cover.
 
 A record inside a structure never carries this header.
 
 Every object file is the common header, then the 32-byte object header of
 section 6.1, then the kind body, then variable data. An object payload no
-longer carries its own magic, version or feature fields; those live once, in
-the common header.
+longer carries its own magic or version fields; those live once, in the
+common header.
 
 Hash and CRC coverage, and reader checks, are stated once per structure in
-sections 2.8, 2.9 and 12.1; this section states the shape only.
+sections 2.7, 2.8 and 12.1; this section states the shape only.
 
-### 2.4 Feature flag registry
-
-| Bit | Half | Name | Meaning |
-|---:|---|---|---|
-| 0 | required | `FEAT_COMPRESSION` | The structure may hold compressed payloads. |
-| 1 | required | `FEAT_BUNDLES` | Reserved for a later version; a Phase 1 writer never sets it; a reader refuses an unknown structure that sets it. |
-| 2 | required | `FEAT_BLOB` | Trees may reference a blob object. |
-| 3 | required | reserved | Never set by a version 1 writer. Earlier document versions gave this bit to a TLV spill mechanism, since removed: a TLV payload is always inline. |
-| 4 | required | `FEAT_CRYPTO` | Objects are encrypted. Not used in version 1. |
-| 5 | required | `FEAT_FEC_RS8` | The run carries GF(2^8) Reed-Solomon parity. |
-| 6 | required | `FEAT_FAN16` | The INDEX Objects table uses a 65536-entry fan-out. |
-| 0 | optional | `OPT_BITMAPS` | Per-snapshot reachability bitmaps are present. |
-| 1 | optional | reserved | Never set by a version 1 writer. |
-| 2 | optional | reserved | Never set by a version 1 writer. |
-| 3 | optional | `OPT_DISC_PARITY` | A disc-wide parity run is present. |
-
-Bits 7 to 63 of the required half and bits 4 to 63 of the optional half are
-reserved. A writer must set them to zero.
-
-A feature bit belongs to the structure that carries it. A reader checks only
-the bits of the structure it is reading. A feature bit is assigned once and is
-never reused.
-
-A version 1 writer sets exactly these bits and no other:
-
-| Structure | Bit | Set when |
-|---|---|---|
-| Object header (section 6.1) | `FEAT_COMPRESSION` | `compression` is not 0. |
-| Tree object (section 6.5) | `FEAT_BLOB` | Any entry is a regular file, since every regular file is a blob reference. |
-| Run header (section 7.6) | `FEAT_FEC_RS8` | Always. Every version 1 run carries parity. |
-| INDEX (section 11.1) | `FEAT_FAN16` | The Objects table fan-out is 16-bit. |
-| Run header (section 7.6) | `OPT_DISC_PARITY` | `run_kind` is 3, a disc-close parity run. Phase 3. |
-
-`FEAT_BUNDLES`, `FEAT_CRYPTO` and `OPT_BITMAPS` are never set by a version 1 writer.
-
-### 2.5 Strings
+### 2.4 Strings
 
 Purpose: a variable-length text field inside a structure.
 
@@ -272,7 +238,7 @@ Purpose: a variable-length text field inside a structure.
 | 4 | 4 | u32 | `length` | Byte count of the string data. |
 | 8 | `length` | u8[] | `data` | The bytes, as found. No terminator. |
 
-### 2.6 Registries
+### 2.5 Registries
 
 A registry id is assigned once. It is never reused and never renumbered.
 
@@ -307,13 +273,6 @@ whose digest is longer needs a new major version.
 | 3 | `P5` | 2 MiB | 8 MiB | 32 MiB | 2 |
 | 4-255 | reserved | | | | |
 
-**FEC scheme registry.**
-
-| Id | Name | Field | Shards | Status |
-|---:|---|---|---:|---|
-| 1 | `rs255-gf8` | GF(2^8) | 255 | Default. A stripe is `k + 1 + m = 255` blocks; the code is over the `k + m` data and parity shards (section 10.1). |
-| 2 | `rs-leopard-gf16` | GF(2^16) | up to 65536 | Reserved. |
-
 **Object kind registry.** Section 6.1 repeats it with detail.
 
 | Id | Name |
@@ -327,7 +286,7 @@ A ref is a row of the REFS table, section 11.2. It is not an object kind and
 carries no id in this registry.
 
 **File role registry.** Section 11.1 states the full table; this is the
-registry index. Ids 1 to 13 name the roles a Files row in INDEX may hold: the
+registry index. Ids 1 to 14 name the roles a Files row in INDEX may hold: the
 files of a run, not the catalog tables' own kinds, which section 2.2's
 `magic_kind` list already names.
 
@@ -336,33 +295,28 @@ files of a run, not the catalog tables' own kinds, which section 2.2's
 | Id | Name | Filesystem | Append mechanism | Status |
 |---:|---|---|---|---|
 | 0 | `oneshot` | UDF 2.01. Phase 1 builds UDF 2.01 only. | None in Phase 1. The disc is POW-formatted and left open, so a Phase 2 append can still reach it. | **Default. Phase 1.** |
-| 1 | `udf201-pow` | Pure UDF 2.01 | POW growth, by carving as section 10.3 states, never by a byte-deterministic image mirror. | Phase 2. |
-| 2 | `iso9660v1-l4-pow` | ISO 9660:1999 level 4, plain | growisofs `-Z` then `-M` on a POW BD-R, one session | Phase 3. |
-| 3-255 | reserved | | | |
+| 1-255 | reserved | | | |
 
 **Media type registry.**
 
-| Id | Name | Sectors | Bytes |
-|---:|---|---:|---:|
-| 1 | `BD-R SL 25` | 12,219,392 | 25,025,314,816 |
-| 2 | `BD-R DL 50` | 24,438,784 | 50,050,629,632 |
-| 3 | `BD-R XL TL 100` | 48,878,592 | 100,103,356,416 |
-| 4 | `BD-R XL QL 128` | 62,500,864 | 128,001,769,472 |
-| 5 | `BD-RE SL 25` | 12,219,392 | 25,025,314,816 |
-| 6 | `BD-RE DL 50` | 24,438,784 | 50,050,629,632 |
-| 7 | `BD-RE XL TL 100` | 48,878,592 | 100,103,356,416 |
-| 8 | `M-DISC BD SL 25` | 12,219,392 | 25,025,314,816 |
-| 9 | `M-DISC BD DL 50` | 24,438,784 | 50,050,629,632 |
-| 10 | `image` | variable | variable |
-| 11 | `Mini BD SL 8 cm` | 3,804,288 | 7,791,181,824 |
-| 12 | `Mini BD DL 8 cm` | 7,608,576 | 15,582,363,648 |
+| Id | Name | Sectors | Bytes | Status |
+|---:|---|---:|---:|---|
+| 1 | `BD-R SL 25` | 12,219,392 | 25,025,314,816 | **Default. Phase 1.** |
+| 2-255 | reserved | | | |
 
 The `Sectors` column states the medium's own physical unit, a fact of the
 media, not a NoahsArk on-disc address. The tool must take the true capacity
 from `growisofs -F`. The tool must not use a hardcoded number for a burn. The
-table is for planning and for labels.
+field is for planning and for labels.
 
-### 2.7 Version policy
+**FEC scheme registry.**
+
+| Id | Name | Field | Shards | Status |
+|---:|---|---|---:|---|
+| 1 | `rs255-gf8` | GF(2^8) | 255 | **Default. Phase 1.** A stripe is `k + 1 + m = 255` blocks; the code is over the `k + m` data and parity shards (section 10.1). |
+| 2-255 | reserved | | | |
+
+### 2.6 Version policy
 
 Three version numbers are independent of one another: the document version
 that heads this file, the program version of the software that reads and
@@ -384,16 +338,15 @@ known_len` bytes.
 
 Every structure has a fixed body size under its `version_major`, growing only
 by a major bump. A minor bump may only append fields to the end of the fixed
-body, giving meaning to what was reserved space.
-
-A feature an old reader can ignore takes an `optional_feat` bit. A feature an
-old reader must not ignore takes a `required_feat` bit.
+body, giving meaning to what was reserved space, and an old reader must be
+able to read the structure correctly while ignoring the appended fields. Any
+change an old reader cannot ignore is a major bump.
 
 `tool_version` (sections 7.5 and 7.6) is informational only. It never gates
 what a reader accepts; a reader never refuses a structure on the strength of
 its value.
 
-### 2.8 Hash coverage per structure
+### 2.7 Hash coverage per structure
 
 Every hash field that names another structure covers all bytes of that
 structure as they lie on the medium, with every CRC already filled in. No hash
@@ -413,7 +366,7 @@ is computed over a structure whose CRC is zeroed.
 Host-only structures carry hash fields of their own. None of those bytes
 reaches a disc, and the operations document holds their coverage table.
 
-### 2.9 CRC coverage per structure
+### 2.8 CRC coverage per structure
 
 | Structure | Field | Covers |
 |---|---|---|
@@ -429,7 +382,7 @@ reaches a disc, and the operations document holds their coverage table.
 Host-only structures carry CRC fields of their own. None of those bytes
 reaches a disc, and the operations document holds their coverage table.
 
-### 2.10 Limits
+### 2.9 Limits
 
 A writer refuses an input that exceeds a limit of this table and names the
 limit. A reader refuses a structure that exceeds one and names the limit.
@@ -446,18 +399,18 @@ limit. A reader refuses a structure that exceeds one and names the limit.
 | Ref name | 1 to 40 bytes | Section 6.17. |
 | Disc label | 64 bytes, in the superblock and in the DISCS row alike | Sections 7.5 and 11.3. |
 | Run sequence number | 1 to 9,999,999,999 | The 10-digit run directory name, section 8.3. |
-| Objects per run | 2^32 - 1 | `object_count`, section 11.1. The INDEX fan-out table holds cumulative u32 counts, so this is the limit INDEX can index; a writer refuses to pack a run past it. |
+| Objects per run | 2^32 - 1 | `object_count`, section 11.1, is u32, so this is the limit INDEX can index; a writer refuses to pack a run past it. |
 | File size | 2^64 - 1 bytes | Every size field is u64, section 2.1. |
-| Disc capacity | 2^64 - 1 sectors, a physical medium unit (section 2.6). | Section 7.5. |
+| Disc capacity | 2^64 - 1 sectors, a physical medium unit (section 2.5). | Section 7.5. |
 | FEC geometry | `k = 231`, `m = 23` | Section 10.1. |
 | On-disc object name | 68 characters | Section 3.4. |
-| Any on-disc name | 126 characters | Section 8.7. |
-| Any on-disc path | under 220 characters | Section 8.7. |
+| Any on-disc name | 126 characters | Section 8.8. |
+| Any on-disc path | under 220 characters | Section 8.8. |
 
 The host limits of the burn plan, the commit bundle, the shelf note and the
 host filesystems are not in this table. The operations document holds them.
 
-### 2.11 Trust boundaries and safety invariants
+### 2.10 Trust boundaries and safety invariants
 
 - Bytes read from a disc are untrusted until the content id verifies.
 - A local index is untrusted. Every cache answer is confirmed against INDEX
@@ -530,7 +483,7 @@ allows one level only.
 The superblock records the choice in `fanout_levels`.
 
 Metadata objects, that is blobs, trees and snapshots, are written before data
-objects, that is chunks, inside a run (section 8.6). That
+objects, that is chunks, inside a run (section 8.7). That
 ordering is a writer rule about fill order, not a rule about which directory
 a kind lives in: every non-snapshot object shares the one `objects/` root.
 
@@ -802,12 +755,12 @@ settings produce identical ids for identical data.
 
 ### 6.1 Object kinds and the object header
 
-Purpose: every stored object begins with the 40-byte common header of section
+Purpose: every stored object begins with the 32-byte common header of section
 2.3, naming `magic_kind` as `CHUNK`, `BLOB`, `TREE` or `SNAPSHOT`, then this
 32-byte object header, then the kind body, then any variable data. An object
-file therefore carries no magic, version or feature fields of its own beyond
-the common header: one object file is common header, object header, kind
-body, variable data.
+file therefore carries no magic or version fields of its own beyond the
+common header: one object file is common header, object header, kind body,
+variable data.
 
 | Id | Kind | Payload | References | Stored as |
 |---:|---|---|---|---|
@@ -845,12 +798,12 @@ Field rules. `kind` takes a value from the object kind registry, 1 to 4.
 the object header.
 
 Hash and CRC coverage. `header_crc32c` covers the common header, bytes 0 to
-39, and bytes 0 to 23 of the object header. The payload is covered by the
+31, and bytes 0 to 23 of the object header. The payload is covered by the
 content id, which is the hash of the uncompressed payload alone and never of
 either header.
 
 Reader checks. Check `magic_project` and `magic_kind`. Check `version_major`.
-Read `header_len` (section 2.3). Check `required_feat`. Verify
+Read `header_len` (section 2.3). Verify
 `header_crc32c` before using any field. Read `stored_len` bytes, decompress
 them into exactly `payload_len` bytes, hash the result and compare it with
 the digest in the file name.
@@ -1321,7 +1274,7 @@ format.
 Encryption and signing are reserved and unused in version 1. The `crypto` byte
 of the object header is 0. The disc superblock's reserved region is all zero;
 a later version places key material there, at an offset that version
-defines. `FEAT_CRYPTO` is never set.
+defines.
 
 ### 6.19 Canonical ordering
 
@@ -1451,55 +1404,42 @@ The superblock holds only **immutable** facts. Mutable disc state comes from
 the run chain (section 7.7) and from DISCS (section 11.3). That is what makes
 every NoahsArk structure on a disc append-only.
 
-Fixed body, after the 40-byte common header (`magic_kind` `DISC`):
+Fixed body, after the 32-byte common header (`magic_kind` `DISC`):
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 40 | 16 | u8[16] | `disc_uuid` | Unique for this physical disc. |
-| 56 | 16 | u8[16] | `repo_uuid` | The repository this disc belongs to. |
-| 72 | 8 | u64 | `disc_seq` | Monotonic position in the repository. |
-| 80 | 8 | u64 | `capacity_sectors` | As reported by the drive at first write. |
-| 88 | 8 | u64 | `capacity_forced_sectors` | Forced capacity, section 7.13. Equals `capacity_sectors` when no override was given. |
-| 96 | 32 | u8[32] | `prev_disc_super_hash` | Hash of the superblock of the highest `disc_seq` below this one of which the writer holds a verified copy. All zero when there is none, which includes `disc_seq` 0 and the first disc of a repository recreated by `init --repo-uuid`. |
-| 128 | 8 | i64 | `created_sec` | Pack time of the first run, seconds: the moment `pack` finalized that run's image. Not the burn time, which is unknown when these bytes are hashed (section 7.6). |
-| 136 | 4 | u32 | `created_nsec` | Nanoseconds. |
-| 140 | 4 | i32 | `tz_offset_sec` | Local zone offset at that pack time. |
-| 144 | 1 | u8 | `media_type` | Media type registry. |
-| 145 | 1 | u8 | `fs_profile` | Disc filesystem profile registry. |
-| 146 | 1 | u8 | `hash_algo` | Multicodec code of the first run, and of `prev_disc_super_hash`. Phase 1 writes 0x12. |
-| 147 | 1 | u8 | `digest_len` | 32. |
-| 148 | 1 | u8 | `chunker_profile` | Chunker profile of the first run. |
-| 149 | 1 | u8 | `compression` | Default compression of the first run. |
-| 150 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
-| 151 | 1 | u8 | `crypto` | 0 plaintext. |
-| 152 | 2 | u16 | `sector_size` | 2048. |
-| 154 | 2 | u16 | `fs_revision` | 0x0201 for UDF 2.01. 0x0004 for ISO 9660:1999 level 4. |
-| 156 | 2 | u16 | `fec_k` | Data columns. 231 in version 1. |
-| 158 | 2 | u16 | `fec_m` | Parity columns. 23 in version 1. |
-| 160 | 1 | u8 | `fanout_levels` | 1 by default. 2 is allowed under profile 1 and profile 0 only. |
-| 161 | 1 | u8 | `append_variant` | Profile 1 only. Writer-defined append variant id. 0 elsewhere. |
-| 162 | 1 | u8 | `capacity_is_forced` | 1 when `capacity_forced_sectors` is below `capacity_sectors`. |
-| 163 | 1 | u8 | `sealed` | 1 when the disc was burned sealed at its first write: `spare:none` and `-dvd-compat` at its first and only write (see the operations document). 0 when the disc was left open. It says nothing about a later `noahsark close`, because the superblock is never updated; the close state of an open disc lives in the run chain and DISCS (sections 7.7 and 11.3). |
-| 164 | 4 | u32 | `label_len` | Byte length of the label. |
-| 168 | 64 | u8[64] | `label` | UTF-8, zero-padded. |
-| 232 | 4 | u32 | `tool_version` | Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only; never gates reading (section 2.7). |
-| 236 | 4 | u32 | `reserved_u32` | Zero. |
-| 240 | 1804 | u8[1804] | `reserved` | Zero. |
+| 32 | 16 | u8[16] | `disc_uuid` | Unique for this physical disc. |
+| 48 | 16 | u8[16] | `repo_uuid` | The repository this disc belongs to. |
+| 64 | 8 | u64 | `disc_seq` | Monotonic position in the repository. |
+| 72 | 8 | u64 | `capacity_sectors` | As reported by the drive at first write. |
+| 80 | 8 | u64 | `capacity_forced_sectors` | Forced capacity, section 7.13. Equals `capacity_sectors` when no override was given. |
+| 88 | 32 | u8[32] | `prev_disc_super_hash` | Hash of the superblock of the highest `disc_seq` below this one of which the writer holds a verified copy. All zero when there is none, which includes `disc_seq` 0 and the first disc of a repository recreated by `init --repo-uuid`. |
+| 120 | 8 | i64 | `created_sec` | Pack time of the first run, seconds: the moment `pack` finalized that run's image. Not the burn time, which is unknown when these bytes are hashed (section 7.6). |
+| 128 | 4 | u32 | `created_nsec` | Nanoseconds. |
+| 132 | 4 | i32 | `tz_offset_sec` | Local zone offset at that pack time. |
+| 136 | 1 | u8 | `media_type` | Media type registry. |
+| 137 | 1 | u8 | `fs_profile` | Disc filesystem profile registry. |
+| 138 | 1 | u8 | `fanout_levels` | 1 by default. 2 is allowed under profile 1 and profile 0 only. |
+| 139 | 1 | u8 | `capacity_is_forced` | 1 when `capacity_forced_sectors` is below `capacity_sectors`. |
+| 140 | 1 | u8 | `sealed` | 1 when the disc was burned sealed at its first write: `spare:none` and `-dvd-compat` at its first and only write (see the operations document). 0 when the disc was left open. It says nothing about a later `noahsark close`, because the superblock is never updated; the close state of an open disc lives in the run chain and DISCS (sections 7.7 and 11.3). |
+| 141 | 3 | u8[3] | `reserved_u8` | Zero. Keeps `label_len` aligned. |
+| 144 | 4 | u32 | `label_len` | Byte length of the label. |
+| 148 | 64 | u8[64] | `label` | UTF-8, zero-padded. |
+| 212 | 4 | u32 | `tool_version` | Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only; never gates reading (section 2.6). |
+| 216 | 4 | u32 | `reserved_u32` | Zero. |
+| 220 | 1824 | u8[1824] | `reserved` | Zero. |
 | 2044 | 4 | u32 | `super_crc32c` | CRC-32C over bytes 0 to 2043. |
 
 Field rules. The superblock holds only immutable facts. Mutable disc state
-comes from the run chain and from DISCS.
+comes from the run chain and from DISCS. Every per-run parameter, that is
+the hash algorithm, the chunker profile, the compression default, the FEC
+scheme and geometry, and the sector size, lives in the run header (section
+7.6) only; the superblock never repeats it, so there is nothing for a run
+header to override.
 
 `prev_disc_super_hash` names the superblock of the highest `disc_seq` below
 this one of which the writer holds a verified copy. It is all zero when the
 writer holds none.
-
-The superblock's `hash_algo`, `chunker_profile` and `compression` fields
-describe the first run. A reader takes current values from the newest run
-header.
-
-`append_variant` records the profile 1 append variant. Every variant produces
-the same disc bytes, and a reader cannot tell them apart.
 
 `tool_version` is a u32. Its high 8 bits are a writer registry id, and its low
 24 bits are a version value that the named writer defines for itself. Registry
@@ -1512,8 +1452,8 @@ The superblock needs no second copy. It lies inside the first run's FEC
 stream, and the run headers carry the disc uuid, the repository uuid and the
 disc sequence.
 
-Reader checks. Check `magic_project`, `magic_kind`, `version_major` and
-`required_feat`. Verify `super_crc32c` before using any field. Check the
+Reader checks. Check `magic_project`, `magic_kind` and `version_major`.
+Verify `super_crc32c` before using any field. Check the
 superblock chain against the DISCS table of the newest catalog the reader
 holds. Any combination other than the accepted cases is a chain failure:
 refuse the disc and report the expected and the found value. A reader with no
@@ -1524,15 +1464,15 @@ that ground.
 
 Purpose: the identity, geometry, counts and pointers of one run.
 
-The run header is 512 bytes: the 40-byte common header (`magic_kind` `RUN`)
-plus a 472-byte fixed body. It is written as `RUN.bin` at the first file of
+The run header is 512 bytes: the 32-byte common header (`magic_kind` `RUN`)
+plus a 480-byte fixed body. It is written as `RUN.bin` at the first file of
 the run, in the first block of every parity file, and as `RUN2.bin` at the
 end of the run. That is `m + 2` copies. Every copy is byte-identical.
 
 Every copy occupies one whole 2048-byte sector: the header is bytes 0 to 511
 of that sector, and bytes 512 to 2047 are zero. **The files `RUN.bin` and
 `RUN2.bin` are therefore 2048 bytes long, not 512.** Their INDEX Files row
-gives `byte_len` 2048. `prev_run_hash` (section 2.8) and `run_hash` in DISCS
+gives `byte_len` 2048. `prev_run_hash` (section 2.7) and `run_hash` in DISCS
 (section 11.3) cover the 512 header bytes only, never the 1536 zero bytes.
 
 A recovery tool that has lost INDEX scans the raw medium for the project
@@ -1540,71 +1480,58 @@ magic and the `magic_kind` `RUN`, section 7.10.
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 40 | 16 | u8[16] | `disc_uuid` | The disc this run sits on. |
-| 56 | 16 | u8[16] | `repo_uuid` | The repository. |
-| 72 | 8 | u64 | `run_seq` | Monotonic run number in the repository, 1-based. |
-| 80 | 8 | u64 | `disc_seq` | Disc sequence number, 0-based. |
-| 88 | 2 | u16 | `fec_k` | Data columns. 231 in version 1. |
-| 90 | 2 | u16 | `fec_m` | Parity columns. 23 in version 1. |
-| 92 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
-| 93 | 1 | u8 | `checksum_column` | Column index of the checksum column in the FEC stream. Equals `fec_k`. |
-| 94 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. Phase 1 writes 0x12. |
-| 95 | 1 | u8 | `digest_len` | 32. |
-| 96 | 1 | u8 | `chunker_profile` | Profile id. |
-| 97 | 1 | u8 | `compression` | Default compression id. |
-| 98 | 1 | u8 | `fs_profile` | Disc filesystem profile id. Equals the superblock's `fs_profile`. |
-| 99 | 1 | u8 | `run_kind` | 1 data run, 2 repair run (Phase 2), 3 disc-close parity run (Phase 3). 0 is invalid. Health is never stored here; it lives in DISCS. |
-| 100 | 1 | u8 | `run_flags` | Run header flags. Bit 0 `CLOSING_RUN`: this run closed the disc, so no later run is possible on it (section 7.11). Bits 1 to 7 reserved, zero. |
-| 101 | 1 | u8 | `reserved_u8` | Zero. |
-| 102 | 2 | u16 | `reserved_u16` | Zero. Keeps `object_count` aligned. |
-| 104 | 8 | u64 | `object_count` | Objects in this run. Equals the Objects row count of INDEX. |
-| 112 | 8 | u64 | `payload_bytes` | Stored object bytes in this run: the sum of `stored_len` over INDEX's Objects rows for objects this run stores as its own file, plus their object headers. |
-| 120 | 8 | u64 | `duplicate_bytes` | Bytes written again for locality. |
-| 128 | 8 | u64 | `index_bytes` | Byte length of `INDEX.bin`. |
-| 136 | 32 | u8[32] | `index_hash` | Hash of `INDEX.bin`'s bytes. |
-| 168 | 8 | u64 | `stream_bytes` | Byte length of the FEC stream, section 7.3. |
-| 176 | 8 | u64 | `stream_blocks` | `stream_bytes` in 2048-byte blocks, rounded up. |
-| 184 | 8 | u64 | `column_blocks` | `L`, section 7.3. |
-| 192 | 32 | u8[32] | `prev_run_hash` | Hash of the previous run header on this disc. Zero for the first run. |
-| 224 | 8 | i64 | `created_sec` | Pack time, seconds: the moment `pack` finalized this run's image. Never the burn time, which is unknown when these bytes are hashed; the actual burn time lives only in the local state log; see the operations document. |
-| 232 | 4 | u32 | `created_nsec` | Nanoseconds. |
-| 236 | 4 | u32 | `source_run_count` | Number of run seqs this run references. |
-| 240 | 8 | u64 | `snapshot_count` | Snapshot objects that this run stores under `/NOAHSARK/snapshots/`. The replicated copies under `catalog/snapobj/` are not counted. |
-| 248 | 8 | u64 | `prereq_count` | Prerequisite ids listed in INDEX. |
-| 256 | 4 | u32 | `tool_version` | Writer registry id in the high 8 bits, writer-defined version in the low 24 bits, as in the superblock (section 7.5). Informational only. |
-| 260 | 4 | u32 | `reserved_u32` | Zero. |
-| 264 | 8 | u64 | `disc_object_count` | Objects on this disc after this run. Cumulative. |
-| 272 | 4 | u32 | `disc_run_index` | Index of this run on this disc. 0 for the first run. |
-| 276 | 4 | u32 | `reserved_u32b` | Zero. |
-| 280 | 224 | u8[224] | `reserved` | Zero. |
+| 32 | 16 | u8[16] | `disc_uuid` | The disc this run sits on. |
+| 48 | 16 | u8[16] | `repo_uuid` | The repository. |
+| 64 | 8 | u64 | `run_seq` | Monotonic run number in the repository, 1-based. |
+| 72 | 8 | u64 | `disc_seq` | Disc sequence number, 0-based. |
+| 80 | 2 | u16 | `fec_k` | Data columns. 231 in version 1. |
+| 82 | 2 | u16 | `fec_m` | Parity columns. 23 in version 1. |
+| 84 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
+| 85 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. Phase 1 writes 0x12. |
+| 86 | 1 | u8 | `chunker_profile` | Profile id. |
+| 87 | 1 | u8 | `compression` | Default compression id. |
+| 88 | 1 | u8 | `fs_profile` | Disc filesystem profile id. |
+| 89 | 1 | u8 | `run_kind` | 1 data run, 2 repair run (Phase 2), 3 disc-close parity run (Phase 3). 0 is invalid. Health is never stored here; it lives in DISCS. |
+| 90 | 1 | u8 | `run_flags` | Run header flags. Bit 0 `CLOSING_RUN`: this run closed the disc, so no later run is possible on it (section 7.11). Bits 1 to 7 reserved, zero. |
+| 91 | 1 | u8 | `reserved_u8` | Zero. |
+| 92 | 4 | u32 | `reserved_u32a` | Zero. Keeps `index_bytes` aligned. |
+| 96 | 8 | u64 | `index_bytes` | Byte length of `INDEX.bin`. |
+| 104 | 32 | u8[32] | `index_hash` | Hash of `INDEX.bin`'s bytes. |
+| 136 | 8 | u64 | `stream_bytes` | Byte length of the FEC stream, section 7.3. |
+| 144 | 32 | u8[32] | `prev_run_hash` | Hash of the previous run header on this disc. Zero for the first run. |
+| 176 | 8 | i64 | `created_sec` | Pack time, seconds: the moment `pack` finalized this run's image. Never the burn time, which is unknown when these bytes are hashed; the actual burn time lives only in the local state log; see the operations document. |
+| 184 | 4 | u32 | `created_nsec` | Nanoseconds. |
+| 188 | 4 | u32 | `tool_version` | Writer registry id in the high 8 bits, writer-defined version in the low 24 bits, as in the superblock (section 7.5). Informational only. |
+| 192 | 8 | u64 | `disc_object_count` | Objects on this disc after this run. Cumulative. |
+| 200 | 4 | u32 | `disc_run_index` | Index of this run on this disc. 0 for the first run. |
+| 204 | 4 | u32 | `reserved_u32b` | Zero. |
+| 208 | 296 | u8[296] | `reserved` | Zero. |
 | 504 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 503. |
 | 508 | 4 | u8[4] | `reserved_final` | Zero. |
 
 Field rules. `run_flags` bit 0 is `CLOSING_RUN`. Bits 1 to 7 are reserved and
 written as zero.
 
-`fs_profile` equals the superblock's `fs_profile` in every run header on the
-disc, the first run's and every appended run's alike. A reader that finds a
-run header whose `fs_profile` differs from the superblock's refuses the run,
-names both values and names the run seq.
+`fs_profile` equals the disc superblock's `fs_profile` in every run header on
+the disc, the first run's and every appended run's alike. A reader that finds
+a run header whose `fs_profile` differs from the superblock's refuses the
+run, names both values and names the run seq.
 
 `created_sec` is pack time, never burn time.
 
-`payload_bytes` sums stored bytes over the objects this run stores as its own
-file, header included, each object counted once.
-
-`snapshot_count` counts only snapshot objects under `/NOAHSARK/snapshots/`.
-
-The set of referenced run seqs lives in INDEX's Prereqs table, not in the run
-header. `source_run_count` bounds it.
+A reader derives the FEC geometry from `stream_bytes`, `fec_k` and `fec_m`:
+`stream_blocks` is `stream_bytes` divided by 2048, rounded up, and `L`,
+section 7.3, is `stream_blocks` divided by `fec_k`, rounded up. Neither
+`stream_blocks` nor `L` is stored; INDEX's `file_count` and `object_count`
+give the counts a reader needs beyond the geometry.
 
 `index_bytes` and `index_hash` let a reader locate and verify `INDEX.bin`
 with no filesystem: `INDEX.bin` is always the first file of the FEC stream
 (section 7.3), so its bytes start at the first byte of the stream and run for
 `index_bytes`.
 
-Reader checks. Check `magic_project`, `magic_kind`, `version_major` and
-`required_feat`. Verify `header_crc32c`. Verify `index_hash` against the
+Reader checks. Check `magic_project`, `magic_kind` and `version_major`.
+Verify `header_crc32c`. Verify `index_hash` against the
 bytes of `INDEX.bin`.
 
 ### 7.7 The run chain
@@ -1667,7 +1594,7 @@ structure out.
 
 The carving path is:
 
-1. Scan the medium for `"NOAHSARK"`. At each hit, read the 40-byte common
+1. Scan the medium for `"NOAHSARK"`. At each hit, read the 32-byte common
    header and check `magic_kind` against section 2.2.
 2. For a `DISC` hit, verify `super_crc32c` and read the superblock whole.
 3. For a `RUN` hit, verify `header_crc32c`, then read `INDEX.bin` by its
@@ -1804,6 +1731,7 @@ under every profile.
 | `/NOAHSARK/DISC.bin` | Disc superblock (section 7.5). Immutable. | First run only, directly after `RUN.bin`. |
 | `/NOAHSARK/README.txt` | Plain-text explanation of the format for a human (section 8.4). | First run only, after `DISC.bin`. |
 | `/NOAHSARK/FORMAT.txt` | The byte-layout tables of every structure (section 8.5). | First run only, after `README.txt`. |
+| `/NOAHSARK/REFERENCE/decoder.py` | A standalone Python 3 reference decoder (section 8.6). | First run only, after `FORMAT.txt`. |
 | `/NOAHSARK/runs/<seq>/RUN.bin` | The run header. | First file of its run. |
 | `/NOAHSARK/runs/<seq>/INDEX.bin` | File order, the Objects table, the Prereqs table (section 11.1). | With its run, first file of the FEC stream. |
 | `/NOAHSARK/runs/<seq>/catalog/REFS.bin` | The ref table (section 11.2). | With its run. |
@@ -1850,8 +1778,8 @@ the text is substituted, wherever it appears.** The substitution rules are:
 | `{repo_uuid}`, `{disc_uuid}` | Hyphenated lowercase uuid text. |
 | `{disc_seq}` | `disc_seq` in decimal, 0-based. |
 | `{label}` | The `label` bytes of the superblock, as they are, with every byte outside 0x20 to 0x7E replaced by `?`. |
-| `{media_type}` | The name from the media type registry of section 2.6. |
-| `{fs_profile}` | The name from the disc filesystem profile registry of section 2.6. |
+| `{media_type}` | The name from the media type registry of section 2.5. |
+| `{fs_profile}` | The name from the disc filesystem profile registry of section 2.5. |
 | `{hash_algo}` | `sha2-256`, from the superblock `hash_algo`. |
 | `{chunker_profile}` | `P3`, `P4` or `P5`, from the superblock `chunker_profile`. |
 | `{created}` | `created_sec` and `tz_offset_sec` of the superblock, as `YYYY-MM-DDTHH:MM:SS+HH:MM`. |
@@ -1892,6 +1820,7 @@ parity geometry: k={fec_k} data columns, m={fec_m} parity columns
 /NOAHSARK/DISC.bin              disc superblock, written once
 /NOAHSARK/README.txt            this file
 /NOAHSARK/FORMAT.txt            the byte layout of every structure
+/NOAHSARK/REFERENCE/decoder.py  a standalone Python 3 reference decoder
 /NOAHSARK/runs/<seq>/RUN.bin    run header, first file of the run
 /NOAHSARK/runs/<seq>/INDEX.bin  file order and the object table
 /NOAHSARK/runs/<seq>/catalog/   tables copied from the whole repository
@@ -1917,11 +1846,11 @@ characters of the digest, which is characters 5 and 6 of the file name.
 
 5. HOW TO READ AN OBJECT
 ------------------------
-An object file starts with a 40-byte common header, then a 32-byte object
+An object file starts with a 32-byte common header, then a 32-byte object
 header. In the object header, at byte offset 3 of that 32-byte header, is
 the compression id: 0 means none and 1 means zstd. At offset 8 is
 payload_len, a little-endian unsigned 64-bit number. At offset 16 is
-stored_len. Skip the 72 header bytes total, take the next stored_len bytes,
+stored_len. Skip the 64 header bytes total, take the next stored_len bytes,
 decompress them with the named algorithm into exactly payload_len bytes,
 hash the result with the algorithm the name declares, and compare that
 digest with the digest in the name. They must be equal. If they are not, the
@@ -1958,6 +1887,10 @@ FORMAT.txt in this directory holds the offset, size, type, name and meaning
 of every field of every structure, the registries, the magic values and the
 chunking constants. This file and that file together are enough to extract
 one file from this disc by hand, with a hex editor and no NoahsArk software.
+REFERENCE/decoder.py in this directory is a runnable Python 3 program that
+does the same extraction in code: it parses DISC.bin, RUN.bin, INDEX.bin and
+every object header, verifies content ids, walks a snapshot and prints the
+listing.
 
 9. THE FORMAT RULES
 --------------------
@@ -1969,8 +1902,8 @@ one file from this disc by hand, with a hex editor and no NoahsArk software.
    then version_major and version_minor.
 5. A reader refuses an unknown version_major and ignores an unknown
    version_minor.
-6. A reader refuses an unknown bit in required_feat and ignores an unknown
-   bit in optional_feat.
+6. A version_minor bump only appends fields an old reader can ignore; a
+   version_major bump changes shape and an old reader refuses it.
 7. Every checksum lies after every byte it covers. Checksums are CRC-32C,
    polynomial 0x1EDC6F41, reflected, init 0xFFFFFFFF, final xor 0xFFFFFFFF.
 8. Every pointer to another structure carries the hash of that structure.
@@ -1997,12 +1930,32 @@ stated order, MAGIC VALUES, CHUNKING CONSTANTS, CHECKSUM PARAMETERS.
 A structure added in a later version is appended to the part 3 list and is
 never removed while the major version holds.
 
-### 8.6 Fill order inside a run
+### 8.6 Reference decoder
+
+Purpose: a runnable check on this document, carried on the disc itself, so
+that a reader with a Python interpreter and no NoahsArk software can extract
+and verify a file without transcribing FORMAT.txt by hand.
+
+Every disc carries `/NOAHSARK/REFERENCE/decoder.py`: a single-file Python 3
+program that uses only the standard library, plus, for zstd payloads, the
+`compression.zstd` module where the interpreter provides it or the `zstd`
+command-line tool otherwise. It parses DISC.bin, a run's RUN.bin and
+INDEX.bin, and every object's common header and object header; it verifies
+every SHA-256 content id; it walks a snapshot's tree from `catalog/REFS.bin`;
+and it prints the resulting listing.
+
+`decoder.py` is a fixed file, checked into the NoahsArk source repository and
+versioned with this document. A writer copies it byte for byte from that
+checked-in file; it is never generated or altered per repository or per
+disc. Its INDEX file role is 14 (section 11.1), and it is at most 64 KiB.
+
+### 8.7 Fill order inside a run
 
 The writer places files in this order under every profile:
 
 1. `RUN.bin`, the run header.
-2. In the first run of a disc only: `DISC.bin`, `README.txt`, `FORMAT.txt`.
+2. In the first run of a disc only: `DISC.bin`, `README.txt`, `FORMAT.txt`,
+   `REFERENCE/decoder.py`.
 3. `INDEX.bin`.
 4. The catalog files, in the entry order of section 11.1's Files table.
 5. Snapshot objects, then tree and blob objects, contiguous.
@@ -2069,7 +2022,7 @@ together, so a connectivity check over one run costs one seek and one
 sequential read. This is a fill-order rule; every non-snapshot object still
 shares the one `objects/` directory (section 3.5).
 
-### 8.7 Name and path budget
+### 8.8 Name and path budget
 
 | Item | Limit |
 |---|---|
@@ -2157,7 +2110,8 @@ four digits. Block 0 of that file is a run header copy. The file is `L + 1`
 blocks.
 
 Every column file is contiguous. INDEX records the byte length of each, and
-the run header records `stream_bytes`, `stream_blocks` and `column_blocks`.
+the run header records `stream_bytes`; a reader derives `stream_blocks` and
+`column_blocks` from it and from `fec_k` by the formulas of section 7.6.
 
 Stripe `i` is block `i` of every column, for `i = 0 .. L-1`.
 
@@ -2271,7 +2225,7 @@ block, computed over the 2048 bytes of the FEC stream at that position.
 
 Every block of `checksum.bin` is a self-delimiting record of 2048 bytes,
 repeated `L` times; it carries the 8-byte `magic_kind` `CHECKSUM` as a record
-magic (section 2.1, rule 5) but not the rest of the 40-byte common header,
+magic (section 2.1, rule 5) but not the rest of the 32-byte common header,
 because a block is a record of the checksum column, not a structure of its
 own:
 
@@ -2311,11 +2265,11 @@ The run header exists `m + 2` times: `RUN.bin` first, block 0 of every parity
 file, and `RUN2.bin` last. The header block of a parity file precedes the
 column and is not part of it.
 
-The parity geometry is derivable from any header copy plus INDEX:
-`stream_bytes`, `stream_blocks`, `column_blocks`, `fec_k` and `fec_m`
-determine every column boundary. A tool that lost every header copy still
-knows `k` and `m`, because version 1 fixes them, and finds `L` by the
-`CHECKSUM` `magic_kind` of the first checksum block.
+The parity geometry is derivable from any header copy: `stream_bytes`,
+`fec_k` and `fec_m` determine every column boundary through the formulas of
+section 7.6. A tool that lost every header copy still knows `k` and `m`,
+because version 1 fixes them, and finds `L` by the `CHECKSUM` `magic_kind`
+of the first checksum block.
 
 ### 10.5 Decode rule
 
@@ -2381,34 +2335,26 @@ container in one structure. There is no membership filter in this format: a
 reader proves absence by consulting the INDEX Objects table of every run a
 catalog lists (section 11.6).
 
-Fixed body, after the 40-byte common header (`magic_kind` `INDEX`):
+Fixed body, after the 32-byte common header (`magic_kind` `INDEX`):
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 40 | 8 | u64 | `run_seq` | The run this INDEX describes. |
-| 48 | 4 | u32 | `file_count` | Rows in the Files table. |
-| 52 | 4 | u32 | `object_count` | Rows in the Objects table. |
-| 56 | 4 | u32 | `prereq_count` | Rows in the Prereqs table. |
-| 60 | 2 | u16 | `file_record_size` | 48. |
-| 62 | 2 | u16 | `object_record_size` | 72. |
-| 64 | 2 | u16 | `prereq_record_size` | 40. |
-| 66 | 1 | u8 | `fanout_bits` | 8 or 16. Fan-out width of the Objects table lookup below. |
-| 67 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. |
-| 68 | 1 | u8 | `digest_len` | 32. |
-| 69 | 3 | u8[3] | `reserved` | Zero. |
-| 72 | 8 | u64 | `container_len` | Total length of this container in bytes, for validation. |
-| 80 | 4 | u32 | `body_crc32c` | CRC-32C over the fan-out table, the Files table, the Objects table and the Prereqs table. |
-| 84 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 83. |
-| 88 | `4 * (256 or 65536)` | u32[] | `fanout` | Cumulative counts over the Objects table, section 3.5's rule, keyed by the first one or two bytes of `content_id`. |
-| | `file_count * 48` | | `files` | The Files table. |
-| | `object_count * 72` | | `objects` | The Objects table, sorted ascending by `content_id`. |
+| 32 | 8 | u64 | `run_seq` | The run this INDEX describes. |
+| 40 | 4 | u32 | `file_count` | Rows in the Files table. |
+| 44 | 4 | u32 | `object_count` | Rows in the Objects table. |
+| 48 | 4 | u32 | `prereq_count` | Rows in the Prereqs table. |
+| 52 | 2 | u16 | `file_record_size` | 48. |
+| 54 | 2 | u16 | `object_record_size` | 72. |
+| 56 | 2 | u16 | `prereq_record_size` | 40. |
+| 58 | 1 | u8 | `hash_algo` | Multicodec code of every id in this run. |
+| 59 | 1 | u8 | `digest_len` | 32. |
+| 60 | 4 | u8[4] | `reserved` | Zero. Keeps `container_len` aligned. |
+| 64 | 8 | u64 | `container_len` | Total length of this container in bytes, for validation. |
+| 72 | 4 | u32 | `body_crc32c` | CRC-32C over the Files table, the Objects table and the Prereqs table. |
+| 76 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 75. |
+| 80 | `file_count * 48` | | `files` | The Files table. |
+| | `object_count * 72` | | `objects` | The Objects table, sorted ascending by `content_id`. A reader binary-searches it directly; the table needs no separate lookup index. |
 | | `prereq_count * 40` | | `prereqs` | The Prereqs table, sorted ascending by `content_id`. |
-
-A writer must use a 16-bit fan-out once a run holds more than 1,000,000
-objects, and marks it with `FEAT_FAN16`. A lookup reads `fanout[b-1]` and
-`fanout[b]` and binary-searches that slice of the Objects table; `fanout[-1]`
-is 0. With `fanout_bits` 8, `b` is byte 0 of `content_id`. With
-`fanout_bits` 16, `b` is `byte0 * 256 + byte1`.
 
 **Files table**, 48 bytes per row:
 
@@ -2437,10 +2383,15 @@ File role registry:
 | 11 | a parity file |
 | 12 | `RUN2.bin` |
 | 13 | an object file under `/NOAHSARK/objects/` or `/NOAHSARK/snapshots/`. Reserved for a later version: a container's role stays 13 too. |
+| 14 | `/NOAHSARK/REFERENCE/decoder.py` |
 
 Field rules. Rows are in FEC stream order (section 7.3): `INDEX.bin` itself
 first, then the fixed-name files by role in the order the table above lists,
-then every object file, role 13, by `file_hash` ascending. This
+then every object file, role 13, by `file_hash` ascending. Role 14,
+`REFERENCE/decoder.py`, is a first-run-only fixed file like roles 3 to 5 and
+sits with them in fill order, despite its higher role number: a role id is
+assigned once and never renumbered, so a role added after role 13 was
+registered still takes the next free id. This
 order is authoritative: it is the order the writer laid the files in, and a
 reader relies on it instead of sorting.
 
@@ -2492,12 +2443,12 @@ any other, with its own `run_seq`. A prerequisite never names a run whose
 The algorithm of a prerequisite `content_id` is the `hash_algo` of the run
 header of that `run_seq`.
 
-Hash and CRC coverage. `header_crc32c` covers bytes 0 to 83. `body_crc32c`
-covers the fan-out table and every table row. The run header records
-`index_hash` over every byte of `INDEX.bin`.
+Hash and CRC coverage. `header_crc32c` covers bytes 0 to 75. `body_crc32c`
+covers every table row. The run header records `index_hash` over every byte
+of `INDEX.bin`.
 
-Reader checks. Check `magic_project`, `magic_kind`, `version_major` and
-`required_feat`. Verify both CRCs. Refuse an Objects row whose `kind` is
+Reader checks. Check `magic_project`, `magic_kind` and `version_major`.
+Verify both CRCs. Refuse an Objects row whose `kind` is
 outside 1 to 4.
 
 ### 11.2 REFS
@@ -2505,19 +2456,19 @@ outside 1 to 4.
 Purpose: the repository-wide table of named pointers to snapshots.
 
 REFS and DISCS (section 11.3) share one container shape. Fixed body, after
-the 40-byte common header (`magic_kind` `REFS` or `DISCS`):
+the 32-byte common header (`magic_kind` `REFS` or `DISCS`):
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 40 | 16 | u8[16] | `repo_uuid` | The repository. |
-| 56 | 8 | u64 | `record_count` | Records that follow. |
-| 64 | 2 | u16 | `record_size` | 96 for REFS, 184 for DISCS. |
-| 66 | 1 | u8 | `hash_algo` | Multicodec code of a digest in the records that has no `hash_algo` of its own. For DISCS, the algorithm of `run_hash`. |
-| 67 | 1 | u8 | `digest_len` | 32. |
-| 68 | 4 | u32 | `reserved` | Zero. |
-| 72 | 4 | u32 | `body_crc32c` | CRC-32C over the records. |
-| 76 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 75. |
-| 80 | `record_count * record_size` | | `records` | Sorted, fixed-width. |
+| 32 | 16 | u8[16] | `repo_uuid` | The repository. |
+| 48 | 8 | u64 | `record_count` | Records that follow. |
+| 56 | 2 | u16 | `record_size` | 96 for REFS, 176 for DISCS. |
+| 58 | 1 | u8 | `hash_algo` | Multicodec code of a digest in the records that has no `hash_algo` of its own. For DISCS, the algorithm of `run_hash`. |
+| 59 | 1 | u8 | `digest_len` | 32. |
+| 60 | 4 | u32 | `reserved` | Zero. |
+| 64 | 4 | u32 | `body_crc32c` | CRC-32C over the records. |
+| 68 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 67. |
+| 72 | `record_count * record_size` | | `records` | Sorted, fixed-width. |
 
 REFS uses the ref record of section 6.17, 96 bytes, sorted by `name` bytes
 ascending, then `time_sec` ascending, then `time_nsec` ascending, then
@@ -2527,7 +2478,7 @@ the same total-key argument section 6.17 states.
 REFS is replicated in full on every run, so a reader finds every name from
 the newest catalog alone.
 
-Reader checks. Check the magic, `version_major` and `required_feat`. Verify
+Reader checks. Check the magic and `version_major`. Verify
 both CRCs. Binary-search the records by the sort key.
 
 ### 11.3 DISCS
@@ -2537,28 +2488,26 @@ versions split into a run table and a disc directory. It carries every run's
 disc, geometry summary and verification status, and it chains each disc's
 superblock hash so a reader can detect a substituted disc.
 
-DISCS row, 184 bytes, sorted by `run_seq`:
+DISCS row, 176 bytes, sorted by `run_seq`:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
 | 0 | 8 | u64 | `run_seq` | The run, 1-based. |
 | 8 | 8 | u64 | `disc_seq` | The disc that holds it, 0-based. |
 | 16 | 16 | u8[16] | `disc_uuid` | That disc's uuid. |
-| 32 | 32 | u8[32] | `run_hash` | Hash of the 512 bytes of that run's `RUN.bin` (section 2.8). All zero in the row of the run that **carries** this table: that header is written after the table (section 8.6), so its hash is not yet known. The next copy of the table, written by the next run, fills the value in. |
+| 32 | 32 | u8[32] | `run_hash` | Hash of the 512 bytes of that run's `RUN.bin` (section 2.7). All zero in the row of the run that **carries** this table: that header is written after the table (section 8.7), so its hash is not yet known. The next copy of the table, written by the next run, fills the value in. |
 | 64 | 8 | i64 | `created_sec` | Pack time of the run, as in the run header (section 7.6). Not the burn time. |
 | 72 | 8 | i64 | `last_verify_sec` | Last verification time of the disc. 0 when never verified. |
 | 80 | 8 | u64 | `capacity_sectors` | Reported capacity of the disc, a physical medium unit. |
 | 88 | 8 | u64 | `used_sectors` | Sectors used on the disc after this run, a physical medium unit taken from the burn, not from any on-disc address field. |
 | 96 | 1 | u8 | `run_status` | 1 verified, 2 burned but not yet verified, 3 withdrawn by the writer after a failed verify. 0 is invalid. |
 | 97 | 1 | u8 | `health` | 1 healthy, 2 degraded, 3 critical, 4 failed, 5 unknown, 6 unverified, this disc. |
-| 98 | 1 | u8 | `media_type` | Media type registry. |
-| 99 | 1 | u8 | `fs_profile` | Disc filesystem profile of that run's disc. |
-| 100 | 2 | u16 | `rs_margin_percent` | Worst-stripe margin, as a percentage of `m`, rounded down and clamped to 0 to 100. |
-| 102 | 2 | u16 | `label_len` | Byte length of the label. |
-| 104 | 64 | u8[64] | `label` | UTF-8, zero-padded. The disc's label, the same 64 bytes the superblock carries (section 7.5). |
-| 168 | 1 | u8 | `state_flags` | bit0 closed, bit1 append-raw-only, bit2 spare below the threshold, bit3 capacity forced. Bits 4 to 7 reserved, zero. |
-| 169 | 7 | u8[7] | `reserved` | Zero. |
-| 176 | 8 | u64 | `capacity_forced_sectors` | Forced capacity, section 7.13. |
+| 98 | 2 | u16 | `rs_margin_percent` | Worst-stripe margin, as a percentage of `m`, rounded down and clamped to 0 to 100. |
+| 100 | 2 | u16 | `label_len` | Byte length of the label. |
+| 102 | 64 | u8[64] | `label` | UTF-8, zero-padded. The disc's label, the same 64 bytes the superblock carries (section 7.5). |
+| 166 | 1 | u8 | `state_flags` | bit0 closed, bit1 append-raw-only, bit2 spare below the threshold, bit3 capacity forced. Bits 4 to 7 reserved, zero. |
+| 167 | 1 | u8 | `reserved` | Zero. Keeps `capacity_forced_sectors` aligned. |
+| 168 | 8 | u64 | `capacity_forced_sectors` | Forced capacity, section 7.13. |
 
 Field rules. DISCS holds one row for every run that was burned, whatever its
 state, plus the row of the run that carries the table. No run is ever
@@ -2595,7 +2544,7 @@ reports the disc as not yet verified and never as healthy.
 2.6); neither is derived from an on-disc address field, because the format
 carries none.
 
-Hash and CRC coverage. `header_crc32c` covers bytes 0 to 75 of the fixed
+Hash and CRC coverage. `header_crc32c` covers bytes 0 to 67 of the fixed
 body. `body_crc32c` covers the rows. `run_hash` covers the 512 bytes of that
 run's `RUN.bin`, CRC included, under the container's `hash_algo`.
 
@@ -2668,10 +2617,8 @@ A reader applies these steps in order, for every structure:
 2. Check `version_major`. Refuse an unknown value and print the value.
 3. Read `header_len` from the common header and skip the excess. Never assume
    the compiled size.
-4. Check `required_feat`. Refuse an unknown bit and print the bit number.
-5. Ignore unknown `optional_feat` bits.
-6. Verify the checksum before using any field.
-7. Verify the content id after decompression, for an object.
+4. Verify the checksum before using any field.
+5. Verify the content id after decompression, for an object.
 
 A reader verifies the hash and the CRC of a structure before it uses any field
 of it.
@@ -2682,16 +2629,13 @@ it returns. There is no trusted path.
 
 ### 12.2 Writer rules
 
-1. Never write a `required_feat` bit that the current major version does not
-   define.
-2. Never reuse a registry id.
-3. Never change a frozen table under an existing name.
-4. Record every parameter that a future diagnostic tool would need, even when a
+1. Never reuse a registry id.
+2. Never change a frozen table under an existing name.
+3. Record every parameter that a future diagnostic tool would need, even when a
    reader does not need it.
-5. Never depend on a structure that a later version might change. Read the
+4. Never depend on a structure that a later version might change. Read the
    version first, and the `header_len`.
-6. Set exactly the feature bits of section 2.4 and no other.
-7. Write zero into every reserved field and every padding byte.
+5. Write zero into every reserved field and every padding byte.
 
 ### 12.3 Which catalog a reader trusts
 
@@ -2724,22 +2668,20 @@ A conforming reader of format major 1:
    catalog, with no local index and no disc other than the ones the plan
    names, and by carving (section 7.10) when the filesystem directory is
    damaged;
-5. verifies every CRC, every hash of section 2.8 and every content id before it
+5. verifies every CRC, every hash of section 2.7 and every content id before it
    uses the bytes;
 6. repairs a run with `k = 231`, `m = 23`, or says that it cannot repair;
-7. refuses an unknown `version_major`, an unknown `required_feat` bit, an
-   unknown registry id in a field it must interpret, and a critical TLV it does
-   not know, and says which.
+7. refuses an unknown `version_major`, an unknown registry id in a field it
+   must interpret, and a critical TLV it does not know, and says which.
 
 A conforming writer of format major 1:
 
 1. writes every structure exactly as its byte-offset table states, with
-   `version_major` 1, `version_minor` 0, reserved fields zero, and the feature
-   bits of section 2.4 and no other;
+   `version_major` 1, `version_minor` 0 and reserved fields zero;
 2. writes SHA-256 content ids over the uncompressed payload, and FastCDC cut
    points by section 4.2;
 3. writes every run with `k = 231`, `m = 23`, the checksum column of section
-   10.3, `m + 2` header copies, the fill order of section 8.6 and the catalog
+   10.3, `m + 2` header copies, the fill order of section 8.7 and the catalog
    copies of section 11.4;
 4. writes every byte as an ordinary file under `/NOAHSARK/`, on a sector
    boundary, and never rewrites a burned run;
@@ -2748,14 +2690,13 @@ A conforming writer of format major 1:
 
 ### 12.5 Change mechanisms
 
-Every change uses one of two mechanisms.
+Every change uses one mechanism: a version bump. A minor bump appends fields
+an old reader can ignore; a major bump changes shape and an old reader
+refuses it, printing `version_major` (section 2.3).
 
-| Mechanism | When | Old reader | New reader |
-|---|---|---|---|
-| A feature bit | A structure gains an item. | Ignores an `optional_feat` bit. Refuses a `required_feat` bit. | Uses the item. |
-| A version bump | A structure changes shape. | Refuses an unknown `version_major`. Ignores an unknown `version_minor`, and skips `header_len - known` (section 2.3). | Uses the new shape. |
-
-A registry id is never reused and never renumbered.
+A registry id is never reused and never renumbered. A new value in an
+existing registry field needs no version bump at all: an old reader already
+refuses a registry id it does not know, in the field it was already reading.
 
 | Change | Mechanism | Old reader does | New reader does |
 |---|---|---|---|
@@ -2764,13 +2705,12 @@ A registry id is never reused and never renumbered.
 | Gear table change | New `gear_table_id` and a new profile name. | Unaffected. | Must never reuse an existing profile name with a different table. |
 | New compression algorithm | New id in the compression registry. | Refuses an object whose `compression` it does not know. The object is unreadable, not misread. | Reads it. |
 | FEC parameter change | A new `version_major` of the run header. It already records `k` and `m`. | Refuses the run for repair, because version 1 accepts no pair other than 231 and 23. Still reads the objects through the filesystem or by carving. | Reads the recorded pair. |
-| New FEC scheme | New id in the FEC registry, plus a `required_feat` bit. | Refuses the run for repair, but still reads its objects. | Repairs it. |
+| New FEC scheme | New id in the FEC scheme registry. | Refuses the run for repair, but still reads its objects. | Repairs it. |
 | Filesystem revision change | `fs_revision` in the superblock. | Depends on the operating system, not on NoahsArk. | Same. |
 | Disc filesystem profile change | New id in the profile registry. | Refuses a profile it does not know, and says the id. | Reads it. |
-| New object kind | New id in the object kind registry, plus a `required_feat` bit on the containing structure. | Refuses the structure. | Reads it. |
+| New object kind | New id in the object kind registry. | Refuses the structure, since `kind` is already outside 1 to 4. | Reads it. |
 | New tree TLV | New id in the TLV registry. The critical bit decides. | Refuses the entry when the critical bit is set. Preserves and reports the TLV otherwise. | Applies it. |
-| Fan-out 8 to 16 bits | `FEAT_FAN16` required bit and `fanout_bits`. | Refuses INDEX. | Reads it. |
-| Encryption | `crypto` byte, `FEAT_CRYPTO` bit. | Refuses the object. | Decrypts it. |
+| Encryption | Non-zero `crypto` byte, reserved in version 1. | Refuses the object. | Decrypts it. |
 | Snapshot signature | New snapshot TLV, non-critical. | Ignores it. | Verifies it. |
 
 ### 12.6 Cross-version and cross-phase reading
@@ -2782,10 +2722,9 @@ A reader that implements profile 0 and profile 1 only:
 
 - reads every object and every catalog table normally;
 - refuses a disc whose `fs_profile` is 2 and names the id;
-- ignores the optional bitmaps;
 - reports a cross-disc parity group as not supported;
-- reports `run_kind` 3 and `OPT_DISC_PARITY` as not supported, and still reads
-  every object of that run;
+- reports `run_kind` 3, a disc-close parity run, as not supported, and still
+  reads every object of that run;
 - reads a raw-append disc's objects by carving (section 7.10) when the
   filesystem directory does not show them.
 
@@ -2796,9 +2735,7 @@ By format version:
 | Writer | Reader of major 1 | Reader of a later major |
 |---|---|---|
 | Major 1, minor 0 | Y | Y. It reads the fixed sizes of major 1. |
-| Major 1, minor above 0, no new `required_feat` bit | Y. It skips `header_len - known`, and ignores fields it does not know elsewhere. | Y |
-| Major 1 with an unknown `required_feat` bit | N. Refuses the structure and prints the bit number. | Y when the bit is known to it. |
-| Major 1 with an unknown `optional_feat` bit | Y, ignoring the bit. | Y |
+| Major 1, minor above 0, appended fields only | Y. It skips `header_len - known`, and ignores fields it does not know elsewhere. | Y |
 | A later major | N. Refuses and prints `version_major`. | Y |
 
 By algorithm and registry id:
@@ -2811,7 +2748,6 @@ By algorithm and registry id:
 | compression 2, `lz4` | Y | N, permitted. Refuses the object and names the id. |
 | A new compression id | Y | N. Refuses the object and names the id. |
 | A new chunker profile | Y | Y. A reader never needs the profile. |
-| `FEAT_FAN16` | Y | N. Refuses INDEX. |
 | A non-critical unknown tree TLV | Y | ~ Preserves it on copy, reports it on restore, does not apply it. |
 | A critical unknown tree TLV, 0x8000 to 0xBFFF | Y | N. Refuses the entry and names the type. |
 | `k`, `m` other than 231, 23 | Y | N for repair; still reads every object. |
@@ -2835,7 +2771,7 @@ not license to change a setting silently.
 
 | Setting | What it changes on disc |
 |---|---|
-| Format version, `format.version_major` and `format.version_minor` | The `version_major` and `version_minor` of every structure a writer emits (section 2.7). |
+| Format version, `format.version_major` and `format.version_minor` | The `version_major` and `version_minor` of every structure a writer emits (section 2.6). |
 | Current hash algorithm | The multihash algorithm of every new object id. |
 | Chunker profile | The cut points of every new chunk, hence the chunk boundaries in every new tree and blob. |
 | Gear table id | The Gear table version, which changes every cut point under a profile name. |
@@ -2850,7 +2786,6 @@ not license to change a setting silently.
 | Fill ratio | `safety_margin`, hence `reserve` and `data_budget`. |
 | Forced capacity, `disc.force_capacity` | `capacity_forced_sectors` in the superblock and in DISCS, hence every run's budget on the disc (section 7.13). |
 | FEC scheme and geometry, `fec.scheme`, `fec.k` and `fec.m` | The stripe shape, the column count, the parity file set and the checksum column, hence the FEC stream layout of every run (sections 10.1 and 10.2). Version 1 fixes `k` 231 and `m` 23 and refuses any other value. |
-| Fan-out bits | The width of INDEX's fan-out table. |
 | Optional metadata switches | Which optional metadata fields are present in every new tree entry. |
 | Source type, `source.type` | The `source_type` and `source_flags` bytes of every new snapshot payload, hence its content id (section 6.14). |
 | Exclude rules, `sources.exclude` and `sources.ignore_file` | Which paths the walk keeps, and the exclude-rule bytes that snapshot metadata tag 5 stores (sections 6.16 and 6.14). |
@@ -2891,7 +2826,7 @@ The golden vectors cover them.
 | Run header | Stated geometry and counts |
 | INDEX | Ten stated Files rows, ten stated Objects rows, and two stated Prereqs rows across one source run |
 | README.txt | The identity values of the disc superblock vector |
-| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 23,388 bytes long in 563 lines; a writer that produces a different length for minor 0 has a defect. |
+| FORMAT.txt | Format major 1, minor 0. The major 1 minor 0 text is 21,469 bytes long in 526 lines; a writer that produces a different length for minor 0 has a defect. |
 | Burn step tree listing | A stated tree of five files, one in a subdirectory |
 | REFS and DISCS | Two stated rows of each table |
 | Checksum block | The 231 stated data blocks of one stripe |
@@ -2922,10 +2857,10 @@ NoahsArk format major 1 minor 0
 1. Every integer is little-endian. No big-endian field exists.
 2. Only fixed-width types are used: u8, u16, u32, u64, i32, i64. No varint appears inside a fixed header.
 3. Every structure is packed with manual alignment. Every gap is a named reserved field. A writer writes zero into every reserved field and every padding byte. A reader does not interpret a reserved field and does not reject a nonzero value in one. A golden test checks that the writer wrote zero into every reserved field and every padding byte.
-4. Every structure begins with the 40-byte common header.
+4. Every structure begins with the 32-byte common header.
 5. A structure is a file-level container or an object payload header. A record inside a structure, a tree entry, a TLV, an INDEX table row, a REFS or DISCS row, is a record, not a structure. A record never carries the common header. A record carries a magic only where its own table states one.
 6. A reader refuses an unknown version_major. A reader accepts an unknown version_minor and ignores the fields it does not know.
-7. Every structure carries required_feat (u64) and optional_feat (u64) in its common header. A reader refuses an unknown required_feat bit. A reader ignores an unknown optional_feat bit.
+7. A version_minor bump may only append fields to the end of the fixed body, and an old reader must be able to read the structure correctly while ignoring them. Any change an old reader cannot ignore is a version_major bump, and an old reader refuses it.
 8. A checksum covers only bytes the writer finalized before computing it. A structure with no separate body ends with one CRC over every byte before it. A container with a header and a body carries header_crc32c and body_crc32c at the end of its header: body_crc32c sits in the header and covers the body. The body becomes final first, then the header is written last, so each CRC covers bytes that were already final.
 9. CRCs are CRC-32C: polynomial 0x1EDC6F41, reflected, initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF.
 10. Objects use the full content hash in place of a body CRC. The content id is the checksum of the payload.
@@ -2978,8 +2913,8 @@ FEC scheme registry
 -------------------
 
 Id	Name	Field	Shards	Status
-1	rs255-gf8	GF(2^8)	255	Default. A stripe is k + 1 + m = 255 blocks; the code is over the k + m data and parity shards.
-2	rs-leopard-gf16	GF(2^16)	up to 65536	Reserved.
+1	rs255-gf8	GF(2^8)	255	Default. Phase 1. A stripe is k + 1 + m = 255 blocks; the code is over the k + m data and parity shards.
+2-255	reserved	-	-	-
 
 Object kind registry
 --------------------
@@ -3010,32 +2945,21 @@ Id	Role
 11	a parity file
 12	RUN2.bin
 13	an object file under /NOAHSARK/objects/ or /NOAHSARK/snapshots/. Reserved for a later version: a container's role stays 13 too.
+14	REFERENCE/decoder.py
 
 Disc filesystem profile registry
 --------------------------------
 
 Id	Name	Filesystem	Append mechanism	Status
 0	oneshot	UDF 2.01. Phase 1 builds UDF 2.01 only.	None in Phase 1. The disc is POW-formatted and left open, so a Phase 2 append can still reach it.	Default. Phase 1.
-1	udf201-pow	Pure UDF 2.01	POW growth, by carving, never by a byte-deterministic image mirror.	Phase 2.
-2	iso9660v1-l4-pow	ISO 9660:1999 level 4, plain	growisofs -Z then -M on a POW BD-R, one session	Phase 3.
-3-255	reserved	-	-	-
+1-255	reserved	-	-	-
 
 Media type registry
 -------------------
 
-Id	Name	Sectors	Bytes
-1	BD-R SL 25	12,219,392	25,025,314,816
-2	BD-R DL 50	24,438,784	50,050,629,632
-3	BD-R XL TL 100	48,878,592	100,103,356,416
-4	BD-R XL QL 128	62,500,864	128,001,769,472
-5	BD-RE SL 25	12,219,392	25,025,314,816
-6	BD-RE DL 50	24,438,784	50,050,629,632
-7	BD-RE XL TL 100	48,878,592	100,103,356,416
-8	M-DISC BD SL 25	12,219,392	25,025,314,816
-9	M-DISC BD DL 50	24,438,784	50,050,629,632
-10	image	variable	variable
-11	Mini BD SL 8 cm	3,804,288	7,791,181,824
-12	Mini BD DL 8 cm	7,608,576	15,582,363,648
+Id	Name	Sectors	Bytes	Status
+1	BD-R SL 25	12,219,392	25,025,314,816	Default. Phase 1.
+2-255	reserved	-	-	-
 
 Source type registry
 --------------------
@@ -3078,11 +3002,10 @@ offset	size	type	name	meaning
 0	8	u8[8]	magic_project	ASCII "NOAHSARK".
 8	8	u8[8]	magic_kind	ASCII kind name, zero-padded to 8 bytes. Compared as all 8 bytes.
 16	2	u16	version_major	Refuse an unknown value.
-18	2	u16	version_minor	Ignore an unknown value.
-20	2	u16	header_len	Common header plus the fixed body. A reader reads min(header_len, known length) and skips the rest.
+18	2	u16	version_minor	Accept an unknown value; read min(header_len, known length).
+20	2	u16	header_len	Common header plus the fixed body.
 22	2	u16	reserved_u16	Zero.
-24	8	u64	required_feat	Refuse on an unknown bit.
-32	8	u64	optional_feat	Ignore an unknown bit.
+24	8	u64	reserved_u64	Zero.
 
 Object header
 -------------
@@ -3230,81 +3153,60 @@ Disc superblock
 ----------------
 
 offset	size	type	name	meaning
-0-39	40	-	common header	magic_kind "DISC".
-40	16	u8[16]	disc_uuid	Unique for this physical disc.
-56	16	u8[16]	repo_uuid	The repository this disc belongs to.
-72	8	u64	disc_seq	Monotonic position in the repository.
-80	8	u64	capacity_sectors	As reported by the drive at first write.
-88	8	u64	capacity_forced_sectors	Forced capacity. Equals capacity_sectors when no override was given.
-96	32	u8[32]	prev_disc_super_hash	Hash of the previous verified superblock. All zero when there is none.
-128	8	i64	created_sec	Pack time of the first run, seconds.
-136	4	u32	created_nsec	Nanoseconds.
-140	4	i32	tz_offset_sec	Local zone offset at that pack time.
-144	1	u8	media_type	Media type registry.
-145	1	u8	fs_profile	Disc filesystem profile registry.
-146	1	u8	hash_algo	Multicodec code of the first run, and of prev_disc_super_hash. Phase 1 writes 0x12.
-147	1	u8	digest_len	32.
-148	1	u8	chunker_profile	Chunker profile of the first run.
-149	1	u8	compression	Default compression of the first run.
-150	1	u8	fec_scheme	FEC scheme registry.
-151	1	u8	crypto	0 plaintext.
-152	2	u16	sector_size	2048.
-154	2	u16	fs_revision	0x0201 for UDF 2.01. 0x0004 for ISO 9660:1999 level 4.
-156	2	u16	fec_k	Data columns. 231 in version 1.
-158	2	u16	fec_m	Parity columns. 23 in version 1.
-160	1	u8	fanout_levels	1 by default. 2 is allowed under profile 1 and profile 0 only.
-161	1	u8	append_variant	Profile 1 only. Writer-defined append variant id. 0 elsewhere.
-162	1	u8	capacity_is_forced	1 when capacity_forced_sectors is below capacity_sectors.
-163	1	u8	sealed	1 when the disc was burned sealed at its first write. 0 when left open.
-164	4	u32	label_len	Byte length of the label.
-168	64	u8[64]	label	UTF-8, zero-padded.
-232	4	u32	tool_version	Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only.
-236	4	u32	reserved_u32	Zero.
-240	1804	u8[1804]	reserved	Zero.
+0-31	32	-	common header	magic_kind "DISC".
+32	16	u8[16]	disc_uuid	Unique for this physical disc.
+48	16	u8[16]	repo_uuid	The repository this disc belongs to.
+64	8	u64	disc_seq	Monotonic position in the repository.
+72	8	u64	capacity_sectors	As reported by the drive at first write.
+80	8	u64	capacity_forced_sectors	Forced capacity. Equals capacity_sectors when no override was given.
+88	32	u8[32]	prev_disc_super_hash	Hash of the previous verified superblock. All zero when there is none.
+120	8	i64	created_sec	Pack time of the first run, seconds.
+128	4	u32	created_nsec	Nanoseconds.
+132	4	i32	tz_offset_sec	Local zone offset at that pack time.
+136	1	u8	media_type	Media type registry.
+137	1	u8	fs_profile	Disc filesystem profile registry.
+138	1	u8	fanout_levels	1 by default. 2 is allowed under profile 1 and profile 0 only.
+139	1	u8	capacity_is_forced	1 when capacity_forced_sectors is below capacity_sectors.
+140	1	u8	sealed	1 when the disc was burned sealed at its first write. 0 when left open.
+141	3	u8[3]	reserved_u8	Zero. Keeps label_len aligned.
+144	4	u32	label_len	Byte length of the label.
+148	64	u8[64]	label	UTF-8, zero-padded.
+212	4	u32	tool_version	Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only.
+216	4	u32	reserved_u32	Zero.
+220	1824	u8[1824]	reserved	Zero.
 2044	4	u32	super_crc32c	CRC-32C over bytes 0 to 2043.
 
 Run header
 ----------
 
 offset	size	type	name	meaning
-0-39	40	-	common header	magic_kind "RUN".
-40	16	u8[16]	disc_uuid	The disc this run sits on.
-56	16	u8[16]	repo_uuid	The repository.
-72	8	u64	run_seq	Monotonic run number in the repository, 1-based.
-80	8	u64	disc_seq	Disc sequence number, 0-based.
-88	2	u16	fec_k	Data columns. 231 in version 1.
-90	2	u16	fec_m	Parity columns. 23 in version 1.
-92	1	u8	fec_scheme	FEC scheme registry.
-93	1	u8	checksum_column	Column index of the checksum column in the FEC stream. Equals fec_k.
-94	1	u8	hash_algo	Multicodec code of every id in this run. Phase 1 writes 0x12.
-95	1	u8	digest_len	32.
-96	1	u8	chunker_profile	Profile id.
-97	1	u8	compression	Default compression id.
-98	1	u8	fs_profile	Disc filesystem profile id. Equals the superblock's fs_profile.
-99	1	u8	run_kind	1 data run, 2 repair run, 3 disc-close parity run. 0 is invalid.
-100	1	u8	run_flags	Bit 0 CLOSING_RUN. Bits 1 to 7 reserved, zero.
-101	1	u8	reserved_u8	Zero.
-102	2	u16	reserved_u16	Zero. Keeps object_count aligned.
-104	8	u64	object_count	Objects in this run.
-112	8	u64	payload_bytes	Stored object bytes in this run.
-120	8	u64	duplicate_bytes	Bytes written again for locality.
-128	8	u64	index_bytes	Byte length of INDEX.bin.
-136	32	u8[32]	index_hash	Hash of INDEX.bin's bytes.
-168	8	u64	stream_bytes	Byte length of the FEC stream.
-176	8	u64	stream_blocks	stream_bytes in 2048-byte blocks, rounded up.
-184	8	u64	column_blocks	L.
-192	32	u8[32]	prev_run_hash	Hash of the previous run header on this disc. Zero for the first run.
-224	8	i64	created_sec	Pack time, seconds.
-232	4	u32	created_nsec	Nanoseconds.
-236	4	u32	source_run_count	Number of run seqs this run references.
-240	8	u64	snapshot_count	Snapshot objects that this run stores under /NOAHSARK/snapshots/.
-248	8	u64	prereq_count	Prerequisite ids listed in INDEX.
-256	4	u32	tool_version	Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only.
-260	4	u32	reserved_u32	Zero.
-264	8	u64	disc_object_count	Objects on this disc after this run. Cumulative.
-272	4	u32	disc_run_index	Index of this run on this disc. 0 for the first run.
-276	4	u32	reserved_u32b	Zero.
-280	224	u8[224]	reserved	Zero.
+0-31	32	-	common header	magic_kind "RUN".
+32	16	u8[16]	disc_uuid	The disc this run sits on.
+48	16	u8[16]	repo_uuid	The repository.
+64	8	u64	run_seq	Monotonic run number in the repository, 1-based.
+72	8	u64	disc_seq	Disc sequence number, 0-based.
+80	2	u16	fec_k	Data columns. 231 in version 1.
+82	2	u16	fec_m	Parity columns. 23 in version 1.
+84	1	u8	fec_scheme	FEC scheme registry.
+85	1	u8	hash_algo	Multicodec code of every id in this run. Phase 1 writes 0x12.
+86	1	u8	chunker_profile	Profile id.
+87	1	u8	compression	Default compression id.
+88	1	u8	fs_profile	Disc filesystem profile id.
+89	1	u8	run_kind	1 data run, 2 repair run, 3 disc-close parity run. 0 is invalid.
+90	1	u8	run_flags	Bit 0 CLOSING_RUN. Bits 1 to 7 reserved, zero.
+91	1	u8	reserved_u8	Zero.
+92	4	u32	reserved_u32a	Zero. Keeps index_bytes aligned.
+96	8	u64	index_bytes	Byte length of INDEX.bin.
+104	32	u8[32]	index_hash	Hash of INDEX.bin's bytes.
+136	8	u64	stream_bytes	Byte length of the FEC stream.
+144	32	u8[32]	prev_run_hash	Hash of the previous run header on this disc. Zero for the first run.
+176	8	i64	created_sec	Pack time, seconds.
+184	4	u32	created_nsec	Nanoseconds.
+188	4	u32	tool_version	Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only.
+192	8	u64	disc_object_count	Objects on this disc after this run. Cumulative.
+200	4	u32	disc_run_index	Index of this run on this disc. 0 for the first run.
+204	4	u32	reserved_u32b	Zero.
+208	296	u8[296]	reserved	Zero.
 504	4	u32	header_crc32c	CRC-32C over bytes 0 to 503.
 508	4	u8[4]	reserved_final	Zero.
 
@@ -3312,24 +3214,22 @@ INDEX header
 ------------
 
 offset	size	type	name	meaning
-0-39	40	-	common header	magic_kind "INDEX".
-40	8	u64	run_seq	The run this INDEX describes.
-48	4	u32	file_count	Rows in the Files table.
-52	4	u32	object_count	Rows in the Objects table.
-56	4	u32	prereq_count	Rows in the Prereqs table.
-60	2	u16	file_record_size	48.
-62	2	u16	object_record_size	72.
-64	2	u16	prereq_record_size	40.
-66	1	u8	fanout_bits	8 or 16.
-67	1	u8	hash_algo	Multicodec code of every id in this run.
-68	1	u8	digest_len	32.
-69	3	u8[3]	reserved	Zero.
-72	8	u64	container_len	Total length of this container in bytes.
-80	4	u32	body_crc32c	CRC-32C over the fan-out table and every table.
-84	4	u32	header_crc32c	CRC-32C over bytes 0 to 83.
-88	-	u32[]	fanout	Cumulative counts over the Objects table.
--	-	-	files	The Files table.
--	-	-	objects	The Objects table.
+0-31	32	-	common header	magic_kind "INDEX".
+32	8	u64	run_seq	The run this INDEX describes.
+40	4	u32	file_count	Rows in the Files table.
+44	4	u32	object_count	Rows in the Objects table.
+48	4	u32	prereq_count	Rows in the Prereqs table.
+52	2	u16	file_record_size	48.
+54	2	u16	object_record_size	72.
+56	2	u16	prereq_record_size	40.
+58	1	u8	hash_algo	Multicodec code of every id in this run.
+59	1	u8	digest_len	32.
+60	4	u8[4]	reserved	Zero. Keeps container_len aligned.
+64	8	u64	container_len	Total length of this container in bytes.
+72	4	u32	body_crc32c	CRC-32C over the Files table, the Objects table and the Prereqs table.
+76	4	u32	header_crc32c	CRC-32C over bytes 0 to 75.
+80	-	-	files	The Files table.
+-	-	-	objects	The Objects table, sorted ascending by content_id.
 -	-	-	prereqs	The Prereqs table.
 
 INDEX Files row
@@ -3367,16 +3267,16 @@ Catalog table header (REFS, DISCS)
 -------------------------------------
 
 offset	size	type	name	meaning
-0-39	40	-	common header	magic_kind "REFS" or "DISCS".
-40	16	u8[16]	repo_uuid	The repository.
-56	8	u64	record_count	Records that follow.
-64	2	u16	record_size	96 for REFS, 184 for DISCS.
-66	1	u8	hash_algo	Multicodec code of a digest in the records that has no hash_algo of its own.
-67	1	u8	digest_len	32.
-68	4	u32	reserved	Zero.
-72	4	u32	body_crc32c	CRC-32C over the records.
-76	4	u32	header_crc32c	CRC-32C over bytes 0 to 75.
-80	-	-	records	Sorted, fixed-width.
+0-31	32	-	common header	magic_kind "REFS" or "DISCS".
+32	16	u8[16]	repo_uuid	The repository.
+48	8	u64	record_count	Records that follow.
+56	2	u16	record_size	96 for REFS, 176 for DISCS.
+58	1	u8	hash_algo	Multicodec code of a digest in the records that has no hash_algo of its own.
+59	1	u8	digest_len	32.
+60	4	u32	reserved	Zero.
+64	4	u32	body_crc32c	CRC-32C over the records.
+68	4	u32	header_crc32c	CRC-32C over bytes 0 to 67.
+72	-	-	records	Sorted, fixed-width.
 
 DISCS row
 ---------
@@ -3392,14 +3292,12 @@ offset	size	type	name	meaning
 88	8	u64	used_sectors	Sectors used on the disc after this run.
 96	1	u8	run_status	1 verified, 2 unverified, 3 withdrawn. 0 is invalid.
 97	1	u8	health	1 healthy, 2 degraded, 3 critical, 4 failed, 5 unknown, 6 unverified, this disc.
-98	1	u8	media_type	Media type registry.
-99	1	u8	fs_profile	Disc filesystem profile of that run's disc.
-100	2	u16	rs_margin_percent	Worst-stripe margin, as a percentage of m.
-102	2	u16	label_len	Byte length of the label.
-104	64	u8[64]	label	UTF-8, zero-padded.
-168	1	u8	state_flags	bit0 closed, bit1 append-raw-only, bit2 spare below the threshold, bit3 capacity forced.
-169	7	u8[7]	reserved	Zero.
-176	8	u64	capacity_forced_sectors	Forced capacity.
+98	2	u16	rs_margin_percent	Worst-stripe margin, as a percentage of m.
+100	2	u16	label_len	Byte length of the label.
+102	64	u8[64]	label	UTF-8, zero-padded.
+166	1	u8	state_flags	bit0 closed, bit1 append-raw-only, bit2 spare below the threshold, bit3 capacity forced.
+167	1	u8	reserved	Zero. Keeps capacity_forced_sectors aligned.
+168	8	u64	capacity_forced_sectors	Forced capacity.
 
 Checksum block record
 -----------------------
@@ -3492,9 +3390,9 @@ decision id followed by its section number.
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | D001 | 2.1 | D002 | 2.1 | D003 | 2.1 | D004 | 2.1 | D005 | 2.1 | D006 | 2.1 |
 | D007 | 2.1 | D008 | 2.1 | D009 | 2.1 | D010 | 2.1 | D011 | 2.1 | D012 | 2.1 |
-| D013 | 2.1 | D014 | 2.1 | D015 | 2.2 | D016 | 2.3 | D017 | 2.4 | D018 | 2.4 |
-| D019 | 2.4 | D020 | 2.4 | D021 | 2.6 | D022 | 2.7 | D023 | 2.7 | D024 | 2.7 |
-| D025 | 2.7 | D026 | 13 | D027 | 2.8 | D028 | 12.1 | D029 | 2.10 | D030 | 3.1 |
+| D013 | 2.1 | D014 | 2.1 | D015 | 2.2 | D016 | 2.3 | D017 | - | D018 | - |
+| D019 | - | D020 | - | D021 | 2.5 | D022 | 2.6 | D023 | 2.6 | D024 | 2.6 |
+| D025 | 2.6 | D026 | 13 | D027 | 2.7 | D028 | 12.1 | D029 | 2.9 | D030 | 3.1 |
 | D031 | 3.1 | D032 | 3.1 | D033 | 3.2 | D034 | 3.2 | D035 | 3.3 | D036 | 3.3 |
 | D037 | 3.4 | D038 | 3.5 | D039 | 3.5 | D040 | 3.5 | D041 | 3.5 | D042 | 3.5 |
 | D043 | 3.6 | D044 | 3.6 | D045 | 3.6 | D046 | 3.6 | D047 | 3.6 | D048 | 4.1 |
@@ -3512,7 +3410,7 @@ decision id followed by its section number.
 | D115 | - | D116 | 6.11 | D117 | 6.11 | D118 | 6.11 | D119 | 6.10 | D120 | 6.10 |
 | D121 | 6.10 | D122 | 6.6 | D123 | 6.6 | D124 | 6.9 | D125 | 6.6 | D126 | 6.6 |
 | D127 | 6.6 | D128 | - | D129 | - | D130 | - | D131 | - | D132 | - |
-| D133 | - | D134 | - | D135 | - | D136 | - | D137 | 2.11 | D138 | - |
+| D133 | - | D134 | - | D135 | - | D136 | - | D137 | 2.10 | D138 | - |
 | D139 | - | D140 | - | D141 | 6.14 | D142 | 6.14 | D143 | 6.14 | D144 | 6.14 |
 | D145 | 6.14 | D146 | 6.14 | D147 | 6.14 | D148 | 6.14 | D149 | 6.14 | D150 | 6.17 |
 | D151 | 6.17 | D152 | 6.17 | D153 | 6.17 | D154 | 6.17 | D155 | 6.17 | D156 | 6.18 |
@@ -3529,15 +3427,15 @@ decision id followed by its section number.
 | D217 | 8.3 | D218 | 7.10 | D219 | 7.10 | D220 | 7.10 | D221 | 7.10 | D222 | 7.10 |
 | D223 | 7.10 | D224 | 7.10 | D225 | 7.10 | D226 | 7.10 | D227 | 7.10 | D228 | 7.10 |
 | D229 | 7.11 | D230 | 7.11 | D231 | 8.1 | D232 | 8.1 | D233 | - | D234 | - |
-| D235 | - | D236 | - | D237 | 8.6 | D238 | - | D239 | - | D240 | - |
+| D235 | - | D236 | - | D237 | 8.7 | D238 | - | D239 | - | D240 | - |
 | D241 | - | D242 | - | D243 | 7.5 | D244 | - | D245 | - | D246 | 8.1 |
 | D247 | - | D248 | 3.5 | D249 | - | D250 | - | D251 | - | D252 | - |
 | D253 | - | D254 | 8.2 | D255 | 8.2 | D256 | 8.2 | D257 | 8.4 | D258 | 8.4 |
-| D259 | 8.5 | D260 | 8.5 | D261 | 8.5 | D262 | 8.5 | D263 | 8.7 | D264 | 8.7 |
-| D265 | 8.7 | D266 | 8.6 | D267 | 8.6 | D268 | 8.6 | D269 | 8.6 | D270 | 8.6 |
-| D271 | 8.6 | D272 | 8.6 | D273 | 8.6 | D274 | 8.6 | D275 | 8.6 | D276 | 8.6 |
-| D277 | 8.6 | D278 | 8.6 | D279 | 8.6 | D280 | 8.6 | D281 | 8.6 | D282 | 8.6 |
-| D283 | - | D284 | 8.6 | D285 | - | D286 | - | D287 | - | D288 | - |
+| D259 | 8.5 | D260 | 8.5 | D261 | 8.5 | D262 | 8.5 | D263 | 8.8 | D264 | 8.8 |
+| D265 | 8.8 | D266 | 8.7 | D267 | 8.7 | D268 | 8.7 | D269 | 8.7 | D270 | 8.7 |
+| D271 | 8.7 | D272 | 8.7 | D273 | 8.7 | D274 | 8.7 | D275 | 8.7 | D276 | 8.7 |
+| D277 | 8.7 | D278 | 8.7 | D279 | 8.7 | D280 | 8.7 | D281 | 8.7 | D282 | 8.7 |
+| D283 | - | D284 | 8.7 | D285 | - | D286 | - | D287 | - | D288 | - |
 | D289 | - | D290 | - | D291 | - | D292 | - | D293 | - | D294 | - |
 | D295 | - | D296 | - | D297 | - | D298 | - | D299 | - | D300 | - |
 | D301 | - | D302 | - | D303 | - | D304 | - | D305 | - | D306 | - |
@@ -3570,7 +3468,7 @@ decision id followed by its section number.
 | D463 | - | D464 | - | D465 | - | D466 | - | D467 | - | D468 | - |
 | D469 | - | D470 | - | D471 | - | D472 | - | D473 | - | D474 | - |
 | D475 | - | D476 | - | D477 | - | D478 | - | D479 | - | D480 | - |
-| D481 | - | D482 | - | D483 | 8.6 | D484 | - | D485 | - | D486 | - |
+| D481 | - | D482 | - | D483 | 8.7 | D484 | - | D485 | - | D486 | - |
 | D487 | - | D488 | - | D489 | - | D490 | - | D491 | 11.2 | D492 | - |
 | D493 | 11.2 | D494 | - | D495 | - | D496 | - | D497 | - | D498 | - |
 | D499 | - | D500 | - | D501 | - | D502 | - | D503 | - | D504 | - |
@@ -3588,11 +3486,11 @@ decision id followed by its section number.
 | D571 | - | D572 | - | D573 | - | D574 | - | D575 | - | D576 | - |
 | D577 | - | D578 | - | D579 | 12.8 | D580 | 12.8 | D581 | 12.5 | D582 | 12.5 |
 | D583 | 12.5 | D584 | 12.2 | D585 | 12.1 | D586 | 12.6 | D587 | 12.4 | D588 | 12.4 |
-| D589 | 12.7 | D590 | 12.4 | D591 | - | D592 | - | D593 | - | D594 | 2.11 |
-| D595 | 2.11 | D596 | 2.11 | D597 | 2.11 | D598 | 2.11 | D599 | - | D600 | 2.11 |
+| D589 | 12.7 | D590 | 12.4 | D591 | - | D592 | - | D593 | - | D594 | 2.10 |
+| D595 | 2.10 | D596 | 2.10 | D597 | 2.10 | D598 | 2.10 | D599 | - | D600 | 2.10 |
 | D601 | - | D602 | - | D603 | 1 | D604 | - | D605 | - | D606 | - |
 | D607 | - | D608 | - | D609 | - | D610 | - | D611 | 13 | D612 | 13 |
 | D613 | - | D614 | 4.8 | D615 | - | D616 | 12.1 | D617 | 12.7 | D618 | - |
 
-Decisions listed: 618. Carried by this document: 390. Not in this document: 228.
+Decisions listed: 618. Carried by this document: 386. Not in this document: 232.
 

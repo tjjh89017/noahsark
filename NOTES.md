@@ -1,6 +1,6 @@
 # NoahsArk design notes
 
-Document version 0.4.2.
+Document version 0.4.3.
 
 Sections other than the change log and Deferred designs still describe
 document version 3.2 and are updated later.
@@ -410,6 +410,24 @@ known values and compares the bytes to a checked-in file, and it also reads the
 checked-in file and compares the fields. Both directions are needed. The first
 catches an accidental change of layout, of padding, or of endianness; the
 second catches a decoder that silently tolerates one.
+
+**Why feature bits were removed (0.4.3).** `required_feat` and `optional_feat`
+duplicated what `version_major` and `version_minor` already said under the
+append-only rule: a field an old reader can skip is exactly what a minor
+bump adds, and a field an old reader cannot skip is exactly what a major bump
+gates. Carrying both a version number and a bit mask for the same fact gave a
+writer two places to get the rule right and a reader two checks to perform
+for one answer. Dropping the masks shrinks the common header from 40 bytes to
+32 and leaves one evolution rule instead of two.
+
+**Why a reference decoder ships on every disc (0.4.3).** FORMAT.md and
+`FORMAT.txt` describe the bytes; they do not prove that a description is
+enough to act on. `/NOAHSARK/REFERENCE/decoder.py` is a runnable check
+against that description, carried on the medium itself, so a person with a
+Python interpreter and no NoahsArk software or network access can still
+extract and verify a file. Fixing it to a single checked-in file per document
+version, copied byte for byte, keeps it as auditable and as stable as the
+format tables it walks.
 
 ### 2.2 Identity and hashing
 
@@ -2529,6 +2547,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 0.4.3 | **Feature bits and derivable fields removed.** The common header drops `required_feat` and `optional_feat` and is now 32 bytes; a `version_minor` bump may only append fields an old reader can ignore, and any change it cannot ignore is a `version_major` bump, so this rule alone now carries what the two masks did. Every feature registry, feature table and "set when" table is removed, and `FEAT_*` names are gone from the document. INDEX drops the fan-out table and `fanout_bits`: the Objects table is sorted by `content_id`, and a reader binary-searches it directly. The DISC superblock drops the per-run fields `hash_algo`, `digest_len`, `chunker_profile`, `compression`, `fec_scheme`, `fec_k`, `fec_m`, `crypto`, `sector_size` and `append_variant`; every per-run parameter now lives in the run header only, so the "run header overrides the superblock" sentence is gone with nothing left to override. The run header drops `stream_blocks`, `column_blocks`, `checksum_column`, `digest_len`, `object_count`, `payload_bytes`, `duplicate_bytes`, `source_run_count`, `snapshot_count` and `prereq_count`; a reader derives the FEC block geometry from `stream_bytes`, `fec_k` and `fec_m`, and the counts live in INDEX. The DISCS row drops `media_type` and `fs_profile`, both already in the DISC superblock. Every disc now carries `/NOAHSARK/REFERENCE/decoder.py`, a fixed, checked-in, standard-library Python 3 program that parses DISC, RUN and INDEX, verifies SHA-256 content ids, walks a snapshot and prints the listing; it has INDEX file role 14 and a 64 KiB limit. The media type, disc filesystem profile and FEC scheme registries each shrink to their one Phase 1 row plus "other values reserved". `FORMAT.txt` regenerated to match; it is now 21,469 bytes in 526 lines. |
 | 0.4.2 | **SHA-256 only in Phase 1.** FORMAT.md's hash algorithm registry marks `sha2-256` as the code Phase 1 writes and every reader must read; `blake3` and a new reserved code, `sha2-512-256`, stay reserved for a later version, and a Phase 1 writer never emits either. Every digest stays 32 bytes; a longer digest needs a new major version. The chunking, checksum column and Gear table pseudocode that read `BLAKE3-256` now read `SHA-256`; the checksum record's `hash_algo` byte is `0x12`; DISC and RUN `hash_algo` fields state that Phase 1 writes `0x12`; the object file name prefix is `1220` for every file this version writes. A conforming reader reads `sha2-256` and refuses an object whose `hash_algo` it does not implement, naming the code, in place of the old "reads both algorithms" rule. FORMAT.md section 10.5's decode rule now states that a decoder facing more than `k` present blocks in a stripe uses the `k` with the lowest column index, so healing is deterministic. `FORMAT.txt` regenerated to match; it is now 23,388 bytes in 563 lines. NOTES.md's "Reasons for BLAKE3 as the default" became "Reasons for SHA-256 as the only Phase 1 algorithm". |
 | 0.4.1 | **BUNDLE deferred.** FORMAT.md section "Deferred designs" holds the reasoning. Phase 1 stores every object as its own file, one file per chunk, blob, tree or snapshot; no chunk bundling and no packed `snapobj.bin` remain. A probe on a loop-mounted UDF 2.01 image, built with `mkudffs` from udftools 2.3, measured an in-ICB embedding threshold around 1,800 bytes and a File Entry cost of about 2 KiB per file above it regardless of payload size, and a populate time of about 19 s for 100,000 small files under 256-way fanout directories against about 0.4 s for the same payload packed into 1,000 bundle files; a single flat 100,000-entry directory showed quadratic populate cost instead. The `BUNDLE` `magic_kind` and the INDEX file role that also names an object file stay reserved for a later version; a Phase 1 writer never emits a bundle and a reader refuses one. The INDEX Objects row keeps `file_index` and `offset` so a later version can add a container without a layout change: `offset` is always 0 and `file_index` names the object's own file in this version. `bundle_threshold` and `bundle_target` are removed from the chunker profile record. NOTES.md gains this Deferred designs subsection, covering the bundle, delta objects and tree slices. |
 | 0.4.0 | FORMAT.md redesigned. Every structure now begins with a 40-byte common header: the project magic `NOAHSARK`, an 8-byte kind name, `version_major`, `version_minor`, `header_len` and two feature masks; a `version_minor` bump may only append fields, and every reserved field is zero. The document version, the program version and each structure's own version are independent, and the format is not frozen before 1.0.0, so no disc burned under a 3.x-era design is supported. Structures go from fifteen to eleven: objects are CHUNK, BLOB, TREE and SNAPSHOT; BUNDLE is a container for any small object; DISC, RUN, INDEX, CHECKSUM and parity describe a run; REFS and DISCS are the catalog. The run layout table, the filter, `CATALOG.bin`, the snapshot table, the run table, the disc directory, the bundle trailer, split records, the DUPS chunk, the TLV spill rule and the XLATE table are removed. No LBA appears anywhere: FEC runs over the file stream INDEX defines, in 2048-byte blocks, and recovery from damaged filesystem metadata is by carving on the project magic. Every regular file has a BLOB object, and object roots are `objects/` and `snapshots/`. OPERATIONS.md and NOTES.md still described document version 3.2 as of this change. |
