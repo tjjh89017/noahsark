@@ -77,16 +77,15 @@ jobs:
           artifact-name: e2e-result-${{ matrix.slug }}
 
   # One stable check the branch ruleset can require in place of every
-  # lint, unit and e2e cell, so adding or dropping a cell never touches
-  # branch protection. Downloads every e2e cell's result first and prints
+  # e2e cell, so adding or dropping a cell never touches branch
+  # protection. e2e already needs lint and unit, so needing e2e alone
+  # covers all three. Downloads every e2e cell's result first and prints
   # a summary table, so the run stays legible even when several cells
-  # failed, then evaluates the needed jobs' results.
+  # failed, then evaluates e2e's result.
   e2e-required:
     name: E2E
     runs-on: ubuntu-latest
     needs:
-      - lint
-      - unit
       - e2e
     if: always()
     steps:
@@ -114,7 +113,4 @@ jobs:
           done
 
       - name: All required jobs passed
-        run: |
-          [ "${{ needs.lint.result }}" = "success" ] && \
-            [ "${{ needs.unit.result }}" = "success" ] && \
-            [ "${{ needs.e2e.result }}" = "success" ]
+        run: '[ "${{ needs.e2e.result }}" = "success" ]'
