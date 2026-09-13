@@ -1,0 +1,533 @@
+NoahsArk format major 1 minor 0
+
+1. FORMAT RULES
+===============
+
+1. Every integer is little-endian. No big-endian field exists.
+2. Only fixed-width types are used: u8, u16, u32, u64, i32, i64. No varint appears inside a fixed header.
+3. Every structure is packed with manual alignment. Every gap is a named reserved field. A writer writes zero into every reserved field and every padding byte. A reader does not interpret a reserved field and does not reject a nonzero value in one. A golden test checks that the writer wrote zero into every reserved field and every padding byte.
+4. Every structure begins with the 32-byte common header.
+5. A structure is a file-level container or an object payload header. A record inside a structure, a tree entry, a TLV, an INDEX table row, a REFS or DISCS row, is a record, not a structure. A record never carries the common header. A record carries a magic only where its own table states one.
+6. A reader refuses an unknown version_major. A reader accepts an unknown version_minor and ignores the fields it does not know.
+7. A version_minor bump may only append fields to the end of the fixed body, and an old reader must be able to read the structure correctly while ignoring them. Any change an old reader cannot ignore is a version_major bump, and an old reader refuses it.
+8. A checksum covers only bytes the writer finalized before computing it. A structure with no separate body ends with one CRC over every byte before it. A container with a header and a body carries header_crc32c and body_crc32c at the end of its header: body_crc32c sits in the header and covers the body. The body becomes final first, then the header is written last, so each CRC covers bytes that were already final.
+9. CRCs are CRC-32C: polynomial 0x1EDC6F41, reflected, initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF.
+10. Objects use the full content hash in place of a body CRC. The content id is the checksum of the payload.
+11. Every pointer carries the hash of its target. No unhashed reference exists.
+12. A string is encoding (u8), reserved (u8[3], zero), length (u32) in bytes, then the bytes. Encoding 0 is UTF-8. There is no NUL terminator and no normalization.
+13. Every structure has a byte-offset table with the columns offset, size, type, name and meaning.
+14. Every file that the format writes begins on a sector boundary of the medium. A structure's fixed header carries enough length information to find the structure's own end without reading anything past it, so that a tool can find a structure by scanning the raw medium for the project magic.
+
+String layout
+-------------
+
+offset	size	type	name	meaning
+0	1	u8	encoding	0 = UTF-8. Other values reserved.
+1	3	u8[3]	reserved	Zero. Keeps length aligned.
+4	4	u32	length	Byte count of the string data.
+8	length	u8[]	data	The bytes, as found. No terminator.
+
+2. REGISTRIES
+=============
+
+Hash algorithm registry
+-----------------------
+
+Code	Name	Digest bytes	Status
+0x12	sha2-256	32	Phase 1 writes it. Every reader must read it.
+0x1e	blake3	32	Reserved for a later version. A Phase 1 writer never emits it.
+0x13	sha2-512	64	Reserved. Not used in version 1.
+0x1020	sha2-512-256	32	Reserved for a later version. A Phase 1 writer never emits it.
+0xb220	blake2b-256	32	Reserved.
+
+Compression registry
+--------------------
+
+Id	Name	Status
+0	none	Mandatory.
+1	zstd	Default.
+2	lz4	Optional.
+3-255	reserved	Refuse.
+
+Chunker profile registry
+------------------------
+
+Id	Name	min	avg	max	NC level
+1	P3	512 KiB	2 MiB	8 MiB	2
+2	P4	1 MiB	4 MiB	16 MiB	2
+3	P5	2 MiB	8 MiB	32 MiB	2
+4-255	reserved	-	-	-	-
+
+FEC scheme registry
+-------------------
+
+Id	Name	Field	Shards	Status
+1	rs255-gf8	GF(2^8)	255	Default. Phase 1. A stripe is k + 1 + m = 255 blocks; the code is over the k + m data and parity shards.
+2-255	reserved	-	-	-
+
+Object kind registry
+--------------------
+
+Id	Name
+1	chunk
+2	blob
+3	tree
+4	snapshot
+
+A ref is a row of the REFS table. It is not an object kind and carries no id in this registry.
+
+File role registry
+-------------------
+
+Id	Role
+0	reserved
+1	INDEX.bin, this file
+2	RUN.bin
+3	DISC.bin
+4	README.txt
+5	FORMAT.txt
+6	reserved. Never assigned again: earlier document versions gave this id to a run-wide membership filter, since removed.
+7	catalog/REFS.bin
+8	catalog/DISCS.bin
+9	a snapshot object copy under catalog/snapobj/, loose or packed
+10	checksum.bin
+11	a parity file
+12	RUN2.bin
+13	an object file under /NOAHSARK/objects/ or /NOAHSARK/snapshots/. Reserved for a later version: a container's role stays 13 too.
+14	REFERENCE/decoder.py
+
+Disc filesystem profile registry
+--------------------------------
+
+Id	Name	Filesystem	Append mechanism	Status
+0	oneshot	UDF 2.01. Phase 1 builds UDF 2.01 only.	None in Phase 1. The disc is POW-formatted and left open, so a Phase 2 append can still reach it.	Default. Phase 1.
+1-255	reserved	-	-	-
+
+Media type registry
+-------------------
+
+Id	Name	Status
+1	BD-R SL 25 GB	Default. Phase 1.
+2	BD-R DL 50 GB	Phase 1.
+3	BD-R XL 100 GB	Phase 1.
+4	BD-R XL 128 GB	Phase 1.
+5-255	reserved	-
+
+media_type is informational. A reader never rejects a value it does not know,
+and no rule depends on it. Capacity comes from capacity_sectors and
+capacity_forced_sectors.
+
+Source type registry
+--------------------
+
+Id	Name	Meaning
+0	unknown	Not recorded. A pre-1.0 writer.
+1	local	A local filesystem. Full metadata fidelity.
+2	snapshot	A filesystem snapshot of a local filesystem.
+3	nfs	An NFS mount.
+4	smb	An SMB or CIFS mount.
+5	bundle	Imported from a commit bundle (see the operations document). The bundle writer's own source type is in its BUNDLE.bin.
+
+Tree TLV type registry
+----------------------
+
+Type	Name	Critical	Payload
+0x0001	SYMLINK_TARGET	yes	Raw bytes. Mandatory when entry_type is 3. Never validated as UTF-8.
+0x0002	USER_NAME	no	UTF-8 bytes.
+0x0003	GROUP_NAME	no	UTF-8 bytes.
+0x0004	ROOT_PATH	no	Raw bytes of a source root's absolute path. Only on an entry of the root tree; source roots are defined in the operations document.
+0x0010	XATTR	no	Reserved. A Phase 1 writer does not emit this type. Its item layout is defined in a later phase, with a version_minor bump. A Phase 1 reader treats it as an unknown TLV.
+0x0011	ACL_ACCESS	no	Reserved. Same rule as XATTR.
+0x0012	ACL_DEFAULT	no	Reserved. Same rule as XATTR.
+0x0013	ACL_NFS4	no	Reserved. Same rule as XATTR.
+0x0020	LINUX_ATTR	no	Reserved. Same rule as XATTR.
+0x0021	BSD_FLAGS	no	Reserved. Same rule as XATTR.
+0x0030	WIN_ATTRS	no	Reserved. Same rule as XATTR.
+0x0031	WIN_SD	no	Reserved. Same rule as XATTR.
+0x0032	WIN_ADS	no	Reserved. Same rule as XATTR.
+0x8000-0xBFFF	reserved critical	yes	Future critical extensions.
+0xF000-0xFFFF	vendor	no	Never critical.
+
+3. STRUCTURES
+=============
+
+Common header
+-------------
+
+offset	size	type	name	meaning
+0	8	u8[8]	magic_project	ASCII "NOAHSARK".
+8	8	u8[8]	magic_kind	ASCII kind name, zero-padded to 8 bytes. Compared as all 8 bytes.
+16	2	u16	version_major	Refuse an unknown value.
+18	2	u16	version_minor	Accept an unknown value; read min(header_len, known length).
+20	2	u16	header_len	Common header plus the fixed body.
+22	2	u16	reserved_u16	Zero.
+24	8	u64	reserved_u64	Zero.
+
+Object header
+-------------
+
+offset	size	type	name	meaning
+0	1	u8	kind	Object kind registry.
+1	1	u8	hash_algo	Multicodec code. 0x12 sha2-256 in version 1.
+2	1	u8	digest_len	Digest length in bytes. 32 in version 1.
+3	1	u8	compression	Compression registry. 0 none, 1 zstd, 2 lz4.
+4	1	u8	crypto	0 plaintext. Other values reserved.
+5	1	u8	reserved_u8	Zero.
+6	2	u16	reserved_u16	Zero. Keeps payload_len aligned.
+8	8	u64	payload_len	Uncompressed payload length in bytes.
+16	8	u64	stored_len	Bytes on the medium after this header.
+24	4	u32	header_crc32c	CRC-32C over the common header and bytes 0 to 23 of this header.
+28	4	u32	reserved_u32	Zero.
+
+Blob payload header
+--------------------
+
+offset	size	type	name	meaning
+0	8	u64	entry_count	Number of entries.
+8	8	u64	total_size	Sum of length over all entries.
+16	2	u16	entry_size	48.
+18	1	u8	hash_algo	Multicodec code.
+19	1	u8	digest_len	32.
+20	1	u8	level	0 = entries are chunks. 1 = entries are blobs.
+21	3	u8[3]	reserved	Zero.
+24	-	-	entries	entry_count records of 48 bytes.
+
+Blob entry
+----------
+
+offset	size	type	name	meaning
+0	32	u8[32]	content_id	Chunk id, or child blob id.
+32	8	u64	length	Uncompressed bytes this entry contributes.
+40	8	u64	file_offset	Offset of this entry inside the file.
+
+Tree payload header
+--------------------
+
+offset	size	type	name	meaning
+0	4	u32	entry_count	Number of entries.
+4	4	u32	reserved_u32	Zero. Keeps entries 8-byte aligned.
+8	-	-	entries	Entries, back to back, each self-delimiting.
+
+Tree entry
+----------
+
+offset	size	type	name	meaning
+0	4	u32	entry_len	Total entry length including all variable areas. Multiple of 8.
+4	2	u16	header_len	112 in version 1. A reader skips the excess.
+6	1	u8	entry_type	1 regular, 2 directory, 3 symlink, 4 chardev, 5 blockdev, 6 fifo, 7 socket. 0 is invalid.
+7	1	u8	entry_flags	See entry flags below.
+8	8	u64	size	Regular files only. 0 otherwise.
+16	8	u64	hardlink_group	Reserved for a later phase. A Phase 1 writer writes 0.
+24	8	i64	mtime_sec	Seconds since 1970-01-01 UTC.
+32	8	i64	atime_sec	Valid only when ATIME_ABSENT is clear.
+40	8	i64	ctime_sec	Valid only when CTIME_ABSENT is clear.
+48	8	i64	btime_sec	Valid only when BTIME_ABSENT is clear.
+56	4	u32	mtime_nsec	0 to 999,999,999.
+60	4	u32	atime_nsec	Same range.
+64	4	u32	ctime_nsec	Same range.
+68	4	u32	btime_nsec	Same range.
+72	4	u32	mode	Low 12 bits are rwxrwxrwx plus setuid 04000, setgid 02000, sticky 01000. Bits 12 to 31 reserved, zero. The file type is not here.
+76	4	u32	uid	0xFFFFFFFF means unknown.
+80	4	u32	gid	0xFFFFFFFF means unknown.
+84	4	u32	rdev_major	Device entries only, else 0.
+88	4	u32	rdev_minor	Device entries only, else 0.
+92	4	u32	content_off	Offset to the content reference area. 0 when there is none.
+96	4	u32	content_len	Bytes in that area.
+100	4	u32	ext_off	Offset to the TLV area. 0 when ext_len is 0.
+104	4	u32	ext_len	Bytes in the TLV area, padding included.
+108	2	u16	name_off	Offset to the name bytes. 112 in version 1.
+110	2	u16	name_len	Name length in bytes, 1 to 4095. No terminator.
+
+Entry flags
+-----------
+
+Bit	Name	Meaning
+0	HARDLINK_MEMBER	Reserved for a later phase. A Phase 1 writer clears this bit.
+1	ATIME_ABSENT	atime_sec and atime_nsec carry no information.
+2	CTIME_ABSENT	ctime_sec and ctime_nsec carry no information.
+3	BTIME_ABSENT	btime_sec and btime_nsec carry no information.
+4	SPARSE	The source file had holes.
+5	METADATA_PARTIAL	The source read failed for at least one metadata field.
+6	reserved	Zero. A version 1 writer never sets this bit.
+7	UNSTABLE	The file changed while it was being read, and no earlier consistent version existed.
+
+Tree extension TLV record
+--------------------------
+
+offset	size	type	name	meaning
+0	2	u16	tlv_type	Tree TLV type registry.
+2	2	u16	tlv_flags	bit0 CRITICAL. Bits 1 and 2 reserved (an earlier spill mechanism, removed). Bits 3 to 15 reserved.
+4	4	u32	tlv_len	Payload bytes, excluding this prefix and excluding padding.
+8	tlv_len	u8[]	payload	The value, always inline.
+-	pad	u8[]	-	Zero bytes to the next 8-byte boundary.
+
+Snapshot payload
+----------------
+
+offset	size	type	name	meaning
+0	32	u8[32]	root_tree	Content id of the root tree.
+32	32	u8[32]	parent	Content id of the parent snapshot. All zero for a root.
+64	8	u64	generation	1 + parent generation. 1 for a root.
+72	8	i64	time_sec	Snapshot time, seconds.
+80	4	u32	time_nsec	Nanoseconds.
+84	4	i32	tz_offset_sec	Local zone offset at snapshot time.
+88	8	u64	total_size	Sum of payload_len over the distinct objects that reachable_object_count counts.
+96	8	u64	reachable_object_count	Distinct content ids reachable from root_tree: chunks, blobs and trees, the root tree included.
+104	1	u8	hash_algo	Multicodec code of root_tree and of every id below it.
+105	1	u8	chunker_profile	Chunker profile id used to produce it.
+106	2	u16	meta_count	Number of TLV records that follow.
+108	1	u8	source_type	Where the source tree was read from.
+109	1	u8	source_flags	What the source could not provide.
+110	1	u8	parent_hash_algo	Multicodec code of parent. 0 for a root.
+111	1	u8	reserved_u8	Zero.
+112	-	-	TLV records	meta_count records follow.
+
+Snapshot metadata TLV record
+-----------------------------
+
+offset	size	type	name	meaning
+0	2	u16	tag	Snapshot metadata tag registry: 1 author, 2 host, 3 message, 4 source root, 5 exclude rules, 6 checksum commit.
+2	2	u16	flags	bit0 CRITICAL.
+4	4	u32	len	Payload bytes.
+8	len	u8[]	value	UTF-8 for tags 1 to 3. Raw path bytes for tag 4. Pattern lines for tag 5. Empty for tag 6.
+-	pad	-	-	Zero to the next 4-byte boundary.
+
+Ref record
+----------
+
+offset	size	type	name	meaning
+0	32	u8[32]	snapshot_id	Content id of the snapshot.
+32	8	i64	time_sec	When the ref took this value.
+40	4	u32	time_nsec	Nanoseconds.
+44	2	u16	name_len	Byte length of the name, 1 to 40.
+46	1	u8	hash_algo	Multicodec code of snapshot_id.
+47	1	u8	reserved_u8	Zero.
+48	40	u8[40]	name	UTF-8, zero-padded. A name above 40 bytes is refused at commit time.
+88	8	u64	run_seq	Run that recorded this value.
+
+Disc superblock
+----------------
+
+offset	size	type	name	meaning
+0-31	32	-	common header	magic_kind "DISC".
+32	16	u8[16]	disc_uuid	Unique for this physical disc.
+48	16	u8[16]	repo_uuid	The repository this disc belongs to.
+64	8	u64	disc_seq	Monotonic position in the repository.
+72	8	u64	capacity_sectors	As reported by the drive at first write.
+80	8	u64	capacity_forced_sectors	Forced capacity. Equals capacity_sectors when no override was given.
+88	32	u8[32]	prev_disc_super_hash	Hash of the previous verified superblock. All zero when there is none.
+120	8	i64	created_sec	Pack time of the first run, seconds.
+128	4	u32	created_nsec	Nanoseconds.
+132	4	i32	tz_offset_sec	Local zone offset at that pack time.
+136	1	u8	media_type	Media type registry. Informational only; never gates reading.
+137	1	u8	fs_profile	Disc filesystem profile registry.
+138	1	u8	fanout_levels	1 by default. 2 is allowed under profile 1 and profile 0 only.
+139	1	u8	capacity_is_forced	1 when capacity_forced_sectors is below capacity_sectors.
+140	1	u8	sealed	1 when the disc was burned sealed at its first write. 0 when left open.
+141	3	u8[3]	reserved_u8	Zero. Keeps label_len aligned.
+144	4	u32	label_len	Byte length of the label.
+148	64	u8[64]	label	UTF-8, zero-padded.
+212	4	u32	tool_version	Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only.
+216	4	u32	reserved_u32	Zero.
+220	1824	u8[1824]	reserved	Zero.
+2044	4	u32	super_crc32c	CRC-32C over bytes 0 to 2043.
+
+Run header
+----------
+
+offset	size	type	name	meaning
+0-31	32	-	common header	magic_kind "RUN".
+32	16	u8[16]	disc_uuid	The disc this run sits on.
+48	16	u8[16]	repo_uuid	The repository.
+64	8	u64	run_seq	Monotonic run number in the repository, 1-based.
+72	8	u64	disc_seq	Disc sequence number, 0-based.
+80	2	u16	fec_k	Data columns. 231 in version 1.
+82	2	u16	fec_m	Parity columns. 23 in version 1.
+84	1	u8	fec_scheme	FEC scheme registry.
+85	1	u8	hash_algo	Multicodec code of every id in this run. Phase 1 writes 0x12.
+86	1	u8	chunker_profile	Profile id.
+87	1	u8	compression	Default compression id.
+88	1	u8	fs_profile	Disc filesystem profile id.
+89	1	u8	run_kind	1 data run, 2 repair run, 3 disc-close parity run. 0 is invalid.
+90	1	u8	run_flags	Bit 0 CLOSING_RUN. Bits 1 to 7 reserved, zero.
+91	1	u8	reserved_u8	Zero.
+92	4	u32	reserved_u32a	Zero. Keeps index_bytes aligned.
+96	8	u64	index_bytes	Byte length of INDEX.bin.
+104	32	u8[32]	index_hash	Hash of INDEX.bin's bytes.
+136	8	u64	stream_bytes	Byte length of the FEC stream.
+144	32	u8[32]	prev_run_hash	Hash of the previous run header on this disc. Zero for the first run.
+176	8	i64	created_sec	Pack time, seconds.
+184	4	u32	created_nsec	Nanoseconds.
+188	4	u32	tool_version	Writer registry id in the high 8 bits, writer-defined version in the low 24 bits. Informational only.
+192	8	u64	disc_object_count	Objects on this disc after this run. Cumulative.
+200	4	u32	disc_run_index	Index of this run on this disc. 0 for the first run.
+204	4	u32	reserved_u32b	Zero.
+208	296	u8[296]	reserved	Zero.
+504	4	u32	header_crc32c	CRC-32C over bytes 0 to 503.
+508	4	u8[4]	reserved_final	Zero.
+
+INDEX header
+------------
+
+offset	size	type	name	meaning
+0-31	32	-	common header	magic_kind "INDEX".
+32	8	u64	run_seq	The run this INDEX describes.
+40	4	u32	file_count	Rows in the Files table.
+44	4	u32	object_count	Rows in the Objects table.
+48	4	u32	prereq_count	Rows in the Prereqs table.
+52	2	u16	file_record_size	48.
+54	2	u16	object_record_size	72.
+56	2	u16	prereq_record_size	40.
+58	1	u8	hash_algo	Multicodec code of every id in this run.
+59	1	u8	digest_len	32.
+60	4	u8[4]	reserved	Zero. Keeps container_len aligned.
+64	8	u64	container_len	Total length of this container in bytes.
+72	4	u32	body_crc32c	CRC-32C over the Files table, the Objects table and the Prereqs table.
+76	4	u32	header_crc32c	CRC-32C over bytes 0 to 75.
+80	-	-	files	The Files table.
+-	-	-	objects	The Objects table, sorted ascending by content_id.
+-	-	-	prereqs	The Prereqs table.
+
+INDEX Files row
+----------------
+
+offset	size	type	name	meaning
+0	32	u8[32]	file_hash	Hash of the whole file's bytes.
+32	8	u64	byte_len	Length of the file in bytes.
+40	1	u8	role	File role registry.
+41	7	u8[7]	reserved	Zero.
+
+INDEX Objects row
+-------------------
+
+offset	size	type	name	meaning
+0	32	u8[32]	content_id	The object id.
+32	4	u32	file_index	0-based row index into the Files table. In this version, always the object's own file.
+36	4	u32	reserved	Zero.
+40	8	u64	offset	In this version, always 0. A later version's container gives this field a member's payload offset.
+48	8	u64	stored_len	Bytes stored at offset.
+56	8	u64	payload_len	Uncompressed payload bytes.
+64	1	u8	kind	Object kind registry.
+65	1	u8	compression	Compression id.
+66	2	u16	flags	bit0 duplicate for locality, bit1 metadata object. Bits 2 to 15 reserved, zero.
+68	4	u32	reserved	Zero.
+
+INDEX Prereqs row
+--------------------
+
+offset	size	type	name	meaning
+0	32	u8[32]	content_id	An object this run references but does not store.
+32	8	u64	run_seq	The run that stores it.
+
+Catalog table header (REFS, DISCS)
+-------------------------------------
+
+offset	size	type	name	meaning
+0-31	32	-	common header	magic_kind "REFS" or "DISCS".
+32	16	u8[16]	repo_uuid	The repository.
+48	8	u64	record_count	Records that follow.
+56	2	u16	record_size	96 for REFS, 176 for DISCS.
+58	1	u8	hash_algo	Multicodec code of a digest in the records that has no hash_algo of its own.
+59	1	u8	digest_len	32.
+60	4	u32	reserved	Zero.
+64	4	u32	body_crc32c	CRC-32C over the records.
+68	4	u32	header_crc32c	CRC-32C over bytes 0 to 67.
+72	-	-	records	Sorted, fixed-width.
+
+DISCS row
+---------
+
+offset	size	type	name	meaning
+0	8	u64	run_seq	The run, 1-based.
+8	8	u64	disc_seq	The disc that holds it, 0-based.
+16	16	u8[16]	disc_uuid	That disc's uuid.
+32	32	u8[32]	run_hash	Hash of the 512 bytes of that run's RUN.bin.
+64	8	i64	created_sec	Pack time of the run.
+72	8	i64	last_verify_sec	Last verification time of the disc. 0 when never verified.
+80	8	u64	capacity_sectors	Reported capacity of the disc.
+88	8	u64	used_sectors	Sectors used on the disc after this run.
+96	1	u8	run_status	1 verified, 2 unverified, 3 withdrawn. 0 is invalid.
+97	1	u8	health	1 healthy, 2 degraded, 3 critical, 4 failed, 5 unknown, 6 unverified, this disc.
+98	2	u16	rs_margin_percent	Worst-stripe margin, as a percentage of m.
+100	2	u16	label_len	Byte length of the label.
+102	64	u8[64]	label	UTF-8, zero-padded.
+166	1	u8	state_flags	bit0 closed, bit1 append-raw-only, bit2 spare below the threshold, bit3 capacity forced.
+167	1	u8	reserved	Zero. Keeps capacity_forced_sectors aligned.
+168	8	u64	capacity_forced_sectors	Forced capacity.
+
+Checksum block record
+-----------------------
+
+offset	size	type	name	meaning
+0	8	u8[8]	magic_kind	ASCII "CHECKSUM".
+8	4	u32	stripe_index	i, the stripe whose data digests follow.
+12	2	u16	digest_count	k. 231 in version 1.
+14	1	u8	digest_bytes	8.
+15	1	u8	hash_algo	0x12, sha2-256.
+16	4	u32	header_crc32c	CRC-32C over bytes 0 to 15.
+20	1848	u8[1848]	digests	k digests, in data column order 0 to k - 1.
+1868	180	u8[180]	reserved	Zero.
+
+4. MAGIC VALUES
+===============
+
+magic_kind (8 ASCII bytes, zero-padded)	Structure
+CHUNK\0\0\0	Chunk object
+BLOB\0\0\0\0	Blob object
+TREE\0\0\0\0	Tree object
+SNAPSHOT	Snapshot object
+BUNDLE\0\0	Reserved for a later version; a Phase 1 writer never emits it; a reader refuses it
+DISC\0\0\0\0	Disc superblock
+RUN\0\0\0\0\0	Run header
+INDEX\0\0\0	Run index
+CHECKSUM	Checksum column record magic
+REFS\0\0\0\0	Ref table
+DISCS\0\0\0	Disc directory table
+
+magic_project is the 8 ASCII bytes "NOAHSARK", the same for every structure.
+
+5. CHUNKING CONSTANTS
+======================
+
+Gear table generation rule
+--------------------------
+
+seed = "noahsark/gear/v1"                      # 16 ASCII bytes, no terminator
+
+for i in 0 .. 255:
+    input      = seed || u8(i)                 # 17 bytes
+    digest     = SHA-256(input)                # 32 bytes
+    Gear[i]    = little-endian u64 of digest[0 .. 7]
+
+Mask generation rule
+--------------------
+
+mask_s = spread_mask(b + 2)      # more one-bits: cutting is less likely
+mask_l = spread_mask(b - 2)      # fewer one-bits: cutting is more likely
+
+spread_mask(n):                       # 1 <= n <= 32
+    mask = 0
+    for j in 0 .. n-1:
+        mask |= 1 << (63 - floor(j * 32 / n))
+    return mask
+
+Mask constants
+--------------
+
+P3_MASK_S	0xeeddbb7600000000
+P3_MASK_L	0xd6b5ad6a00000000
+P4_MASK_S	0xeeeeeeee00000000
+P4_MASK_L	0xdadadada00000000
+P5_MASK_S	0xf7bbddee00000000
+P5_MASK_L	0xdb6db6da00000000
+
+6. CHECKSUM PARAMETERS
+======================
+
+CRC32C_POLYNOMIAL	0x1edc6f41
+CRC32C_REFLECTED	1
+CRC32C_INIT	0xffffffff
+CRC32C_XOROUT	0xffffffff
+BLOCK_BYTES	2048
+FEC_K	231
+FEC_M	23

@@ -11,6 +11,7 @@ Run with:
 
 import os
 import sys
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +20,12 @@ import decoder  # noqa: E402
 TESTDATA = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "internal", "format", "testdata"
 )
+
+# SCHEME0_FIXTURE is a whole run tree, one snapshot of one small file,
+# built by internal/image.Build with FECEnabled false: fec_scheme 0, no
+# checksum.bin, no parity directory. See NOTES.md's change log entry for
+# document version 0.4.4.
+SCHEME0_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata", "scheme0-fixture")
 
 
 def golden(name: str) -> bytes:
@@ -308,6 +315,27 @@ class ChecksumTest(unittest.TestCase):
         self.assertEqual(len(r["digests"]), 3)
         for i, d in enumerate(r["digests"]):
             self.assertEqual(d, bytes([i + 1]) * 8)
+
+
+class Scheme0FixtureTest(unittest.TestCase):
+    """cmd_verify on a run that carries no FEC (fec_scheme 0): no
+    checksum.bin, no parity directory. Verify must pass by content id and
+    file hash alone, the same as it always has, since this decoder never
+    performs a checksum-column or parity check of its own."""
+
+    def test_run_header_fec_scheme_is_none(self):
+        repo = decoder.Repo(SCHEME0_FIXTURE)
+        run = repo.run_header(repo.newest_seq)
+        self.assertEqual(run["fec_scheme"], 0)
+
+    def test_no_checksum_or_parity_files(self):
+        run_dir = decoder.run_dir(os.path.join(SCHEME0_FIXTURE, "NOAHSARK"), 1)
+        self.assertFalse(os.path.exists(os.path.join(run_dir, "checksum.bin")))
+        self.assertFalse(os.path.exists(os.path.join(run_dir, "parity")))
+
+    def test_verify_passes_by_content_id_and_file_hash_alone(self):
+        args = types.SimpleNamespace(disc_root=SCHEME0_FIXTURE)
+        self.assertEqual(decoder.cmd_verify(args), 0)
 
 
 if __name__ == "__main__":

@@ -624,6 +624,7 @@ def parse_run(buf: bytes, where: str):
         "disc_seq": disc_seq,
         "fec_k": fec_k,
         "fec_m": fec_m,
+        "fec_scheme": fec_scheme,
         "hash_algo": hash_algo,
         "chunker_profile": chunker_profile,
         "compression": compression,
