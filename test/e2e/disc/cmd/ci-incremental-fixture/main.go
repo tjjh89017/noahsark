@@ -164,8 +164,8 @@ func runMutate(srcDir, addStr, seedStr, planIn, hashesIn, hashesOut string) {
 	prefix := rotateDirName + string(filepath.Separator)
 	renamedHashes := make(map[string]string, len(hashes))
 	for rel, h := range hashes {
-		if strings.HasPrefix(rel, prefix) {
-			renamedHashes[filepath.Join(renamed, strings.TrimPrefix(rel, prefix))] = h
+		if after, ok := strings.CutPrefix(rel, prefix); ok {
+			renamedHashes[filepath.Join(renamed, after)] = h
 			continue
 		}
 		renamedHashes[rel] = h
@@ -499,7 +499,7 @@ func readPlan(path string) (deletePaths, appendPaths []string, rewritePath strin
 	if err != nil {
 		return nil, nil, "", err
 	}
-	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 		if line == "" {
 			continue
 		}
@@ -559,7 +559,7 @@ func readHashes(path string) (map[string]string, error) {
 		return nil, err
 	}
 	out := make(map[string]string)
-	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(data), "\n"), "\n") {
 		if line == "" {
 			continue
 		}
