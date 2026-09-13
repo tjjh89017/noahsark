@@ -70,6 +70,9 @@ runs:
 
         sudo mount -o loop -t udf "$IMAGE" "$MNT"
         sudo cp -a "$TREE_DIR"/NOAHSARK "$MNT"/
+        # Corrupt-and-heal below writes back into the mount as the
+        # runner user, not root.
+        sudo chown -R "$(id -u):$(id -g)" "$MNT"/NOAHSARK
         sync
 
         go run ./internal/image/cmd/ci-list "$MNT" > "$WORK/go-list.txt"
@@ -85,4 +88,50 @@ runs:
           exit 1
         fi
 
-        sudo umount "$MNT"
+    - name: Delete the staging directory before restore
+      shell: bash
+      run: |
+        # internal/restore's Restore must need only the disc image, never
+        # the staging directory Commit wrote objects into. Deleting it
+        # here, before restoring, is the proof.
+        WORK="${{ runner.temp }}/noahsark-ci"
+        STAGING="$WORK/staging"
+        if [ ! -d "$STAGING" ]; then
+          echo "expected a staging directory at $STAGING before deleting it"
+          exit 1
+        fi
+        rm -rf "$STAGING"
+
+    - name: Restore, corrupt, heal, restore, and compare against the source
+      shell: bash
+      run: |
+        WORK="${{ runner.temp }}/noahsark-ci"
+        SRC="$(sed -n '3p' "$WORK/paths.txt")"
+        MNT="$WORK/mnt"
+
+        # Restore from the untouched image and compare with the source
+        # fixture ci-fixture committed. Restore recreates the source's own
+        # absolute path under its output directory.
+        go run ./internal/restore/cmd/ci-restore "$MNT" "$WORK/restore-before"
+        diff -rq "$WORK/restore-before$SRC" "$SRC"
+
+        # Corrupt two data blocks of the mounted image directly: one byte
+        # each inside README.txt and FORMAT.txt's on-disc bytes, found
+        # through the same stream layout Heal uses. Column 0 and 1 are
+        # INDEX.bin itself and are never corrupted here: Heal needs a
+        # readable INDEX.bin to find anything else to repair.
+        go run ./internal/restore/cmd/ci-corrupt "$MNT" 3:0 6:0
+
+        go run ./internal/restore/cmd/ci-heal "$MNT"
+
+        go run ./internal/restore/cmd/ci-restore "$MNT" "$WORK/restore-after"
+        diff -rq "$WORK/restore-after$SRC" "$SRC"
+
+    - name: Unmount the image
+      if: always()
+      shell: bash
+      run: |
+        MNT="${{ runner.temp }}/noahsark-ci/mnt"
+        if mountpoint -q "$MNT"; then
+          sudo umount "$MNT"
+        fi

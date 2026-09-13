@@ -5,8 +5,8 @@
 //
 // Usage: ci-fixture WORKDIR
 //
-// It prints two lines to stdout: the tree directory, then the image
-// path.
+// It prints three lines to stdout: the tree directory, the image path,
+// and the source directory the fixture snapshot was committed from.
 package main
 
 import (
@@ -62,6 +62,7 @@ func main() {
 
 	fmt.Println(treeDir)
 	fmt.Println(imagePath)
+	fmt.Println(srcDir)
 }
 
 func must(err error) {

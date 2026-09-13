@@ -148,6 +148,24 @@ since the padding is not part of the label and would otherwise read as a
 run of `?` characters. This does not change `label` or `label_len` on
 disc; it only fixes what a human-readable substitution should print.
 
+## 22. Test list: corrupting the real image for the restore-heal-restore CI check
+
+The CI check that proves `internal/restore` works against a real UDF
+image, not only an unpacked tree, corrupts the image itself: it loop-
+mounts the image read-write, as the existing mount step already does to
+populate it, then writes the corrupted bytes directly into the files
+under that mount, at the exact file and offset `internal/restore`'s own
+stream-layout logic resolves for a chosen `(column, stripe)` pair. A
+write through a read-write loop mount lands on the image file's own
+sectors, so this is corruption of the image, not a stand-in for it; nothing
+about the check depends on an unpacked tree. `ci-corrupt` picks columns 3
+and 6 of the fixture's one stripe, `README.txt` and `FORMAT.txt`,
+skipping columns 0 and 1, `INDEX.bin` itself: `internal/restore`'s Heal
+needs a readable `INDEX.bin` to resolve the stream layout in the first
+place, so healing `INDEX.bin`'s own bytes is out of scope for this
+implementation (see the `file_index` decision above), and this CI check
+does not exercise it.
+
 ## 11.1 INDEX, Objects table: resolving an object row's file by file_index
 
 `internal/image`'s `StreamFiles`, used by both `Read`'s parity
