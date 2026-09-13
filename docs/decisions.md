@@ -213,27 +213,13 @@ building it; it does not change any on-disc byte.
 
 ## 8.1 Profiles a reader must know: keeping files out of the ICB
 
-FORMAT.md requires every file the format writes to begin on a 2048-byte
-sector boundary and names two ways to hold that: configure the image
-builder, or rely on kernel driver behaviour, so no NoahsArk file is
-embedded in-ICB; padding up to 2048 bytes is the stated fallback.
-Measured directly (mkudffs 2.3, Linux udf driver, blocksize 2048): a file
-of 1800 bytes or less lands in-ICB by default (no separate data extent,
-confirmed by `filefrag` reporting a FIBMAP error, the same signal a
-missing block map gives for an in-ICB file); a file of 1900 bytes or more
-gets its own sector. Mounting with `-o noadinicb` removes this threshold
-entirely: even a 64-byte file gets its own sector-aligned extent, verified
-the same way. `internal/image/populate.sh` now mounts with `noadinicb`,
-so the writer never pads a file to reach 2048 bytes; the mount option is
-the chosen mechanism, matching FORMAT.md's first-named option before its
-padding fallback. `internal/image`'s `TestPopulatedImageHasNoInICBFiles`
-proves this by scanning the built image's raw bytes with the carving
-reader and asserting every structure carves out at a sector-aligned
-offset; an in-ICB file would carve out at an offset inside its File
-Entry block instead, which the test confirmed by failing when the mount
-option was removed. The `probe-udf-small-files` action recorded this
-question before it was answered; its answer is now this entry and the
-test above, so the action is removed.
+Small files may be embedded in-ICB by the UDF driver. The writer does not
+pad and sets no mount option. NoahsArk works at the file level and never
+depends on how a filesystem stores a file. A disc whose filesystem cannot
+be mounted counts as lost. Recovery by carving is not a supported
+operation, even though a carving reader exists in `internal/format`. This
+differs from the sector-boundary rule in FORMAT.md; the user will decide
+on a FORMAT.md change.
 
 ## 10.1 Profile 0 image build: how the volume is populated
 
