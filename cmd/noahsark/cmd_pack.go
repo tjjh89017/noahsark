@@ -50,12 +50,12 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 
 	repoDir, err := discoverRepo(*repoFlag)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: pack:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: pack:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
 
@@ -64,13 +64,13 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	case *capacityStr != "":
 		capacitySectors, err = parseCapacity(*capacityStr)
 		if err != nil {
-			fmt.Fprintln(stderr, "noahsark: pack:", err)
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 			return 2
 		}
 	case cfg.ForceCapacitySectors != 0:
 		capacitySectors = cfg.ForceCapacitySectors
 	default:
-		fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity or set disc.force_capacity in the config")
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity or set disc.force_capacity in the config")
 		return 2
 	}
 
@@ -78,20 +78,20 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	if *physicalCapacityStr != "" {
 		physicalCapacitySectors, err = parseCapacity(*physicalCapacityStr)
 		if err != nil {
-			fmt.Fprintln(stderr, "noahsark: pack:", err)
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 			return 2
 		}
 	}
 
 	mediaType, ok := mediaTypes[*media]
 	if !ok {
-		fmt.Fprintf(stderr, "noahsark: pack: unknown media type %q\n", *media)
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: unknown media type %q\n", *media)
 		return 2
 	}
 
 	snapIDs := []string(snapshotFlags)
 	if *ref != "" && len(snapIDs) > 0 {
-		fmt.Fprintln(stderr, "noahsark: pack: --ref and --snapshot are mutually exclusive")
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --ref and --snapshot are mutually exclusive")
 		return 2
 	}
 	if *ref == "" && len(snapIDs) == 0 {
@@ -103,7 +103,7 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	if *ref != "" {
 		id, err := resolveRef(repoDir, *ref)
 		if err != nil {
-			fmt.Fprintln(stderr, "noahsark: pack:", err)
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 			return 1
 		}
 		snapshots = append(snapshots, image.SnapshotRef{Name: *ref, ID: id, Time: now})
@@ -111,7 +111,7 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	for _, s := range snapIDs {
 		id, err := parseSnapshotID(s)
 		if err != nil {
-			fmt.Fprintln(stderr, "noahsark: pack:", err)
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 			return 2
 		}
 		snapshots = append(snapshots, image.SnapshotRef{Name: id.TextForm(), ID: id, Time: now})
@@ -122,18 +122,18 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	}
 	absOut, err := filepath.Abs(*outDir)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: pack:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: pack:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
 	discUUIDBytes := make([]byte, 16)
 	if _, err := rand.Read(discUUIDBytes); err != nil {
-		fmt.Fprintln(stderr, "noahsark: pack:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
 	var discUUID [16]byte
@@ -152,12 +152,12 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	}
 	result, err := image.Build(opts)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: pack:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "packed run %d on disc %d into %s\n", result.RunSeq, result.DiscSeq, absOut)
-	fmt.Fprintf(stdout, "objects: %d, files: %d, stream blocks: %d, stripes: %d\n",
+	_, _ = fmt.Fprintf(stdout, "packed run %d on disc %d into %s\n", result.RunSeq, result.DiscSeq, absOut)
+	_, _ = fmt.Fprintf(stdout, "objects: %d, files: %d, stream blocks: %d, stripes: %d\n",
 		result.ObjectCount, result.FileCount, result.StreamBlocks, result.StripeCount)
 	return 0
 }

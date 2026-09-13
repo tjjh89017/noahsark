@@ -66,10 +66,10 @@ var knownConfigKeys = map[string]bool{
 // key=value pair per line, in a fixed order.
 func writeConfig(path string, c repoConfig) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "repo.uuid = %s\n", c.RepoUUID)
-	fmt.Fprintf(&b, "staging.dir = %s\n", c.StagingDir)
+	_, _ = fmt.Fprintf(&b, "repo.uuid = %s\n", c.RepoUUID)
+	_, _ = fmt.Fprintf(&b, "staging.dir = %s\n", c.StagingDir)
 	if c.ForceCapacitySectors != 0 {
-		fmt.Fprintf(&b, "disc.force_capacity = %d\n", c.ForceCapacitySectors)
+		_, _ = fmt.Fprintf(&b, "disc.force_capacity = %d\n", c.ForceCapacitySectors)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
@@ -80,7 +80,7 @@ func readConfig(path string) (repoConfig, error) {
 	if err != nil {
 		return repoConfig{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var c repoConfig
 	sc := bufio.NewScanner(f)
@@ -89,12 +89,12 @@ func readConfig(path string) (repoConfig, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		eq := strings.Index(line, "=")
-		if eq < 0 {
+		rawKey, rawValue, ok := strings.Cut(line, "=")
+		if !ok {
 			return repoConfig{}, fmt.Errorf("config: malformed line %q", line)
 		}
-		key := strings.TrimSpace(line[:eq])
-		value := strings.TrimSpace(line[eq+1:])
+		key := strings.TrimSpace(rawKey)
+		value := strings.TrimSpace(rawValue)
 
 		if phase, ok := laterPhaseConfigKeys[key]; ok {
 			return repoConfig{}, fmt.Errorf("config: %s is a %s key; not available in Phase 1", key, phase)

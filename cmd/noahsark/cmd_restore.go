@@ -17,22 +17,22 @@ func cmdRestore(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if len(args) != 3 {
-		fmt.Fprintln(stderr, "usage: noahsark restore DISC-ROOT SNAPSHOT OUT-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore DISC-ROOT SNAPSHOT OUT-DIR")
 		return 2
 	}
 	discRoot, snapshotArg, outDir := args[0], args[1], args[2]
 
 	snapID, err := parseSnapshotID(snapshotArg)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: restore:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}
 
 	if err := restore.Restore(discRoot, snapID, outDir); err != nil {
-		fmt.Fprintln(stderr, "noahsark: restore:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
+	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
 	return 0
 }

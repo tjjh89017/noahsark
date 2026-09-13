@@ -15,11 +15,11 @@ import (
 // docs/decisions.md, "16. CLI reference".
 func cmdImage(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
 		return 2
 	}
 	if args[0] != "build" {
-		fmt.Fprintf(stderr, "noahsark: image %s is not available in Phase 1; only \"image build\" is\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "noahsark: image %s is not available in Phase 1; only \"image build\" is\n", args[0])
 		return 2
 	}
 
@@ -31,31 +31,31 @@ func cmdImage(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 || *out == "" {
-		fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
 		return 2
 	}
 	treeDir := fs.Arg(0)
 
 	if *capacityStr == "" {
-		fmt.Fprintln(stderr, "noahsark: image build: --capacity is required")
+		_, _ = fmt.Fprintln(stderr, "noahsark: image build: --capacity is required")
 		return 2
 	}
 	sectors, err := parseCapacity(*capacityStr)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: image build:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: image build:", err)
 		return 2
 	}
 
 	if _, err := image.CheckTools(); err != nil {
-		fmt.Fprintln(stderr, "noahsark: image build:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: image build:", err)
 		return 1
 	}
 
 	if err := image.MakeImage(treeDir, *out, sectors); err != nil {
-		fmt.Fprintln(stderr, "noahsark: image build:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: image build:", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "built image %s (%d sectors)\n", *out, sectors)
+	_, _ = fmt.Fprintf(stdout, "built image %s (%d sectors)\n", *out, sectors)
 	return 0
 }

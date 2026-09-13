@@ -27,12 +27,12 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 
 	absRepoPath, err := filepath.Abs(*repoPath)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: init:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 2
 	}
 
 	if isRepoDir(absRepoPath) {
-		fmt.Fprintf(stderr, "noahsark: init: %s is already a noahsark repository\n", absRepoPath)
+		_, _ = fmt.Fprintf(stderr, "noahsark: init: %s is already a noahsark repository\n", absRepoPath)
 		return 2
 	}
 
@@ -40,29 +40,29 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	if *capacityStr != "" {
 		capacitySectors, err = parseCapacity(*capacityStr)
 		if err != nil {
-			fmt.Fprintln(stderr, "noahsark: init:", err)
+			_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 			return 2
 		}
 	}
 
 	if err := os.MkdirAll(absRepoPath, 0o755); err != nil {
-		fmt.Fprintln(stderr, "noahsark: init:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}
 
 	stagingDir := filepath.Join(absRepoPath, "staging")
 	if err := os.MkdirAll(filepath.Join(stagingDir, "objects"), 0o755); err != nil {
-		fmt.Fprintln(stderr, "noahsark: init:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}
 	if err := os.MkdirAll(filepath.Join(stagingDir, "snapshots"), 0o755); err != nil {
-		fmt.Fprintln(stderr, "noahsark: init:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}
 
 	uuidBytes := make([]byte, 16)
 	if _, err := rand.Read(uuidBytes); err != nil {
-		fmt.Fprintln(stderr, "noahsark: init:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}
 
@@ -72,11 +72,11 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		ForceCapacitySectors: capacitySectors,
 	}
 	if err := writeConfig(filepath.Join(absRepoPath, configFileName), cfg); err != nil {
-		fmt.Fprintln(stderr, "noahsark: init:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "initialized repository %s\n", absRepoPath)
-	fmt.Fprintf(stdout, "staging: %s\n", stagingDir)
+	_, _ = fmt.Fprintf(stdout, "initialized repository %s\n", absRepoPath)
+	_, _ = fmt.Fprintf(stdout, "staging: %s\n", stagingDir)
 	return 0
 }

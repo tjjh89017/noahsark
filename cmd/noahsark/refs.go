@@ -36,7 +36,7 @@ func updateRef(repoDir, name string, id object.ID) error {
 
 	var b strings.Builder
 	for _, n := range names {
-		fmt.Fprintf(&b, "%s %s\n", n, refs[n])
+		_, _ = fmt.Fprintf(&b, "%s %s\n", n, refs[n])
 	}
 	return os.WriteFile(filepath.Join(repoDir, refsFileName), []byte(b.String()), 0o644)
 }
@@ -67,7 +67,7 @@ func readRefs(repoDir string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {

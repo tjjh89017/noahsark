@@ -25,7 +25,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *imagePath == "" {
-		fmt.Fprintln(stderr, "usage: noahsark verify --image=PATH [--heal] [--out=DIR]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify --image=PATH [--heal] [--out=DIR]")
 		return 2
 	}
 
@@ -33,13 +33,13 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	if *heal {
 		reports, err := restore.Heal(*imagePath, *healOut)
 		if err != nil {
-			fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
+			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
 			return 1
 		}
 		for _, r := range reports {
-			fmt.Fprintf(stdout, "stripe %d: repaired data columns %v, parity columns %v\n", r.Stripe, r.DataColumns, r.ParityColumns)
+			_, _ = fmt.Fprintf(stdout, "stripe %d: repaired data columns %v, parity columns %v\n", r.Stripe, r.DataColumns, r.ParityColumns)
 		}
-		fmt.Fprintf(stdout, "heal: %d stripe(s) repaired\n", len(reports))
+		_, _ = fmt.Fprintf(stdout, "heal: %d stripe(s) repaired\n", len(reports))
 		if *healOut != "" {
 			target = *healOut
 		}
@@ -47,16 +47,16 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 
 	rr, err := image.Read(target)
 	if err != nil {
-		fmt.Fprintln(stderr, "noahsark: verify:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "disc label: %q\n", labelText(rr.Disc.Label[:rr.Disc.LabelLen]))
-	fmt.Fprintf(stdout, "disc capacity: %d sectors, forced %d sectors, capacity_is_forced=%d\n",
+	_, _ = fmt.Fprintf(stdout, "disc label: %q\n", labelText(rr.Disc.Label[:rr.Disc.LabelLen]))
+	_, _ = fmt.Fprintf(stdout, "disc capacity: %d sectors, forced %d sectors, capacity_is_forced=%d\n",
 		rr.Disc.CapacitySectors, rr.Disc.CapacityForcedSectors, rr.Disc.CapacityIsForced)
-	fmt.Fprintf(stdout, "run: %d objects verified, %d run header copies\n", rr.ObjectsVerified, rr.RunCopies)
-	fmt.Fprintf(stdout, "refs: %d, discs: %d\n", len(rr.Refs.Records), len(rr.Discs.Rows))
-	fmt.Fprintln(stdout, "verify: ok")
+	_, _ = fmt.Fprintf(stdout, "run: %d objects verified, %d run header copies\n", rr.ObjectsVerified, rr.RunCopies)
+	_, _ = fmt.Fprintf(stdout, "refs: %d, discs: %d\n", len(rr.Refs.Records), len(rr.Discs.Rows))
+	_, _ = fmt.Fprintln(stdout, "verify: ok")
 	return 0
 }
 
