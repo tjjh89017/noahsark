@@ -11,6 +11,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // mediaTypes maps a --media name to its FORMAT.md registry value.
@@ -139,7 +140,13 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	var discUUID [16]byte
 	copy(discUUID[:], discUUIDBytes)
 
-	opts := image.BuildOptions{
+	stageLog, err := stage.Open(cfg.StagingDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+
+	opts := image.PackOptions{
 		StagingDir:              cfg.StagingDir,
 		Snapshots:               snapshots,
 		TargetCapacitySectors:   capacitySectors,
@@ -149,8 +156,9 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 		DiscUUID:                discUUID,
 		Label:                   *label,
 		MediaType:               mediaType,
+		StageLog:                stageLog,
 	}
-	result, err := image.Build(opts)
+	result, err := image.Pack(opts)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -159,6 +167,11 @@ func cmdPack(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "packed run %d on disc %d into %s\n", result.RunSeq, result.DiscSeq, absOut)
 	_, _ = fmt.Fprintf(stdout, "objects: %d, files: %d, stream blocks: %d, stripes: %d\n",
 		result.ObjectCount, result.FileCount, result.StreamBlocks, result.StripeCount)
+	if result.RemainingObjects > 0 {
+		_, _ = fmt.Fprintf(stdout, "remaining staged: %d objects, %d bytes\n", result.RemainingObjects, result.RemainingBytes)
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, "remaining staged: 0 objects, 0 bytes")
 	return 0
 }
 
