@@ -6,15 +6,17 @@
 # restore checks the other scenarios run against a UDF mount. It also
 # builds a second, Joliet-only ISO to prove README.md's warning against
 # Joliet: Joliet truncates the 68-character object names, so an object
-# lookup on that mount must fail.
+# lookup on that mount must fail. A third image, plain ISO 9660 level 4
+# with no Rock Ridge, proves the opposite case: this runner's
+# genisoimage folds every fixed name to lowercase under that mode
+# (NOAHSARK, README.txt, FORMAT.txt, DISC.bin and so on), and the
+# readers still accept it.
 #
-# This scenario builds README.md's "Burning without UDF" convenience
-# path (Rock Ridge, not FORMAT.md's Phase 3 profile 2), because this
-# runner's genisoimage folds every name to lowercase under plain ISO
-# 9660:1999 level 4 without Rock Ridge, which would rename NOAHSARK,
-# README.txt, FORMAT.txt and DISC.bin and break iso_assert_fixed_files;
-# see the task report for the exact commands that showed this. See
-# lib.sh for build_binary and the media_* helpers, and assert.sh for
+# The main image in this scenario still uses README.md's "Burning
+# without UDF" convenience path (Rock Ridge, not FORMAT.md's Phase 3
+# profile 2): Rock Ridge keeps exact case, so iso_assert_fixed_files can
+# compare the mount against the packed tree byte for byte. See lib.sh
+# for build_binary and the media_* helpers, and assert.sh for
 # assert_dirs_equal and assert_listing_matches.
 set -euo pipefail
 
@@ -104,6 +106,39 @@ iso_assert_fixed_files() {
 		fi
 	done
 	log "iso: README.txt, FORMAT.txt and REFERENCE/decoder.py match the packed tree"
+}
+
+# iso_plain_level4_check TOOL FLAVOR WORK TREE SRC SNAP builds a third
+# image with plain ISO 9660 level 4 and no Rock Ridge: the exact
+# genisoimage invocation that folds every fixed name to lowercase (see
+# the file header). It mounts that image and checks that verify, the
+# decoder listing diff and restore all still succeed against it, and
+# prints the folded root directory name it found.
+iso_plain_level4_check() {
+	local tool="$1" flavor="$2" work="$3" tree="$4" src="$5" snap="$6"
+	local plain_iso="$work/plain.iso" plain_mnt="$work/plain-mnt" plain_restored="$work/plain-restored"
+	local root_name
+
+	log "iso: $tool -iso-level 4 -V NOAHSARK-PLAIN -o $plain_iso $tree"
+	iso_build_image "$tool" "$flavor" "$plain_iso" "$tree" -iso-level 4 -V NOAHSARK-PLAIN
+	mkdir -p "$plain_mnt"
+	sudo mount -t iso9660 -o loop,ro "$plain_iso" "$plain_mnt"
+
+	root_name="$(find "$plain_mnt" -maxdepth 1 -iname noahsark -printf '%f\n')"
+	if [ -z "$root_name" ]; then
+		umount_if_mounted "$plain_mnt"
+		fail "iso: plain level 4 image: no NOAHSARK root found, case-folded or not"
+	fi
+	log "iso: plain level 4 image folded the root to: $root_name"
+
+	"$BIN" verify --image="$plain_mnt"
+	assert_listing_matches "$plain_mnt" "$work"
+
+	"$BIN" restore "$plain_mnt" "$snap" "$plain_restored"
+	assert_dirs_equal "$plain_restored$src" "$src"
+
+	umount_if_mounted "$plain_mnt"
+	log "iso: plain level 4 (case-folded) image PASS"
 }
 
 # iso_joliet_negative_check TOOL FLAVOR WORK TREE builds a second,
@@ -204,6 +239,8 @@ scenario_iso() {
 	umount_if_mounted "$mnt"
 
 	iso_joliet_negative_check "$tool" "$flavor" "$work" "$tree"
+
+	iso_plain_level4_check "$tool" "$flavor" "$work" "$tree" "$src" "$snap"
 
 	df -h
 	log "iso PASS"
