@@ -236,10 +236,10 @@ func verifyOneObject(path string, id object.ID, offset, storedLen uint64, compre
 // this holds even when the object's bytes are damaged, since it never
 // depends on hashing the file's current, possibly-corrupt content. A
 // snapobj row (role 9) carries no such field in this version, so it is
-// found by sorting the candidate files by their own file_hash, the same
-// rule Build used to order those rows, and matching that order position
-// by position against the run's consecutive rows of that role; that
-// match only holds while every snapobj file is intact.
+// found by sorting the candidate files by their own name, the same
+// content id order Build used to order those rows, and matching that
+// order position by position against the run's consecutive rows of that
+// role.
 func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *format.Index, err error) {
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, "INDEX.bin"))
 	if err != nil {
@@ -250,7 +250,7 @@ func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *form
 		return nil, nil, nil, err
 	}
 
-	snapobjPaths, err := hashSortedFiles(filepath.Join(runDir, "catalog", "snapobj"))
+	snapobjPaths, err := idSortedFiles(filepath.Join(runDir, "catalog", "snapobj"))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -422,10 +422,14 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 	return nil
 }
 
-// hashSortedFiles lists the regular files directly under dir and returns
-// their paths sorted by the sha256 of their own whole-file bytes
-// ascending. A missing dir is not an error; it yields no files.
-func hashSortedFiles(dir string) ([]string, error) {
+// idSortedFiles lists the regular files directly under dir and returns
+// their paths sorted by their own file name ascending: for
+// catalog/snapobj, that name is the snapshot object's content id text
+// form, whose hex digits sort in the same order as the id's own bytes.
+// This matches Build and Pack's snapObjOrder, which sorts those rows by
+// content id, not by the file's own bytes. A missing dir is not an
+// error; it yields no files.
+func idSortedFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -433,29 +437,19 @@ func hashSortedFiles(dir string) ([]string, error) {
 		}
 		return nil, err
 	}
-	var paths []string
+	var names []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		paths = append(paths, filepath.Join(dir, e.Name()))
+		names = append(names, e.Name())
 	}
-	sort.Slice(paths, func(i, j int) bool {
-		return compareBytes(fileHashBytes(paths[i]), fileHashBytes(paths[j])) < 0
-	})
+	sort.Strings(names)
+	paths := make([]string, len(names))
+	for i, name := range names {
+		paths[i] = filepath.Join(dir, name)
+	}
 	return paths, nil
-}
-
-// fileHashBytes returns sha256 of path's whole bytes, or nil on a read
-// error; the caller's later os.ReadFile of the same path reports the
-// real error.
-func fileHashBytes(path string) []byte {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	sum := sha256sum(data)
-	return sum[:]
 }
 
 // filesRowPath returns the path of a fixed-name INDEX Files row, given
