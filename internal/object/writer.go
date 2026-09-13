@@ -2,6 +2,7 @@ package object
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,14 @@ import (
 	"github.com/tjjh89017/noahsark/internal/chunker"
 	"github.com/tjjh89017/noahsark/internal/format"
 )
+
+// defaultRetryUnstable is commit.retry_unstable's Phase 1 default.
+const defaultRetryUnstable = 1
+
+// errEntryVanished marks a path that was present in a directory listing
+// but gone by the time the writer opened or stat'd it. The caller skips
+// the path and reports it; it does not abort the commit.
+var errEntryVanished = errors.New("object: entry vanished during commit")
 
 // Fixed header lengths of the four object kinds: the common header, the
 // object header, and each kind's own fixed body, before any variable
@@ -31,6 +40,23 @@ const (
 type Summary struct {
 	NewObjects      int
 	ExistingObjects int
+	// Unstable lists every regular file the in-flight change detection
+	// caught: the file changed while it was being read, and the writer
+	// stored the content it read and set the UNSTABLE flag.
+	Unstable []UnstablePath
+	// Skipped lists every path the writer could not commit because it
+	// vanished between being listed and being opened. The commit
+	// continues without it.
+	Skipped []string
+}
+
+// UnstablePath names one path the in-flight change detection flagged, and
+// which branch of the rule was taken. Phase 1 has no parent snapshot, so
+// the branch is always "flagged": the writer stores the content it read
+// and sets UNSTABLE.
+type UnstablePath struct {
+	Path   string
+	Branch string
 }
 
 // Writer commits one source directory tree into a staging directory as
@@ -44,17 +70,35 @@ type Writer struct {
 	// Now returns the snapshot time. Tests set it to a fixed clock so a
 	// commit is reproducible.
 	Now func() time.Time
+	// RestatAfterRead enables in-flight change detection: stat a regular
+	// file before and after reading it, and treat a size or mtime
+	// difference as the file having changed during the read. This must
+	// never be turned off against a live source.
+	RestatAfterRead bool
+	// RetryUnstable is how many times an unstable file is re-read before
+	// the writer accepts the last read, keeps its content, and sets the
+	// entry's UNSTABLE flag.
+	RetryUnstable int
+
+	// Stat is the seam every in-flight-change stat goes through. A
+	// caller replaces it to make a stat differ deterministically,
+	// without touching the real filesystem clock. Defaults to os.Lstat.
+	Stat func(path string) (os.FileInfo, error)
 
 	reachable map[ID]uint64
+	rootAbs   string
 }
 
 // NewWriter returns a Writer that stages objects under stagingDir using
 // the default chunker profile and the system clock.
 func NewWriter(stagingDir string) *Writer {
 	return &Writer{
-		StagingDir: stagingDir,
-		Profile:    chunker.DefaultProfile,
-		Now:        time.Now,
+		StagingDir:      stagingDir,
+		Profile:         chunker.DefaultProfile,
+		Now:             time.Now,
+		RestatAfterRead: true,
+		RetryUnstable:   defaultRetryUnstable,
+		Stat:            os.Lstat,
 	}
 }
 
@@ -75,6 +119,7 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	}
 
 	w.reachable = make(map[ID]uint64)
+	w.rootAbs = absRoot
 	var sum Summary
 
 	rootDirTree, err := w.commitDir(absRoot, &sum)
@@ -108,17 +153,26 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 }
 
 // commitDir writes one tree object for the contents of dirPath and
-// returns its id.
+// returns its id. A dirPath that vanished since its parent listed it
+// (removed between listing and open) is reported to the caller as
+// vanished, not as a commit failure.
 func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 	des, err := os.ReadDir(dirPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ID{}, errEntryVanished
+		}
 		return ID{}, err
 	}
 
 	entries := make([]format.TreeEntry, 0, len(des))
 	for _, de := range des {
 		childPath := filepath.Join(dirPath, de.Name())
-		te, err := w.commitEntry(childPath, de.Name(), sum)
+		te, vanished, err := w.commitEntry(childPath, de.Name(), sum)
+		if vanished {
+			sum.Skipped = append(sum.Skipped, w.relPath(childPath))
+			continue
+		}
 		if err != nil {
 			return ID{}, fmt.Errorf("%s: %w", childPath, err)
 		}
@@ -129,11 +183,16 @@ func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 }
 
 // commitEntry builds the tree entry for one directory child, writing
-// whatever chunk, blob or tree objects its content needs.
-func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry, error) {
-	info, err := os.Lstat(path)
+// whatever chunk, blob or tree objects its content needs. The second
+// return value reports that path vanished after the directory listing
+// named it; the caller skips it rather than failing the commit.
+func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry, bool, error) {
+	info, err := w.Stat(path)
 	if err != nil {
-		return format.TreeEntry{}, err
+		if os.IsNotExist(err) {
+			return format.TreeEntry{}, true, nil
+		}
+		return format.TreeEntry{}, false, err
 	}
 
 	te := format.TreeEntry{
@@ -147,23 +206,36 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 	case mode.IsDir():
 		te.EntryType = format.EntryTypeDirectory
 		id, err := w.commitDir(path, sum)
+		if errors.Is(err, errEntryVanished) {
+			return te, true, nil
+		}
 		if err != nil {
-			return te, err
+			return te, false, err
 		}
 		te.ContentID = id
 	case mode.IsRegular():
 		te.EntryType = format.EntryTypeRegular
-		id, size, err := w.commitFile(path, sum)
+		id, size, unstable, err := w.commitFile(path, info, sum)
+		if errors.Is(err, errEntryVanished) {
+			return te, true, nil
+		}
 		if err != nil {
-			return te, err
+			return te, false, err
 		}
 		te.ContentID = id
 		te.Size = uint64(size)
+		if unstable {
+			te.EntryFlags |= format.EntryFlagUnstable
+			sum.Unstable = append(sum.Unstable, UnstablePath{Path: w.relPath(path), Branch: "flagged"})
+		}
 	case mode&os.ModeSymlink != 0:
 		te.EntryType = format.EntryTypeSymlink
 		target, err := os.Readlink(path)
 		if err != nil {
-			return te, err
+			if os.IsNotExist(err) {
+				return te, true, nil
+			}
+			return te, false, err
 		}
 		te.TLVs = []format.TLV{{Type: format.TLVTypeSymlinkTarget, Payload: []byte(target)}}
 	case mode&os.ModeNamedPipe != 0:
@@ -178,16 +250,62 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 		}
 		te.RdevMajor, te.RdevMinor = rdevMajorMinor(info)
 	default:
-		return te, fmt.Errorf("object: unsupported entry type for %s", path)
+		return te, false, fmt.Errorf("object: unsupported entry type for %s", path)
 	}
-	return te, nil
+	return te, false, nil
 }
 
-// commitFile chunks path, writes every new chunk and one blob over their
-// ids, and returns the blob id and the file's size.
-func (w *Writer) commitFile(path string, sum *Summary) (ID, int64, error) {
+// commitFile reads and chunks path, applying in-flight change detection:
+// it compares the stat before the read against a fresh stat after. A
+// difference in size or mtime means the file changed while it was being
+// read. The file is re-read up to RetryUnstable times; if it still
+// differs, the writer keeps the last read content and reports it
+// unstable. Detection never changes the chunk ids a stable file produces,
+// since a stable file always takes the no-difference return before any
+// retry runs.
+func (w *Writer) commitFile(path string, before os.FileInfo, sum *Summary) (id ID, size int64, unstable bool, err error) {
+	maxRetries := 0
+	if w.RestatAfterRead {
+		maxRetries = w.RetryUnstable
+	}
+
+	for attempt := 0; ; attempt++ {
+		id, size, err = w.readAndChunk(path, sum)
+		if err != nil {
+			return ID{}, 0, false, err
+		}
+		if !w.RestatAfterRead {
+			return id, size, false, nil
+		}
+
+		after, statErr := w.Stat(path)
+		changed := statErr != nil || statDiffers(before, after)
+		if !changed {
+			return id, size, false, nil
+		}
+		if attempt >= maxRetries {
+			return id, size, true, nil
+		}
+		if statErr != nil {
+			// The file is gone between reads; nothing left to restat
+			// against. Keep retrying the read itself against the same
+			// baseline until the retry budget runs out.
+			continue
+		}
+		before = after
+	}
+}
+
+// readAndChunk chunks path, writes every new chunk and one blob over
+// their ids, and returns the blob id and the file's size. A file that
+// vanished after its caller opened it (removed between listing and open)
+// is reported as errEntryVanished.
+func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ID{}, 0, errEntryVanished
+		}
 		return ID{}, 0, err
 	}
 	defer func() { _ = f.Close() }()
@@ -479,6 +597,37 @@ func encodeRootName(path string) string {
 		}
 	}
 	return b.String()
+}
+
+// relPath renders path relative to the commit's source root for
+// reporting. It falls back to the absolute path if the relation cannot be
+// computed, which never happens for a path this writer built itself.
+func (w *Writer) relPath(path string) string {
+	rel, err := filepath.Rel(w.rootAbs, path)
+	if err != nil {
+		return path
+	}
+	return rel
+}
+
+// statDiffers reports whether a and b disagree on size or mtime, the two
+// fields the in-flight change detection compares.
+func statDiffers(a, b os.FileInfo) bool {
+	if a.Size() != b.Size() {
+		return true
+	}
+	asec, ansec := mtimeOf(a)
+	bsec, bnsec := mtimeOf(b)
+	return asec != bsec || ansec != bnsec
+}
+
+// mtimeOf returns a's mtime as seconds and nanoseconds, using the raw
+// stat when available for full precision.
+func mtimeOf(info os.FileInfo) (sec int64, nsec int64) {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return st.Mtim.Sec, st.Mtim.Nsec
+	}
+	return info.ModTime().Unix(), int64(info.ModTime().Nanosecond())
 }
 
 // fillTimes sets a tree entry's mtime and ctime from info, and marks
