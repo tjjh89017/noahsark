@@ -27,7 +27,7 @@ runs:
       run: cat "${{ github.workspace }}/probe-udf-work/results.md"
 
     - name: Upload probe results
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: probe-udf-small-files-results
         path: |
