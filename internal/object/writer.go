@@ -13,6 +13,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/chunker"
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default.
@@ -85,6 +86,10 @@ type Writer struct {
 	// without touching the real filesystem clock. Defaults to os.Lstat.
 	Stat func(path string) (os.FileInfo, error)
 
+	// Progress reports bytes of regular-file content chunked during
+	// Commit. A nil Progress reports nothing.
+	Progress *progress.Reporter
+
 	reachable map[ID]uint64
 	rootAbs   string
 }
@@ -122,6 +127,10 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	w.rootAbs = absRoot
 	var sum Summary
 
+	total := regularFileBytes(absRoot)
+	w.Progress.Start("commit", total)
+	defer w.Progress.Done()
+
 	rootDirTree, err := w.commitDir(absRoot, &sum)
 	if err != nil {
 		return ID{}, Summary{}, err
@@ -150,6 +159,27 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 		return ID{}, Summary{}, err
 	}
 	return snapID, sum, nil
+}
+
+// regularFileBytes sums the size of every regular file under root, for
+// the commit progress total. It is a best-effort pass: a path that
+// vanishes or errors out here is simply left out of the total, since
+// commitDir itself is the source of truth for what actually gets
+// committed.
+func regularFileBytes(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			if info, err := d.Info(); err == nil {
+				total += info.Size()
+			}
+		}
+		return nil
+	})
+	return total
 }
 
 // commitDir writes one tree object for the contents of dirPath and
@@ -331,6 +361,7 @@ func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
 			FileOffset: offset,
 		})
 		offset += uint64(len(chunk))
+		w.Progress.Add(int64(len(chunk)))
 	}
 
 	blobID, err := w.writeBlob(entries, offset, sum)
