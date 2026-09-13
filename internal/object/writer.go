@@ -2,7 +2,6 @@ package object
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,12 +46,6 @@ type Writer struct {
 	Now func() time.Time
 
 	reachable map[ID]uint64
-
-	// sparseProbed and sparseSupported track one SEEK_HOLE probe per
-	// commit. The first regular file with a non-zero size decides both;
-	// no later file in the same commit probes again.
-	sparseProbed    bool
-	sparseSupported bool
 }
 
 // NewWriter returns a Writer that stages objects under stagingDir using
@@ -82,8 +75,6 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	}
 
 	w.reachable = make(map[ID]uint64)
-	w.sparseProbed = false
-	w.sparseSupported = false
 	var sum Summary
 
 	rootDirTree, err := w.commitDir(absRoot, &sum)
@@ -162,15 +153,12 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 		te.ContentID = id
 	case mode.IsRegular():
 		te.EntryType = format.EntryTypeRegular
-		id, size, sparse, err := w.commitFile(path, sum)
+		id, size, err := w.commitFile(path, sum)
 		if err != nil {
 			return te, err
 		}
 		te.ContentID = id
 		te.Size = uint64(size)
-		if sparse {
-			te.EntryFlags |= format.EntryFlagSparse
-		}
 	case mode&os.ModeSymlink != 0:
 		te.EntryType = format.EntryTypeSymlink
 		target, err := os.Readlink(path)
@@ -196,28 +184,13 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 }
 
 // commitFile chunks path, writes every new chunk and one blob over their
-// ids, and returns the blob id, the file's size, and whether the source
-// file had a hole before its end. The chunk stream never depends on the
-// sparse probe: it always reads the same bytes, hole or not, so the
-// object stream is identical whether or not the probe ran.
-func (w *Writer) commitFile(path string, sum *Summary) (ID, int64, bool, error) {
+// ids, and returns the blob id and the file's size.
+func (w *Writer) commitFile(path string, sum *Summary) (ID, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ID{}, 0, false, err
+		return ID{}, 0, err
 	}
 	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return ID{}, 0, false, err
-	}
-	sparse, err := w.detectSparse(f, info.Size())
-	if err != nil {
-		return ID{}, 0, false, err
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return ID{}, 0, false, err
-	}
 
 	ck := chunker.New(f, w.Profile)
 	var entries []format.BlobEntry
@@ -228,11 +201,11 @@ func (w *Writer) commitFile(path string, sum *Summary) (ID, int64, bool, error) 
 			break
 		}
 		if err != nil {
-			return ID{}, 0, false, err
+			return ID{}, 0, err
 		}
 		id, err := w.writeChunk(chunk, sum)
 		if err != nil {
-			return ID{}, 0, false, err
+			return ID{}, 0, err
 		}
 		entries = append(entries, format.BlobEntry{
 			ContentID:  id,
@@ -243,7 +216,7 @@ func (w *Writer) commitFile(path string, sum *Summary) (ID, int64, bool, error) 
 	}
 
 	blobID, err := w.writeBlob(entries, offset, sum)
-	return blobID, int64(offset), sparse, err
+	return blobID, int64(offset), err
 }
 
 // writeChunk writes one chunk object for payload, applying the
@@ -364,7 +337,9 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 		HashAlgo:             format.HashAlgoSHA256,
 		ChunkerProfile:       format.ChunkerProfileP4,
 		SourceType:           format.SnapshotSourceLocal,
-		SourceFlags:          w.sourceFlags(),
+		// The writer does not probe SEEK_HOLE, so it never claims sparse
+		// detection happened.
+		SourceFlags: format.SnapshotFlagNoSparse,
 	}
 
 	buf := make([]byte, s.EncodedLen())
@@ -385,64 +360,6 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	}
 	countObject(sum, isNew)
 	return id, nil
-}
-
-// sourceFlags returns this commit's snapshot source_flags. NO_SPARSE is
-// set unless the commit proved SEEK_HOLE worked, by probing it on at
-// least one regular file.
-func (w *Writer) sourceFlags() uint8 {
-	if w.sparseProbed && w.sparseSupported {
-		return 0
-	}
-	return format.SnapshotFlagNoSparse
-}
-
-// seekData and seekHole are the Linux SEEK_DATA and SEEK_HOLE whence
-// values for lseek(2). The syscall package does not define them.
-const (
-	seekData = 3
-	seekHole = 4
-)
-
-// detectSparse reports whether f, of the given size, has a hole before
-// its end. It probes SEEK_HOLE at most once per commit: the first
-// regular file with a non-zero size decides whether the probe is
-// supported, and every later file in the same commit reuses that
-// answer. A zero-size file has no hole to find and never touches the
-// probe state.
-func (w *Writer) detectSparse(f *os.File, size int64) (bool, error) {
-	if size == 0 {
-		return false, nil
-	}
-	if w.sparseProbed && !w.sparseSupported {
-		return false, nil
-	}
-	hasHole, ok, err := probeSparse(f, size)
-	if err != nil {
-		return false, err
-	}
-	w.sparseProbed = true
-	w.sparseSupported = ok
-	if !ok {
-		return false, nil
-	}
-	return hasHole, nil
-}
-
-// probeSparse reports whether f has a hole before offset size, using
-// SEEK_HOLE. ok is false when ENXIO or EINVAL shows the filesystem or
-// kernel does not implement the extension; the caller then falls back
-// to reading. The seek this performs is undone by the caller before it
-// reads f for chunking, so it never changes the bytes the chunker sees.
-func probeSparse(f *os.File, size int64) (hasHole, ok bool, err error) {
-	holeOff, serr := f.Seek(0, seekHole)
-	if serr != nil {
-		if errors.Is(serr, syscall.ENXIO) || errors.Is(serr, syscall.EINVAL) {
-			return false, false, nil
-		}
-		return false, false, serr
-	}
-	return holeOff < size, true, nil
 }
 
 // recordReachable adds id to the set of objects reachable from this
