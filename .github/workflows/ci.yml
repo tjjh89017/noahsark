@@ -44,6 +44,7 @@ jobs:
   e2e:
     name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     needs:
       - lint
       - unit
@@ -59,6 +60,8 @@ jobs:
           - { scenario: corrupt-max, media: '', name: corrupt-max, slug: corrupt-max }
           - { scenario: corrupt-over, media: '', name: corrupt-over, slug: corrupt-over }
           - { scenario: cli, media: '', name: cli, slug: cli }
+          - { scenario: chain, order: dvd-bd25-bd10, name: chain/dvd-bd25-bd10, slug: chain-dvd-bd25-bd10 }
+          - { scenario: chain, order: bd25-bd10-dvd, name: chain/bd25-bd10-dvd, slug: chain-bd25-bd10-dvd }
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -73,6 +76,8 @@ jobs:
         with:
           scenario: ${{ matrix.scenario }}
           media: ${{ matrix.media }}
+          order: ${{ matrix.order }}
+          go-test-timeout: ${{ matrix.scenario == 'chain' && '170m' || '30m' }}
           cell-name: ${{ matrix.name }}
           artifact-name: e2e-result-${{ matrix.slug }}
 
