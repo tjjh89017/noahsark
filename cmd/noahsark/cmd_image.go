@@ -15,7 +15,7 @@ import (
 // docs/decisions.md, "16. CLI reference".
 func cmdImage(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: noahsark image build TREE-DIR --out=FILE [--capacity=N]")
+		fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
 		return 2
 	}
 	if args[0] != "build" {
@@ -31,7 +31,7 @@ func cmdImage(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 || *out == "" {
-		fmt.Fprintln(stderr, "usage: noahsark image build TREE-DIR --out=FILE [--capacity=N]")
+		fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
 		return 2
 	}
 	treeDir := fs.Arg(0)

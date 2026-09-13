@@ -16,7 +16,7 @@ go build -o noahsark ./cmd/noahsark
 ./noahsark init --repo=repo --capacity=25GB
 ./noahsark commit --repo=repo /path/to/source
 ./noahsark pack --repo=repo --capacity=25GB --out=tree
-./noahsark image build tree --out=run.img --capacity=25GB
+./noahsark image build --out=run.img --capacity=25GB tree
 ```
 
 Mounting a UDF image and corrupting its blocks both need root, which

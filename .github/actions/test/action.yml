@@ -148,7 +148,7 @@ runs:
         echo "$SNAP" > "$WORK/cli-snapshot.txt"
 
         "$BIN" pack --repo="$REPO" --capacity=64MiB --out="$TREE"
-        "$BIN" image build "$TREE" --out="$IMAGE" --capacity=64MiB
+        "$BIN" image build --out="$IMAGE" --capacity=64MiB "$TREE"
 
     - name: Mount the binary-built image, verify and restore through the binary
       shell: bash

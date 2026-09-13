@@ -62,7 +62,7 @@ Phase 1 commands:
   init    SOURCE-less setup of a repository directory
   commit  SOURCE [--ref=NAME]
   pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]
-  image build TREE-DIR --out=FILE [--capacity=N]
+  image build --out=FILE [--capacity=N] TREE-DIR
   verify  --image=PATH [--heal] [--out=DIR]
   restore DISC-ROOT SNAPSHOT OUT-DIR
 
