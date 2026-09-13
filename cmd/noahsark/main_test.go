@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tjjh89017/noahsark/internal/object"
 )
 
 // runCmd runs one command in process and returns its exit code and the
@@ -143,6 +145,66 @@ func TestLaterPhaseCommandRefused(t *testing.T) {
 	want := "noahsark: sync is a Phase 2 command; not available in Phase 1"
 	if !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
+	}
+}
+
+// fakeStatInfo wraps a real os.FileInfo but reports a caller-chosen size,
+// so the Writer's Stat seam can make one restat disagree with the one
+// before it, deterministically, without touching the real filesystem
+// clock.
+type fakeStatInfo struct {
+	os.FileInfo
+	size int64
+}
+
+func (f fakeStatInfo) Size() int64 { return f.size }
+func (f fakeStatInfo) Sys() any    { return nil }
+
+// TestCommitExitsOneAndReportsAnUnstablePath uses the newWriter seam to
+// install a Stat function that never lets one target file's two stats
+// agree, forcing the in-flight change detection to flag it UNSTABLE on
+// every commit. It asserts commit exits 1 and prints the path.
+func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	target, err := filepath.Abs(filepath.Join(src, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	oldNewWriter := newWriter
+	defer func() { newWriter = oldNewWriter }()
+	var calls int
+	newWriter = func(stagingDir string) *object.Writer {
+		w := object.NewWriter(stagingDir)
+		w.Stat = func(path string) (os.FileInfo, error) {
+			real, err := os.Lstat(path)
+			if err != nil {
+				return nil, err
+			}
+			if path != target {
+				return real, nil
+			}
+			calls++
+			return fakeStatInfo{FileInfo: real, size: real.Size() + int64(calls)}, nil
+		}
+		return w
+	}
+
+	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	if code != 1 {
+		t.Fatalf("commit: exit %d, want 1; output: %s", code, out)
+	}
+	if !strings.Contains(out, "unstable a.txt branch=flagged") {
+		t.Fatalf("output = %q, want an unstable line naming a.txt", out)
+	}
+	if !strings.Contains(out, "unstable: 1, skipped: 0") {
+		t.Fatalf("output = %q, want the unstable/skipped count line", out)
 	}
 }
 
