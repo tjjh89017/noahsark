@@ -101,8 +101,12 @@ chain_pack_one() {
 
 	local code
 	set +e
+	# --ref=A: pack requires a resolvable ref or --snapshot even though,
+	# per this file's own top comment, the ref it is given never narrows
+	# which objects it packs. Fixture A always exists, so it always
+	# resolves.
 	# shellcheck disable=SC2086 # packflags is a list of --capacity[=...] words
-	"$BIN" pack --repo="$repo" $packflags --out="$tree" >"$logf" 2>&1
+	"$BIN" pack --repo="$repo" --ref=A $packflags --out="$tree" >"$logf" 2>&1
 	code=$?
 	set -e
 	cat "$logf"
