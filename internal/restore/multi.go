@@ -99,13 +99,21 @@ type multiSource struct {
 // RestoreMulti returns a *MissingDiscError naming every needed disc and
 // every needed object once the walk finishes, instead of stopping at the
 // first miss.
-func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string) error {
-	return RestoreMultiWithProgress(discRoots, snapshotID, outDir, nil)
+func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts ...Option) error {
+	return RestoreMultiWithProgress(discRoots, snapshotID, outDir, nil, opts...)
 }
 
 // RestoreMultiWithProgress is RestoreMulti, reporting bytes written
 // through prog. A nil prog reports nothing.
-func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter) error {
+//
+// With WithInclude, every include path is checked against the
+// snapshot's tree before any directory is created or file written,
+// reading only the tree objects an included path needs. A missing disc
+// found during that check, or during the restore itself, is reported as
+// a *MissingDiscError; a path that matches nothing in the snapshot is
+// reported as an *UnmatchedIncludeError.
+func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) error {
+	o := newRestoreOptions(opts)
 	if len(discRoots) == 0 {
 		return fmt.Errorf("restore: at least one disc root is required")
 	}
@@ -140,6 +148,22 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 		return fmt.Errorf("restore: tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
+	fs, err := newFilterState(o.includes)
+	if err != nil {
+		return err
+	}
+	if fs != nil {
+		if err := src.resolveIncludes(rootTree.Entries, fs); err != nil {
+			return err
+		}
+		if err := src.finalError(); err != nil {
+			return err
+		}
+		if unmatched := unmatchedIncludes(fs, o.includes); len(unmatched) > 0 {
+			return &UnmatchedIncludeError{Paths: unmatched}
+		}
+	}
+
 	// Unlike the single-disc Restore, this does not pre-sum an expected
 	// total: summing would mean an extra read pass through src, and a
 	// miss during that pass would double-count itself into the eventual
@@ -149,11 +173,58 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 	defer prog.Done()
 
 	for _, e := range rootTree.Entries {
-		if err := src.restoreRootEntry(absOut, e, prog); err != nil {
+		if err := src.restoreRootEntry(absOut, e, prog, fs); err != nil {
 			return err
 		}
 	}
 	return src.finalError()
+}
+
+// resolveIncludes checks every include path fs carries against
+// rootEntries, reading only tree objects and writing nothing. A missing
+// tree is recorded on src the same way a real restore records it, and is
+// reported by the caller's next src.finalError call.
+func (src *multiSource) resolveIncludes(rootEntries []format.TreeEntry, fs *filterState) error {
+	for _, e := range rootEntries {
+		if e.EntryType != format.EntryTypeDirectory {
+			continue
+		}
+		rootPath := rootPathOf(e)
+		if rootPath == "" {
+			continue
+		}
+		child, include := stepInto(fs, splitPath(rootPath))
+		if !include || child == nil {
+			continue
+		}
+		if err := src.resolveIncludesDir(object.ID(e.ContentID), child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resolveIncludesDir is resolveIncludes for one already-matched
+// directory's own tree.
+func (src *multiSource) resolveIncludesDir(treeID object.ID, fs *filterState) error {
+	raw, _, ok := src.read(treeID, false)
+	if !ok {
+		return nil
+	}
+	var t format.Tree
+	if _, err := t.Decode(raw); err != nil {
+		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
+	}
+	for _, e := range t.Entries {
+		child, include := stepInto(fs, []string{string(e.Name)})
+		if !include || child == nil || e.EntryType != format.EntryTypeDirectory {
+			continue
+		}
+		if err := src.resolveIncludesDir(object.ID(e.ContentID), child); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // newMultiSource resolves every disc root and reads its single run's
@@ -287,18 +358,17 @@ func (src *multiSource) finalError() error {
 
 // restoreRootEntry mirrors restoreRootEntry, reading through src instead
 // of one fixed base.
-func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog *progress.Reporter) error {
+func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState) error {
 	if e.EntryType != format.EntryTypeDirectory {
 		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
 	}
-	rootPath := ""
-	for _, t := range e.TLVs {
-		if t.Type == format.TLVTypeRootPath {
-			rootPath = string(t.Payload)
-		}
-	}
+	rootPath := rootPathOf(e)
 	if rootPath == "" {
 		return fmt.Errorf("restore: root entry %q: no root path TLV", e.Name)
+	}
+	childFS, include := stepInto(fs, splitPath(rootPath))
+	if !include {
+		return nil
 	}
 	dest, err := joinSafe(outDir, rootPath)
 	if err != nil {
@@ -307,14 +377,14 @@ func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
-	if err := src.restoreDirContents(object.ID(e.ContentID), dest, prog); err != nil {
+	if err := src.restoreDirContents(object.ID(e.ContentID), dest, prog, childFS); err != nil {
 		return err
 	}
 	applyMetadata(dest, e)
 	return nil
 }
 
-func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *progress.Reporter) error {
+func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *progress.Reporter, fs *filterState) error {
 	raw, _, ok := src.read(treeID, false)
 	if !ok {
 		// This whole subtree is unreachable without a missing disc;
@@ -327,14 +397,18 @@ func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *
 		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
-		if err := src.restoreEntry(dest, e, prog); err != nil {
+		childFS, include := stepInto(fs, []string{string(e.Name)})
+		if !include {
+			continue
+		}
+		if err := src.restoreEntry(dest, e, prog, childFS); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progress.Reporter) error {
+func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -345,7 +419,7 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			return err
 		}
-		if err := src.restoreDirContents(object.ID(e.ContentID), child, prog); err != nil {
+		if err := src.restoreDirContents(object.ID(e.ContentID), child, prog, fs); err != nil {
 			return err
 		}
 		applyMetadata(child, e)

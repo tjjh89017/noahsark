@@ -24,15 +24,22 @@ import (
 // discRoot/NOAHSARK. Restore verifies every object's content id before
 // using its bytes; a chunk, blob, tree or snapshot that does not verify
 // is a hard error.
-func Restore(discRoot string, snapshotID object.ID, outDir string) error {
-	return RestoreWithProgress(discRoot, snapshotID, outDir, nil)
+func Restore(discRoot string, snapshotID object.ID, outDir string, opts ...Option) error {
+	return RestoreWithProgress(discRoot, snapshotID, outDir, nil, opts...)
 }
 
 // RestoreWithProgress is Restore, reporting bytes written through prog.
 // A nil prog reports nothing. The total is the sum of every regular
-// file's recorded size in the snapshot's tree, found by a pass over the
-// tree objects alone, before any file content is read or written.
-func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter) error {
+// file's recorded size in the snapshot's tree that WithInclude leaves
+// in scope, found by a pass over the tree objects alone, before any
+// file content is read or written.
+//
+// With WithInclude, every include path is checked against the snapshot's
+// tree, reading only tree objects, before any directory is created or
+// file written. A path that matches nothing fails the whole call with an
+// *UnmatchedIncludeError naming every such path.
+func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) error {
+	o := newRestoreOptions(opts)
 	cache := image.NewNameCache()
 	base, err := findNoahsark(discRoot, cache)
 	if err != nil {
@@ -64,17 +71,35 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 		return fmt.Errorf("restore: tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
+	fs, err := newFilterState(o.includes)
+	if err != nil {
+		return err
+	}
+	if fs != nil {
+		if err := resolveIncludes(base, rootTree.Entries, fs, cache); err != nil {
+			return err
+		}
+		if unmatched := unmatchedIncludes(fs, o.includes); len(unmatched) > 0 {
+			return &UnmatchedIncludeError{Paths: unmatched}
+		}
+	}
+
 	var total uint64
 	for _, e := range rootTree.Entries {
-		if e.EntryType == format.EntryTypeDirectory {
-			total += sumRegularSizes(base, object.ID(e.ContentID), cache)
+		if e.EntryType != format.EntryTypeDirectory {
+			continue
 		}
+		child, include := stepInto(fs, splitPath(rootPathOf(e)))
+		if !include {
+			continue
+		}
+		total += sumRegularSizes(base, object.ID(e.ContentID), child, cache)
 	}
 	prog.Start("restore: bytes written", int64(total))
 	defer prog.Done()
 
 	for _, e := range rootTree.Entries {
-		if err := restoreRootEntry(base, absOut, e, prog, cache); err != nil {
+		if err := restoreRootEntry(base, absOut, e, prog, cache, fs); err != nil {
 			return err
 		}
 	}
@@ -82,11 +107,11 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 }
 
 // sumRegularSizes recursively sums every regular file entry's recorded
-// size under treeID, reading only tree objects, never file content. A
-// tree that fails to read or decode contributes zero rather than failing
-// the whole progress total: the real restore below is what reports any
-// such error properly.
-func sumRegularSizes(base string, treeID object.ID, cache *image.NameCache) uint64 {
+// size under treeID that fs leaves in scope, reading only tree objects,
+// never file content. A tree that fails to read or decode contributes
+// zero rather than failing the whole progress total: the real restore
+// below is what reports any such error properly.
+func sumRegularSizes(base string, treeID object.ID, fs *filterState, cache *image.NameCache) uint64 {
 	raw, _, err := readVerified(base, treeID, false, cache)
 	if err != nil {
 		return 0
@@ -97,9 +122,13 @@ func sumRegularSizes(base string, treeID object.ID, cache *image.NameCache) uint
 	}
 	var total uint64
 	for _, e := range t.Entries {
+		child, include := stepInto(fs, []string{string(e.Name)})
+		if !include {
+			continue
+		}
 		switch e.EntryType {
 		case format.EntryTypeDirectory:
-			total += sumRegularSizes(base, object.ID(e.ContentID), cache)
+			total += sumRegularSizes(base, object.ID(e.ContentID), child, cache)
 		case format.EntryTypeRegular:
 			total += e.Size
 		}
@@ -107,41 +136,32 @@ func sumRegularSizes(base string, treeID object.ID, cache *image.NameCache) uint
 	return total
 }
 
-// restoreRootEntry restores one entry of the synthetic root tree. Its
-// destination is the source's own absolute path, carried in the
-// entry's root-path TLV, joined under outDir; its content is the
-// entry's own directory tree, restored directly into that destination
-// rather than one level below it.
-func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache) error {
-	if e.EntryType != format.EntryTypeDirectory {
-		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
-	}
-	rootPath := ""
-	for _, t := range e.TLVs {
-		if t.Type == format.TLVTypeRootPath {
-			rootPath = string(t.Payload)
+// resolveIncludes checks every include path fs carries against
+// rootEntries, reading only tree objects and writing nothing. It leaves
+// fs.matched set for every path it found.
+func resolveIncludes(base string, rootEntries []format.TreeEntry, fs *filterState, cache *image.NameCache) error {
+	for _, e := range rootEntries {
+		if e.EntryType != format.EntryTypeDirectory {
+			continue
+		}
+		rootPath := rootPathOf(e)
+		if rootPath == "" {
+			continue
+		}
+		child, include := stepInto(fs, splitPath(rootPath))
+		if !include || child == nil {
+			continue
+		}
+		if err := resolveIncludesDir(base, object.ID(e.ContentID), child, cache); err != nil {
+			return err
 		}
 	}
-	if rootPath == "" {
-		return fmt.Errorf("restore: root entry %q: no root path TLV", e.Name)
-	}
-	dest, err := joinSafe(outDir, rootPath)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return err
-	}
-	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache); err != nil {
-		return err
-	}
-	applyMetadata(dest, e)
 	return nil
 }
 
-// restoreDirContents decodes the tree at treeID and restores every entry
-// as a child of dest, which already exists.
-func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter, cache *image.NameCache) error {
+// resolveIncludesDir is resolveIncludes for one already-matched
+// directory's own tree.
+func resolveIncludesDir(base string, treeID object.ID, fs *filterState, cache *image.NameCache) error {
 	raw, _, err := readVerified(base, treeID, false, cache)
 	if err != nil {
 		return err
@@ -151,15 +171,75 @@ func restoreDirContents(base string, treeID object.ID, dest string, prog *progre
 		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
-		if err := restoreEntry(base, dest, e, prog, cache); err != nil {
+		child, include := stepInto(fs, []string{string(e.Name)})
+		if !include || child == nil || e.EntryType != format.EntryTypeDirectory {
+			continue
+		}
+		if err := resolveIncludesDir(base, object.ID(e.ContentID), child, cache); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// restoreEntry writes one tree entry as a child of dir.
-func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache) error {
+// restoreRootEntry restores one entry of the synthetic root tree. Its
+// destination is the source's own absolute path, carried in the
+// entry's root-path TLV, joined under outDir; its content is the
+// entry's own directory tree, restored directly into that destination
+// rather than one level below it.
+func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, fs *filterState) error {
+	if e.EntryType != format.EntryTypeDirectory {
+		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
+	}
+	rootPath := rootPathOf(e)
+	if rootPath == "" {
+		return fmt.Errorf("restore: root entry %q: no root path TLV", e.Name)
+	}
+	childFS, include := stepInto(fs, splitPath(rootPath))
+	if !include {
+		return nil
+	}
+	dest, err := joinSafe(outDir, rootPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return err
+	}
+	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache, childFS); err != nil {
+		return err
+	}
+	applyMetadata(dest, e)
+	return nil
+}
+
+// restoreDirContents decodes the tree at treeID and restores every entry
+// fs leaves in scope as a child of dest, which already exists.
+func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter, cache *image.NameCache, fs *filterState) error {
+	raw, _, err := readVerified(base, treeID, false, cache)
+	if err != nil {
+		return err
+	}
+	var t format.Tree
+	if _, err := t.Decode(raw); err != nil {
+		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
+	}
+	for _, e := range t.Entries {
+		childFS, include := stepInto(fs, []string{string(e.Name)})
+		if !include {
+			continue
+		}
+		if err := restoreEntry(base, dest, e, prog, cache, childFS); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restoreEntry writes one tree entry as a child of dir. The caller has
+// already decided the entry is in scope; fs is only used for a directory
+// entry's own children.
+func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, fs *filterState) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -170,7 +250,7 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			return err
 		}
-		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog, cache); err != nil {
+		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog, cache, fs); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
