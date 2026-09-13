@@ -3,6 +3,7 @@ package image
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -404,15 +405,26 @@ func appendFECRows(rows []fileRow, fecEnabled bool) (fecPlan, error) {
 
 // writeRunTree writes every row of plan.rows to its final path under
 // outputDir (runRowIdx and run2RowIdx's bytes must already be set in
-// rows), skipping the checksum and parity rows, then, when the run
-// carries FEC, computes the checksum column and the parity straight to
-// disk from the files just written. prog reports bytes of object rows
-// placed, and, when the run carries FEC, stripes encoded; a nil prog
-// reports nothing.
+// rows), skipping the checksum and parity rows. When the run carries
+// FEC, it feeds every in-stream row's bytes to a blockDigester as they
+// are written, computing the checksum column's digests in the same pass
+// that places the objects rather than reading the placed files a second
+// time to hash them. It then computes the checksum column and the
+// parity straight to disk from the files just written, reading their
+// bytes back only for the Reed-Solomon encode, which needs a whole
+// stripe's data columns at once (see FORMAT.md's Forward error
+// correction section on how a stripe's columns are laid out across the
+// stream). prog reports bytes of object rows placed, and, when the run
+// carries FEC, stripes encoded; a nil prog reports nothing.
 func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, prog *progress.Reporter) error {
 	rows := plan.rows
 	seqDir := fmt.Sprintf("%010d", runSeq)
 	finalPaths := make([]string, len(rows))
+
+	var digester *blockDigester
+	if plan.layout != nil {
+		digester = newBlockDigester(uint64(fec.K) * plan.layout.StripeCount())
+	}
 
 	var objectBytesTotal int64
 	for _, r := range rows {
@@ -431,12 +443,26 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
+		var sink io.Writer
+		if r.inStream && digester != nil {
+			sink = digester
+		}
 		if r.srcPath != "" {
-			if err := copyFileStream(r.srcPath, full, 0o644); err != nil {
+			if err := copyFileStream(r.srcPath, full, 0o644, sink); err != nil {
 				return err
 			}
-		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
-			return err
+		} else {
+			if err := os.WriteFile(full, r.data, 0o644); err != nil {
+				return err
+			}
+			if sink != nil {
+				if _, err := sink.Write(r.data); err != nil {
+					return err
+				}
+			}
+		}
+		if sink != nil {
+			digester.FinishFile()
 		}
 		if r.role == format.FileRoleObject {
 			prog.Add(int64(r.byteLen))
@@ -447,6 +473,8 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 	if plan.layout == nil {
 		return nil
 	}
+	digester.Wait()
+	digester.PadRemaining()
 
 	var sources []streamSource
 	for i, r := range rows {
@@ -465,7 +493,7 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
 		return err
 	}
-	return buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths, prog)
+	return buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths, digester.digests, prog)
 }
 
 func padLen(n int) int {
