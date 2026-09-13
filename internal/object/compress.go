@@ -1,6 +1,8 @@
 package object
 
 import (
+	"crypto/sha256"
+	"io"
 	"sync"
 
 	"github.com/klauspost/compress/zstd"
@@ -74,4 +76,31 @@ func Decompress(stored []byte, code format.Compression, payloadLen uint64) ([]by
 		return nil, err
 	}
 	return out, nil
+}
+
+// HashStreamed reads exactly storedLen bytes of stored payload from r,
+// decompressing when code says so, and returns the sha256 content id of
+// the decompressed payload. It streams the whole way through a hasher:
+// it never holds the payload whole in memory, whatever the object's own
+// size, unlike Decompress which returns the full decoded payload.
+func HashStreamed(r io.Reader, code format.Compression, storedLen uint64) (id [32]byte, err error) {
+	lr := io.LimitReader(r, int64(storedLen))
+	h := sha256.New()
+	if code == format.CompressionNone {
+		if _, err := io.Copy(h, lr); err != nil {
+			return id, err
+		}
+		copy(id[:], h.Sum(nil))
+		return id, nil
+	}
+	d, err := zstd.NewReader(lr)
+	if err != nil {
+		return id, err
+	}
+	defer d.Close()
+	if _, err := io.Copy(h, d); err != nil {
+		return id, err
+	}
+	copy(id[:], h.Sum(nil))
+	return id, nil
 }

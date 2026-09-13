@@ -179,10 +179,14 @@ func NewestRunDir(runsDir string) (string, error) {
 	return filepath.Join(runsDir, byName[seqs[0]]), nil
 }
 
-// verifyObjects checks every Objects row's content id against the payload
-// bytes read from disc, decompressing when the row says compression was
-// used.
+// verifyObjects checks every Objects row's content id against the
+// stored bytes read from disc, decompressing when the row says
+// compression was used. It streams each object's stored bytes straight
+// into the hash, never holding a whole object file, or a decompressed
+// payload, in memory: an object can be as large as the maximum chunk
+// size, so this bound must hold whatever the object's own size is.
 func verifyObjects(base string, idx *format.Index) error {
+	headerLen := int64(format.CommonHeaderLen + format.ObjectHeaderLen)
 	for _, row := range idx.Objects {
 		id := object.ID(row.ContentID)
 		var path string
@@ -191,22 +195,32 @@ func verifyObjects(base string, idx *format.Index) error {
 		} else {
 			path = filepath.Join(base, "objects", id.FanoutByte(), id.TextForm())
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+		if err := verifyOneObject(path, id, row.Offset, row.StoredLen, row.Compression, headerLen); err != nil {
+			return err
 		}
-		headerLen := format.CommonHeaderLen + format.ObjectHeaderLen
-		if uint64(len(data)) < uint64(headerLen)+row.Offset+row.StoredLen {
-			return fmt.Errorf("image: object %s: file too short", id.TextForm())
-		}
-		stored := data[uint64(headerLen)+row.Offset : uint64(headerLen)+row.Offset+row.StoredLen]
-		payload, err := object.Decompress(stored, row.Compression, row.PayloadLen)
-		if err != nil {
-			return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
-		}
-		if object.ComputeID(payload) != id {
-			return fmt.Errorf("image: object %s: content id does not verify", id.TextForm())
-		}
+	}
+	return nil
+}
+
+// verifyOneObject streams the object file at path, from headerLen+offset
+// for storedLen bytes, decompressing when compression says so, and
+// checks the result hashes to id.
+func verifyOneObject(path string, id object.ID, offset, storedLen uint64, compression format.Compression, headerLen int64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := f.Seek(headerLen+int64(offset), io.SeekStart); err != nil {
+		return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+	}
+	got, err := object.HashStreamed(f, compression, storedLen)
+	if err != nil {
+		return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+	}
+	if object.ID(got) != id {
+		return fmt.Errorf("image: object %s: content id does not verify", id.TextForm())
 	}
 	return nil
 }
