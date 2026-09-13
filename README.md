@@ -105,6 +105,36 @@ prerequisites of the earlier disc instead.
 `pack` exits 0 once nothing is left staged, and 1 while objects remain;
 either way it prints the remaining object count and byte total.
 
+## Finding a snapshot to restore
+
+`log` and `ls` read the same disc roots `restore` and `verify` do, so a
+snapshot id or a path can be found before running a restore.
+
+`log` lists the snapshots the given discs know, newest first:
+
+```sh
+./noahsark log tree0
+```
+
+`ls` lists a snapshot's tree, given its id or a ref name from `log`:
+
+```sh
+./noahsark ls tree0 SNAPSHOT-ID
+```
+
+`ls --recursive` walks the whole tree and prints each entry's full
+path, in the same form `restore --include` takes:
+
+```sh
+./noahsark ls --recursive tree0 SNAPSHOT-ID
+```
+
+A path copied from that output restores just that path:
+
+```sh
+./noahsark restore tree0 --include=srv/data/etc SNAPSHOT-ID restored
+```
+
 `restore` reads from one disc root by default:
 
 ```sh
