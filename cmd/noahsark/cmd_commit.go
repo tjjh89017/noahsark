@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // newWriter builds the Writer cmdCommit commits through. A test replaces
@@ -60,6 +62,11 @@ func cmdCommit(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if err := markStaged(cfg.StagingDir, snapID); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 1
+	}
+
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
@@ -74,4 +81,24 @@ func cmdCommit(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// markStaged appends a Staged state.db record for every object snapID
+// reaches that has no record yet: the whole staging state machine's
+// entry point.
+func markStaged(stagingDir string, snapID object.ID) error {
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		return err
+	}
+	objs, err := image.CollectReachable(stagingDir, []object.ID{snapID})
+	if err != nil {
+		return err
+	}
+	for _, o := range objs {
+		if err := l.EnsureStaged(o.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
