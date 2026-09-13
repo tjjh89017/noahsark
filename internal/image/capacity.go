@@ -81,24 +81,40 @@ func EstimateFilesystemOverhead(fileCount int, capacitySectors uint64) uint64 {
 	return base + perFile + perDir + margin
 }
 
-// DataBudgetBlocks returns the number of blockSize stream blocks a run
-// may fill, given a target capacity of targetSectors and a UDF tree of
-// fileCount files. It reserves the estimated filesystem overhead for
-// fileCount files, plus the two RUN.bin and RUN2.bin header copies,
-// then gives the rest to whole FEC stripes: k data blocks out of every
-// stripeWidth sectors, the checksum and parity sectors of a stripe
-// taking the remainder. A partial stripe's sectors go unused, and a
-// target too small for the reserved sectors alone yields a zero
-// budget.
-func DataBudgetBlocks(targetSectors uint64, fileCount int, k, stripeWidth int) uint64 {
+// usableSectors returns the sectors left of targetSectors once the
+// estimated filesystem overhead for fileCount files and the two RUN.bin
+// and RUN2.bin header copies are set aside. It is the shared first step
+// of both capacity budgets below: a target too small for the reserved
+// sectors alone yields zero.
+func usableSectors(targetSectors uint64, fileCount int) uint64 {
 	reservedBytes := EstimateFilesystemOverhead(fileCount, targetSectors) + 2*RunFileLen
 	reservedSectors := (reservedBytes + SectorSize - 1) / SectorSize
 	if reservedSectors >= targetSectors {
 		return 0
 	}
-	usableSectors := targetSectors - reservedSectors
-	stripes := usableSectors / uint64(stripeWidth)
+	return targetSectors - reservedSectors
+}
+
+// DataBudgetBlocks returns the number of blockSize stream blocks a run
+// may fill, given a target capacity of targetSectors and a UDF tree of
+// fileCount files, when the run carries FEC. It reserves the estimated
+// filesystem overhead for fileCount files, plus the two RUN.bin and
+// RUN2.bin header copies, then gives the rest to whole FEC stripes: k
+// data blocks out of every stripeWidth sectors, the checksum and parity
+// sectors of a stripe taking the remainder. A partial stripe's sectors
+// go unused, and a target too small for the reserved sectors alone
+// yields a zero budget.
+func DataBudgetBlocks(targetSectors uint64, fileCount int, k, stripeWidth int) uint64 {
+	stripes := usableSectors(targetSectors, fileCount) / uint64(stripeWidth)
 	return stripes * uint64(k)
+}
+
+// DataBudgetBlocksNoFEC returns the number of blockSize stream blocks a
+// run may fill when it carries no FEC: every usable sector after the
+// filesystem overhead estimate, with no stripe rounding and no share
+// given up to a checksum column or parity, since neither exists.
+func DataBudgetBlocksNoFEC(targetSectors uint64, fileCount int) uint64 {
+	return usableSectors(targetSectors, fileCount)
 }
 
 // CheckCapacity refuses a run whose total on-disc size, streamBytes plus
