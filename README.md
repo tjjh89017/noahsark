@@ -43,6 +43,33 @@ sudo umount /mnt/noahsark
 Both restores should match the original source: healing repairs the
 corrupted blocks before the second restore reads them.
 
+`image build` needs root today: it loop-mounts the image it builds to
+copy the packed tree in. The default burn line stays open for later
+appends and never passes `-dvd-compat`:
+
+```sh
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.img
+```
+
+## Burning without UDF
+
+`pack` and `image build` are both provided, but `pack` alone already
+gives a folder that is the complete disc root. If you do not want the
+UDF image, burn that folder with any tool you trust, for example:
+
+```sh
+genisoimage -r -o run.iso tree
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.iso
+```
+
+or a GUI burner: point it at the `tree` folder and burn a data disc
+from it, choosing ISO 9660 or UDF as the tool offers.
+
+NoahsArk reads any filesystem the host can mount, so restore and
+verify work the same on a disc burned this way. What you lose: the
+image cannot be verified before burning, the mirror kept for later
+scrubbing, and conformance to the UDF profile FORMAT.md describes.
+
 ## Packing a disc sequence and restoring across discs
 
 `commit` stages every object once. Each `pack` call then selects as

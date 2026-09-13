@@ -329,6 +329,10 @@ disc or a conforming reader accepts; they change only which command-line
 surface reaches the same Go calls the rest of this implementation
 already exposes.
 
+Burning the folder `pack` produces directly, without running `image
+build`, is a documented, supported use: see README.md, "Burning
+without UDF".
+
 ## 7.6 In-flight change detection
 
 Phase 1 has no parent snapshot: `internal/object`'s `Writer.Commit` always
