@@ -67,3 +67,4 @@ tmp/
 
 # Local plans, never committed
 .plan/
+__pycache__/

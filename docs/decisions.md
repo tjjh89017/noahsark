@@ -46,6 +46,21 @@ repository's snapshot history.
 `source_flags` always carries `NO_SPARSE`: the writer never probes
 `SEEK_HOLE`, so it never claims sparse detection happened.
 
+## 10.5 Decode rule
+
+`internal/fec`'s `Codec.Decode` takes an explicit set of surviving shards
+and applies the base algebraic rule: it picks the `k` shards with the
+lowest index and inverts `[I_k ; C]` restricted to those rows, per the
+normative choice this heading states. It does not run the single-parity
+retry loop itself, because that loop needs the checksum column and the
+content ids INDEX maps into the stripe, and `internal/fec` takes byte
+slices only, with no knowledge of INDEX or the checksum column's file
+layout. The caller (the image package) is expected to try each erasure set
+the retry loop names and call `Decode` again for each attempt. This does
+not change which parity bytes a conforming writer produces or which stripe
+a conforming reader accepts as decoded; it only fixes which package runs
+the retry loop.
+
 ## 6.6 Tree entry fixed header and 6.7 Entry flags
 
 `internal/object`'s writer always sets `CTIME_ABSENT` clear and
