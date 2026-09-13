@@ -15,25 +15,25 @@ import (
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: ci-list <disc-root>")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-list <disc-root>")
 		os.Exit(2)
 	}
 	root := os.Args[1]
 
 	rr, err := image.Read(root)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-list: read:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-list: read:", err)
 		os.Exit(1)
 	}
 	if len(rr.Refs.Records) == 0 {
-		fmt.Fprintln(os.Stderr, "ci-list: REFS has no records")
+		_, _ = fmt.Fprintln(os.Stderr, "ci-list: REFS has no records")
 		os.Exit(1)
 	}
 	snapID := object.ID(rr.Refs.Records[0].SnapshotID)
 
 	entries, err := image.ListSnapshot(root, snapID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-list: list:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-list: list:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("# snapshot %s\n", hex.EncodeToString(snapID[:]))

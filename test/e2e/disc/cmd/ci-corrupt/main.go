@@ -28,7 +28,7 @@ import (
 
 func main() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: ci-corrupt DISC-ROOT BLOCK [BLOCK ...]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-corrupt DISC-ROOT BLOCK [BLOCK ...]")
 		os.Exit(2)
 	}
 	root := os.Args[1]
@@ -141,7 +141,7 @@ func flipByte(path string, off int64) error {
 
 func must(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-corrupt:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-corrupt:", err)
 		os.Exit(1)
 	}
 }

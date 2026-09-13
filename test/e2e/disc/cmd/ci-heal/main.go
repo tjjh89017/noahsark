@@ -18,7 +18,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || len(os.Args) > 3 {
-		fmt.Fprintln(os.Stderr, "usage: ci-heal DISC-ROOT [OUT-DIR]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-heal DISC-ROOT [OUT-DIR]")
 		os.Exit(2)
 	}
 	root := os.Args[1]
@@ -29,7 +29,7 @@ func main() {
 
 	reports, err := restore.Heal(root, outDir)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-heal:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-heal:", err)
 		os.Exit(1)
 	}
 	for _, r := range reports {

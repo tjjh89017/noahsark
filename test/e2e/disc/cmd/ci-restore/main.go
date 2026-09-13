@@ -19,19 +19,19 @@ import (
 
 func main() {
 	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: ci-restore DISC-ROOT OUT-DIR")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-restore DISC-ROOT OUT-DIR")
 		os.Exit(2)
 	}
 	root, outDir := os.Args[1], os.Args[2]
 
 	snapID, err := firstRefsSnapshot(root)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-restore:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-restore:", err)
 		os.Exit(1)
 	}
 
 	if err := restore.Restore(root, snapID, outDir); err != nil {
-		fmt.Fprintln(os.Stderr, "ci-restore:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-restore:", err)
 		os.Exit(1)
 	}
 	fmt.Println("ci-restore: restored snapshot", snapID.TextForm(), "into", outDir)

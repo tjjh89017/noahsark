@@ -31,7 +31,7 @@ func fixedClock() time.Time {
 
 func main() {
 	if len(os.Args) < 2 || len(os.Args) > 4 {
-		fmt.Fprintln(os.Stderr, "usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS]")
 		os.Exit(2)
 	}
 	workDir := os.Args[1]
@@ -83,7 +83,7 @@ func main() {
 func mustSectors(s string) uint64 {
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-fixture: bad sector count:", s)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-fixture: bad sector count:", s)
 		os.Exit(2)
 	}
 	return n
@@ -91,7 +91,7 @@ func mustSectors(s string) uint64 {
 
 func must(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ci-fixture:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "ci-fixture:", err)
 		os.Exit(1)
 	}
 }
