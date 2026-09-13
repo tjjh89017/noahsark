@@ -12,6 +12,9 @@
 package disc
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -75,12 +78,24 @@ func requireHarness(t *testing.T) (scenario, media, order string) {
 func TestDisc(t *testing.T) {
 	scenario, media, order := requireHarness(t)
 
-	cmd := exec.Command("bash", "./run.sh", scenario, media, order)
-	out, err := cmd.CombinedOutput()
-	t.Logf("run.sh %s %s %s:\n%s", scenario, media, order, out)
-	if err != nil {
+	if err := runScenario(scenario, media, order); err != nil {
 		t.Fatalf("scenario %s (media %q, order %q) failed: %v", scenario, media, order, err)
 	}
+}
+
+// runScenario runs run.sh with the given arguments, streaming its output
+// live to stdout and stderr as it happens, so a `go test -v` run shows
+// progress instead of one block of text after the run finishes. It also
+// keeps a copy of the combined output, for a failure message.
+func runScenario(args ...string) error {
+	cmd := exec.Command("bash", append([]string{"./run.sh"}, args...)...)
+	var captured bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &captured)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w\noutput:\n%s", err, captured.String())
+	}
+	return nil
 }
 
 // TestChainSmall runs the chain scenario at a small, fast fixture size,
@@ -94,10 +109,7 @@ func TestChainSmall(t *testing.T) {
 		t.Skip("chain-small rides in the cli e2e cell")
 	}
 
-	cmd := exec.Command("bash", "./run.sh", "chain-small", "", "dvd-bd25-bd10")
-	out, err := cmd.CombinedOutput()
-	t.Logf("run.sh chain-small:\n%s", out)
-	if err != nil {
+	if err := runScenario("chain-small", "", "dvd-bd25-bd10"); err != nil {
 		t.Fatalf("chain-small failed: %v", err)
 	}
 }
