@@ -1,0 +1,90 @@
+package image
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/object"
+)
+
+// ListEntry is one line of a snapshot listing: an entry's type, size,
+// mode and path from the tree root.
+type ListEntry struct {
+	Type string
+	Size uint64
+	Mode uint32
+	Path string
+}
+
+var entryTypeNames = map[uint8]string{
+	format.EntryTypeRegular:   "regular",
+	format.EntryTypeDirectory: "directory",
+	format.EntryTypeSymlink:   "symlink",
+	format.EntryTypeCharDev:   "chardev",
+	format.EntryTypeBlockDev:  "blockdev",
+	format.EntryTypeFIFO:      "fifo",
+	format.EntryTypeSocket:    "socket",
+}
+
+// ListSnapshot walks the tree of the snapshot content id snapID from a
+// disc tree rooted at base (as findNoahsark resolves it), in the same
+// pre-order walk section 8.7 defines, and returns one ListEntry per tree
+// entry.
+func ListSnapshot(root string, snapID object.ID) ([]ListEntry, error) {
+	base, err := findNoahsark(root)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(base, "snapshots", snapID.TextForm()))
+	if err != nil {
+		return nil, err
+	}
+	var snap format.Snapshot
+	if _, err := snap.Decode(data); err != nil {
+		return nil, err
+	}
+	var out []ListEntry
+	if err := walkListTree(base, object.ID(snap.RootTree), "", &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func walkListTree(base string, treeID object.ID, prefix string, out *[]ListEntry) error {
+	data, err := os.ReadFile(filepath.Join(base, "objects", treeID.FanoutByte(), treeID.TextForm()))
+	if err != nil {
+		return fmt.Errorf("image: tree %s: %w", treeID.TextForm(), err)
+	}
+	var tree format.Tree
+	if _, err := tree.Decode(data); err != nil {
+		return fmt.Errorf("image: tree %s: %w", treeID.TextForm(), err)
+	}
+	for _, e := range tree.Entries {
+		path := filepath.ToSlash(filepath.Join(prefix, string(e.Name)))
+		typeName := entryTypeNames[e.EntryType]
+		if typeName == "" {
+			typeName = fmt.Sprintf("type%d", e.EntryType)
+		}
+		*out = append(*out, ListEntry{Type: typeName, Size: e.Size, Mode: e.Mode, Path: path})
+		if e.EntryType == format.EntryTypeDirectory {
+			if err := walkListTree(base, object.ID(e.ContentID), path, out); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// SortedPaths returns entries' Path fields, sorted, for a
+// formatting-independent comparison against another listing.
+func SortedPaths(entries []ListEntry) []string {
+	paths := make([]string, len(entries))
+	for i, e := range entries {
+		paths[i] = e.Path
+	}
+	sort.Strings(paths)
+	return paths
+}
