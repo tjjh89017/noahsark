@@ -129,7 +129,7 @@ func flipByte(path string, off int64) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var b [1]byte
 	if _, err := f.ReadAt(b[:], off); err != nil {
 		return err
