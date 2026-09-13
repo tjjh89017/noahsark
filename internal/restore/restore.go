@@ -240,7 +240,13 @@ func objectPath(base string, id object.ID, snapshot bool) string {
 // verifies the payload hashes to id. It returns the whole raw file bytes
 // (for a typed Decode call) and the decompressed payload separately.
 func readVerified(base string, id object.ID, snapshot bool) (raw, payload []byte, err error) {
-	path := objectPath(base, id, snapshot)
+	return readVerifiedAt(objectPath(base, id, snapshot), id)
+}
+
+// readVerifiedAt is readVerified against an explicit file path, for a
+// caller that already knows an object's copy lives somewhere other than
+// its canonical path, such as a run's catalog/snapobj copy.
+func readVerifiedAt(path string, id object.ID) (raw, payload []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("restore: %s: %w", id.TextForm(), err)
