@@ -10,7 +10,7 @@ import (
 // header padded to one whole sector.
 const RunFileLen = SectorSize
 
-func buildDisc(opts BuildOptions, packTime time.Time) ([]byte, [32]byte, error) {
+func buildDisc(opts BuildOptions, packTime time.Time, discSeq uint64) ([]byte, [32]byte, error) {
 	_, tzOffset := packTime.Zone()
 	var label [64]byte
 	n := copy(label[:], opts.Label)
@@ -25,7 +25,7 @@ func buildDisc(opts BuildOptions, packTime time.Time) ([]byte, [32]byte, error) 
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicDisc,
 			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.CommonHeaderLen + 2012,
 		},
-		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, DiscSeq: buildDiscSeq,
+		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, DiscSeq: discSeq,
 		CapacitySectors: opts.PhysicalCapacitySectors, CapacityForcedSectors: opts.TargetCapacitySectors,
 		CreatedSec: packTime.Unix(), CreatedNsec: uint32(packTime.Nanosecond()), TzOffsetSec: int32(tzOffset),
 		MediaType: opts.MediaType, FSProfile: format.DiscFSProfileOneshot, FanoutLevels: 1,
@@ -38,13 +38,13 @@ func buildDisc(opts BuildOptions, packTime time.Time) ([]byte, [32]byte, error) 
 	return buf, sha256sum(buf), nil
 }
 
-func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, objectCount uint64) ([]byte, error) {
+func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, objectCount uint64, runSeq, discSeq uint64) ([]byte, error) {
 	r := format.Run{
 		Common: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRun,
 			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.CommonHeaderLen + 480,
 		},
-		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, RunSeq: buildRunSeq, DiscSeq: buildDiscSeq,
+		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, RunSeq: runSeq, DiscSeq: discSeq,
 		FECK: uint16(231), FECM: uint16(23), FECScheme: format.FECSchemeRS255GF8,
 		HashAlgo: format.HashAlgoSHA256, ChunkerProfile: format.ChunkerProfileP4,
 		Compression: format.CompressionZstd, FSProfile: format.DiscFSProfileOneshot,
@@ -140,7 +140,11 @@ func compareBytes(a, b []byte) int {
 	}
 }
 
-func buildDiscs(opts BuildOptions, packTime time.Time) ([]byte, [32]byte, error) {
+// newDiscsRow builds this run's own DISCS row: its RunHash is zero,
+// since DISCS is carried by the run it describes and that run's own
+// header hash is not yet known when the table is built. The next disc's
+// copy of DISCS fills it in.
+func newDiscsRow(opts BuildOptions, packTime time.Time, runSeq, discSeq uint64) format.DiscsRow {
 	var label [format.DiscsLabelLen]byte
 	n := copy(label[:], opts.Label)
 
@@ -149,22 +153,30 @@ func buildDiscs(opts BuildOptions, packTime time.Time) ([]byte, [32]byte, error)
 		stateFlags |= format.DiscsStateCapacityForced
 	}
 
-	row := format.DiscsRow{
-		RunSeq: buildRunSeq, DiscSeq: buildDiscSeq, DiscUUID: opts.DiscUUID,
-		// RunHash is zero: DISCS is carried by the run it describes.
+	return format.DiscsRow{
+		RunSeq: runSeq, DiscSeq: discSeq, DiscUUID: opts.DiscUUID,
 		CreatedSec: packTime.Unix(), LastVerifySec: 0,
 		CapacitySectors: opts.PhysicalCapacitySectors, UsedSectors: 0,
 		RunStatus: 2, Health: 6, RsMarginPercent: 100,
 		LabelLen: uint16(n), Label: label, StateFlags: stateFlags,
 		CapacityForcedSectors: opts.TargetCapacitySectors,
 	}
+}
+
+// buildDiscs encodes DISCS: every prior disc's row, exactly as the
+// repository's disc ledger carries them, followed by this run's own row.
+func buildDiscs(opts BuildOptions, packTime time.Time, runSeq, discSeq uint64, priorRows []format.DiscsRow) ([]byte, [32]byte, error) {
+	rows := make([]format.DiscsRow, 0, len(priorRows)+1)
+	rows = append(rows, priorRows...)
+	rows = append(rows, newDiscsRow(opts, packTime, runSeq, discSeq))
+
 	t := format.DiscsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs,
 			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.DiscsHeaderLen,
 		},
-		RepoUUID: opts.RepoUUID, RecordCount: 1, RecordSize: format.DiscsRowLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Rows: []format.DiscsRow{row},
+		RepoUUID: opts.RepoUUID, RecordCount: uint64(len(rows)), RecordSize: format.DiscsRowLen,
+		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Rows: rows,
 	}
 	buf := make([]byte, t.EncodedLen())
 	if _, err := t.Encode(buf); err != nil {
