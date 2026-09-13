@@ -1,0 +1,12 @@
+name: 'Lint'
+description: >
+  Installs the latest golangci-lint release and runs it against
+  .golangci.yml at the repository root. Every workflow that lints Go
+  code calls this action instead of repeating its steps.
+runs:
+  using: 'composite'
+  steps:
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: latest
