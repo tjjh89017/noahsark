@@ -1,13 +1,13 @@
 // Package disc is the disc e2e harness: real mkudffs images, a real loop
 // mount, real corruption and healing, and the real noahsark binary. It
-// runs one scenario against one media preset per test invocation, chosen
-// by environment variables, so a CI matrix cell runs exactly one
-// scenario/media pair.
+// runs one scenario per test invocation, chosen by environment
+// variables, so a CI matrix cell runs exactly one scenario (and, for the
+// media scenario, one media preset).
 //
 // Run with:
 //
 //	sudo env "PATH=$PATH" NOAHSARK_E2E=1 \
-//	  NOAHSARK_E2E_SCENARIO=verify-restore NOAHSARK_E2E_MEDIA=dvd+r \
+//	  NOAHSARK_E2E_SCENARIO=media NOAHSARK_E2E_MEDIA=dvd+r \
 //	  go test ./test/e2e/disc -v
 package disc
 
@@ -19,12 +19,15 @@ import (
 )
 
 // scenarios lists the disc e2e suite's scenario names, matching run.sh.
+// Only "media" reads NOAHSARK_E2E_MEDIA; the others use a fixed dvd+r
+// fixture.
 var scenarios = map[string]bool{
-	"verify-restore": true,
+	"media":          true,
 	"corrupt-heal":   true,
 	"corrupt-parity": true,
+	"corrupt-max":    true,
+	"corrupt-over":   true,
 	"cli":            true,
-	"capacity":       true,
 }
 
 func requireHarness(t *testing.T) (scenario, media string) {
@@ -37,11 +40,14 @@ func requireHarness(t *testing.T) (scenario, media string) {
 	}
 	scenario = os.Getenv("NOAHSARK_E2E_SCENARIO")
 	media = os.Getenv("NOAHSARK_E2E_MEDIA")
-	if scenario == "" || media == "" {
-		t.Fatal("NOAHSARK_E2E_SCENARIO and NOAHSARK_E2E_MEDIA are both required when NOAHSARK_E2E=1")
+	if scenario == "" {
+		t.Fatal("NOAHSARK_E2E_SCENARIO is required when NOAHSARK_E2E=1")
 	}
 	if !scenarios[scenario] {
 		t.Fatalf("unknown NOAHSARK_E2E_SCENARIO: %s", scenario)
+	}
+	if scenario == "media" && media == "" {
+		t.Fatal("NOAHSARK_E2E_MEDIA is required for the media scenario")
 	}
 	if os.Geteuid() != 0 {
 		t.Skip("requires root (loop mount)")
@@ -54,10 +60,10 @@ func requireHarness(t *testing.T) (scenario, media string) {
 	return scenario, media
 }
 
-// TestDisc runs the scenario and media preset named by
-// NOAHSARK_E2E_SCENARIO and NOAHSARK_E2E_MEDIA through run.sh. run.sh
-// carries the scenario logic; this test is the harness's skip guard and
-// its entry point from `go test`.
+// TestDisc runs the scenario named by NOAHSARK_E2E_SCENARIO (and, for
+// the media scenario, the media preset named by NOAHSARK_E2E_MEDIA)
+// through run.sh. run.sh carries the scenario logic; this test is the
+// harness's skip guard and its entry point from `go test`.
 func TestDisc(t *testing.T) {
 	scenario, media := requireHarness(t)
 
@@ -65,6 +71,6 @@ func TestDisc(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	t.Logf("run.sh %s %s:\n%s", scenario, media, out)
 	if err != nil {
-		t.Fatalf("scenario %s/%s failed: %v", scenario, media, err)
+		t.Fatalf("scenario %s (media %q) failed: %v", scenario, media, err)
 	}
 }

@@ -19,10 +19,31 @@ BIN="$WORK/noahsark"
 log() { echo "[disc-e2e] $*"; }
 fail() { echo "[disc-e2e] FAIL: $*" >&2; exit 1; }
 
+# build_binary sets BIN to a runnable noahsark binary: NOAHSARK_E2E_BIN
+# when the caller (the e2e action) already built one outside sudo, else
+# a binary this scenario builds itself.
 build_binary() {
+	if [ -n "${NOAHSARK_E2E_BIN:-}" ] && [ -x "$NOAHSARK_E2E_BIN" ]; then
+		BIN="$NOAHSARK_E2E_BIN"
+		return
+	fi
 	if [ ! -x "$BIN" ]; then
 		log "building the noahsark binary"
 		(cd "$ROOT" && go build -o "$BIN" ./cmd/noahsark)
+	fi
+}
+
+# run_tool NAME [ARGS...] runs one of the disc e2e helper commands
+# (test/e2e/disc/cmd/NAME): the prebuilt binary at NOAHSARK_E2E_TOOLDIR
+# when the e2e action built one outside sudo, else `go run` against its
+# source, for a caller running the suite directly.
+run_tool() {
+	local name="$1"
+	shift
+	if [ -n "${NOAHSARK_E2E_TOOLDIR:-}" ] && [ -x "$NOAHSARK_E2E_TOOLDIR/$name" ]; then
+		"$NOAHSARK_E2E_TOOLDIR/$name" "$@"
+	else
+		go run "$ROOT/test/e2e/disc/cmd/$name" "$@"
 	fi
 }
 
