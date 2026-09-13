@@ -60,6 +60,7 @@ jobs:
           - { scenario: corrupt-max, media: '', name: corrupt-max, slug: corrupt-max }
           - { scenario: corrupt-over, media: '', name: corrupt-over, slug: corrupt-over }
           - { scenario: cli, media: '', name: cli, slug: cli }
+          - { scenario: iso, media: '', name: iso, slug: iso }
           - { scenario: chain, order: dvd-bd25-bd10, name: chain/dvd-bd25-bd10, slug: chain-dvd-bd25-bd10 }
           - { scenario: chain, order: bd25-bd10-dvd, name: chain/bd25-bd10-dvd, slug: chain-bd25-bd10-dvd }
           - { scenario: lowmem, media: '', name: lowmem, slug: lowmem }

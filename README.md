@@ -58,12 +58,23 @@ gives a folder that is the complete disc root. If you do not want the
 UDF image, burn that folder with any tool you trust, for example:
 
 ```sh
-genisoimage -r -o run.iso tree
+genisoimage -R -iso-level 4 -V NOAHSARK -o run.iso tree
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.iso
+```
+
+or burn straight from the folder, since growisofs calls genisoimage or
+mkisofs itself when given a directory instead of an image:
+
+```sh
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK tree
 ```
 
 or a GUI burner: point it at the `tree` folder and burn a data disc
 from it, choosing ISO 9660 or UDF as the tool offers.
+
+Use `-R -iso-level 4` (Rock Ridge), never `-J` (Joliet) alone: Joliet
+truncates names at 64 characters, which cuts off NoahsArk's
+68-character object file names.
 
 NoahsArk reads any filesystem the host can mount, so restore and
 verify work the same on a disc burned this way. What you lose: the
@@ -131,6 +142,13 @@ dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
 ```
 
 Pass that block count straight to `--capacity` as a sector count.
+
+## Dependencies
+
+Forward error correction encodes and decodes with the
+`github.com/klauspost/reedsolomon` library; `docs/fec-reference.md`
+documents the code by hand for an implementer who does not want the
+library.
 
 ## Documentation
 

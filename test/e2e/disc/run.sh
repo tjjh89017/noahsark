@@ -6,7 +6,7 @@
 #
 # Usage: run.sh SCENARIO [MEDIA] [ORDER]
 #   SCENARIO  media | corrupt-heal | corrupt-parity | corrupt-max |
-#             corrupt-over | cli | chain | chain-small | lowmem
+#             corrupt-over | cli | iso | chain | chain-small | lowmem
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
 #             fixture at dvd+r's real sector counts. lowmem ignores it
@@ -21,22 +21,28 @@ HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 . "$HERE/lib.sh"
 # shellcheck source=test/e2e/disc/chain.sh
 . "$HERE/chain.sh"
+# shellcheck source=test/e2e/disc/iso.sh
+. "$HERE/iso.sh"
 
 # FIXED_MEDIA is the media preset every scenario but media builds its
 # fixture at: real, but small enough that fixture size never depends on
 # it, so a fixed choice keeps those scenarios simple.
 FIXED_MEDIA="dvd+r"
 
-# build_fixture MEDIA WORK [CONTENT_BYTES] builds a fixture disc at
+# build_fixture MEDIA WORK [CONTENT_BYTES] [FEC] builds a fixture disc at
 # MEDIA's real sector counts, with CONTENT_BYTES of extra deterministic
-# content when given, and prints "TREE_DIR IMAGE_PATH SRC_DIR".
+# content when given, and prints "TREE_DIR IMAGE_PATH SRC_DIR". FEC, when
+# non-empty, builds the run with Reed-Solomon FEC; a corrupt-and-heal
+# scenario needs it, since there is nothing to heal without it.
 build_fixture() {
-	local media="$1" work="$2" content="${3:-}" target physical
+	local media="$1" work="$2" content="${3:-}" fec="${4:-}" target physical
 	read -r target physical <<<"$(media_sectors "$media")"
+	local fecflag=()
+	[ -n "$fec" ] && fecflag=(-fec)
 	if [ -n "$content" ]; then
-		run_tool ci-fixture "$work" "$target" "$physical" "$content"
+		run_tool ci-fixture "${fecflag[@]}" "$work" "$target" "$physical" "$content"
 	else
-		run_tool ci-fixture "$work" "$target" "$physical"
+		run_tool ci-fixture "${fecflag[@]}" "$work" "$target" "$physical"
 	fi
 }
 
@@ -48,7 +54,7 @@ MULTI_STRIPE_BYTES=1200000
 scenario_corrupt_heal() {
 	local work="$WORK/ch"
 	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work")"
+	out="$(build_fixture "$FIXED_MEDIA" "$work" "" 1)"
 	tree="$(sed -n '1p' <<<"$out")"
 	image="$(sed -n '2p' <<<"$out")"
 	src="$(sed -n '3p' <<<"$out")"
@@ -72,7 +78,7 @@ scenario_corrupt_heal() {
 scenario_corrupt_parity() {
 	local work="$WORK/cp"
 	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work")"
+	out="$(build_fixture "$FIXED_MEDIA" "$work" "" 1)"
 	tree="$(sed -n '1p' <<<"$out")"
 	image="$(sed -n '2p' <<<"$out")"
 	src="$(sed -n '3p' <<<"$out")"
@@ -101,7 +107,7 @@ scenario_corrupt_parity() {
 scenario_corrupt_max() {
 	local work="$WORK/cmax"
 	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work" "$MULTI_STRIPE_BYTES")"
+	out="$(build_fixture "$FIXED_MEDIA" "$work" "$MULTI_STRIPE_BYTES" 1)"
 	tree="$(sed -n '1p' <<<"$out")"
 	image="$(sed -n '2p' <<<"$out")"
 	src="$(sed -n '3p' <<<"$out")"
@@ -132,7 +138,7 @@ scenario_corrupt_max() {
 scenario_corrupt_over() {
 	local work="$WORK/cover"
 	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work" "$MULTI_STRIPE_BYTES")"
+	out="$(build_fixture "$FIXED_MEDIA" "$work" "$MULTI_STRIPE_BYTES" 1)"
 	tree="$(sed -n '1p' <<<"$out")"
 	image="$(sed -n '2p' <<<"$out")"
 	src="$(sed -n '3p' <<<"$out")"
@@ -218,11 +224,14 @@ media_image_capacity() {
 # longer refuses to pack outright: under the multi-disc pack semantics,
 # pack takes what fits onto this disc and reports the remainder for the
 # next one; that spill-across-discs behaviour is covered by the chain
-# scenario, not here.
+# scenario, not here. FEC, when non-empty, packs with --fec; lowmem uses
+# this to keep FEC on, every other caller leaves it at the default, off.
 scenario_media() {
-	local media="$1" work="$WORK/media"
+	local media="$1" fec="${2:-}" work="$WORK/media"
 	local repo small_src tree image mnt restored
-	local capflag physflag small_mb apparent
+	local capflag physflag small_mb apparent packfec
+	packfec=""
+	[ -n "$fec" ] && packfec="--fec"
 	repo="$work/repo"
 	small_src="$work/small"
 	tree="$work/tree"
@@ -254,7 +263,7 @@ scenario_media() {
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
 
-	"$BIN" pack --repo="$repo" --ref=SMALL "$capflag" $physflag --out="$tree"
+	"$BIN" pack --repo="$repo" --ref=SMALL "$capflag" $physflag $packfec --out="$tree"
 
 	"$BIN" image build --out="$image" --capacity="$(media_image_capacity "$media")" "$tree"
 	assert_sparse "$image" "$apparent"
@@ -287,6 +296,7 @@ main() {
 	corrupt-max) scenario_corrupt_max ;;
 	corrupt-over) scenario_corrupt_over ;;
 	cli) scenario_cli ;;
+	iso) scenario_iso ;;
 	chain)
 		[ -n "$order" ] || fail "the chain scenario needs an ORDER argument"
 		scenario_chain "$order"
@@ -299,8 +309,9 @@ main() {
 		# The memory bound is enforced on the process from outside (the
 		# e2e action wraps this whole script), not by anything in here;
 		# this scenario just picks a real, non-trivial flow to run under
-		# that limit.
-		scenario_media "bd25"
+		# that limit. It keeps FEC on, since FEC's own stripe-at-a-time
+		# memory strategy is exactly what this scenario means to check.
+		scenario_media "bd25" 1
 		;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac

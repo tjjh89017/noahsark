@@ -28,6 +28,7 @@ var scenarios = map[string]bool{
 	"corrupt-max":    true,
 	"corrupt-over":   true,
 	"cli":            true,
+	"iso":            true,
 	"chain":          true,
 	"lowmem":         true,
 }

@@ -52,11 +52,11 @@ runs:
           /opt/hostedtoolcache/CodeQL || true
         df -h /
 
-    - name: Install udftools
+    - name: Install udftools and genisoimage
       shell: bash
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y udftools
+        sudo apt-get install -y udftools genisoimage
 
     - name: Check mkudffs version
       shell: bash
