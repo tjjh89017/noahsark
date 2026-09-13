@@ -4,17 +4,22 @@
 //
 // Each argument names one block:
 //
-//	COLUMN:STRIPE   a data stream column, mapped to its file and byte
-//	                offset the same way internal/restore's Heal does
-//	p:COLUMN:STRIPE a parity column (COLUMN counts from 0, the first
-//	                parity column), in runs/*/parity/p%04d.bin
-//	c:STRIPE        the checksum record for one stripe, in
-//	                runs/*/checksum.bin
+//	COLUMN:STRIPE      a data stream column, mapped to its file and byte
+//	                   offset the same way internal/restore's Heal does
+//	p:COLUMN:STRIPE    a parity column (COLUMN counts from 0, the first
+//	                   parity column), in runs/*/parity/p%04d.bin
+//	c:STRIPE           the checksum record for one stripe, in
+//	                   runs/*/checksum.bin
+//	peek:COLUMN:STRIPE prints the data column's current block digest
+//	                   without changing it, so a caller can prove a
+//	                   block is unchanged across two peeks
 //
 // Usage: ci-corrupt DISC-ROOT BLOCK [BLOCK ...]
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,10 +54,46 @@ func main() {
 			must(corruptParity(runDir, arg))
 		case strings.HasPrefix(arg, "c:"):
 			must(corruptChecksum(runDir, arg))
+		case strings.HasPrefix(arg, "peek:"):
+			must(peekData(paths, sizes, layout, L, arg))
 		default:
 			must(corruptData(paths, sizes, layout, L, arg))
 		}
 	}
+}
+
+// peekData prints the SHA-256 digest of a data stream column's block,
+// without modifying it, so a caller can compare two peeks of the same
+// block and prove nothing wrote to it in between.
+func peekData(paths []string, sizes []uint64, layout *fec.StreamLayout, L uint64, arg string) error {
+	rest := strings.TrimPrefix(arg, "peek:")
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("bad peek:COLUMN:STRIPE argument: %s", arg)
+	}
+	col, err1 := strconv.ParseUint(parts[0], 10, 64)
+	stripe, err2 := strconv.ParseUint(parts[1], 10, 64)
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("bad peek:COLUMN:STRIPE argument: %s", arg)
+	}
+	block := col*L + stripe
+	idx, off, err := layout.Locate(block)
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, fec.BlockSize)
+	f, err := os.Open(paths[idx])
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	n, err := f.ReadAt(buf, int64(off))
+	if err != nil && n == 0 {
+		return err
+	}
+	sum := sha256.Sum256(buf[:n])
+	fmt.Printf("peek column %d stripe %d: %s\n", col, stripe, hex.EncodeToString(sum[:]))
+	return nil
 }
 
 func corruptData(paths []string, sizes []uint64, layout *fec.StreamLayout, L uint64, arg string) error {

@@ -3,12 +3,19 @@
 // NOAHSARK tree from it, and builds a UDF image from that tree with
 // mkudffs, so an e2e scenario has a real disc image to loop-mount.
 //
-// Usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS]
+// Usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS] [CONTENT-BYTES]
 //
 // TARGET-SECTORS and PHYSICAL-SECTORS default to 512 MiB, comfortably
 // above the small fixture tree; a scenario testing one media preset
 // passes that preset's real sector counts so the empty image it builds
 // is the real, sparse size for that preset.
+//
+// CONTENT-BYTES adds one more deterministic pseudo-random file of that
+// size, on top of the two small fixed files always written. A scenario
+// that needs its real data to span more than one FEC stripe (one stripe
+// holds 231*2048 bytes) passes a size past that, e.g. corrupting a
+// second stripe and proving a different one stayed untouched needs real
+// data there to check.
 //
 // It prints three lines to stdout: the tree directory, the image path,
 // and the source directory the fixture snapshot was committed from.
@@ -16,6 +23,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,8 +38,8 @@ func fixedClock() time.Time {
 }
 
 func main() {
-	if len(os.Args) < 2 || len(os.Args) > 4 {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS]")
+	if len(os.Args) < 2 || len(os.Args) > 5 {
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture WORKDIR [TARGET-SECTORS] [PHYSICAL-SECTORS] [CONTENT-BYTES]")
 		os.Exit(2)
 	}
 	workDir := os.Args[1]
@@ -46,13 +54,27 @@ func main() {
 		targetSectors = mustSectors(os.Args[2])
 	}
 	physicalSectors := targetSectors
-	if len(os.Args) == 4 {
+	if len(os.Args) >= 4 {
 		physicalSectors = mustSectors(os.Args[3])
+	}
+	var contentBytes int
+	if len(os.Args) == 5 {
+		n, err := strconv.Atoi(os.Args[4])
+		if err != nil || n < 0 {
+			_, _ = fmt.Fprintln(os.Stderr, "ci-fixture: bad content byte count:", os.Args[4])
+			os.Exit(2)
+		}
+		contentBytes = n
 	}
 
 	must(os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755))
 	must(os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content of a, for the CI fixture disc"), 0o644))
 	must(os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("content of b, also for the CI fixture disc, a bit longer"), 0o644))
+	if contentBytes > 0 {
+		big := make([]byte, contentBytes)
+		rand.New(rand.NewSource(1)).Read(big)
+		must(os.WriteFile(filepath.Join(srcDir, "sub", "big.bin"), big, 0o644))
+	}
 
 	w := object.NewWriter(stagingDir)
 	w.Now = fixedClock
