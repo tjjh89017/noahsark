@@ -34,6 +34,7 @@ var scenarios = map[string]bool{
 	"iso":            true,
 	"chain":          true,
 	"lowmem":         true,
+	"incremental":    true,
 }
 
 func requireHarness(t *testing.T) (scenario, media, order string) {
