@@ -328,3 +328,32 @@ None of these reductions change any byte a conforming writer puts on a
 disc or a conforming reader accepts; they change only which command-line
 surface reaches the same Go calls the rest of this implementation
 already exposes.
+
+## 7.6 In-flight change detection
+
+Phase 1 has no parent snapshot: `internal/object`'s `Writer.Commit` always
+writes a root snapshot, with no prior tree to compare against. The branch
+rule of section 6.7 that reuses the parent entry therefore never applies
+in this build; every unstable file takes the other branch, "flagged":
+the writer keeps the content it read and sets the `UNSTABLE` entry flag.
+`Writer` restats a regular file before and after reading it, controlled
+by a `RestatAfterRead` option (default true, matching
+`commit.restat_after_read`) and a `RetryUnstable` option (default 1,
+matching `commit.retry_unstable`). `cmd/noahsark`'s `commit` reads both
+keys from the config file when present and passes them through
+unchanged; both are Phase 1 keys, so no refusal applies. `commit` prints
+one `unstable PATH branch=flagged` line per flagged path, then the
+count, and exits 1 when the count is nonzero, matching the exit code
+table's "some files could not be read, or were unstable" rule.
+
+A path that vanishes between being listed and being opened or stat'd
+(deleted, renamed, or replaced by a broken symlink out from under the
+walker) is a different case from an in-flight content change: nothing
+was read, so there is no content to flag `UNSTABLE`. `Writer` reports
+such a path in `Summary.Skipped` and continues the commit without it,
+matching the source policy table's "unreadable file: skipped and
+reported, exit code 1" rule; `commit` prints a `skipped PATH` line for
+each and folds the count into the same nonzero-exit check. A read that
+fails for any other reason (permission denied, an I/O error) still
+aborts the commit and returns an error, since that is not a vanished
+path and not a reason to keep partial or torn content.
