@@ -81,6 +81,7 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 			RepoUUID:                [16]byte{9, 9, 9},
 			DiscUUID:                [16]byte{byte(i + 1)},
 			Label:                   fmt.Sprintf("disc-%d", i),
+			FECEnabled:              true,
 			Now:                     multiFixedClock,
 			StageLog:                l,
 		}

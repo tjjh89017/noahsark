@@ -60,6 +60,18 @@ func Heal(discRoot, outDir string) ([]StripeReport, error) {
 		return nil, err
 	}
 
+	runBuf, err := os.ReadFile(filepath.Join(runDir, "RUN.bin"))
+	if err != nil {
+		return nil, err
+	}
+	var run format.Run
+	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
+		return nil, err
+	}
+	if run.FECScheme != format.FECSchemeRS255GF8 {
+		return nil, fmt.Errorf("restore: heal: run %d has no FEC", run.RunSeq)
+	}
+
 	paths, sizes, _, err := image.StreamFiles(base, runDir)
 	if err != nil {
 		return nil, err

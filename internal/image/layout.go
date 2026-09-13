@@ -43,6 +43,11 @@ type BuildOptions struct {
 	DiscUUID  [16]byte
 	Label     string
 	MediaType format.MediaType
+	// FECEnabled writes a Reed-Solomon checksum column and parity for
+	// this run when true (fec_scheme 1). When false, the default, the
+	// run carries no FEC (fec_scheme 0): burning two identical discs is
+	// the primary redundancy this project relies on.
+	FECEnabled bool
 	// Now returns the pack time. Defaults to time.Now.
 	Now func() time.Time
 }
@@ -210,40 +215,19 @@ func Build(opts BuildOptions) (*Result, error) {
 	// not needed to know its length, only the row and table counts,
 	// which are already fixed at this point.
 	objectCount := len(hashed)
-	fileCount := len(rows) + 1 /* checksum */ + fec.M /* parity */ + 1 /* RUN2 */
+	fileCount := len(rows) + extraFixedRowCount(opts.FECEnabled)
 	indexLen := format.IndexHeaderLen + fileCount*format.IndexFileRecordLen +
 		objectCount*format.IndexObjectRecordLen
 	rows[indexRowIdx].byteLen = uint64(indexLen)
 
-	var streamSizes []uint64
-	for _, r := range rows {
-		if r.inStream {
-			streamSizes = append(streamSizes, r.byteLen)
-		}
-	}
-	layout, err := fec.NewStreamLayout(streamSizes, fec.K)
+	plan, err := appendFECRows(rows, opts.FECEnabled)
 	if err != nil {
 		return nil, err
 	}
-	L := layout.StripeCount()
+	rows = plan.rows
+	run2RowIdx := plan.run2RowIdx
 
-	checksumLen := L * fec.BlockSize
-	parityFileLen := (L + 1) * fec.BlockSize
-
-	checksumRowIdx := len(rows)
-	rows = append(rows, fileRow{role: format.FileRoleChecksum, byteLen: checksumLen, path: "NOAHSARK/runs/%RUNSEQ%/checksum.bin"})
-	parityRowStart := len(rows)
-	for j := range fec.M {
-		rows = append(rows, fileRow{
-			role: format.FileRoleParity, byteLen: parityFileLen,
-			path: fmt.Sprintf("NOAHSARK/runs/%%RUNSEQ%%/parity/p%04d.bin", fec.K+1+j),
-		})
-	}
-	run2RowIdx := len(rows)
-	rows = append(rows, fileRow{role: format.FileRoleRun2, byteLen: RunFileLen, path: "NOAHSARK/runs/%RUNSEQ%/RUN2.bin"})
-
-	streamBytesTotal := streamTotal(streamSizes)
-	if err := CheckCapacity(streamBytesTotal, checksumLen, uint64(fec.M)*parityFileLen, 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
+	if err := CheckCapacity(plan.streamBytesTotal, plan.checksumLen, uint64(fec.M)*plan.parityFileLen, 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
 		return nil, err
 	}
 
@@ -305,64 +289,21 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
 
-	runBuf, err := buildRun(opts, packTime, indexBuf, indexHash, streamBytesTotal, uint64(objectCount), buildRunSeq, buildDiscSeq)
+	runBuf, err := buildRun(opts, packTime, indexBuf, indexHash, plan.streamBytesTotal, uint64(objectCount), buildRunSeq, buildDiscSeq, opts.FECEnabled)
 	if err != nil {
 		return nil, err
 	}
 	rows[runRowIdx].data = runBuf
 	rows[run2RowIdx].data = runBuf
+	plan.rows = rows
 
-	// Write every row to its final path first: an in-memory row by
-	// WriteFile, a chunk-sized row by a streaming copy from its staged
-	// file. checksumRowIdx and the parity rows are filled in below and
-	// written by buildFECToDisk instead.
-	seqDir := fmt.Sprintf("%010d", buildRunSeq)
-	finalPaths := make([]string, len(rows))
-	for i, r := range rows {
-		path := filepath.FromSlash(replaceRunSeq(r.path, seqDir))
-		full := filepath.Join(opts.OutputDir, path)
-		finalPaths[i] = full
-		if i == checksumRowIdx || (i >= parityRowStart && i < parityRowStart+fec.M) {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return nil, err
-		}
-		if r.srcPath != "" {
-			if err := copyFileStream(r.srcPath, full, 0o644); err != nil {
-				return nil, err
-			}
-		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
-			return nil, err
-		}
-	}
-
-	// Compute the checksum column and the parity, one stripe at a time,
-	// reading every in-stream file's block range from its final path.
-	var sources []streamSource
-	for i, r := range rows {
-		if !r.inStream {
-			continue
-		}
-		sources = append(sources, streamSource{path: finalPaths[i], size: r.byteLen})
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPaths[checksumRowIdx]), 0o755); err != nil {
-		return nil, err
-	}
-	parityPaths := make([]string, fec.M)
-	for j := range fec.M {
-		parityPaths[j] = finalPaths[parityRowStart+j]
-	}
-	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
-		return nil, err
-	}
-	if err := buildFECToDisk(sources, layout, runBuf, finalPaths[checksumRowIdx], parityPaths); err != nil {
+	if err := writeRunTree(opts.OutputDir, buildRunSeq, plan, runBuf); err != nil {
 		return nil, err
 	}
 
 	return &Result{
 		RunSeq: buildRunSeq, DiscSeq: buildDiscSeq, ObjectCount: objectCount,
-		FileCount: len(rows), StreamBlocks: layout.BlockCount(), StripeCount: L,
+		FileCount: len(rows), StreamBlocks: blockCount(plan.streamBytesTotal), StripeCount: plan.stripeCount,
 	}, nil
 }
 
@@ -389,6 +330,123 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// extraFixedRowCount is the number of Files rows a run adds on top of
+// its INDEX, its fixed named files and its object rows: RUN2.bin always,
+// plus checksum.bin and fec.M parity files when the run carries FEC.
+func extraFixedRowCount(fecEnabled bool) int {
+	if fecEnabled {
+		return 1 + fec.M + 1 // checksum, parity, RUN2
+	}
+	return 1 // RUN2 only
+}
+
+// fecPlan holds what appending the checksum, parity and RUN2 rows
+// produced: the extended rows slice, the row indices buildFECToDisk and
+// the writer need, and the geometry a Result reports. checksumRowIdx and
+// parityRowStart are -1 when the run carries no FEC.
+type fecPlan struct {
+	rows             []fileRow
+	checksumRowIdx   int
+	parityRowStart   int
+	run2RowIdx       int
+	streamBytesTotal uint64
+	checksumLen      uint64
+	parityFileLen    uint64
+	stripeCount      uint64
+	layout           *fec.StreamLayout // nil when the run carries no FEC
+}
+
+// appendFECRows appends the checksum, parity and RUN2 rows to rows,
+// when fecEnabled, and always appends RUN2. It is shared by Build and
+// Pack so the two lay out a run's file order identically.
+func appendFECRows(rows []fileRow, fecEnabled bool) (fecPlan, error) {
+	var streamSizes []uint64
+	for _, r := range rows {
+		if r.inStream {
+			streamSizes = append(streamSizes, r.byteLen)
+		}
+	}
+	plan := fecPlan{checksumRowIdx: -1, parityRowStart: -1}
+	if fecEnabled {
+		layout, err := fec.NewStreamLayout(streamSizes, fec.K)
+		if err != nil {
+			return fecPlan{}, err
+		}
+		L := layout.StripeCount()
+		plan.layout = layout
+		plan.stripeCount = L
+		plan.checksumLen = L * fec.BlockSize
+		plan.parityFileLen = (L + 1) * fec.BlockSize
+
+		plan.checksumRowIdx = len(rows)
+		rows = append(rows, fileRow{role: format.FileRoleChecksum, byteLen: plan.checksumLen, path: "NOAHSARK/runs/%RUNSEQ%/checksum.bin"})
+		plan.parityRowStart = len(rows)
+		for j := range fec.M {
+			rows = append(rows, fileRow{
+				role: format.FileRoleParity, byteLen: plan.parityFileLen,
+				path: fmt.Sprintf("NOAHSARK/runs/%%RUNSEQ%%/parity/p%04d.bin", fec.K+1+j),
+			})
+		}
+	}
+	plan.run2RowIdx = len(rows)
+	rows = append(rows, fileRow{role: format.FileRoleRun2, byteLen: RunFileLen, path: "NOAHSARK/runs/%RUNSEQ%/RUN2.bin"})
+	plan.rows = rows
+	plan.streamBytesTotal = streamTotal(streamSizes)
+	return plan, nil
+}
+
+// writeRunTree writes every row of plan.rows to its final path under
+// outputDir (runRowIdx and run2RowIdx's bytes must already be set in
+// rows), skipping the checksum and parity rows, then, when the run
+// carries FEC, computes the checksum column and the parity straight to
+// disk from the files just written.
+func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte) error {
+	rows := plan.rows
+	seqDir := fmt.Sprintf("%010d", runSeq)
+	finalPaths := make([]string, len(rows))
+	for i, r := range rows {
+		path := filepath.FromSlash(replaceRunSeq(r.path, seqDir))
+		full := filepath.Join(outputDir, path)
+		finalPaths[i] = full
+		if i == plan.checksumRowIdx || (plan.parityRowStart >= 0 && i >= plan.parityRowStart && i < plan.parityRowStart+fec.M) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if r.srcPath != "" {
+			if err := copyFileStream(r.srcPath, full, 0o644); err != nil {
+				return err
+			}
+		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
+			return err
+		}
+	}
+
+	if plan.layout == nil {
+		return nil
+	}
+
+	var sources []streamSource
+	for i, r := range rows {
+		if !r.inStream {
+			continue
+		}
+		sources = append(sources, streamSource{path: finalPaths[i], size: r.byteLen})
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPaths[plan.checksumRowIdx]), 0o755); err != nil {
+		return err
+	}
+	parityPaths := make([]string, fec.M)
+	for j := range fec.M {
+		parityPaths[j] = finalPaths[plan.parityRowStart+j]
+	}
+	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
+		return err
+	}
+	return buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths)
 }
 
 func padLen(n int) int {

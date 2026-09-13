@@ -71,6 +71,7 @@ func buildFixtureTree(t *testing.T, srcDir string) (stagingDir, treeDir string, 
 		RepoUUID:                [16]byte{1, 2, 3, 4},
 		DiscUUID:                [16]byte{5, 6, 7, 8},
 		Label:                   "restore-test",
+		FECEnabled:              true,
 		Now:                     fixedClock,
 	}
 	if _, err := image.Build(opts); err != nil {

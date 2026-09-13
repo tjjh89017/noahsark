@@ -105,31 +105,38 @@ func Read(root string) (*ReadResult, error) {
 	}
 
 	// Every parity file's header block must match RUN.bin exactly. Read
-	// only that header, never the file's parity payload.
-	for j := range fec.M {
-		path := filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, fmt.Errorf("image: parity column %d: %w", j, err)
+	// only that header, never the file's parity payload. A scheme 0 run
+	// (no FEC) carries no parity files, so there is nothing to check
+	// here and no checksum column or parity to recompute below: verify
+	// checks content ids and file hashes only.
+	if run.FECScheme == format.FECSchemeRS255GF8 {
+		for j := range fec.M {
+			path := filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
+			f, err := os.Open(path)
+			if err != nil {
+				return nil, fmt.Errorf("image: parity column %d: %w", j, err)
+			}
+			header := make([]byte, RunFileLen)
+			_, err = io.ReadFull(f, header)
+			_ = f.Close()
+			if err != nil {
+				return nil, fmt.Errorf("image: parity column %d: %w", j, err)
+			}
+			if !bytes.Equal(header, runBuf) {
+				return nil, fmt.Errorf("image: parity column %d header does not match RUN.bin", j)
+			}
+			runCopies++
 		}
-		header := make([]byte, RunFileLen)
-		_, err = io.ReadFull(f, header)
-		_ = f.Close()
-		if err != nil {
-			return nil, fmt.Errorf("image: parity column %d: %w", j, err)
-		}
-		if !bytes.Equal(header, runBuf) {
-			return nil, fmt.Errorf("image: parity column %d header does not match RUN.bin", j)
-		}
-		runCopies++
 	}
 
 	if err := verifyObjects(base, &idx); err != nil {
 		return nil, err
 	}
 
-	if err := verifyFEC(base, runDir); err != nil {
-		return nil, err
+	if run.FECScheme == format.FECSchemeRS255GF8 {
+		if err := verifyFEC(base, runDir); err != nil {
+			return nil, err
+		}
 	}
 
 	return &ReadResult{

@@ -142,6 +142,7 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 		RepoUUID:                [16]byte{1, 2, 3, 4},
 		DiscUUID:                [16]byte{5, 6, 7, 8},
 		Label:                   "restore-mem-test",
+		FECEnabled:              true,
 		Now:                     fixedClock,
 	}
 	if _, err := image.Build(opts); err != nil {

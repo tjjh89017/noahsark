@@ -110,6 +110,7 @@ func packOpts(stagingDir string, snapID object.ID, outDir string, capacitySector
 		RepoUUID:                [16]byte{1, 2, 3, 4},
 		DiscUUID:                [16]byte{discUUID},
 		Label:                   "test-disc",
+		FECEnabled:              true,
 		Now:                     fixedClock,
 		StageLog:                l,
 	}

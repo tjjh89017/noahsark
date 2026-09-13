@@ -86,6 +86,7 @@ func testOpts(t *testing.T, stagingDir string, snapID object.ID, outDir string) 
 		RepoUUID:                [16]byte{1, 2, 3, 4},
 		DiscUUID:                [16]byte{5, 6, 7, 8},
 		Label:                   "test-disc",
+		FECEnabled:              true,
 		Now:                     fixedClock,
 	}
 }

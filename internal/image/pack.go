@@ -41,6 +41,10 @@ type PackOptions struct {
 	DiscUUID  [16]byte
 	Label     string
 	MediaType format.MediaType
+	// FECEnabled writes a Reed-Solomon checksum column and parity for
+	// this run when true (fec_scheme 1). When false, the default, the
+	// run carries no FEC (fec_scheme 0).
+	FECEnabled bool
 	// Now returns the pack time. Defaults to time.Now.
 	Now func() time.Time
 	// StageLog is the repository's staging state log. Pack reads it to
@@ -246,39 +250,19 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 
 	objectCount := len(hashed)
-	fileCount := len(rows) + 1 + fec.M + 1
+	fileCount := len(rows) + extraFixedRowCount(opts.FECEnabled)
 	indexLen := format.IndexHeaderLen + fileCount*format.IndexFileRecordLen +
 		objectCount*format.IndexObjectRecordLen + len(prereqs)*format.IndexPrereqRecordLen
 	rows[indexRowIdx].byteLen = uint64(indexLen)
 
-	var streamSizes []uint64
-	for _, r := range rows {
-		if r.inStream {
-			streamSizes = append(streamSizes, r.byteLen)
-		}
-	}
-	layout, err := fec.NewStreamLayout(streamSizes, fec.K)
+	plan, err := appendFECRows(rows, opts.FECEnabled)
 	if err != nil {
 		return nil, err
 	}
-	L := layout.StripeCount()
-	checksumLen := L * fec.BlockSize
-	parityFileLen := (L + 1) * fec.BlockSize
+	rows = plan.rows
+	run2RowIdx := plan.run2RowIdx
 
-	checksumRowIdx := len(rows)
-	rows = append(rows, fileRow{role: format.FileRoleChecksum, byteLen: checksumLen, path: "NOAHSARK/runs/%RUNSEQ%/checksum.bin"})
-	parityRowStart := len(rows)
-	for j := range fec.M {
-		rows = append(rows, fileRow{
-			role: format.FileRoleParity, byteLen: parityFileLen,
-			path: fmt.Sprintf("NOAHSARK/runs/%%RUNSEQ%%/parity/p%04d.bin", fec.K+1+j),
-		})
-	}
-	run2RowIdx := len(rows)
-	rows = append(rows, fileRow{role: format.FileRoleRun2, byteLen: RunFileLen, path: "NOAHSARK/runs/%RUNSEQ%/RUN2.bin"})
-
-	streamBytesTotal := streamTotal(streamSizes)
-	if err := CheckCapacity(streamBytesTotal, checksumLen, uint64(fec.M)*parityFileLen, 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
+	if err := CheckCapacity(plan.streamBytesTotal, plan.checksumLen, uint64(fec.M)*plan.parityFileLen, 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
 		return nil, fmt.Errorf("image: internal error: selected run does not fit after all: %w", err)
 	}
 
@@ -332,56 +316,15 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
 
-	runBuf, err := buildRun(opts.asBuildOptions(), packTime, indexBuf, indexHash, streamBytesTotal, uint64(objectCount), runSeq, discSeq)
+	runBuf, err := buildRun(opts.asBuildOptions(), packTime, indexBuf, indexHash, plan.streamBytesTotal, uint64(objectCount), runSeq, discSeq, opts.FECEnabled)
 	if err != nil {
 		return nil, err
 	}
 	rows[runRowIdx].data = runBuf
 	rows[run2RowIdx].data = runBuf
+	plan.rows = rows
 
-	// Write every row to its final path first: an in-memory row by
-	// WriteFile, a chunk-sized row by a streaming copy from its staged
-	// file. The checksum and parity rows are written by buildFECToDisk
-	// below instead, one stripe at a time.
-	seqDir := fmt.Sprintf("%010d", runSeq)
-	finalPaths := make([]string, len(rows))
-	for i, r := range rows {
-		path := filepath.FromSlash(replaceRunSeq(r.path, seqDir))
-		full := filepath.Join(opts.OutputDir, path)
-		finalPaths[i] = full
-		if i == checksumRowIdx || (i >= parityRowStart && i < parityRowStart+fec.M) {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return nil, err
-		}
-		if r.srcPath != "" {
-			if err := copyFileStream(r.srcPath, full, 0o644); err != nil {
-				return nil, err
-			}
-		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
-			return nil, err
-		}
-	}
-
-	var sources []streamSource
-	for i, r := range rows {
-		if !r.inStream {
-			continue
-		}
-		sources = append(sources, streamSource{path: finalPaths[i], size: r.byteLen})
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPaths[checksumRowIdx]), 0o755); err != nil {
-		return nil, err
-	}
-	parityPaths := make([]string, fec.M)
-	for j := range fec.M {
-		parityPaths[j] = finalPaths[parityRowStart+j]
-	}
-	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
-		return nil, err
-	}
-	if err := buildFECToDisk(sources, layout, runBuf, finalPaths[checksumRowIdx], parityPaths); err != nil {
+	if err := writeRunTree(opts.OutputDir, runSeq, plan, runBuf); err != nil {
 		return nil, err
 	}
 
@@ -418,7 +361,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 
 	return &PackResult{
 		RunSeq: runSeq, DiscSeq: discSeq, ObjectCount: objectCount,
-		FileCount: len(rows), StreamBlocks: layout.BlockCount(), StripeCount: L,
+		FileCount: len(rows), StreamBlocks: blockCount(plan.streamBytesTotal), StripeCount: plan.stripeCount,
 		RemainingObjects: remainingObjects,
 		RemainingBytes:   remainingBytes,
 	}, nil
@@ -462,13 +405,19 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 	blocks := make([]uint64, len(candidates))
 
 	stripeWidth := fec.K + fec.M + 1
+	extraRows := extraFixedRowCount(opts.FECEnabled)
 
 	var selected []packUnit
 	prereqSet := make(map[object.ID]bool)
 	objectCount := 0
 	for range selectRunMaxIterations {
-		fileCount := fixedFileCount + objectCount + 1 + fec.M + 1
-		dataBudget := DataBudgetBlocks(opts.TargetCapacitySectors, fileCount, fec.K, stripeWidth)
+		fileCount := fixedFileCount + objectCount + extraRows
+		var dataBudget uint64
+		if opts.FECEnabled {
+			dataBudget = DataBudgetBlocks(opts.TargetCapacitySectors, fileCount, fec.K, stripeWidth)
+		} else {
+			dataBudget = DataBudgetBlocksNoFEC(opts.TargetCapacitySectors, fileCount)
+		}
 
 		var round []packUnit
 		selectedSet := make(map[object.ID]bool)
@@ -497,7 +446,7 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 
 			trialObjectCount := len(round) + 1
 			trialPrereqCount := len(roundPrereqs) + len(newPrereqs)
-			trialFileCount := fixedFileCount + trialObjectCount + 1 + fec.M + 1
+			trialFileCount := fixedFileCount + trialObjectCount + extraRows
 			trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
 				trialObjectCount*format.IndexObjectRecordLen + trialPrereqCount*format.IndexPrereqRecordLen
 			trialIndexBlocks := blockCount(uint64(trialIndexLen))

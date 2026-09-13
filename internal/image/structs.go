@@ -3,6 +3,7 @@ package image
 import (
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
@@ -38,14 +39,26 @@ func buildDisc(opts BuildOptions, packTime time.Time, discSeq uint64) ([]byte, [
 	return buf, sha256sum(buf), nil
 }
 
-func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, objectCount uint64, runSeq, discSeq uint64) ([]byte, error) {
+// runFECFields returns the fec_k, fec_m and fec_scheme fields a run
+// header carries for the given FEC mode: the fixed version 1 geometry
+// under fec_scheme 1, or zero under fec_scheme 0, which carries no
+// checksum column or parity for those fields to describe.
+func runFECFields(fecEnabled bool) (k, m uint16, scheme format.FECScheme) {
+	if fecEnabled {
+		return uint16(fec.K), uint16(fec.M), format.FECSchemeRS255GF8
+	}
+	return 0, 0, format.FECSchemeNone
+}
+
+func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, objectCount uint64, runSeq, discSeq uint64, fecEnabled bool) ([]byte, error) {
+	fecK, fecM, fecScheme := runFECFields(fecEnabled)
 	r := format.Run{
 		Common: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRun,
 			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.CommonHeaderLen + 480,
 		},
 		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, RunSeq: runSeq, DiscSeq: discSeq,
-		FECK: uint16(231), FECM: uint16(23), FECScheme: format.FECSchemeRS255GF8,
+		FECK: fecK, FECM: fecM, FECScheme: fecScheme,
 		HashAlgo: format.HashAlgoSHA256, ChunkerProfile: format.ChunkerProfileP4,
 		Compression: format.CompressionZstd, FSProfile: format.DiscFSProfileOneshot,
 		RunKind: format.RunKindData, RunFlags: 0,
