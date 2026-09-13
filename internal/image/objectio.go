@@ -52,7 +52,10 @@ func readObjectHeaderFile(path string) (storedLen, payloadLen uint64, compressio
 
 // copyFileStream copies the whole file at src to dst, creating dst's
 // parent directories, without reading src's bytes whole into memory.
-func copyFileStream(src, dst string, mode os.FileMode) error {
+// When sink is not nil, every byte read from src is also written to it
+// in the same pass, so a caller can feed the bytes onward (for example
+// to a blockDigester) without a second read of src or dst.
+func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -62,7 +65,11 @@ func copyFileStream(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	w := io.Writer(out)
+	if sink != nil {
+		w = io.MultiWriter(out, sink)
+	}
+	if _, err := io.Copy(w, in); err != nil {
 		_ = out.Close()
 		return err
 	}
