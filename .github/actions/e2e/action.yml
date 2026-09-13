@@ -14,6 +14,17 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    - name: Free disk space for large media fixtures
+      shell: bash
+      run: |
+        # The capacity scenario writes fixture data close to a real
+        # disc's capacity; a standard runner's default free space is not
+        # enough headroom for that at the BD presets. Remove large
+        # preinstalled toolchains this workflow never uses.
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+          /opt/hostedtoolcache/CodeQL || true
+        df -h /
+
     - name: Install udftools
       shell: bash
       run: |
