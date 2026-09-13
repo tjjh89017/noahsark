@@ -43,6 +43,31 @@ sudo umount /mnt/noahsark
 Both restores should match the original source: healing repairs the
 corrupted blocks before the second restore reads them.
 
+## Disc capacity
+
+Marketing sizes are not the real capacity. A "25 GB" BD-R actually holds
+25,025,314,816 bytes, not 25,000,000,000. `--capacity` accepts a preset
+name for the real, drive-reported sector count of common write-once
+media, in addition to a sector count or a byte size like `25GB`:
+
+| Preset | Media | Sectors | Bytes |
+|---|---|---:|---:|
+| `dvd+r` | DVD+R | 2,295,104 | 4,700,372,992 |
+| `dvd-r` | DVD-R | 2,298,496 | 4,707,319,808 |
+| `bd25` | BD-R, 25 GB | 12,219,392 | 25,025,314,816 |
+| `bd50` | BD-R DL, 50 GB | 24,438,784 | 50,050,629,632 |
+| `bd100` | BD-R XL, 100 GB | 48,878,592 | 100,103,356,416 |
+| `bd128` | BD-R XL, 128 GB | 62,500,864 | 128,001,769,472 |
+
+To read the real capacity of a specific disc from a drive, use
+`dvd+rw-mediainfo` and its `Free Blocks` line:
+
+```sh
+dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
+```
+
+Pass that block count straight to `--capacity` as a sector count.
+
 ## Documentation
 
 `FORMAT.md` is the authority for every on-disc byte. `OPERATIONS.md` is
