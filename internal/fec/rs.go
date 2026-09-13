@@ -1,6 +1,13 @@
+// Package fec implements the rs255-gf8 forward error correction code:
+// the Cauchy code, the stream-to-stripe mapping, and the checksum column.
+// Codec encodes and decodes with the klauspost/reedsolomon backend built
+// with the Cauchy matrix option, so its output matches this package's own
+// GF(2^8) arithmetic byte for byte; see docs/decisions.md. Build with the
+// fecref tag to add the pure Go reference implementation and its
+// cross-check test.
 package fec
 
-import "sort"
+import "github.com/klauspost/reedsolomon"
 
 // K and M are the version 1 code geometry: 231 data shards and 23 parity
 // shards per stripe.
@@ -12,20 +19,20 @@ const (
 	BlockSize = 2048
 )
 
-// Codec holds the Cauchy matrix for one (k, m) pair and encodes or
-// decodes stripes against it.
+// Codec holds the encoder for one (k, m) pair and encodes or decodes
+// stripes against it.
 type Codec struct {
-	k, m   int
-	matrix [][]byte // m x k
+	k, m int
+	enc  reedsolomon.Encoder
 }
 
 // NewCodec builds a Codec for k data shards and m parity shards.
 func NewCodec(k, m int) (*Codec, error) {
-	matrix, err := BuildCauchyMatrix(k, m)
+	enc, err := reedsolomon.New(k, m, reedsolomon.WithCauchyMatrix())
 	if err != nil {
 		return nil, err
 	}
-	return &Codec{k: k, m: m, matrix: matrix}, nil
+	return &Codec{k: k, m: m, enc: enc}, nil
 }
 
 // K returns the codec's data shard count.
@@ -47,85 +54,45 @@ func (c *Codec) Encode(data [][]byte) ([][]byte, error) {
 		}
 	}
 
-	parity := make([][]byte, c.m)
-	for j := 0; j < c.m; j++ {
-		p := make([]byte, blockLen)
-		row := c.matrix[j]
-		for i := 0; i < c.k; i++ {
-			coeff := row[i]
-			if coeff == 0 {
-				continue
-			}
-			d := data[i]
-			for t := range blockLen {
-				p[t] ^= Mul(coeff, d[t])
-			}
-		}
-		parity[j] = p
+	shards := make([][]byte, c.k+c.m)
+	copy(shards, data)
+	for j := c.k; j < c.k+c.m; j++ {
+		shards[j] = make([]byte, blockLen)
 	}
-	return parity, nil
+	if err := c.enc.Encode(shards); err != nil {
+		return nil, err
+	}
+	return shards[c.k:], nil
 }
 
 // Decode reconstructs the k data shards and the m parity shards of a
 // stripe from any k of its k+m shards. shards keys are 0..k-1 for data
-// shards and k..k+m-1 for parity shards. When more than k shards are
-// present, Decode uses the k with the lowest index, the normative choice
-// so healing the same stripe always reproduces the same output.
+// shards and k..k+m-1 for parity shards.
 func (c *Codec) Decode(shards map[int][]byte) (data [][]byte, parity [][]byte, err error) {
 	if len(shards) < c.k {
 		return nil, nil, ErrTooFewShards
 	}
 
-	indices := make([]int, 0, len(shards))
-	for idx := range shards {
-		indices = append(indices, idx)
-	}
-	sort.Ints(indices)
-	indices = indices[:c.k]
-
-	blockLen := len(shards[indices[0]])
-	square := make([][]byte, c.k)
-	present := make([][]byte, c.k)
-	for row, idx := range indices {
-		s := shards[idx]
-		if len(s) != blockLen {
+	total := c.k + c.m
+	all := make([][]byte, total)
+	blockLen := -1
+	for idx, s := range shards {
+		if idx < 0 || idx >= total {
+			return nil, nil, ErrShardCount
+		}
+		if blockLen == -1 {
+			blockLen = len(s)
+		} else if len(s) != blockLen {
 			return nil, nil, ErrBlockLen
 		}
-		present[row] = s
-		if idx < c.k {
-			unit := make([]byte, c.k)
-			unit[idx] = 1
-			square[row] = unit
-		} else {
-			square[row] = c.matrix[idx-c.k]
-		}
+		all[idx] = s
 	}
 
-	invMatrix, err := InvertMatrix(square)
-	if err != nil {
-		return nil, nil, err
+	if err := c.enc.Reconstruct(all); err != nil {
+		return nil, nil, ErrTooFewShards
 	}
 
-	data = make([][]byte, c.k)
-	for i := 0; i < c.k; i++ {
-		out := make([]byte, blockLen)
-		invRow := invMatrix[i]
-		for row := 0; row < c.k; row++ {
-			coeff := invRow[row]
-			if coeff == 0 {
-				continue
-			}
-			s := present[row]
-			for t := range blockLen {
-				out[t] ^= Mul(coeff, s[t])
-			}
-		}
-		data[i] = out
-	}
-
-	parity, err = c.Encode(data)
-	if err != nil {
-		return nil, nil, err
-	}
+	data = all[:c.k]
+	parity = all[c.k:]
 	return data, parity, nil
 }
