@@ -6,9 +6,9 @@ on:
   pull_request:
 
 jobs:
-  # TODO: remove once the unit and e2e jobs below are green on main;
-  # .github/actions/test is being replaced by .github/actions/unit and
-  # .github/actions/e2e.
+  # TODO: remove once lint, unit and e2e below are green on main;
+  # .github/actions/test is being replaced by .github/actions/lint,
+  # .github/actions/unit and .github/actions/e2e.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -22,6 +22,21 @@ jobs:
 
       - name: Run tests
         uses: ./.github/actions/test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      - name: Lint
+        uses: ./.github/actions/lint
 
   unit:
     name: Unit
@@ -38,25 +53,26 @@ jobs:
       - name: Unit
         uses: ./.github/actions/unit
 
-  # One matrix cell per scenario/media pair. Not every scenario needs
-  # every media preset; the pairs actually exercised are listed
-  # explicitly instead of taken from a full cross product.
+  # One matrix cell per scenario (and, for the media scenario, per media
+  # preset). Runs in parallel with lint and unit, not after them: every
+  # cell runs to the end regardless of the others' outcome (fail-fast is
+  # off), and each cell uploads its own log and result so e2e-required
+  # can report on all of them even when some fail.
   e2e:
-    name: E2E (${{ matrix.scenario }}/${{ matrix.media }})
+    name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
-    needs: unit
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { scenario: verify-restore, media: dvd+r }
-          - { scenario: verify-restore, media: bd25 }
-          - { scenario: corrupt-heal, media: bd25 }
-          - { scenario: corrupt-parity, media: bd25 }
-          - { scenario: cli, media: dvd+r }
-          - { scenario: capacity, media: dvd+r }
-          - { scenario: capacity, media: bd25 }
-          - { scenario: capacity, media: bd25-forced-10g }
+          - { scenario: media, media: dvd+r, name: media/dvd+r, slug: media-dvd-r }
+          - { scenario: media, media: bd25, name: media/bd25, slug: media-bd25 }
+          - { scenario: media, media: bd25-forced-10g, name: media/bd25-forced-10g, slug: media-bd25-forced-10g }
+          - { scenario: corrupt-heal, media: '', name: corrupt-heal, slug: corrupt-heal }
+          - { scenario: corrupt-parity, media: '', name: corrupt-parity, slug: corrupt-parity }
+          - { scenario: corrupt-max, media: '', name: corrupt-max, slug: corrupt-max }
+          - { scenario: corrupt-over, media: '', name: corrupt-over, slug: corrupt-over }
+          - { scenario: cli, media: '', name: cli, slug: cli }
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -71,19 +87,48 @@ jobs:
         with:
           scenario: ${{ matrix.scenario }}
           media: ${{ matrix.media }}
+          cell-name: ${{ matrix.name }}
+          artifact-name: e2e-result-${{ matrix.slug }}
 
   # One stable check the branch ruleset can require in place of every
-  # e2e matrix cell, so adding or dropping a cell never touches branch
-  # protection.
+  # lint, unit and e2e cell, so adding or dropping a cell never touches
+  # branch protection. Downloads every e2e cell's result first and prints
+  # a summary table, so the run stays legible even when several cells
+  # failed, then evaluates the needed jobs' results.
   e2e-required:
     name: E2E
     runs-on: ubuntu-latest
     needs:
+      - lint
       - unit
       - e2e
     if: always()
     steps:
+      - name: Download e2e cell results
+        if: always()
+        uses: actions/download-artifact@v8
+        with:
+          pattern: e2e-result-*
+          path: e2e-results
+          merge-multiple: false
+
+      - name: Summarize e2e cell results
+        if: always()
+        run: |
+          {
+            echo "## E2E cell results"
+            echo
+            echo "| cell | result | time |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          shopt -s nullglob
+          for f in e2e-results/*/result.txt; do
+            read -r cell status seconds < "$f"
+            echo "| $cell | $status | $seconds |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
       - name: All required jobs passed
         run: |
-          [ "${{ needs.unit.result }}" = "success" ] && \
+          [ "${{ needs.lint.result }}" = "success" ] && \
+            [ "${{ needs.unit.result }}" = "success" ] && \
             [ "${{ needs.e2e.result }}" = "success" ]
