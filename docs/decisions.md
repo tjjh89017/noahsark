@@ -501,3 +501,56 @@ records it and the cross-check has passed. The klauspost/reedsolomon
 library is the sole implementation from here on; the worked example
 from FORMAT.md (k=3, m=2, p0=0xE0, p1=0xAD) stays as a test in
 `internal/fec` to confirm the library still matches the spec.
+
+## 10. Forward error correction, FEC scheme registry value 0
+
+The user's decision: FEC becomes optional and is off by default. The
+primary redundancy is burning two identical discs; FEC is a reserve
+feature. FORMAT.md's FEC scheme registry gains id 0, `none`, now the
+default; id 1, `rs255-gf8`, is unchanged and still the only scheme that
+writes a checksum column and parity. The existing Reed-Solomon
+implementation is untouched by this change: `internal/fec` and
+`internal/image`'s scheme 1 path produce the same bytes as before.
+
+`internal/image`'s `BuildOptions` and `PackOptions` gain `FECEnabled
+bool`, false by default, read by both `Build` and `Pack` through a
+shared `appendFECRows`/`writeRunTree` pair that either lays out the
+checksum and parity rows and computes them to disk (scheme 1), or skips
+both entirely (scheme 0): the two writers' row order and byte output
+for a scheme 1 run are unchanged, since that code path is untouched,
+only reached through the same call it always was.
+
+`cmd/noahsark`'s config gains `fec.scheme` (Phase 1, values `none` and
+`rs255-gf8`, default `none`), read as `repoConfig.FECEnabled`; `pack`
+gains `--fec` and `--no-fec`, which override the config for one run and
+refuse to be given together. `pack` prints which mode it used and the
+stream-block budget that mode consumed.
+
+`internal/image.DataBudgetBlocksNoFEC` is the scheme 0 capacity rule:
+every usable sector after the filesystem overhead estimate, with no
+stripe rounding and no share given to a checksum column or parity,
+against `DataBudgetBlocks`'s existing whole-stripe rule for scheme 1.
+Both are covered by tests in `internal/image`.
+
+`image.Read` skips the parity-header and checksum/parity recomputation
+checks when `run.FECScheme` is not `rs255-gf8`, and verifies every
+object's content id and every Files row's file hash either way, per
+FORMAT.md's new "10.8 Scheme 0: no FEC" subsection. `restore.Heal`
+reads the run header first and refuses a non-`rs255-gf8` run with an
+error naming the run seq, before opening any FEC file.
+
+`reference/decoder.py`'s `cmd_verify` never implemented a checksum-column
+or parity check of its own; it already conformed to the scheme 0 rule by
+construction. Its `parse_run` was missing a `fec_scheme` key in the
+returned dict, filled in here since a scheme-aware reader needs it. A
+checked-in fixture at `reference/testdata/scheme0-fixture`, one small
+run built with `FECEnabled: false`, backs a decoder test asserting
+`cmd_verify` passes and no `checksum.bin` or `parity/` exists.
+
+Test/e2e coverage: `corrupt-heal`, `corrupt-parity`, `corrupt-max`,
+`corrupt-over` and `lowmem` all need FEC on to have anything to
+corrupt and heal, or, for `lowmem`, to exercise the stripe-at-a-time
+memory strategy that scenario checks; `test/e2e/disc/cmd/ci-fixture`
+gained a `-fec` flag and `run.sh`'s `build_fixture` and `scenario_media`
+pass it through for those scenarios only. `cli`, `media` and `chain`
+run at the new default, off, unchanged.

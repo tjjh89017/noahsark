@@ -1,21 +1,23 @@
 # NoahsArk
 
 NoahsArk is a backup system for write-once Blu-ray optical media. It
-writes content-addressed, deduplicated objects to discs with
-Reed-Solomon parity, using content-defined chunking and self-describing
-on-disc tables, and reads them back years later, healing a damaged run
-from that parity.
+writes content-addressed, deduplicated objects to discs, using
+content-defined chunking and self-describing on-disc tables, and reads
+them back years later. Reed-Solomon parity is available per run but off
+by default: see "FEC: off by default" below for why, and how to turn
+it on.
 
 ## Running the restore and heal experiment
 
 Build the CLI, then commit a source tree, pack it, and build a UDF
-image:
+image. This experiment corrupts and heals a run, so it needs `--fec`:
+a run with no FEC (the default) has no parity for `heal` to repair from.
 
 ```sh
 go build -o noahsark ./cmd/noahsark
 ./noahsark init --repo=repo --capacity=25GB
 ./noahsark commit --repo=repo /path/to/source
-./noahsark pack --repo=repo --capacity=25GB --out=tree
+./noahsark pack --repo=repo --capacity=25GB --fec --out=tree
 ./noahsark image build --out=run.img --capacity=25GB tree
 ```
 
@@ -142,6 +144,39 @@ dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
 ```
 
 Pass that block count straight to `--capacity` as a sector count.
+
+## FEC: off by default
+
+`pack`'s Reed-Solomon checksum column and parity are off by default
+(`fec.scheme = none`, format registry value 0). The primary redundancy
+this project relies on is burning two identical discs, not parity on
+one disc: FEC is a reserve feature you opt into, not a default cost on
+every disc.
+
+Turn it on per pack with `--fec`:
+
+```sh
+./noahsark pack --repo=repo --capacity=25GB --fec --out=tree
+```
+
+or set it for every pack in the repository config:
+
+```
+fec.scheme = rs255-gf8
+```
+
+`--no-fec` overrides a repository default of `rs255-gf8` back to none
+for one pack. `pack` prints which mode it used and the sector budget
+that mode gave the run, for example `fec: off, budget used: 6094696
+stream blocks`.
+
+Capacity effect: a run with FEC off gives every usable sector, after
+the filesystem overhead estimate, to data, with no stripe rounding and
+no share held back for a checksum column or parity; a run with FEC on
+gives up `(m + 1) / (k + m + 1)`, about 9.4%, of that space to the
+checksum column and parity, rounded down to whole stripes. `heal`
+refuses a run with no FEC and says so; `verify` still checks every
+object's content id and every file's hash either way.
 
 ## Dependencies
 
