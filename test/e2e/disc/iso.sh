@@ -59,7 +59,7 @@ iso_gen_fixture() {
 # and the packed tree hold the same count of object files.
 iso_assert_object_names() {
 	local mnt="$1" tree="$2" bad mnt_count tree_count
-	bad="$(find "$mnt/NOAHSARK/objects" -type f -printf '%f\n' | awk 'length($0) != 68' | head -1)"
+	bad="$(find "$mnt/NOAHSARK/objects" -type f -printf '%f\n' | awk 'length($0) != 68 { print; exit }')"
 	if [ -n "$bad" ]; then
 		fail "iso: object name on the mount is not 68 characters: $bad"
 	fi
@@ -95,11 +95,17 @@ iso_joliet_negative_check() {
 	mkdir -p "$joliet_mnt"
 	sudo mount -t iso9660 -o loop,ro "$joliet_iso" "$joliet_mnt"
 
+	# Disable errexit for the whole checked block: a failure in any of
+	# these commands must still reach the umount_if_mounted call below,
+	# the same way chain_pack_one guards its own verify call.
+	set +e
 	local truncated
-	truncated="$(find "$joliet_mnt/NOAHSARK/objects" -type f -printf '%f\n' 2>/dev/null | awk 'length($0) != 68' | head -1)"
+	truncated="$(find "$joliet_mnt/NOAHSARK/objects" -type f -printf '%f\n' 2>/dev/null | awk 'length($0) != 68 { print; exit }')"
 
 	local verify_code=0
-	"$BIN" verify --image="$joliet_mnt" >"$work/joliet-verify.log" 2>&1 || verify_code=$?
+	"$BIN" verify --image="$joliet_mnt" >"$work/joliet-verify.log" 2>&1
+	verify_code=$?
+	set -e
 
 	umount_if_mounted "$joliet_mnt"
 

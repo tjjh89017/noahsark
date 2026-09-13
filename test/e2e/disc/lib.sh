@@ -181,7 +181,26 @@ umount_if_mounted() {
 	fi
 }
 
+# cleanup_work_nested_mounts unmounts every mount point under $WORK at
+# any depth, deepest first, so a mount a scenario nested below its own
+# *mnt directory (for example iso.sh's joliet-mnt, or a mount left
+# behind by a killed pipeline) does not survive to block rm -rf.
+cleanup_work_nested_mounts() {
+	command -v findmnt >/dev/null 2>&1 || return 0
+	local mounts
+	mounts="$(findmnt -rn -o TARGET 2>/dev/null \
+		| awk -v w="$WORK/" 'index($0, w) == 1 { print gsub(/\//, "&") "\t" $0 }' \
+		| sort -t "$(printf '\t')" -k1,1rn \
+		| cut -f2-)"
+	[ -n "$mounts" ] || return 0
+	local m
+	while IFS= read -r m; do
+		umount_if_mounted "$m"
+	done <<<"$mounts"
+}
+
 cleanup_work() {
+	cleanup_work_nested_mounts
 	for m in "$WORK"/*mnt; do
 		[ -d "$m" ] && umount_if_mounted "$m"
 	done
