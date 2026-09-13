@@ -66,14 +66,10 @@ runs:
         TREE_DIR="$(sed -n '1p' "$WORK/paths.txt")"
         IMAGE="$(sed -n '2p' "$WORK/paths.txt")"
         MNT="$WORK/mnt"
-        mkdir -p "$MNT"
 
-        sudo mount -o loop -t udf "$IMAGE" "$MNT"
-        sudo cp -a "$TREE_DIR"/NOAHSARK "$MNT"/
         # Corrupt-and-heal below writes back into the mount as the
         # runner user, not root.
-        sudo chown -R "$(id -u):$(id -g)" "$MNT"/NOAHSARK
-        sync
+        "${{ github.action_path }}/mount-populate.sh" "$IMAGE" "$TREE_DIR" "$MNT"
 
         go run ./internal/image/cmd/ci-list "$MNT" > "$WORK/go-list.txt"
         python3 reference/decoder.py summary "$MNT"
@@ -84,7 +80,7 @@ runs:
         grep -v '^#' "$WORK/py-list.txt" | awk '{print $NF}' | sort > "$WORK/py-paths.sorted.txt"
         if ! diff -u "$WORK/py-paths.sorted.txt" "$WORK/go-paths.sorted.txt"; then
           echo "decoder.py and the Go reader disagree on the snapshot listing"
-          sudo umount "$MNT"
+          "${{ github.action_path }}/umount-if-mounted.sh" "$MNT"
           exit 1
         fi
 
@@ -130,8 +126,48 @@ runs:
     - name: Unmount the image
       if: always()
       shell: bash
+      run: "${{ github.action_path }}/umount-if-mounted.sh \"${{ runner.temp }}/noahsark-ci/mnt\""
+
+    - name: Build the noahsark binary
+      shell: bash
+      run: go build -o "${{ runner.temp }}/noahsark-ci/noahsark" ./cmd/noahsark
+
+    - name: Run init, commit, pack and image build through the binary
+      shell: bash
       run: |
-        MNT="${{ runner.temp }}/noahsark-ci/mnt"
-        if mountpoint -q "$MNT"; then
-          sudo umount "$MNT"
-        fi
+        WORK="${{ runner.temp }}/noahsark-ci"
+        BIN="$WORK/noahsark"
+        SRC="$(sed -n '3p' "$WORK/paths.txt")"
+        REPO="$WORK/cli-repo"
+        TREE="$WORK/cli-tree"
+        IMAGE="$WORK/cli-run.img"
+
+        "$BIN" init --repo="$REPO" --capacity=64MiB
+        "$BIN" commit --repo="$REPO" "$SRC" | tee "$WORK/cli-commit.txt"
+        SNAP="$(awk '/^snapshot /{print $2}' "$WORK/cli-commit.txt")"
+        echo "$SNAP" > "$WORK/cli-snapshot.txt"
+
+        "$BIN" pack --repo="$REPO" --capacity=64MiB --out="$TREE"
+        "$BIN" image build "$TREE" --out="$IMAGE" --capacity=64MiB
+
+    - name: Mount the binary-built image, verify and restore through the binary
+      shell: bash
+      run: |
+        WORK="${{ runner.temp }}/noahsark-ci"
+        BIN="$WORK/noahsark"
+        SRC="$(sed -n '3p' "$WORK/paths.txt")"
+        SNAP="$(cat "$WORK/cli-snapshot.txt")"
+        TREE="$WORK/cli-tree"
+        IMAGE="$WORK/cli-run.img"
+        MNT="$WORK/cli-mnt"
+
+        "${{ github.action_path }}/mount-populate.sh" "$IMAGE" "$TREE" "$MNT"
+
+        "$BIN" verify --image="$MNT"
+        "$BIN" restore "$MNT" "$SNAP" "$WORK/cli-restored"
+        diff -rq "$WORK/cli-restored$SRC" "$SRC"
+
+    - name: Unmount the binary-built image
+      if: always()
+      shell: bash
+      run: "${{ github.action_path }}/umount-if-mounted.sh \"${{ runner.temp }}/noahsark-ci/cli-mnt\""
