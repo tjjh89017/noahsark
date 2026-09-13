@@ -30,7 +30,19 @@ set -euo pipefail
 # few GiB, landing the loser's leftover in the 1 to 10 GiB band the
 # scenario checks. Override with NOAHSARK_E2E_CHAIN_HALF_BYTES for a
 # different full-size run.
-CHAIN_HALF_BYTES="${NOAHSARK_E2E_CHAIN_HALF_BYTES:-20500000000}"
+#
+# The three discs' usable capacity, FEC off, is about
+# 4.68 + 24.97 + 10.70 = 40.35 GB. CI run 34786269740 packed two
+# 20,500,000,000-byte fixtures (41.0 GB total) and left the loser's
+# remaining bytes at 660,645,722 (dvd-bd25-bd10) and 655,469,257
+# (bd25-bd10-dvd): both below the 1 GiB floor, only ~0.66 GB short of
+# it. The loser's leftover is 2*CHAIN_HALF_BYTES minus the usable
+# capacity, so each extra byte on both fixtures adds twice itself to
+# the leftover. Raising CHAIN_HALF_BYTES by 2,000,000,000, to
+# 22,500,000,000, adds about 4,000,000,000 bytes to that leftover,
+# for an expected ~4.66 GB (about 4.3 GiB): comfortably inside the
+# 1-10 GiB band and near its middle, in both orders.
+CHAIN_HALF_BYTES="${NOAHSARK_E2E_CHAIN_HALF_BYTES:-22500000000}"
 CHAIN_SMALL_HALF_BYTES="${NOAHSARK_E2E_CHAIN_SMALL_HALF_BYTES:-200000000}"
 CHAIN_SEED="${NOAHSARK_E2E_CHAIN_SEED:-20260914}"
 
