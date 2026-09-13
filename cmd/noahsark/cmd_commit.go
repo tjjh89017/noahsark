@@ -8,6 +8,10 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
+// newWriter builds the Writer cmdCommit commits through. A test replaces
+// it to reach the Writer's Stat seam before Commit runs.
+var newWriter = object.NewWriter
+
 // cmdCommit implements "noahsark commit". It reduces OPERATIONS.md's
 // commit flags to the source path and --ref: the quick check, excludes,
 // source-type override, mirror mode and commit bundles all need a config
@@ -42,7 +46,9 @@ func cmdCommit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	w := object.NewWriter(cfg.StagingDir)
+	w := newWriter(cfg.StagingDir)
+	w.RestatAfterRead = cfg.RestatAfterRead
+	w.RetryUnstable = cfg.RetryUnstable
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
@@ -57,5 +63,15 @@ func cmdCommit(args []string, stdout, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
+	for _, u := range sum.Unstable {
+		_, _ = fmt.Fprintf(stdout, "unstable %s branch=%s\n", u.Path, u.Branch)
+	}
+	for _, p := range sum.Skipped {
+		_, _ = fmt.Fprintf(stdout, "skipped %s\n", p)
+	}
+	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
+	if len(sum.Unstable) > 0 || len(sum.Skipped) > 0 {
+		return 1
+	}
 	return 0
 }

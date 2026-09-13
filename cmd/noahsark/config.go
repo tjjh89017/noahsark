@@ -24,6 +24,11 @@ type repoConfig struct {
 	// ForceCapacitySectors is disc.force_capacity, stored as a sector
 	// count. Zero means unset.
 	ForceCapacitySectors uint64
+	// RestatAfterRead is commit.restat_after_read. Defaults true.
+	RestatAfterRead bool
+	// RetryUnstable is commit.retry_unstable. Defaults to
+	// object.defaultRetryUnstable's value.
+	RetryUnstable int
 }
 
 // laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
@@ -57,10 +62,16 @@ var laterPhaseConfigKeys = map[string]string{
 // knownConfigKeys names every key this build reads. A key present in the
 // file that is neither here nor in laterPhaseConfigKeys is unknown.
 var knownConfigKeys = map[string]bool{
-	"repo.uuid":           true,
-	"staging.dir":         true,
-	"disc.force_capacity": true,
+	"repo.uuid":                true,
+	"staging.dir":              true,
+	"disc.force_capacity":      true,
+	"commit.restat_after_read": true,
+	"commit.retry_unstable":    true,
 }
+
+// defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
+// when the config file does not set the key.
+const defaultRetryUnstable = 1
 
 // writeConfig writes repository config file with the given keys, one
 // key=value pair per line, in a fixed order.
@@ -82,7 +93,10 @@ func readConfig(path string) (repoConfig, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	var c repoConfig
+	c := repoConfig{
+		RestatAfterRead: true,
+		RetryUnstable:   defaultRetryUnstable,
+	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -114,6 +128,18 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: disc.force_capacity: %w", err)
 			}
 			c.ForceCapacitySectors = n
+		case "commit.restat_after_read":
+			b, err := strconv.ParseBool(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: commit.restat_after_read: %w", err)
+			}
+			c.RestatAfterRead = b
+		case "commit.retry_unstable":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: commit.retry_unstable: %w", err)
+			}
+			c.RetryUnstable = n
 		}
 	}
 	if err := sc.Err(); err != nil {
