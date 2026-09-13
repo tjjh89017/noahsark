@@ -20,17 +20,17 @@ go build -o noahsark ./cmd/noahsark
 ```
 
 Mounting a UDF image and corrupting its blocks both need root, which
-the CLI never assumes, so the rest of the experiment uses the CI-only
-tools under `internal/image/cmd` and `internal/restore/cmd`, the same
-way `.github/actions/test/action.yml` does:
+the CLI never assumes, so the rest of the experiment uses the e2e-only
+tools under `test/e2e/disc/cmd`, the same way `test/e2e/disc/run.sh`
+does:
 
 ```sh
 sudo mount -o loop -t udf run.img /mnt/noahsark
 sudo chown -R "$(id -u):$(id -g)" /mnt/noahsark
 
 ./noahsark restore /mnt/noahsark SNAPSHOT-ID restore-before
-go run ./internal/restore/cmd/ci-corrupt /mnt/noahsark 3:0 6:0
-go run ./internal/restore/cmd/ci-heal /mnt/noahsark
+go run ./test/e2e/disc/cmd/ci-corrupt /mnt/noahsark 3:0 6:0
+go run ./test/e2e/disc/cmd/ci-heal /mnt/noahsark
 ./noahsark verify --image=/mnt/noahsark
 ./noahsark restore /mnt/noahsark SNAPSHOT-ID restore-after
 
