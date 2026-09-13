@@ -5,6 +5,7 @@ package object
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 )
 
 // ID is a content id: the SHA-256 digest of an object's uncompressed
@@ -32,6 +33,22 @@ func (id ID) TextForm() string {
 	buf = appendVarint(buf, multihashDigestLen)
 	buf = append(buf, id[:]...)
 	return hex.EncodeToString(buf)
+}
+
+// ParseID parses an id in the text form TextForm produces: lowercase hex
+// of the multihash varint prefix (algorithm code 0x12, length 32)
+// followed by the 32-byte digest.
+func ParseID(s string) (ID, error) {
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return ID{}, fmt.Errorf("object: id %q: %w", s, err)
+	}
+	if len(raw) != 2+multihashDigestLen || raw[0] != multihashSHA256Code || raw[1] != multihashDigestLen {
+		return ID{}, fmt.Errorf("object: id %q: not a sha256 multihash id", s)
+	}
+	var id ID
+	copy(id[:], raw[2:])
+	return id, nil
 }
 
 // FanoutByte returns the two lowercase hex digits of the digest's first
