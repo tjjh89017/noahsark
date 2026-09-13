@@ -29,10 +29,10 @@ const (
 func buildChaosFixture(t *testing.T, src string) []string {
 	t.Helper()
 	var paths []string
-	for d := 0; d < chaosDirCount; d++ {
+	for d := range chaosDirCount {
 		mustMkdir(t, filepath.Join(src, fmt.Sprintf("d%d", d)))
 	}
-	for i := 0; i < chaosFileCount; i++ {
+	for i := range chaosFileCount {
 		dir := filepath.Join(src, fmt.Sprintf("d%d", i%chaosDirCount))
 		p := filepath.Join(dir, fmt.Sprintf("f%04d.dat", i))
 		mustWriteBytes(t, p, []byte(strings.Repeat("x", 200+i%64)))
@@ -104,7 +104,7 @@ func TestChaosDuringCommit(t *testing.T) {
 	src := t.TempDir()
 	paths := buildChaosFixture(t, src)
 	var dirs []string
-	for d := 0; d < chaosDirCount; d++ {
+	for d := range chaosDirCount {
 		dirs = append(dirs, filepath.Join(src, fmt.Sprintf("d%d", d)))
 	}
 
@@ -128,7 +128,7 @@ func TestChaosDuringCommit(t *testing.T) {
 	}()
 
 	const iterations = 6
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		snapID, _, err := w.Commit(src)
 		gotSnapshot := snapID != (ID{})
 		if err == nil && !gotSnapshot {
