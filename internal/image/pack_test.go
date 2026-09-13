@@ -189,7 +189,7 @@ func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 	}
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
-	capacities := []uint64{sectorsFor(2_500_000), sectorsFor(2_500_000), sectorsFor(4_800_000)}
+	capacities := []uint64{sectorsFor(7_000_000), sectorsFor(7_000_000), sectorsFor(7_000_000)}
 	var discRoots []string
 	var results []*PackResult
 	for i, cap := range capacities {

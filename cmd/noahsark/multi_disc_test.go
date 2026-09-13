@@ -60,7 +60,7 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	var discRoots []string
-	capacities := []string{packSectors(2_500_000), packSectors(2_500_000), packSectors(8_000_000)}
+	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
 		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir)
@@ -108,7 +108,7 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	var discRoots []string
-	capacities := []string{packSectors(2_500_000), packSectors(2_500_000), packSectors(8_000_000)}
+	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
 		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir); code != 0 && i != len(capacities)-1 {
