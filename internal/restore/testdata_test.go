@@ -84,7 +84,7 @@ func buildFixtureTree(t *testing.T, srcDir string) (stagingDir, treeDir string, 
 // treeDir's one run, the same way Heal does.
 func streamLayout(t *testing.T, treeDir string) (paths []string, sizes []uint64, layout *fec.StreamLayout) {
 	t.Helper()
-	base, err := image.FindNoahsark(treeDir)
+	base, err := image.FindNoahsark(treeDir, image.NewNameCache())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func corruptDataBlockAt(t *testing.T, paths []string, sizes []uint64, layout *fe
 // stripe.
 func corruptParityBlock(t *testing.T, treeDir string, j int, stripe uint64) {
 	t.Helper()
-	base, err := image.FindNoahsark(treeDir)
+	base, err := image.FindNoahsark(treeDir, image.NewNameCache())
 	if err != nil {
 		t.Fatal(err)
 	}

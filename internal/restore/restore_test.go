@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/image"
 )
 
 // compareRestoredTree compares srcDir, byte for byte including mode bits
@@ -97,7 +98,7 @@ func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 
-	base, err := findNoahsark(treeDir)
+	base, err := findNoahsark(treeDir, image.NewNameCache())
 	if err != nil {
 		t.Fatal(err)
 	}

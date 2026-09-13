@@ -58,16 +58,18 @@ func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]Strip
 		work = outDir
 	}
 
-	base, err := image.FindNoahsark(work)
+	cache := image.NewNameCache()
+	base, err := image.FindNoahsark(work, cache)
 	if err != nil {
 		return nil, err
 	}
-	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
+	runsDir := cache.Join(base, "runs")
+	runDir, err := image.NewestRunDir(runsDir)
 	if err != nil {
 		return nil, err
 	}
 
-	runBuf, err := os.ReadFile(filepath.Join(runDir, "RUN.bin"))
+	runBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +81,7 @@ func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]Strip
 		return nil, fmt.Errorf("restore: heal: run %d has no FEC", run.RunSeq)
 	}
 
-	paths, sizes, _, err := image.StreamFiles(base, runDir)
+	paths, sizes, _, err := image.StreamFilesWithCache(base, runDir, cache)
 	if err != nil {
 		return nil, err
 	}
@@ -99,15 +101,17 @@ func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]Strip
 		streamFiles[i] = f
 	}
 
-	checksumFile, err := os.OpenFile(filepath.Join(runDir, "checksum.bin"), os.O_RDWR, 0)
+	checksumFile, err := os.OpenFile(filepath.Join(runDir, cache.Resolve(runDir, "checksum.bin")), os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = checksumFile.Close() }()
 
+	parityDir := cache.Join(runDir, "parity")
 	parityFiles := make([]*os.File, fec.M)
 	for j := range fec.M {
-		p := filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
+		name := fmt.Sprintf("p%04d.bin", fec.K+1+j)
+		p := filepath.Join(parityDir, cache.Resolve(parityDir, name))
 		f, err := os.OpenFile(p, os.O_RDWR, 0)
 		if err != nil {
 			return nil, err
@@ -299,7 +303,7 @@ func writeStreamBlock(files []*os.File, sizes []uint64, layout *fec.StreamLayout
 // read-only mount. Regular files are copied with their own mode bits;
 // directories are created 0o755 and symlinks are recreated verbatim.
 func copyTree(src, dst string) error {
-	base, err := image.FindNoahsark(src)
+	base, err := image.FindNoahsark(src, image.NewNameCache())
 	if err != nil {
 		return err
 	}

@@ -9,7 +9,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -42,15 +41,16 @@ func main() {
 // caller corrupting the image on purpose runs only after healing, not
 // before restoring.
 func firstRefsSnapshot(root string) (object.ID, error) {
-	base, err := image.FindNoahsark(root)
+	cache := image.NewNameCache()
+	base, err := image.FindNoahsark(root, cache)
 	if err != nil {
 		return object.ID{}, err
 	}
-	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
+	runDir, err := image.NewestRunDir(cache.Join(base, "runs"))
 	if err != nil {
 		return object.ID{}, err
 	}
-	data, err := os.ReadFile(filepath.Join(runDir, "catalog", "REFS.bin"))
+	data, err := os.ReadFile(cache.Join(runDir, "catalog", "REFS.bin"))
 	if err != nil {
 		return object.ID{}, err
 	}

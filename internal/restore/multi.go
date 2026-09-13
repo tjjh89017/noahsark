@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
@@ -54,6 +55,7 @@ type multiSource struct {
 	contentToRun   map[object.ID]uint64
 	missingByDisc  map[[16]byte][]object.ID
 	missingUnknown []object.ID // needed but no disc could be identified
+	names          *image.NameCache
 }
 
 // RestoreMulti reads snapshotID's tree from whichever of discRoots holds
@@ -131,13 +133,14 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		runSeqToUUID:  make(map[uint64][16]byte),
 		contentToRun:  make(map[object.ID]uint64),
 		missingByDisc: make(map[[16]byte][]object.ID),
+		names:         image.NewNameCache(),
 	}
 	for _, root := range discRoots {
-		base, err := findNoahsark(root)
+		base, err := findNoahsark(root, src.names)
 		if err != nil {
 			return nil, err
 		}
-		discBuf, err := os.ReadFile(filepath.Join(base, "DISC.bin"))
+		discBuf, err := os.ReadFile(filepath.Join(base, src.names.Resolve(base, "DISC.bin")))
 		if err != nil {
 			return nil, fmt.Errorf("restore: %s: %w", base, err)
 		}
@@ -145,12 +148,12 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		if err := disc.Decode(discBuf); err != nil {
 			return nil, fmt.Errorf("restore: %s: %w", base, err)
 		}
-		runDir, err := newestRunDir(filepath.Join(base, "runs"))
+		runDir, err := image.NewestRunDir(src.names.Join(base, "runs"))
 		if err != nil {
 			return nil, err
 		}
 		src.bases = append(src.bases, discSource{base: base, runDir: runDir, uuid: disc.DiscUUID})
-		idxBuf, err := os.ReadFile(filepath.Join(runDir, "INDEX.bin"))
+		idxBuf, err := os.ReadFile(filepath.Join(runDir, src.names.Resolve(runDir, "INDEX.bin")))
 		if err != nil {
 			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
 		}
@@ -168,7 +171,8 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		}
 		src.runSeqToUUID[idx.RunSeq] = disc.DiscUUID
 
-		discsBuf, err := os.ReadFile(filepath.Join(runDir, "catalog", "DISCS.bin"))
+		catalogDir := src.names.Join(runDir, "catalog")
+		discsBuf, err := os.ReadFile(filepath.Join(catalogDir, src.names.Resolve(catalogDir, "DISCS.bin")))
 		if err != nil {
 			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
 		}
@@ -183,41 +187,13 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 	return src, nil
 }
 
-// newestRunDir is image.NewestRunDir, duplicated locally so this package
-// does not import internal/image.
-func newestRunDir(runsDir string) (string, error) {
-	entries, err := os.ReadDir(runsDir)
-	if err != nil {
-		return "", fmt.Errorf("restore: runs directory: %w", err)
-	}
-	best := ""
-	var bestSeq int64 = -1
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		var seq int64
-		if _, err := fmt.Sscanf(e.Name(), "%d", &seq); err != nil {
-			continue
-		}
-		if seq > bestSeq {
-			bestSeq = seq
-			best = e.Name()
-		}
-	}
-	if best == "" {
-		return "", fmt.Errorf("restore: no run directory under %s", runsDir)
-	}
-	return filepath.Join(runsDir, best), nil
-}
-
 // read looks for id directly on every provided disc root, and returns
 // its raw file bytes and decompressed, verified payload. A miss is
 // recorded (by the disc it must live on, when known) and reported false;
 // the caller decides whether it can still make progress without id.
 func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, ok bool) {
 	for _, b := range src.bases {
-		path := objectPath(b.base, id, snapshot)
+		path := objectPath(b.base, id, snapshot, src.names)
 		if _, err := os.Stat(path); err == nil {
 			if raw, payload, err := readVerifiedAt(path, id); err == nil {
 				return raw, payload, true
@@ -227,7 +203,7 @@ func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, 
 		// disc that packed it, but its catalog/snapobj copy is
 		// replicated in full on every run; try that too.
 		if snapshot {
-			snapobjPath := filepath.Join(b.runDir, "catalog", "snapobj", id.TextForm())
+			snapobjPath := filepath.Join(src.names.Join(b.runDir, "catalog", "snapobj"), id.TextForm())
 			if _, err := os.Stat(snapobjPath); err == nil {
 				if raw, payload, err := readVerifiedAt(snapobjPath, id); err == nil {
 					return raw, payload, true

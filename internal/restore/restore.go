@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
@@ -32,7 +33,8 @@ func Restore(discRoot string, snapshotID object.ID, outDir string) error {
 // file's recorded size in the snapshot's tree, found by a pass over the
 // tree objects alone, before any file content is read or written.
 func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter) error {
-	base, err := findNoahsark(discRoot)
+	cache := image.NewNameCache()
+	base, err := findNoahsark(discRoot, cache)
 	if err != nil {
 		return err
 	}
@@ -44,7 +46,7 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 		return err
 	}
 
-	snapRaw, _, err := readVerified(base, snapshotID, true)
+	snapRaw, _, err := readVerified(base, snapshotID, true, cache)
 	if err != nil {
 		return err
 	}
@@ -53,7 +55,7 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 		return fmt.Errorf("restore: snapshot %s: %w", snapshotID.TextForm(), err)
 	}
 
-	rootRaw, _, err := readVerified(base, object.ID(snap.RootTree), false)
+	rootRaw, _, err := readVerified(base, object.ID(snap.RootTree), false, cache)
 	if err != nil {
 		return err
 	}
@@ -65,14 +67,14 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 	var total uint64
 	for _, e := range rootTree.Entries {
 		if e.EntryType == format.EntryTypeDirectory {
-			total += sumRegularSizes(base, object.ID(e.ContentID))
+			total += sumRegularSizes(base, object.ID(e.ContentID), cache)
 		}
 	}
 	prog.Start("restore: bytes written", int64(total))
 	defer prog.Done()
 
 	for _, e := range rootTree.Entries {
-		if err := restoreRootEntry(base, absOut, e, prog); err != nil {
+		if err := restoreRootEntry(base, absOut, e, prog, cache); err != nil {
 			return err
 		}
 	}
@@ -84,8 +86,8 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 // tree that fails to read or decode contributes zero rather than failing
 // the whole progress total: the real restore below is what reports any
 // such error properly.
-func sumRegularSizes(base string, treeID object.ID) uint64 {
-	raw, _, err := readVerified(base, treeID, false)
+func sumRegularSizes(base string, treeID object.ID, cache *image.NameCache) uint64 {
+	raw, _, err := readVerified(base, treeID, false, cache)
 	if err != nil {
 		return 0
 	}
@@ -97,7 +99,7 @@ func sumRegularSizes(base string, treeID object.ID) uint64 {
 	for _, e := range t.Entries {
 		switch e.EntryType {
 		case format.EntryTypeDirectory:
-			total += sumRegularSizes(base, object.ID(e.ContentID))
+			total += sumRegularSizes(base, object.ID(e.ContentID), cache)
 		case format.EntryTypeRegular:
 			total += e.Size
 		}
@@ -110,7 +112,7 @@ func sumRegularSizes(base string, treeID object.ID) uint64 {
 // entry's root-path TLV, joined under outDir; its content is the
 // entry's own directory tree, restored directly into that destination
 // rather than one level below it.
-func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter) error {
+func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache) error {
 	if e.EntryType != format.EntryTypeDirectory {
 		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
 	}
@@ -130,7 +132,7 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Re
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
-	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog); err != nil {
+	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache); err != nil {
 		return err
 	}
 	applyMetadata(dest, e)
@@ -139,8 +141,8 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Re
 
 // restoreDirContents decodes the tree at treeID and restores every entry
 // as a child of dest, which already exists.
-func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter) error {
-	raw, _, err := readVerified(base, treeID, false)
+func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter, cache *image.NameCache) error {
+	raw, _, err := readVerified(base, treeID, false, cache)
 	if err != nil {
 		return err
 	}
@@ -149,7 +151,7 @@ func restoreDirContents(base string, treeID object.ID, dest string, prog *progre
 		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
-		if err := restoreEntry(base, dest, e, prog); err != nil {
+		if err := restoreEntry(base, dest, e, prog, cache); err != nil {
 			return err
 		}
 	}
@@ -157,7 +159,7 @@ func restoreDirContents(base string, treeID object.ID, dest string, prog *progre
 }
 
 // restoreEntry writes one tree entry as a child of dir.
-func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter) error {
+func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -168,13 +170,13 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter)
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			return err
 		}
-		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog); err != nil {
+		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog, cache); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		if err := restoreFile(base, child, object.ID(e.ContentID), prog); err != nil {
+		if err := restoreFile(base, child, object.ID(e.ContentID), prog, cache); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
@@ -200,8 +202,8 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter)
 
 // restoreFile reassembles blobID's chunks into dest, in blob entry order,
 // verifying every chunk's content id before writing its bytes.
-func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter) error {
-	raw, _, err := readVerified(base, blobID, false)
+func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter, cache *image.NameCache) error {
+	raw, _, err := readVerified(base, blobID, false, cache)
 	if err != nil {
 		return err
 	}
@@ -220,7 +222,7 @@ func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter) e
 	defer func() { _ = f.Close() }()
 
 	for _, be := range entries {
-		_, payload, err := readVerified(base, object.ID(be.ContentID), false)
+		_, payload, err := readVerified(base, object.ID(be.ContentID), false, cache)
 		if err != nil {
 			return err
 		}
@@ -259,33 +261,34 @@ func joinSafe(dir, name string) (string, error) {
 }
 
 // findNoahsark returns root if it already holds DISC.bin, or
-// root/NOAHSARK otherwise. It matches image.Read's own rule, so Restore
+// root/NOAHSARK otherwise, resolving both names case-insensitively
+// through cache. It matches image.FindNoahsark's own rule, so Restore
 // accepts the same two roots.
-func findNoahsark(root string) (string, error) {
-	if _, err := os.Stat(filepath.Join(root, "DISC.bin")); err == nil {
-		return root, nil
+func findNoahsark(root string, cache *image.NameCache) (string, error) {
+	base, err := image.FindNoahsark(root, cache)
+	if err != nil {
+		return "", fmt.Errorf("restore: %w", err)
 	}
-	nested := filepath.Join(root, "NOAHSARK")
-	if _, err := os.Stat(filepath.Join(nested, "DISC.bin")); err == nil {
-		return nested, nil
-	}
-	return "", fmt.Errorf("restore: no DISC.bin under %s or %s", root, nested)
+	return base, nil
 }
 
 // objectPath returns the on-disc path of id: under snapshots/ for a
-// snapshot, or under objects/<fanout>/ for every other kind.
-func objectPath(base string, id object.ID, snapshot bool) string {
+// snapshot, or under objects/<fanout>/ for every other kind. The
+// fan-out directory and the object's own file name are exact-match
+// lowercase; only the objects/snapshots root name is resolved through
+// cache.
+func objectPath(base string, id object.ID, snapshot bool, cache *image.NameCache) string {
 	if snapshot {
-		return filepath.Join(base, "snapshots", id.TextForm())
+		return filepath.Join(cache.Join(base, "snapshots"), id.TextForm())
 	}
-	return filepath.Join(base, "objects", id.FanoutByte(), id.TextForm())
+	return filepath.Join(cache.Join(base, "objects"), id.FanoutByte(), id.TextForm())
 }
 
 // readVerified reads id's object file, decompresses its payload, and
 // verifies the payload hashes to id. It returns the whole raw file bytes
 // (for a typed Decode call) and the decompressed payload separately.
-func readVerified(base string, id object.ID, snapshot bool) (raw, payload []byte, err error) {
-	return readVerifiedAt(objectPath(base, id, snapshot), id)
+func readVerified(base string, id object.ID, snapshot bool, cache *image.NameCache) (raw, payload []byte, err error) {
+	return readVerifiedAt(objectPath(base, id, snapshot, cache), id)
 }
 
 // readVerifiedAt is readVerified against an explicit file path, for a

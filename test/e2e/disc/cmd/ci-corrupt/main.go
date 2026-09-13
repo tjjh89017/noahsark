@@ -38,11 +38,12 @@ func main() {
 	}
 	root := os.Args[1]
 
-	base, err := image.FindNoahsark(root)
+	cache := image.NewNameCache()
+	base, err := image.FindNoahsark(root, cache)
 	must(err)
-	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
+	runDir, err := image.NewestRunDir(cache.Join(base, "runs"))
 	must(err)
-	paths, sizes, _, err := image.StreamFiles(base, runDir)
+	paths, sizes, _, err := image.StreamFilesWithCache(base, runDir, cache)
 	must(err)
 	layout, err := fec.NewStreamLayout(sizes, fec.K)
 	must(err)
