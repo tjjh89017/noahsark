@@ -30,11 +30,11 @@ var entryTypeNames = map[uint8]string{
 }
 
 // ListSnapshot walks the tree of the snapshot content id snapID from a
-// disc tree rooted at base (as findNoahsark resolves it), in the same
+// disc tree rooted at base (as FindNoahsark resolves it), in the same
 // pre-order walk section 8.7 defines, and returns one ListEntry per tree
 // entry.
 func ListSnapshot(root string, snapID object.ID) ([]ListEntry, error) {
-	base, err := findNoahsark(root)
+	base, err := FindNoahsark(root)
 	if err != nil {
 		return nil, err
 	}

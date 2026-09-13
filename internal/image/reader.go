@@ -32,7 +32,7 @@ type ReadResult struct {
 // run header copy is byte-identical, and recomputes the checksum column
 // and the parity to verify them against the run's actual FEC stream.
 func Read(root string) (*ReadResult, error) {
-	base, err := findNoahsark(root)
+	base, err := FindNoahsark(root)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func Read(root string) (*ReadResult, error) {
 		return nil, fmt.Errorf("image: DISC.bin: %w", err)
 	}
 
-	runDir, err := newestRunDir(filepath.Join(base, "runs"))
+	runDir, err := NewestRunDir(filepath.Join(base, "runs"))
 	if err != nil {
 		return nil, err
 	}
@@ -129,9 +129,9 @@ func Read(root string) (*ReadResult, error) {
 	}, nil
 }
 
-// findNoahsark returns root if it already holds DISC.bin, or
+// FindNoahsark returns root if it already holds DISC.bin, or
 // root/NOAHSARK otherwise.
-func findNoahsark(root string) (string, error) {
+func FindNoahsark(root string) (string, error) {
 	if _, err := os.Stat(filepath.Join(root, "DISC.bin")); err == nil {
 		return root, nil
 	}
@@ -142,10 +142,10 @@ func findNoahsark(root string) (string, error) {
 	return "", fmt.Errorf("image: no DISC.bin under %s or %s", root, nested)
 }
 
-// newestRunDir returns the run directory with the highest numeric
+// NewestRunDir returns the run directory with the highest numeric
 // <seq>, comparing the ten-digit names as integers, never as plain
 // strings.
-func newestRunDir(runsDir string) (string, error) {
+func NewestRunDir(runsDir string) (string, error) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		return "", fmt.Errorf("image: runs directory: %w", err)
@@ -202,80 +202,84 @@ func verifyObjects(base string, idx *format.Index) error {
 	return nil
 }
 
-// verifyFEC rebuilds the checksum column and the parity from the run's
-// own files, in INDEX's Files table order, and compares them to what is
-// on disc.
+// StreamFiles resolves the FEC stream's file paths and sizes for one run
+// directory, in INDEX's Files table row order: the order Build wrote
+// them in and the order the stream concatenates them in.
 //
 // The Files table stores no file name. A fixed-name row (INDEX, DISC,
-// decoder.py, REFS, DISCS) is found by its role. A snapobj row (role 9)
-// or an object row (role 13) is found by sorting the candidate files by
-// their own file_hash, the same rule Build used to order those rows, and
-// matching that order position by position against the run's consecutive
-// rows of that role.
-func verifyFEC(base, runDir string) error {
+// README.txt, FORMAT.txt, decoder.py, REFS, DISCS) is found by its role.
+// An object row (role 13) is found through the Objects table's
+// file_index field, which names that object's own Files row directly;
+// this holds even when the object's bytes are damaged, since it never
+// depends on hashing the file's current, possibly-corrupt content. A
+// snapobj row (role 9) carries no such field in this version, so it is
+// found by sorting the candidate files by their own file_hash, the same
+// rule Build used to order those rows, and matching that order position
+// by position against the run's consecutive rows of that role; that
+// match only holds while every snapobj file is intact.
+func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *format.Index, err error) {
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, "INDEX.bin"))
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
-	var idx format.Index
-	if _, err := idx.Decode(indexBuf); err != nil {
-		return err
+	var decoded format.Index
+	if _, err := decoded.Decode(indexBuf); err != nil {
+		return nil, nil, nil, err
 	}
 
 	snapobjPaths, err := hashSortedFiles(filepath.Join(runDir, "catalog", "snapobj"))
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
-	var objectDirs []string
-	objRoot := filepath.Join(base, "objects")
-	fanouts, err := os.ReadDir(objRoot)
-	if err == nil {
-		for _, f := range fanouts {
-			if f.IsDir() {
-				objectDirs = append(objectDirs, filepath.Join(objRoot, f.Name()))
-			}
-		}
-	}
-	objectDirs = append(objectDirs, filepath.Join(base, "snapshots"))
-	var objectPaths []string
-	for _, d := range objectDirs {
-		paths, err := hashSortedFiles(d)
-		if err != nil {
-			return err
-		}
-		objectPaths = append(objectPaths, paths...)
-	}
-	sort.Slice(objectPaths, func(i, j int) bool {
-		return compareBytes(fileHashBytes(objectPaths[i]), fileHashBytes(objectPaths[j])) < 0
-	})
 
-	var streamSizes []uint64
-	var streamPaths []string
-	snapIdx, objIdx := 0, 0
-	for _, row := range idx.Files {
+	objectPathByFileIndex := make(map[int]string, len(decoded.Objects))
+	for _, row := range decoded.Objects {
+		id := object.ID(row.ContentID)
+		var p string
+		if row.Kind == format.ObjectKindSnapshot {
+			p = filepath.Join(base, "snapshots", id.TextForm())
+		} else {
+			p = filepath.Join(base, "objects", id.FanoutByte(), id.TextForm())
+		}
+		objectPathByFileIndex[int(row.FileIndex)] = p
+	}
+
+	snapIdx := 0
+	for i, row := range decoded.Files {
 		var path string
 		var inStream bool
 		switch row.Role {
 		case format.FileRoleSnapobj:
 			if snapIdx >= len(snapobjPaths) {
-				return fmt.Errorf("image: fewer snapobj files than INDEX rows")
+				return nil, nil, nil, fmt.Errorf("image: fewer snapobj files than INDEX rows")
 			}
 			path, inStream = snapobjPaths[snapIdx], true
 			snapIdx++
 		case format.FileRoleObject:
-			if objIdx >= len(objectPaths) {
-				return fmt.Errorf("image: fewer object files than INDEX rows")
+			p, ok := objectPathByFileIndex[i]
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("image: no Objects row names file_index %d", i)
 			}
-			path, inStream = objectPaths[objIdx], true
-			objIdx++
+			path, inStream = p, true
 		default:
 			path, inStream = filesRowPath(base, runDir, row.Role)
 		}
 		if !inStream {
 			continue
 		}
-		streamSizes = append(streamSizes, row.ByteLen)
-		streamPaths = append(streamPaths, path)
+		sizes = append(sizes, row.ByteLen)
+		paths = append(paths, path)
+	}
+	return paths, sizes, &decoded, nil
+}
+
+// verifyFEC rebuilds the checksum column and the parity from the run's
+// own files, in INDEX's Files table order, and compares them to what is
+// on disc.
+func verifyFEC(base, runDir string) error {
+	streamPaths, streamSizes, _, err := StreamFiles(base, runDir)
+	if err != nil {
+		return err
 	}
 
 	layout, err := fec.NewStreamLayout(streamSizes, fec.K)
@@ -371,6 +375,10 @@ func filesRowPath(base, runDir string, role uint8) (string, bool) {
 		return filepath.Join(runDir, "INDEX.bin"), true
 	case format.FileRoleDisc:
 		return filepath.Join(base, "DISC.bin"), true
+	case format.FileRoleReadme:
+		return filepath.Join(base, "README.txt"), true
+	case format.FileRoleFormat:
+		return filepath.Join(base, "FORMAT.txt"), true
 	case format.FileRoleReference:
 		return filepath.Join(base, "REFERENCE", "decoder.py"), true
 	case format.FileRoleRefs:
