@@ -120,6 +120,67 @@ func sectorsFor(bytes uint64) uint64 {
 	return (bytes + SectorSize - 1) / SectorSize
 }
 
+// commitNamedFixture commits a small, distinct source tree into
+// stagingDir under name, so two calls with different names produce two
+// snapshots with different content, and returns the new snapshot id.
+func commitNamedFixture(t *testing.T, stagingDir, name string) object.ID {
+	t.Helper()
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content of "+name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("more content, fixture "+name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := object.NewWriter(stagingDir)
+	w.Now = fixedClock
+	snapID, _, err := w.Commit(srcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapID
+}
+
+// TestPackTwoSnapshotsSnapobjOrder packs a run that carries two
+// snapshots' objects in catalog/snapobj. Every disc always stores every
+// repository snapshot's own object there, regardless of which ref the
+// run's REFS table names, so two committed snapshots always produce two
+// snapobj files. Read must resolve the FEC stream over those two files
+// in the same order Pack wrote them in.
+func TestPackTwoSnapshotsSnapobjOrder(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Several snapshots, not just two: the snapshot object id (a hash of
+	// its own payload) and the snapshot file's whole-bytes hash sort
+	// independently of each other, so with enough snapshots at least one
+	// pair is certain to land in a different relative order under the
+	// two keys.
+	var firstSnap object.ID
+	for i := range 8 {
+		id := commitNamedFixture(t, stagingDir, fmt.Sprintf("snap-%d", i))
+		if i == 0 {
+			firstSnap = id
+		}
+		markStagedFromCommit(t, stagingDir, id, l)
+	}
+
+	outDir := t.TempDir()
+	opts := packOpts(stagingDir, firstSnap, outDir, sectorsFor(50_000_000), 1, l)
+	if _, err := Pack(opts); err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+
+	if _, err := Read(outDir); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+}
+
 func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 	stagingDir, snapID := packFixture(t)
 	l, err := stage.Open(stagingDir)
