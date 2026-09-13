@@ -7,10 +7,34 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/chunker"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+// packFixtureChunkProfile cuts chunks far smaller than the production
+// default, purely so packFixture's big file splits into enough chunks,
+// over a small enough span, for a small forced capacity to land its
+// selection boundary between two of them.
+var packFixtureChunkProfile = chunker.Profile{
+	Min:   1 << 16,
+	Avg:   1 << 18,
+	Max:   1 << 20,
+	MaskS: spreadMask(20),
+	MaskL: spreadMask(16),
+}
+
+// spreadMask mirrors the chunker package's own bit-spread mask rule
+// for a mask of n set bits, used only to build packFixtureChunkProfile.
+func spreadMask(n int) uint64 {
+	var mask uint64
+	for j := range n {
+		pos := 63 - (j * 32 / n)
+		mask |= 1 << uint(pos)
+	}
+	return mask
+}
 
 // packFixture commits a source tree of a few MiB of low-entropy-free
 // (so it neither dedups nor compresses away) content, spread over
@@ -33,10 +57,27 @@ func packFixture(t *testing.T) (string, object.ID) {
 			t.Fatal(err)
 		}
 	}
+	// One file, chunked under packFixtureChunkProfile, cuts into many
+	// small chunks, so a capacity boundary can fall between two of
+	// them: the blob that lands on the later disc then references a
+	// chunk the earlier disc already stored, and that disc's INDEX
+	// carries a Prereqs row for it.
+	bigDir := filepath.Join(srcDir, "big")
+	if err := os.MkdirAll(bigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := make([]byte, 4<<20)
+	if _, err := rng.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bigDir, "big.bin"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	stagingDir := t.TempDir()
 	w := object.NewWriter(stagingDir)
 	w.Now = fixedClock
+	w.Profile = packFixtureChunkProfile
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +128,7 @@ func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 	}
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
-	capacities := []uint64{sectorsFor(2_000_000), sectorsFor(2_000_000), sectorsFor(4_000_000)}
+	capacities := []uint64{sectorsFor(2_500_000), sectorsFor(2_500_000), sectorsFor(4_800_000)}
 	var discRoots []string
 	var results []*PackResult
 	for i, cap := range capacities {

@@ -128,7 +128,7 @@ func compareTrees(t *testing.T, want, got string) {
 
 func TestRestoreMultiAcrossThreeDiscs(t *testing.T) {
 	stagingDir, srcDir, snapID := commitMultiFixture(t)
-	roots := packSequence(t, stagingDir, snapID, []uint64{2_000_000, 2_000_000, 8_000_000})
+	roots := packSequence(t, stagingDir, snapID, []uint64{2_500_000, 2_500_000, 8_000_000})
 
 	outDir := t.TempDir()
 	if err := RestoreMulti(roots, snapID, outDir); err != nil {
@@ -139,7 +139,7 @@ func TestRestoreMultiAcrossThreeDiscs(t *testing.T) {
 
 func TestRestoreMultiCapacityOrderDoesNotMatterForResult(t *testing.T) {
 	stagingDir, srcDir, snapID := commitMultiFixture(t)
-	roots := packSequence(t, stagingDir, snapID, []uint64{8_000_000, 2_000_000, 2_000_000})
+	roots := packSequence(t, stagingDir, snapID, []uint64{8_000_000, 2_500_000, 2_500_000})
 
 	outDir := t.TempDir()
 	if err := RestoreMulti(roots, snapID, outDir); err != nil {
@@ -150,7 +150,7 @@ func TestRestoreMultiCapacityOrderDoesNotMatterForResult(t *testing.T) {
 
 func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 	stagingDir, _, snapID := commitMultiFixture(t)
-	roots := packSequence(t, stagingDir, snapID, []uint64{2_000_000, 2_000_000, 8_000_000})
+	roots := packSequence(t, stagingDir, snapID, []uint64{2_500_000, 2_500_000, 8_000_000})
 
 	// Drop the middle disc: restore from the other two only.
 	partial := []string{roots[0], roots[2]}
