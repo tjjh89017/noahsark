@@ -14,7 +14,7 @@ func TestGearTable(t *testing.T) {
 		t.Fatalf("seed length = %d, want 16", len(seed))
 	}
 
-	for i := 0; i < 256; i++ {
+	for i := range 256 {
 		input := append(append([]byte{}, seed...), byte(i))
 		digest := sha256.Sum256(input)
 		want := binary.LittleEndian.Uint64(digest[0:8])

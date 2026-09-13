@@ -23,7 +23,7 @@ var testProfile = Profile{
 // mask derivation.
 func spreadMaskForTest(n int) uint64 {
 	var mask uint64
-	for j := 0; j < n; j++ {
+	for j := range n {
 		pos := 63 - (j * 32 / n)
 		mask |= 1 << uint(pos)
 	}
@@ -143,7 +143,7 @@ func TestLargeRandomInput(t *testing.T) {
 	var total []byte
 	for i, chunk := range chunks {
 		last := i == len(chunks)-1
-		if len(chunk) < testProfile.Min && !(last && len(data) < testProfile.Min) {
+		if len(chunk) < testProfile.Min && (!last || len(data) >= testProfile.Min) {
 			// A chunk shorter than Min is only valid as the final
 			// remainder of the stream.
 			if !last {
@@ -173,10 +173,7 @@ func (r *sizedReader) Read(p []byte) (int, error) {
 	if r.pos >= len(r.data) {
 		return 0, io.EOF
 	}
-	n := r.step
-	if n > len(p) {
-		n = len(p)
-	}
+	n := min(r.step, len(p))
 	remaining := len(r.data) - r.pos
 	if n > remaining {
 		n = remaining

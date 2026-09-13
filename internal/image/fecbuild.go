@@ -47,9 +47,9 @@ func buildFEC(stream []byte, layout *fec.StreamLayout, runHeaderCopy []byte) (ch
 		parity[j] = p
 	}
 
-	for i := uint64(0); i < L; i++ {
+	for i := range L {
 		data := make([][]byte, fec.K)
-		for c := 0; c < fec.K; c++ {
+		for c := range fec.K {
 			data[c] = blockAt(stream, uint64(c)*L+i)
 		}
 		rec := fec.BuildChecksumRecord(uint32(i), data)

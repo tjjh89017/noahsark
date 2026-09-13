@@ -116,10 +116,7 @@ func (c *Carver) findMagic() (int, error) {
 		}
 		// Keep the trailing bytes that could be the start of a magic that
 		// straddles the next read, and keep searching from there.
-		scanned = len(c.buf) - (len(ProjectMagic) - 1)
-		if scanned < 0 {
-			scanned = 0
-		}
+		scanned = max(len(c.buf)-(len(ProjectMagic)-1), 0)
 	}
 }
 

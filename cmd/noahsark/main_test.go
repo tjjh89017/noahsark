@@ -21,9 +21,9 @@ func runCmd(t *testing.T, args ...string) (int, string) {
 // output.
 func snapshotIDFromCommit(t *testing.T, output string) string {
 	t.Helper()
-	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "snapshot ") {
-			return strings.TrimPrefix(line, "snapshot ")
+	for line := range strings.SplitSeq(output, "\n") {
+		if rest, ok := strings.CutPrefix(line, "snapshot "); ok {
+			return rest
 		}
 	}
 	t.Fatalf("no snapshot line in commit output: %q", output)

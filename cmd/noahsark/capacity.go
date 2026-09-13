@@ -48,8 +48,8 @@ func parseCapacity(s string) (uint64, error) {
 		{"KB", 1_000},
 	}
 	for _, u := range units {
-		if strings.HasSuffix(s, u.suffix) {
-			numPart := strings.TrimSpace(strings.TrimSuffix(s, u.suffix))
+		if numPart, ok := strings.CutSuffix(s, u.suffix); ok {
+			numPart = strings.TrimSpace(numPart)
 			n, err := strconv.ParseFloat(numPart, 64)
 			if err != nil {
 				return 0, fmt.Errorf("capacity: invalid size %q", s)

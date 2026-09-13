@@ -422,7 +422,7 @@ func (t *Tree) Decode(buf []byte) (int, error) {
 	pos := treeFixedLen
 	t.Entries = nil
 	var prev *TreeEntry
-	for i := uint32(0); i < entryCount; i++ {
+	for range entryCount {
 		if pos >= len(buf) {
 			return 0, ErrShort
 		}

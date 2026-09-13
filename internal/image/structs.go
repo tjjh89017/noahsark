@@ -121,11 +121,8 @@ func insertionSortRefs(recs []format.RefRecord, less func(i, j int) bool) {
 }
 
 func compareBytes(a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
+	n := min(len(a), len(b))
+	for i := range n {
 		if a[i] != b[i] {
 			if a[i] < b[i] {
 				return -1

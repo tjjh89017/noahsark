@@ -215,7 +215,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	checksumRowIdx := len(rows)
 	rows = append(rows, fileRow{role: format.FileRoleChecksum, byteLen: checksumLen, path: "NOAHSARK/runs/%RUNSEQ%/checksum.bin"})
 	parityRowStart := len(rows)
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		rows = append(rows, fileRow{
 			role: format.FileRoleParity, byteLen: parityFileLen,
 			path: fmt.Sprintf("NOAHSARK/runs/%%RUNSEQ%%/parity/p%04d.bin", fec.K+1+j),
@@ -306,7 +306,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		return nil, err
 	}
 	rows[checksumRowIdx].data = checksumBuf
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		rows[parityRowStart+j].data = parityBufs[j]
 	}
 

@@ -104,7 +104,7 @@ func Read(root string) (*ReadResult, error) {
 	}
 
 	// Every parity file's header block must match RUN.bin exactly.
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		p, err := os.ReadFile(filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j)))
 		if err != nil {
 			return nil, fmt.Errorf("image: parity column %d: %w", j, err)
@@ -317,7 +317,7 @@ func verifyFEC(base, runDir string) error {
 	if !bytes.Equal(checksum, diskChecksum) {
 		return fmt.Errorf("image: checksum.bin does not match the recomputed checksum column")
 	}
-	for j := 0; j < fec.M; j++ {
+	for j := range fec.M {
 		diskParity, err := os.ReadFile(filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j)))
 		if err != nil {
 			return err
