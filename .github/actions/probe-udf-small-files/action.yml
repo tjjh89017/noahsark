@@ -1,0 +1,35 @@
+name: 'Probe: UDF small-file cost'
+description: >
+  Records sector cost, directory cost, build cost, and directory-count
+  behaviour for many small content-addressed object files on a UDF 2.01
+  image built with mkudffs, the way a Blu-ray image is built. This is a
+  probe: it records answers, it does not assert them. A test promotes any
+  answer once it is stable.
+runs:
+  using: 'composite'
+  steps:
+    - name: Install udftools
+      shell: bash
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y udftools
+
+    - name: Run UDF small-file probe
+      shell: bash
+      run: |
+        mkdir -p "${{ github.workspace }}/probe-udf-work"
+        bash "${{ github.action_path }}/probe.sh" \
+          "${{ github.workspace }}/probe-udf-work" \
+          "${{ github.workspace }}/probe-udf-work/results.md"
+
+    - name: Show results
+      shell: bash
+      run: cat "${{ github.workspace }}/probe-udf-work/results.md"
+
+    - name: Upload probe results
+      uses: actions/upload-artifact@v4
+      with:
+        name: probe-udf-small-files-results
+        path: |
+          ${{ github.workspace }}/probe-udf-work/results.md
+          ${{ github.workspace }}/probe-udf-work/results.md.log
