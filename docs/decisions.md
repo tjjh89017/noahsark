@@ -43,19 +43,10 @@ config or CLI layer exists yet to supply them at this layer. Parent
 chaining and metadata belong to a later layer that already holds a
 repository's snapshot history.
 
-`source_flags` always carries `NO_SPARSE`: the writer never probes
-`SEEK_HOLE`, so it never claims sparse detection happened.
-
-Update: `internal/object`'s `Writer` now probes `SEEK_HOLE` and
-`SEEK_DATA`, once per commit, on the first regular file with a non-zero
-size. When the probe works, a regular file with a hole before its end
-gets the tree entry `SPARSE` flag, and the snapshot's `source_flags`
-clears `NO_SPARSE`. When the probe is unsupported on that first file,
-the commit keeps `NO_SPARSE` set, as the paragraph above states, and
-does not probe again for the rest of the commit. The chunk stream never
-depends on the probe: a dense file and a sparse file with the same bytes
-produce identical chunk and blob objects, because the chunker always
-reads the same bytes either way.
+Sparse file handling (`SEEK_HOLE` probing, the tree entry `SPARSE` flag,
+hole punching on restore) is deferred to Phase 2. In Phase 1, a hole is
+ordinary zero data: the writer never probes `SEEK_HOLE`, so `source_flags`
+always carries `NO_SPARSE`, and it never claims sparse detection happened.
 
 ## 10.5 Decode rule
 
