@@ -1,0 +1,65 @@
+name: 'E2E'
+description: >
+  Runs one disc e2e scenario against one media preset: installs
+  udftools, checks the mkudffs version, builds the noahsark binary, and
+  runs test/e2e/disc under sudo with NOAHSARK_E2E set. Every e2e matrix
+  cell calls this action instead of repeating its steps.
+inputs:
+  scenario:
+    description: 'NOAHSARK_E2E_SCENARIO value'
+    required: true
+  media:
+    description: 'NOAHSARK_E2E_MEDIA value'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Install udftools
+      shell: bash
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y udftools
+
+    - name: Check mkudffs version
+      shell: bash
+      run: |
+        # mkudffs has no --version option; it prints its "mkudffs from
+        # udftools X.Y" banner and a usage message, then exits nonzero,
+        # when run with no device argument.
+        out="$(mkudffs 2>&1 || true)"
+        echo "$out"
+        ver="$(echo "$out" | grep -oE 'udftools [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+        major="${ver%%.*}"
+        minor="${ver##*.}"
+        if [ -z "$ver" ] || [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 3 ]; }; then
+          echo "mkudffs version $ver is older than the required 2.3"
+          exit 1
+        fi
+
+    - name: Build the noahsark binary
+      shell: bash
+      run: go build -o ./noahsark ./cmd/noahsark
+
+    - name: "Run scenario: ${{ inputs.scenario }}/${{ inputs.media }}"
+      shell: bash
+      env:
+        NOAHSARK_E2E: '1'
+        NOAHSARK_E2E_SCENARIO: ${{ inputs.scenario }}
+        NOAHSARK_E2E_MEDIA: ${{ inputs.media }}
+      run: |
+        sudo -E env "PATH=$PATH" NOAHSARK_E2E="$NOAHSARK_E2E" \
+          NOAHSARK_E2E_SCENARIO="$NOAHSARK_E2E_SCENARIO" \
+          NOAHSARK_E2E_MEDIA="$NOAHSARK_E2E_MEDIA" \
+          go test ./test/e2e/disc -v -count=1 -timeout 30m
+
+    - name: Fix cache ownership
+      if: always()
+      shell: bash
+      run: |
+        # go test ran under sudo; restore ownership of the build cache
+        # so later steps and git cleanup succeed.
+        for dir in "$HOME/.cache/go-build" "$GITHUB_WORKSPACE"; do
+          if [ -d "$dir" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$dir"
+          fi
+        done
