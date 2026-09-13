@@ -76,7 +76,9 @@ type fileRow struct {
 	hash    [32]byte // zero for a row whose bytes are not final until
 	// after INDEX itself is built; see docs/decisions.md.
 	data []byte // bytes to write; nil when filled in later (RUN,
-	// RUN2, checksum, parity, and INDEX itself).
+	// RUN2, checksum, parity, and INDEX itself) or when srcPath names
+	// the bytes instead.
+	srcPath  string // staged file to stream-copy from; set instead of data for a chunk-sized object.
 	path     string // path under OutputDir, relative, forward slashes.
 	inStream bool
 }
@@ -108,14 +110,24 @@ func Build(opts BuildOptions) (*Result, error) {
 		return nil, err
 	}
 	// Sort object rows by their whole-file hash, the order INDEX's Files
-	// table gives for role 13 rows.
+	// table gives for role 13 rows. A chunk's hash is read by streaming
+	// its staged file; its bytes are never held whole in memory here.
 	type hashedObject struct {
 		ReachableObject
 		hash [32]byte
 	}
 	hashed := make([]hashedObject, len(reachable))
 	for i, r := range reachable {
-		hashed[i] = hashedObject{ReachableObject: r, hash: sha256.Sum256(r.Bytes)}
+		var h [32]byte
+		if r.Bytes != nil {
+			h = sha256.Sum256(r.Bytes)
+		} else {
+			h, err = hashFile(StagedPath(opts.StagingDir, r.ID, r.Kind))
+			if err != nil {
+				return nil, fmt.Errorf("image: %s: %w", r.ID.TextForm(), err)
+			}
+		}
+		hashed[i] = hashedObject{ReachableObject: r, hash: h}
 	}
 	sort.Slice(hashed, func(i, j int) bool {
 		return lessBytes(hashed[i].hash[:], hashed[j].hash[:])
@@ -184,7 +196,13 @@ func Build(opts BuildOptions) (*Result, error) {
 			p = filepath.ToSlash(filepath.Join("NOAHSARK/objects", h.ID.FanoutByte(), h.ID.TextForm()))
 		}
 		fileIndex[h.ID] = len(rows)
-		rows = append(rows, fileRow{role: format.FileRoleObject, byteLen: uint64(len(h.Bytes)), hash: h.hash, data: h.Bytes, path: p, inStream: true})
+		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, hash: h.hash, path: p, inStream: true}
+		if h.Bytes != nil {
+			row.data = h.Bytes
+		} else {
+			row.srcPath = StagedPath(opts.StagingDir, h.ID, h.Kind)
+		}
+		rows = append(rows, row)
 	}
 
 	// Stream sizes, in row order, for every row that is part of the FEC
@@ -234,7 +252,13 @@ func Build(opts BuildOptions) (*Result, error) {
 	for i, h := range hashed {
 		var storedLen, payloadLen uint64
 		var compression format.Compression
-		if err := readObjectHeader(h.Bytes, &storedLen, &payloadLen, &compression); err != nil {
+		var err error
+		if h.Bytes != nil {
+			err = readObjectHeader(h.Bytes, &storedLen, &payloadLen, &compression)
+		} else {
+			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
+		}
+		if err != nil {
 			return nil, fmt.Errorf("image: %s: %w", h.ID.TextForm(), err)
 		}
 		var flags uint16
@@ -288,38 +312,52 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows[runRowIdx].data = runBuf
 	rows[run2RowIdx].data = runBuf
 
-	// Build the FEC stream bytes: every in-stream row's bytes, zero
-	// padded to a block boundary, concatenated in row order.
-	var stream []byte
-	for _, r := range rows {
-		if !r.inStream {
-			continue
-		}
-		stream = append(stream, r.data...)
-		if pad := padLen(len(r.data)); pad > 0 {
-			stream = append(stream, make([]byte, pad)...)
-		}
-	}
-
-	checksumBuf, parityBufs, err := buildFEC(stream, layout, runBuf)
-	if err != nil {
-		return nil, err
-	}
-	rows[checksumRowIdx].data = checksumBuf
-	for j := range fec.M {
-		rows[parityRowStart+j].data = parityBufs[j]
-	}
-
+	// Write every row to its final path first: an in-memory row by
+	// WriteFile, a chunk-sized row by a streaming copy from its staged
+	// file. checksumRowIdx and the parity rows are filled in below and
+	// written by buildFECToDisk instead.
 	seqDir := fmt.Sprintf("%010d", buildRunSeq)
-	for _, r := range rows {
+	finalPaths := make([]string, len(rows))
+	for i, r := range rows {
 		path := filepath.FromSlash(replaceRunSeq(r.path, seqDir))
 		full := filepath.Join(opts.OutputDir, path)
+		finalPaths[i] = full
+		if i == checksumRowIdx || (i >= parityRowStart && i < parityRowStart+fec.M) {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(full, r.data, 0o644); err != nil {
+		if r.srcPath != "" {
+			if err := copyFileStream(r.srcPath, full, 0o644); err != nil {
+				return nil, err
+			}
+		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
 			return nil, err
 		}
+	}
+
+	// Compute the checksum column and the parity, one stripe at a time,
+	// reading every in-stream file's block range from its final path.
+	var sources []streamSource
+	for i, r := range rows {
+		if !r.inStream {
+			continue
+		}
+		sources = append(sources, streamSource{path: finalPaths[i], size: r.byteLen})
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPaths[checksumRowIdx]), 0o755); err != nil {
+		return nil, err
+	}
+	parityPaths := make([]string, fec.M)
+	for j := range fec.M {
+		parityPaths[j] = finalPaths[parityRowStart+j]
+	}
+	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
+		return nil, err
+	}
+	if err := buildFECToDisk(sources, layout, runBuf, finalPaths[checksumRowIdx], parityPaths); err != nil {
+		return nil, err
 	}
 
 	return &Result{

@@ -65,7 +65,8 @@ type packUnit struct {
 	ID       object.ID
 	Kind     format.ObjectKind
 	Children []object.ID
-	Bytes    []byte // nil for a chunk; read lazily when selected
+	Bytes    []byte // nil for a chunk: its payload stays on staging disk.
+	ByteLen  uint64 // set once selectRun has sized the candidate.
 }
 
 // Pack selects the STAGED objects for exactly one run within
@@ -171,27 +172,27 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, fmt.Errorf("image: target capacity %d sectors is too small to hold even one object", opts.TargetCapacitySectors)
 	}
 
-	// Read the full bytes of every selected chunk; tree, blob and
-	// snapshot bytes are already cached from buildPackOrder.
-	objectsRoot := filepath.Join(opts.StagingDir, "objects")
-	for i := range selected {
-		if selected[i].Bytes != nil {
-			continue
-		}
-		data, err := os.ReadFile(stagedObjectPath(objectsRoot, selected[i].ID))
-		if err != nil {
-			return nil, fmt.Errorf("image: chunk %s: %w", selected[i].ID.TextForm(), err)
-		}
-		selected[i].Bytes = data
-	}
-
+	// A selected chunk's hash is read by streaming its staged file; its
+	// bytes are never held whole in memory. Tree, blob and snapshot
+	// bytes are already cached from buildPackOrder, small metadata
+	// bounded by the tree shape rather than by data size.
 	type hashedUnit struct {
 		packUnit
 		hash [32]byte
 	}
 	hashed := make([]hashedUnit, len(selected))
 	for i, u := range selected {
-		hashed[i] = hashedUnit{packUnit: u, hash: sha256.Sum256(u.Bytes)}
+		var h [32]byte
+		if u.Bytes != nil {
+			h = sha256.Sum256(u.Bytes)
+		} else {
+			var err error
+			h, err = hashFile(StagedPath(opts.StagingDir, u.ID, u.Kind))
+			if err != nil {
+				return nil, fmt.Errorf("image: chunk %s: %w", u.ID.TextForm(), err)
+			}
+		}
+		hashed[i] = hashedUnit{packUnit: u, hash: h}
 	}
 	sort.Slice(hashed, func(i, j int) bool { return lessBytes(hashed[i].hash[:], hashed[j].hash[:]) })
 
@@ -235,7 +236,13 @@ func Pack(opts PackOptions) (*PackResult, error) {
 			p = filepath.ToSlash(filepath.Join("NOAHSARK/objects", h.ID.FanoutByte(), h.ID.TextForm()))
 		}
 		fileIndex[h.ID] = len(rows)
-		rows = append(rows, fileRow{role: format.FileRoleObject, byteLen: uint64(len(h.Bytes)), hash: h.hash, data: h.Bytes, path: p, inStream: true})
+		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, hash: h.hash, path: p, inStream: true}
+		if h.Bytes != nil {
+			row.data = h.Bytes
+		} else {
+			row.srcPath = StagedPath(opts.StagingDir, h.ID, h.Kind)
+		}
+		rows = append(rows, row)
 	}
 
 	objectCount := len(hashed)
@@ -279,7 +286,13 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	for i, h := range hashed {
 		var storedLen, payloadLen uint64
 		var compression format.Compression
-		if err := readObjectHeader(h.Bytes, &storedLen, &payloadLen, &compression); err != nil {
+		var err error
+		if h.Bytes != nil {
+			err = readObjectHeader(h.Bytes, &storedLen, &payloadLen, &compression)
+		} else {
+			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
+		}
+		if err != nil {
 			return nil, fmt.Errorf("image: %s: %w", h.ID.TextForm(), err)
 		}
 		var flags uint16
@@ -326,35 +339,50 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows[runRowIdx].data = runBuf
 	rows[run2RowIdx].data = runBuf
 
-	var stream []byte
-	for _, r := range rows {
-		if !r.inStream {
-			continue
-		}
-		stream = append(stream, r.data...)
-		if pad := padLen(len(r.data)); pad > 0 {
-			stream = append(stream, make([]byte, pad)...)
-		}
-	}
-	checksumBuf, parityBufs, err := buildFEC(stream, layout, runBuf)
-	if err != nil {
-		return nil, err
-	}
-	rows[checksumRowIdx].data = checksumBuf
-	for j := range fec.M {
-		rows[parityRowStart+j].data = parityBufs[j]
-	}
-
+	// Write every row to its final path first: an in-memory row by
+	// WriteFile, a chunk-sized row by a streaming copy from its staged
+	// file. The checksum and parity rows are written by buildFECToDisk
+	// below instead, one stripe at a time.
 	seqDir := fmt.Sprintf("%010d", runSeq)
-	for _, r := range rows {
+	finalPaths := make([]string, len(rows))
+	for i, r := range rows {
 		path := filepath.FromSlash(replaceRunSeq(r.path, seqDir))
 		full := filepath.Join(opts.OutputDir, path)
+		finalPaths[i] = full
+		if i == checksumRowIdx || (i >= parityRowStart && i < parityRowStart+fec.M) {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(full, r.data, 0o644); err != nil {
+		if r.srcPath != "" {
+			if err := copyFileStream(r.srcPath, full, 0o644); err != nil {
+				return nil, err
+			}
+		} else if err := os.WriteFile(full, r.data, 0o644); err != nil {
 			return nil, err
 		}
+	}
+
+	var sources []streamSource
+	for i, r := range rows {
+		if !r.inStream {
+			continue
+		}
+		sources = append(sources, streamSource{path: finalPaths[i], size: r.byteLen})
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPaths[checksumRowIdx]), 0o755); err != nil {
+		return nil, err
+	}
+	parityPaths := make([]string, fec.M)
+	for j := range fec.M {
+		parityPaths[j] = finalPaths[parityRowStart+j]
+	}
+	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
+		return nil, err
+	}
+	if err := buildFECToDisk(sources, layout, runBuf, finalPaths[checksumRowIdx], parityPaths); err != nil {
+		return nil, err
 	}
 
 	// Record every packed object as Packed, and this disc's row into the
@@ -452,6 +480,7 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 			break
 		}
 
+		cand.ByteLen = size
 		selected = append(selected, cand)
 		selectedSet[cand.ID] = true
 		for _, p := range newPrereqs {
