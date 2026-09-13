@@ -57,7 +57,7 @@ func (c *Codec) Encode(data [][]byte) ([][]byte, error) {
 				continue
 			}
 			d := data[i]
-			for t := 0; t < blockLen; t++ {
+			for t := range blockLen {
 				p[t] ^= Mul(coeff, d[t])
 			}
 		}
@@ -116,7 +116,7 @@ func (c *Codec) Decode(shards map[int][]byte) (data [][]byte, parity [][]byte, e
 				continue
 			}
 			s := present[row]
-			for t := 0; t < blockLen; t++ {
+			for t := range blockLen {
 				out[t] ^= Mul(coeff, s[t])
 			}
 		}

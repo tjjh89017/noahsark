@@ -47,7 +47,7 @@ func TestInvZeroErrors(t *testing.T) {
 }
 
 func TestDivMatchesMulInv(t *testing.T) {
-	for a := 0; a < 256; a++ {
+	for a := range 256 {
 		for b := 1; b < 256; b++ {
 			inv, _ := Inv(byte(b))
 			want := Mul(byte(a), inv)
@@ -65,8 +65,8 @@ func TestDivMatchesMulInv(t *testing.T) {
 // TestMulTableMatchesBitLoop checks the log/exp table lookup against the
 // carry-less multiplication loop FORMAT.md states directly.
 func TestMulTableMatchesBitLoop(t *testing.T) {
-	for a := 0; a < 256; a++ {
-		for b := 0; b < 256; b++ {
+	for a := range 256 {
+		for b := range 256 {
 			want := mulBits(byte(a), byte(b))
 			got := Mul(byte(a), byte(b))
 			if got != want {

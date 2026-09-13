@@ -1,5 +1,7 @@
 package fec
 
+import "slices"
+
 // StreamLayout maps the FEC stream, the run's data files padded and
 // concatenated in INDEX's file order, to blocks, columns and stripes.
 type StreamLayout struct {
@@ -55,8 +57,8 @@ func (s *StreamLayout) Locate(block uint64) (fileIndex int, offset uint64, err e
 		return 0, 0, ErrBlockRange
 	}
 	idx := 0
-	for i := len(s.fileStart) - 1; i >= 0; i-- {
-		if s.fileStart[i] <= block {
+	for i, v := range slices.Backward(s.fileStart) {
+		if v <= block {
 			idx = i
 			break
 		}

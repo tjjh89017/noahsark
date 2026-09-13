@@ -15,7 +15,7 @@ var logTable [256]byte
 
 func init() {
 	x := byte(1)
-	for i := 0; i < 255; i++ {
+	for i := range 255 {
 		expTable[i] = x
 		logTable[x] = byte(i)
 		x = mulBits(x, generator)

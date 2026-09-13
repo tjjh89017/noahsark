@@ -8,10 +8,10 @@ func BuildCauchyMatrix(k, m int) ([][]byte, error) {
 		return nil, ErrShardCount
 	}
 	c := make([][]byte, m)
-	for j := 0; j < m; j++ {
+	for j := range m {
 		row := make([]byte, k)
 		xj := byte(k + j)
-		for i := 0; i < k; i++ {
+		for i := range k {
 			yi := byte(i)
 			v, err := Inv(xj ^ yi)
 			if err != nil {
@@ -37,7 +37,7 @@ func InvertMatrix(m [][]byte) ([][]byte, error) {
 		aug[i] = row
 	}
 
-	for col := 0; col < n; col++ {
+	for col := range n {
 		pivot := -1
 		for r := col; r < n; r++ {
 			if aug[r][col] != 0 {
@@ -59,7 +59,7 @@ func InvertMatrix(m [][]byte) ([][]byte, error) {
 			row[c] = Mul(row[c], inv)
 		}
 
-		for r := 0; r < n; r++ {
+		for r := range n {
 			if r == col {
 				continue
 			}

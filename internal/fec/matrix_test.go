@@ -51,9 +51,9 @@ func mulMatrix(a, b [][]byte) [][]byte {
 	out := make([][]byte, n)
 	for i := range out {
 		out[i] = make([]byte, n)
-		for j := 0; j < n; j++ {
+		for j := range n {
 			var sum byte
-			for k := 0; k < n; k++ {
+			for k := range n {
 				sum ^= Mul(a[i][k], b[k][j])
 			}
 			out[i][j] = sum
@@ -86,17 +86,17 @@ func TestInvertRandomSubsets(t *testing.T) {
 		t.Fatalf("BuildCauchyMatrix: %v", err)
 	}
 	full := make([][]byte, K+M)
-	for i := 0; i < K; i++ {
+	for i := range K {
 		row := make([]byte, K)
 		row[i] = 1
 		full[i] = row
 	}
-	for j := 0; j < M; j++ {
+	for j := range M {
 		full[K+j] = c[j]
 	}
 
 	rng := rand.New(rand.NewSource(1))
-	for trial := 0; trial < 5; trial++ {
+	for trial := range 5 {
 		perm := rng.Perm(K + M)[:K]
 		square := make([][]byte, K)
 		for i, idx := range perm {
