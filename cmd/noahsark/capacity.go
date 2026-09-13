@@ -8,15 +8,34 @@ import (
 	"github.com/tjjh89017/noahsark/internal/image"
 )
 
-// parseCapacity reads a --capacity value. A bare integer is a sector
-// count. An integer followed by GiB, MiB or KiB is a binary byte size;
-// followed by GB, MB or KB is a decimal byte size, the marketing
-// convention optical media capacities are named in. Either byte form is
-// converted to whole sectors at FORMAT.md's 2048-byte sector size,
-// rounding up so the requested size always fits.
+// capacityPresets names the real, drive-reported sector count of common
+// write-once optical media, keyed by lower-case preset name. A marketing
+// size such as "25 GB" is decimal-rounded and is not the sector count a
+// drive actually reports; these values are the real counts, checked
+// against dvd+rw-mediainfo output. See docs/decisions.md,
+// "16. CLI reference".
+var capacityPresets = map[string]uint64{
+	"dvd+r": 2_295_104,
+	"dvd-r": 2_298_496,
+	"bd25":  12_219_392,
+	"bd50":  24_438_784,
+	"bd100": 48_878_592,
+	"bd128": 62_500_864,
+}
+
+// parseCapacity reads a --capacity value. A name from capacityPresets
+// (case insensitive) is the real sector count of that media. A bare
+// integer is a sector count. An integer followed by GiB, MiB or KiB is a
+// binary byte size; followed by GB, MB or KB is a decimal byte size, the
+// marketing convention optical media capacities are named in. Either byte
+// form is converted to whole sectors at FORMAT.md's 2048-byte sector
+// size, rounding up so the requested size always fits.
 //
 // Reading: docs/decisions.md, "16. CLI reference".
 func parseCapacity(s string) (uint64, error) {
+	if sectors, ok := capacityPresets[strings.ToLower(s)]; ok {
+		return sectors, nil
+	}
 	units := []struct {
 		suffix string
 		scale  uint64
@@ -41,7 +60,7 @@ func parseCapacity(s string) (uint64, error) {
 	}
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("capacity: invalid value %q, expected a sector count or a size like 25GB", s)
+		return 0, fmt.Errorf("capacity: invalid value %q, expected a preset name, a sector count, or a size like 25GB", s)
 	}
 	return n, nil
 }
