@@ -64,3 +64,6 @@ debug
 /docs/_build/
 /site/
 tmp/
+
+# Local plans, never committed
+.plan/
