@@ -6,6 +6,7 @@ package restore
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -130,7 +131,8 @@ func restoreEntry(base, dir string, e format.TreeEntry) error {
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		if err := restoreFile(base, child, object.ID(e.ContentID)); err != nil {
+		sparse := e.EntryFlags&format.EntryFlagSparse != 0
+		if err := restoreFile(base, child, object.ID(e.ContentID), sparse); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
@@ -155,8 +157,13 @@ func restoreEntry(base, dir string, e format.TreeEntry) error {
 }
 
 // restoreFile reassembles blobID's chunks into dest, in blob entry order,
-// verifying every chunk's content id before writing its bytes.
-func restoreFile(base, dest string, blobID object.ID) error {
+// verifying every chunk's content id before writing its bytes. When
+// sparse is true, an all-zero chunk is not written; the file is instead
+// extended past it with Seek and a final Truncate, leaving the region an
+// unwritten hole. sparse is the tree entry's SPARSE flag: a hint from the
+// writer, not a data structure, so a chunk is still scanned to confirm it
+// is all zero before its write is skipped.
+func restoreFile(base, dest string, blobID object.ID, sparse bool) error {
 	raw, _, err := readVerified(base, blobID, false)
 	if err != nil {
 		return err
@@ -184,11 +191,36 @@ func restoreFile(base, dest string, blobID object.ID) error {
 			return fmt.Errorf("restore: chunk %s: length %d, blob entry says %d",
 				object.ID(be.ContentID).TextForm(), len(payload), be.Length)
 		}
+		if sparse && isAllZero(payload) {
+			// Seek past the chunk instead of writing it, so the region
+			// stays an unwritten hole rather than an allocated run of
+			// zero bytes.
+			if _, err := f.Seek(int64(be.FileOffset)+int64(be.Length), io.SeekStart); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
 			return err
 		}
 	}
+	// Truncate to the full size in every case: it is a no-op when the
+	// last chunk was written, and it is what turns a skipped trailing
+	// chunk into a hole that reaches the end of the file.
+	if err := f.Truncate(int64(blob.TotalSize)); err != nil {
+		return err
+	}
 	return nil
+}
+
+// isAllZero reports whether every byte of b is zero.
+func isAllZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // applyMetadata sets mode and mtime from e. Ownership is applied best
