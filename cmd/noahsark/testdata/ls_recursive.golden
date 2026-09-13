@@ -1,0 +1,4 @@
+ {{SRC}}/
+ {{SRC}}/a.txt
+ {{SRC}}/sub/
+ {{SRC}}/sub/b.txt
