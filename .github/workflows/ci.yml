@@ -6,6 +6,9 @@ on:
   pull_request:
 
 jobs:
+  # TODO: remove once the unit and e2e jobs below are green on main;
+  # .github/actions/test is being replaced by .github/actions/unit and
+  # .github/actions/e2e.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -19,3 +22,68 @@ jobs:
 
       - name: Run tests
         uses: ./.github/actions/test
+
+  unit:
+    name: Unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      - name: Unit
+        uses: ./.github/actions/unit
+
+  # One matrix cell per scenario/media pair. Not every scenario needs
+  # every media preset; the pairs actually exercised are listed
+  # explicitly instead of taken from a full cross product.
+  e2e:
+    name: E2E (${{ matrix.scenario }}/${{ matrix.media }})
+    runs-on: ubuntu-latest
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { scenario: verify-restore, media: dvd+r }
+          - { scenario: verify-restore, media: bd25 }
+          - { scenario: corrupt-heal, media: bd25 }
+          - { scenario: corrupt-parity, media: bd25 }
+          - { scenario: cli, media: dvd+r }
+          - { scenario: capacity, media: dvd+r }
+          - { scenario: capacity, media: bd25 }
+          - { scenario: capacity, media: bd25-forced-10g }
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      - name: E2E
+        uses: ./.github/actions/e2e
+        with:
+          scenario: ${{ matrix.scenario }}
+          media: ${{ matrix.media }}
+
+  # One stable check the branch ruleset can require in place of every
+  # e2e matrix cell, so adding or dropping a cell never touches branch
+  # protection.
+  e2e-required:
+    name: E2E
+    runs-on: ubuntu-latest
+    needs:
+      - unit
+      - e2e
+    if: always()
+    steps:
+      - name: All required jobs passed
+        run: |
+          [ "${{ needs.unit.result }}" = "success" ] && \
+            [ "${{ needs.e2e.result }}" = "success" ]
