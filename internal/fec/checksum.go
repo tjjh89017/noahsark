@@ -31,6 +31,22 @@ func BuildChecksumRecord(stripeIndex uint32, dataBlocks [][]byte) *format.Checks
 	}
 }
 
+// BuildChecksumRecordFromDigests builds the checksum column record for
+// one stripe from digests already computed for its k data blocks, in
+// data column order. It gives the same record as BuildChecksumRecord
+// over the same blocks, without hashing them again.
+func BuildChecksumRecordFromDigests(stripeIndex uint32, digests [][8]byte) *format.ChecksumRecord {
+	out := make([][8]byte, len(digests))
+	copy(out, digests)
+	return &format.ChecksumRecord{
+		StripeIndex: stripeIndex,
+		DigestCount: uint16(len(out)),
+		DigestBytes: format.ChecksumDigestSize,
+		HashAlgo:    format.HashAlgoSHA256,
+		Digests:     out,
+	}
+}
+
 // VerifyBlocks compares dataBlocks against rec's digests, in data column
 // order, and returns the indices of blocks whose digest does not match.
 func VerifyBlocks(rec *format.ChecksumRecord, dataBlocks [][]byte) ([]int, error) {
