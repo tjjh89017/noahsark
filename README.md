@@ -145,6 +145,17 @@ dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
 
 Pass that block count straight to `--capacity` as a sector count.
 
+## Progress output
+
+`commit`, `pack`, `image build`, `verify` and `restore` each print a
+progress line to stderr while they run: bytes done, the total, a
+percentage, a throughput and an ETA, or, where no total is known ahead
+of time, bytes and throughput alone. On a terminal the line rewrites in
+place; piped to a file or CI log, it prints a full line every few
+seconds instead. Progress is on by default; pass `--no-progress` or
+`--quiet` (`-q`) to turn it off, or `--progress` to force it on when
+stderr is not a terminal.
+
 ## FEC: off by default
 
 `pack`'s Reed-Solomon checksum column and parity are off by default
