@@ -98,7 +98,8 @@ func TestCommitTwiceIsByteIdentical(t *testing.T) {
 	if id1 != id2 {
 		t.Fatalf("snapshot ids differ: %s vs %s", id1.TextForm(), id2.TextForm())
 	}
-	if sum1 != sum2 {
+	if sum1.NewObjects != sum2.NewObjects || sum1.ExistingObjects != sum2.ExistingObjects ||
+		len(sum1.Unstable) != len(sum2.Unstable) || len(sum1.Skipped) != len(sum2.Skipped) {
 		t.Fatalf("summaries differ: %+v vs %+v", sum1, sum2)
 	}
 
@@ -200,6 +201,16 @@ func TestEveryObjectDecodesAndItsIDMatchesItsFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	verifyAllObjectsValid(t, staging)
+}
+
+// verifyAllObjectsValid decodes every object and snapshot file under
+// staging through format.Dispatch and checks that recomputing its
+// content id from the decoded value reproduces the file name. It fails
+// the test on the first object that does not decode or whose id does not
+// match.
+func verifyAllObjectsValid(t *testing.T, staging string) {
+	t.Helper()
 	for _, rel := range listFiles(t, staging) {
 		path := filepath.Join(staging, rel)
 		buf, err := os.ReadFile(path)
@@ -218,6 +229,262 @@ func TestEveryObjectDecodesAndItsIDMatchesItsFileName(t *testing.T) {
 		if got.TextForm() != want {
 			t.Fatalf("%s: recomputed id %s, want %s", rel, got.TextForm(), want)
 		}
+	}
+}
+
+// checkNoTempFiles fails the test if any writeObjectFile temp file
+// (".tmp-*") is left under staging. A crash or an aborted commit must
+// never leave one behind.
+func checkNoTempFiles(t *testing.T, staging string) {
+	t.Helper()
+	err := filepath.WalkDir(staging, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasPrefix(d.Name(), ".tmp-") {
+			t.Errorf("leftover temp file: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// loadTree decodes the tree object id from staging.
+func loadTree(t *testing.T, staging string, id ID) *format.Tree {
+	t.Helper()
+	buf, err := os.ReadFile(filepath.Join(staging, "objects", id.FanoutByte(), id.TextForm()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _, err := format.Dispatch(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, ok := v.(*format.Tree)
+	if !ok {
+		t.Fatalf("object %s is not a tree", id.TextForm())
+	}
+	return tr
+}
+
+// loadSnapshot decodes the snapshot object id from staging.
+func loadSnapshot(t *testing.T, staging string, id ID) *format.Snapshot {
+	t.Helper()
+	buf, err := os.ReadFile(filepath.Join(staging, "snapshots", id.TextForm()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _, err := format.Dispatch(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := v.(*format.Snapshot)
+	if !ok {
+		t.Fatalf("object %s is not a snapshot", id.TextForm())
+	}
+	return s
+}
+
+// findEntry returns the entry named name in tr, failing the test if it is
+// absent.
+func findEntry(t *testing.T, tr *format.Tree, name string) format.TreeEntry {
+	t.Helper()
+	for _, e := range tr.Entries {
+		if string(e.Name) == name {
+			return e
+		}
+	}
+	t.Fatalf("no entry named %q", name)
+	return format.TreeEntry{}
+}
+
+// fakeStableInfo wraps a real os.FileInfo but reports a caller-chosen size
+// and mtime instead of the real ones, and no Sys(), so the in-flight
+// change detection's stat seam can be made to disagree with itself
+// without touching the real filesystem clock.
+type fakeStatInfo struct {
+	os.FileInfo
+	size  int64
+	mtime time.Time
+}
+
+func (f fakeStatInfo) Size() int64        { return f.size }
+func (f fakeStatInfo) ModTime() time.Time { return f.mtime }
+func (f fakeStatInfo) Sys() any           { return nil }
+
+// TestUnstableFileIsFlaggedAndReported uses the stat seam to make every
+// restat of one file disagree with the one before it, so the in-flight
+// change detection never sees two matching stats and exhausts its
+// retries. It asserts the tree entry carries UNSTABLE and the commit
+// summary lists the path under the "flagged" branch.
+func TestUnstableFileIsFlaggedAndReported(t *testing.T) {
+	src := t.TempDir()
+	mustWrite(t, filepath.Join(src, "a.txt"), "content of a")
+	target, err := filepath.Abs(filepath.Join(src, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+
+	var calls int
+	w.Stat = func(path string) (os.FileInfo, error) {
+		real, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if path != target {
+			return real, nil
+		}
+		calls++
+		return fakeStatInfo{FileInfo: real, size: real.Size() + int64(calls), mtime: real.ModTime()}, nil
+	}
+
+	snapID, sum, err := w.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sum.Unstable) != 1 {
+		t.Fatalf("Summary.Unstable = %v, want exactly one entry", sum.Unstable)
+	}
+	if sum.Unstable[0].Path != "a.txt" || sum.Unstable[0].Branch != "flagged" {
+		t.Fatalf("Summary.Unstable[0] = %+v, want path a.txt branch flagged", sum.Unstable[0])
+	}
+
+	snap := loadSnapshot(t, staging, snapID)
+	rootTree := loadTree(t, staging, ID(snap.RootTree))
+	sourceRootEntry := rootTree.Entries[0]
+	dirTree := loadTree(t, staging, ID(sourceRootEntry.ContentID))
+	entry := findEntry(t, dirTree, "a.txt")
+	if entry.EntryFlags&format.EntryFlagUnstable == 0 {
+		t.Fatalf("a.txt entry flags = %#x, want UNSTABLE set", entry.EntryFlags)
+	}
+}
+
+// TestStableTreeGetsNoUnstableFlags commits an ordinary, unmodified
+// source tree twice and checks that neither commit flags any entry
+// UNSTABLE and that the two commits produce byte-identical staging
+// trees. It reuses TestCommitTwiceIsByteIdentical's fixture and byte
+// comparison, adding the UNSTABLE check.
+func TestStableTreeGetsNoUnstableFlags(t *testing.T) {
+	src := t.TempDir()
+	buildFixture(t, src)
+
+	staging1 := t.TempDir()
+	w1 := NewWriter(staging1)
+	w1.Now = fixedClock
+	_, sum1, err := w1.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum1.Unstable) != 0 {
+		t.Fatalf("first commit: Summary.Unstable = %v, want none", sum1.Unstable)
+	}
+
+	staging2 := t.TempDir()
+	w2 := NewWriter(staging2)
+	w2.Now = fixedClock
+	_, sum2, err := w2.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sum2.Unstable) != 0 {
+		t.Fatalf("second commit: Summary.Unstable = %v, want none", sum2.Unstable)
+	}
+
+	files1 := listFiles(t, staging1)
+	files2 := listFiles(t, staging2)
+	if len(files1) != len(files2) {
+		t.Fatalf("file count differs: %d vs %d", len(files1), len(files2))
+	}
+	for i := range files1 {
+		if files1[i] != files2[i] {
+			t.Fatalf("path %d differs: %s vs %s", i, files1[i], files2[i])
+		}
+		b1, err := os.ReadFile(filepath.Join(staging1, files1[i]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b2, err := os.ReadFile(filepath.Join(staging2, files2[i]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(b1, b2) {
+			t.Fatalf("object %s differs between the two commits", files1[i])
+		}
+	}
+}
+
+// TestConcurrentMutationDuringCommit runs Commit against a several-MiB
+// file while a goroutine rewrites its bytes and bumps its mtime in a
+// tight loop, stopping only once Commit returns. Run with -race. The
+// mutation is not guaranteed to land inside the narrow window between
+// the writer's two stats, so the test only asserts the entry is flagged
+// UNSTABLE when the race actually triggered; otherwise it logs that and
+// passes.
+func TestConcurrentMutationDuringCommit(t *testing.T) {
+	src := t.TempDir()
+	target := filepath.Join(src, "big.bin")
+	const fileSize = 8 << 20
+	initial := bytes.Repeat([]byte{0xAB}, fileSize)
+	mustWriteBytes(t, target, initial)
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := bytes.Repeat([]byte{0xCD}, fileSize)
+		mtime := time.Now()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			f, err := os.OpenFile(target, os.O_WRONLY, 0o644)
+			if err == nil {
+				_, _ = f.WriteAt(buf[:1<<20], 0)
+				_ = f.Close()
+			}
+			mtime = mtime.Add(time.Second)
+			_ = os.Chtimes(target, mtime, mtime)
+		}
+	}()
+
+	snapID, sum, err := w.Commit(src)
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sum.Unstable) == 0 {
+		t.Logf("the mutation goroutine did not land inside the detection window on this run; nothing to assert")
+		return
+	}
+
+	snap := loadSnapshot(t, staging, snapID)
+	rootTree := loadTree(t, staging, ID(snap.RootTree))
+	dirTree := loadTree(t, staging, ID(rootTree.Entries[0].ContentID))
+	entry := findEntry(t, dirTree, "big.bin")
+	if entry.EntryFlags&format.EntryFlagUnstable == 0 {
+		t.Fatalf("big.bin entry flags = %#x, want UNSTABLE set since Summary reported it unstable", entry.EntryFlags)
+	}
+}
+
+func mustWriteBytes(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
