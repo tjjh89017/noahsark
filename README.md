@@ -82,6 +82,9 @@ NoahsArk reads any filesystem the host can mount, so restore and
 verify work the same on a disc burned this way. What you lose: the
 image cannot be verified before burning, the mirror kept for later
 scrubbing, and conformance to the UDF profile FORMAT.md describes.
+NoahsArk's readers also accept a fixed name folded to lowercase, so a
+plain ISO 9660 level 4 image with no Rock Ridge (some burners' default)
+reads correctly too, not only the Rock Ridge command shown above.
 
 ## Packing a disc sequence and restoring across discs
 

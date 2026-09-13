@@ -554,3 +554,29 @@ memory strategy that scenario checks; `test/e2e/disc/cmd/ci-fixture`
 gained a `-fec` flag and `run.sh`'s `build_fixture` and `scenario_media`
 pass it through for those scenarios only. `cli`, `media` and `chain`
 run at the new default, off, unchanged.
+
+## 8.2 Files at the volume root, and 8.3 Run directory naming: case-insensitive reading
+
+Some burners fold every on-disc name to lowercase: plain ISO 9660
+level 4 with no Rock Ridge is the common case (verified with this
+host's `genisoimage`; `NOAHSARK` becomes `noahsark`, `README.txt`
+becomes `readme.txt`, `RUN.bin` becomes `run.bin`, and so on), and other
+burners or tools may fold names the same way. Object file names and
+their two-hex-digit fan-out directories are unaffected: they are
+already lowercase hex, so folding changes nothing there.
+
+`internal/image.NameCache` resolves one fixed name inside a directory:
+the exact name first, then a case-insensitive match against that
+directory's own listing, cached per directory for the caller's whole
+`Read`, list, restore or heal call. Every fixed name FORMAT.md's volume
+root and run directory sections define is resolved this way in
+`internal/image` (`reader.go`, `listwalk.go`, `walk.go`) and
+`internal/restore` (`restore.go`, `heal.go`); object and fan-out
+directory names stay exact-match. `reference/decoder.py` carries the
+same `NameCache` and the same rule. Writers are unaffected: NoahsArk
+still writes every fixed name in the exact case FORMAT.md defines; only
+reading tolerates a burner's own folding.
+
+This reading has a bearing on the later profile 2 filesystem work: a
+profile that relies on FAT-family case-insensitivity, or on a burner
+that folds names, can reuse this same tolerance instead of a new rule.
