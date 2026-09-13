@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 This file gives an agent working guidance for this repository. It never
-repeats format details. `spec.md` is the design authority.
+repeats format details. `FORMAT.md` and `OPERATIONS.md` are the design
+authorities. `NOTES.md` is informative.
 
 ## Project overview
 
@@ -13,70 +14,79 @@ project is spec-only today. No code exists yet.
 
 ## Where the truth lives
 
-`spec.md` is the single design authority. Read the relevant section before
-you write or change any code. Do not copy format tables, field layouts, magic
-values, or CLI syntax into this file. Point to the spec section name instead.
+Three documents replace the old single spec. `FORMAT.md` is the authority
+for every on-disc byte: object layouts, disc and run structures, and reader
+rules. `OPERATIONS.md` is the authority for host-side behaviour: the CLI, the
+configuration keys, staging, packing, burning, restore, and failure handling.
+`NOTES.md` is informative: rationale, evidence, worked examples, the
+glossary, and the change log. Where `NOTES.md` disagrees with `FORMAT.md` or
+`OPERATIONS.md`, the other two win.
 
-Use these section names to find a topic, not the numbers (numbers drift when
-the spec is edited):
+Read the relevant section before you write or change any code. Do not copy
+format tables, field layouts, magic values, or CLI syntax into this file.
+Point to the document and the heading name instead.
 
-- Overview, goals, and platform tiers: "Overview" and "Goals, non-goals, and
-  priorities".
-- System structure and data flow: "Architecture".
-- Byte layout rules that every structure obeys: "Binary format rules".
-- Hashing, multihash, and hash epochs: "Identity and hashing".
-- Chunking algorithm and profiles: "Chunking".
-- Compression rules: "Compression".
-- Chunk, bundle, chunklist, tree, snapshot, ref: "Object model".
-- Disc, run, and append behaviour: "Disc, run, and append model".
-- Burning and disc filesystem profiles: "Disc filesystems and burning".
-- Reed-Solomon parity and healing: "FEC and self-healing".
-- Filters, manifests, and the catalog: "Filters, manifests, and catalog".
-- Local cache: "Local cache".
-- Staging store and GC: "Staging store".
-- Packing and locality: "Packing and locality".
-- Restore planning: "Restore and the disc plan".
-- File metadata and permissions: "File metadata and permissions".
-- Commit flow, quick check, mirror mode: "Commit flow".
-- Command syntax: "CLI reference".
-- Config keys: "Configuration reference".
-- Format versioning rules: "Format evolution and compatibility".
-- Failure and recovery behaviour: "Failure modes and recovery matrix".
-- Testing and CI: "Testing and CI".
-- Go-level implementation notes: "Implementation notes".
-- What changed from the old design: "Design changes from the previous
-  specification".
-- Term definitions: "Glossary".
-- The Gear table generation rule: "Appendix A. Gear table".
-- Magic numbers and registries: "Appendix B. Magic numbers and registry
-  summary".
-- Burning-host command reference: "Appendix C. Command reference for the
-  burning host".
-- Rejected designs and why: "Appendix D. Rejected and superseded
-  alternatives".
+Use this table to find a topic, by document and heading, not by number
+(numbers drift when a document is edited):
 
-If this file and `spec.md` ever disagree, `spec.md` wins. Fix this file.
+| Topic | Document | Heading |
+|---|---|---|
+| Overview, goals, and platform tiers | NOTES.md | "1. Purpose and goals" |
+| System structure and data flow | NOTES.md | "1.8 Architecture" |
+| Byte layout rules that every structure obeys | FORMAT.md | "2. Binary format rules" |
+| Hashing, multihash, and hash epochs | FORMAT.md | "3. Identity and hashing" |
+| Chunking algorithm and profiles | FORMAT.md | "4. Chunking" |
+| Compression rules | FORMAT.md | "5. Compression" |
+| Chunk, bundle, chunklist, tree, snapshot, ref | FORMAT.md | "6. Objects" |
+| Disc, run, and append behaviour (on-disc) | FORMAT.md | "7. Disc and run model" |
+| Disc, run, and append behaviour (host-side) | OPERATIONS.md | "12. Disc lifecycle, closing and appending" |
+| Disc filesystem profiles (on-disc layout) | FORMAT.md | "8. Filesystem profiles and the volume tree" |
+| Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burn plan and burning" |
+| Reed-Solomon parity (on-disc layout) | FORMAT.md | "10. Forward error correction" |
+| Self-healing, scrub, and verify (host-side) | OPERATIONS.md | "13. Verify, scrub and heal" |
+| Filters, manifests, and the catalog | FORMAT.md | "11. Filters, manifests and the catalog" |
+| Local cache | OPERATIONS.md | "2.4 Local cache layout" |
+| Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
+| Packing and locality | OPERATIONS.md | "8. Packing and locality" |
+| Restore planning | OPERATIONS.md | "14. Restore" |
+| File metadata and permissions | OPERATIONS.md | "15. Metadata restore policy" |
+| Commit flow, quick check, mirror mode | OPERATIONS.md | "7. Commit" |
+| Command syntax | OPERATIONS.md | "16. CLI reference" |
+| Config keys | OPERATIONS.md | "17. Configuration reference" |
+| Format versioning rules | FORMAT.md | "12. Reader and writer rules" |
+| Failure and recovery behaviour | OPERATIONS.md | "20. Failure and recovery actions" |
+| Testing and CI | OPERATIONS.md | "22. Test list" and "23. Manual physical checklist" |
+| Go-level implementation notes | NOTES.md | "6. Implementation notes" |
+| What changed from the old design | NOTES.md | "2.19 Design changes from the superseded design" |
+| Term definitions | NOTES.md | "8. Glossary" |
+| The Gear table generation rule | FORMAT.md | "4.8 Gear table" |
+| Magic numbers and registries | FORMAT.md | "2.2 Magic values" and "2.6 Registries" |
+| Burning-host command reference | OPERATIONS.md | "24. Burning-host command reference" |
+| Rejected designs and why | NOTES.md | "2.18 Rejected and superseded alternatives" |
+
+If this file disagrees with `FORMAT.md` or `OPERATIONS.md`, those documents
+win. Fix this file.
 
 ## Implementation rules
 
-Follow these rules for every change, in addition to the spec's "Implementation
-notes" section.
+Follow these rules for every change, in addition to NOTES.md's "6.
+Implementation notes" section.
 
 - Write Go. Use the standard library where it covers the need.
 - Code must explain itself. Do not lean on comments to carry the design.
 - A comment carries only information related to the code beside it.
-- A comment or a commit message must never cite a spec section number.
+- A comment or a commit message must never cite a section number.
   Section numbers drift; describe the rule or name the section instead.
 - Give every on-disc structure exactly one Go definition.
 - Write explicit little-endian encode and decode functions for every
   structure. Do not use reflection-based marshalling. Do not use struct tags
   for encoding.
 - Write the byte layout by hand, field by field, matching the structure's
-  offset table in the spec.
+  offset table in FORMAT.md.
 - Write a golden-file test for every structure: encode known values, compare
   to a checked-in file; decode that file, compare the fields.
 - Vendor the Gear table. Generate it once from the normative rule in
-  "Appendix A. Gear table", check it in as a literal array, and never
+  FORMAT.md's "4.8 Gear table", check it in as a literal array, and never
   regenerate it from a dependency.
 - Check pinned tool versions at startup: `dvd+rw-tools` 7.1-14 or later, and
   `udftools` 2.3 or later. Refuse to run the burn path on an older or
@@ -85,9 +95,9 @@ notes" section.
 ## Phase discipline
 
 - Implement Phase 1 only, unless the user asks for a later phase.
-- The phase table lives in the spec's "Implementation phases" and "CLI
-  reference" sections. Check a command's or a config key's phase tag before
-  you touch it.
+- The phase table lives in NOTES.md's "1.5 Implementation phases" and
+  OPERATIONS.md's "16. CLI reference" sections. Check a command's or a
+  config key's phase tag before you touch it.
 - A Phase 1 build must refuse a later-phase option or key with a clear
   message. Do not silently ignore it.
 - Never start a Backlog item without an explicit decision from the user.
@@ -95,7 +105,8 @@ notes" section.
 
 ## Testing rules
 
-Follow the spec's "Testing and CI" section. In summary:
+Follow OPERATIONS.md's "22. Test list" and "23. Manual physical checklist"
+sections. In summary:
 
 - Test image-first. Build a filesystem image, loop-mount it, verify it,
   simulate append and damage on the image. Physical burns are a manual
@@ -105,8 +116,9 @@ Follow the spec's "Testing and CI" section. In summary:
 - When a tool's behaviour is an open question, write a probe action under
   `.github/actions/probe-<topic>/`. A probe records an unknown answer; a test
   asserts a known one. Promote a probe to a test once its answer is stable.
-- Manual physical probes need a real drive and real media. Follow the spec's
-  manual checklist and manual probes; do not attempt to automate them in CI.
+- Manual physical probes need a real drive and real media. Follow
+  OPERATIONS.md's manual checklist and manual probes; do not attempt to
+  automate them in CI.
 - CI must prove the local cache is only an accelerator: delete the cache and
   restore from the disc images alone.
 
@@ -123,8 +135,8 @@ Follow the spec's "Testing and CI" section. In summary:
 ## Writing style
 
 Write this file, code comments, and commit messages in ASD-STE100 style:
-short sentences, active voice, one instruction per sentence. The spec already
-follows this style; match it.
+short sentences, active voice, one instruction per sentence. FORMAT.md,
+OPERATIONS.md, and NOTES.md already follow this style; match it.
 
 ## Proposed directory layout
 
@@ -150,8 +162,10 @@ internal/udf         disc filesystem profile handling
 
 ## How to work on this repo
 
-1. Read the spec section for the topic before writing or changing code.
+1. Read the FORMAT.md or OPERATIONS.md section for the topic before writing
+   or changing code.
 2. Check the phase tag for the command, key, or feature you touch.
 3. Write the golden-file test first, then the encode and decode functions.
 4. Never change a frozen on-disc format without a version bump and a matching
-   spec change. Ask the user before changing anything the spec calls frozen.
+   FORMAT.md change. Ask the user before changing anything FORMAT.md calls
+   frozen.
