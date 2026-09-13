@@ -1,6 +1,6 @@
 # NoahsArk on-disc format
 
-Format major version 1. Document version 0.4.3.
+Format major version 1. Document version 0.4.4.
 
 This document defines every byte that NoahsArk writes onto a disc and every
 rule a reader applies to those bytes. It covers the binary conventions, object
@@ -315,7 +315,8 @@ know, and no rule depends on it. Capacity comes from `capacity_sectors` and
 
 | Id | Name | Field | Shards | Status |
 |---:|---|---|---:|---|
-| 1 | `rs255-gf8` | GF(2^8) | 255 | **Default. Phase 1.** A stripe is `k + 1 + m = 255` blocks; the code is over the `k + m` data and parity shards (section 10.1). |
+| 0 | `none` | - | - | **Default. Phase 1.** No FEC. A run with this scheme carries no checksum column and no parity files (section 10.8). |
+| 1 | `rs255-gf8` | GF(2^8) | 255 | Phase 1. A stripe is `k + 1 + m = 255` blocks; the code is over the `k + m` data and parity shards (section 10.1). |
 | 2-255 | reserved | | | |
 
 ### 2.6 Version policy
@@ -2083,6 +2084,11 @@ of the on-disc contract, and a reader never uses them.
 
 ## 10. Forward error correction
 
+FEC is optional per run: `fec_scheme` 0, `none`, writes no checksum column and
+no parity, and `fec_scheme` 1, `rs255-gf8`, writes both, as this section
+describes. Section 10.8 states the scheme 0 rules; sections 10.1 to 10.7
+describe scheme 1.
+
 ### 10.1 Parity layout
 
 The FEC scheme is `rs255-gf8`: a systematic erasure code over GF(2^8) with `k`
@@ -2325,6 +2331,26 @@ object is unrecoverable, and `UNKNOWN` where no record exists.
 What a local cache reports for a disc that carries no health record of its own
 is host behaviour. The operations document states it.
 
+### 10.8 Scheme 0: no FEC
+
+A run whose `fec_scheme` is 0, `none`, carries no `checksum.bin` file and no
+parity files. Its INDEX carries no Files rows for roles 10 (`checksum.bin`)
+and 11 (a parity file), and its Objects and Prereqs tables are unaffected.
+`RUN.bin` and `RUN2.bin` still exist: the run header replication rule of
+section 10.4 still gives two copies, `RUN.bin` first and `RUN2.bin` last,
+just with no parity file copies between them.
+
+The stream definition of section 7.3 still applies to the file order: INDEX
+lists every stream file in the same fill order whether or not the run carries
+FEC, so a reader that only needs the file order, not the parity, reads a
+scheme 0 run the same way.
+
+A reader verifies a scheme 0 run by checking every object's content id
+(section 12.1) and every Files row's `file_hash` against the bytes on disc;
+it performs no checksum-column or parity check, because none exists. Heal
+refuses a scheme 0 run and reports that the run has no FEC, naming the run
+seq; it repairs nothing, because there is no parity to repair from.
+
 ---
 ## 11. The run index and the catalog
 
@@ -2404,6 +2430,10 @@ reader relies on it instead of sorting.
 (section 7.3); their rows still appear in the Files table, describing files
 of the run, but not in stream order relative to the stream's own rows —
 they follow every stream row, in the fixed order roles 10, 11, 12 give.
+
+A run whose `fec_scheme` is 0, `none` (section 10.8), carries no role 10 or
+role 11 rows: there is no `checksum.bin` and no parity file. `RUN2.bin`,
+role 12, still appears.
 
 File names are not stored. A reader derives a fixed-name file's path from its
 role, and an object file's name from the content id or the
