@@ -1,0 +1,25 @@
+name: 'Unit'
+description: >
+  Runs the Go unit test suite: a gofmt check, go vet, and go test over
+  every package, without the disc e2e suite. Every workflow that needs
+  the unit suite calls this action instead of repeating its steps.
+runs:
+  using: 'composite'
+  steps:
+    - name: gofmt check
+      shell: bash
+      run: |
+        fmt_out="$(gofmt -l .)"
+        if [ -n "$fmt_out" ]; then
+          echo "gofmt found unformatted files:"
+          echo "$fmt_out"
+          exit 1
+        fi
+
+    - name: go vet
+      shell: bash
+      run: go vet ./...
+
+    - name: go test
+      shell: bash
+      run: go test ./...
