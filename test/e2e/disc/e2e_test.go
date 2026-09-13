@@ -29,6 +29,7 @@ var scenarios = map[string]bool{
 	"corrupt-over":   true,
 	"cli":            true,
 	"chain":          true,
+	"lowmem":         true,
 }
 
 func requireHarness(t *testing.T) (scenario, media, order string) {

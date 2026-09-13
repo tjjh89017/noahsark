@@ -6,10 +6,12 @@
 #
 # Usage: run.sh SCENARIO [MEDIA] [ORDER]
 #   SCENARIO  media | corrupt-heal | corrupt-parity | corrupt-max |
-#             corrupt-over | cli | chain | chain-small
+#             corrupt-over | cli | chain | chain-small | lowmem
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
-#             fixture at dvd+r's real sector counts
+#             fixture at dvd+r's real sector counts. lowmem ignores it
+#             too: it always runs the media/bd25 flow, under whatever
+#             process memory limit the caller (the e2e action) applied.
 #   ORDER     dvd-bd25-bd10 | bd25-bd10-dvd; required for chain and
 #             chain-small, unused by every other scenario
 set -euo pipefail
@@ -211,16 +213,18 @@ media_image_capacity() {
 }
 
 # scenario_media packs, images, mounts, verifies and restores a sample at
-# MEDIA's real capacity; checks that an over-size pack is refused at that
-# capacity; and, for a forced media, checks DISC's forced capacity
-# fields through verify's output.
+# MEDIA's real capacity, and, for a forced media, checks DISC's forced
+# capacity fields through verify's output. An over-capacity commit no
+# longer refuses to pack outright: under the multi-disc pack semantics,
+# pack takes what fits onto this disc and reports the remainder for the
+# next one; that spill-across-discs behaviour is covered by the chain
+# scenario, not here.
 scenario_media() {
 	local media="$1" work="$WORK/media"
-	local repo small_src over_src tree image mnt restored
-	local capflag physflag small_mb over_mb apparent
+	local repo small_src tree image mnt restored
+	local capflag physflag small_mb apparent
 	repo="$work/repo"
 	small_src="$work/small"
-	over_src="$work/over"
 	tree="$work/tree"
 	image="$work/run.img"
 	mnt="$work/mnt"
@@ -228,11 +232,9 @@ scenario_media() {
 
 	build_binary
 	small_mb="$(media_small_mb "$media")"
-	over_mb="$(media_over_mb "$media")"
 	apparent="$(media_apparent_bytes "$media")"
 
 	gen_fixture "$small_src/data.bin" "$((small_mb * 1024 * 1024))"
-	gen_fixture "$over_src/data.bin" "$((over_mb * 1024 * 1024))"
 
 	case "$media" in
 	bd25-forced-10g)
@@ -251,11 +253,8 @@ scenario_media() {
 	commit_out="$("$BIN" commit --repo="$repo" --ref=SMALL "$small_src")"
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
-	"$BIN" commit --repo="$repo" --ref=OVER "$over_src"
 
 	"$BIN" pack --repo="$repo" --ref=SMALL "$capflag" $physflag --out="$tree"
-	assert_refused "media/$media: pack over-size" \
-		"$BIN" pack --repo="$repo" --ref=OVER "$capflag" $physflag --out="$work/over-tree"
 
 	"$BIN" image build --out="$image" --capacity="$(media_image_capacity "$media")" "$tree"
 	assert_sparse "$image" "$apparent"
@@ -295,6 +294,13 @@ main() {
 	chain-small)
 		[ -n "$order" ] || fail "the chain-small scenario needs an ORDER argument"
 		scenario_chain_small "$order"
+		;;
+	lowmem)
+		# The memory bound is enforced on the process from outside (the
+		# e2e action wraps this whole script), not by anything in here;
+		# this scenario just picks a real, non-trivial flow to run under
+		# that limit.
+		scenario_media "bd25"
 		;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac

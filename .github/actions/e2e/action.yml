@@ -23,6 +23,15 @@ inputs:
     description: 'go test -timeout value; the chain scenario needs far longer than every other cell'
     required: false
     default: '30m'
+  mem-limit-mb:
+    description: >
+      Caps the sudo'd go test process at this many MiB of address space,
+      to prove the low-RAM rule against a real cell instead of only unit
+      tests. Empty (the default) runs unconstrained. Tries systemd-run
+      --scope first, falls back to prlimit --as if that is not usable on
+      the runner.
+    required: false
+    default: ''
   cell-name:
     description: 'Matrix cell name, used for the result line'
     required: true
@@ -91,8 +100,8 @@ runs:
         mkdir -p "$RUNNER_TEMP/e2e-result"
         LOG="$RUNNER_TEMP/e2e-result/log.txt"
         RESULT="$RUNNER_TEMP/e2e-result/result.txt"
-        start=$(date +%s)
-        if sudo -E env "PATH=$PATH" \
+
+        GOTEST_CMD=(env "PATH=$PATH" \
             GOCACHE=/tmp/noahsark-e2e-gocache GOMODCACHE=/tmp/noahsark-e2e-gomodcache \
             NOAHSARK_E2E="$NOAHSARK_E2E" \
             NOAHSARK_E2E_SCENARIO="$NOAHSARK_E2E_SCENARIO" \
@@ -100,10 +109,54 @@ runs:
             NOAHSARK_E2E_ORDER="$NOAHSARK_E2E_ORDER" \
             NOAHSARK_E2E_TOOLDIR="$RUNNER_TEMP/e2e-tools" \
             NOAHSARK_E2E_BIN="$RUNNER_TEMP/e2e-tools/noahsark" \
-            go test ./test/e2e/disc -v -count=1 -timeout "${{ inputs.go-test-timeout }}" 2>&1 | tee "$LOG"; then
-          status=pass
-        else
+            go test ./test/e2e/disc -v -count=1 -timeout "${{ inputs.go-test-timeout }}")
+
+        MEM_LIMIT_MB="${{ inputs.mem-limit-mb }}"
+        mechanism="none"
+        if [ -n "$MEM_LIMIT_MB" ]; then
+          # Try systemd-run --scope first: it caps the whole process tree
+          # by cgroup memory accounting, the mechanism OPERATIONS.md's
+          # low-RAM rule is meant to hold under. Probe it with a no-op
+          # scope before trusting it for the real run; some runners do
+          # not have a usable systemd manager for this.
+          if sudo systemd-run --scope -p "MemoryMax=${MEM_LIMIT_MB}M" --same-dir true >/tmp/systemd-run-probe.log 2>&1; then
+            mechanism="systemd-run"
+            echo "lowmem: capping at ${MEM_LIMIT_MB} MiB via systemd-run --scope MemoryMax=${MEM_LIMIT_MB}M"
+          else
+            echo "lowmem: systemd-run --scope is not usable on this runner, falling back to prlimit --as:"
+            cat /tmp/systemd-run-probe.log || true
+            mechanism="prlimit"
+            echo "lowmem: capping at ${MEM_LIMIT_MB} MiB via prlimit --as=$((MEM_LIMIT_MB * 1024 * 1024))"
+          fi
+        fi
+
+        # run_wrapped CMD... runs CMD under whichever memory-limiting
+        # mechanism was picked above, or plain sudo -E when mem-limit-mb
+        # was not given.
+        run_wrapped() {
+          case "$mechanism" in
+          systemd-run) sudo systemd-run --scope -p "MemoryMax=${MEM_LIMIT_MB}M" --same-dir "$@" ;;
+          prlimit) sudo prlimit "--as=$((MEM_LIMIT_MB * 1024 * 1024))" "$@" ;;
+          *) sudo -E "$@" ;;
+          esac
+        }
+
+        start=$(date +%s)
+        status=pass
+        if ! run_wrapped "${GOTEST_CMD[@]}" 2>&1 | tee "$LOG"; then
           status=fail
+        fi
+
+        # The lowmem cell also proves the memory assertion tests
+        # (internal/image, internal/restore) hold under the same
+        # process-wide cap, not only the disc e2e flow above.
+        if [ "${{ inputs.scenario }}" = "lowmem" ]; then
+          MEMTEST_CMD=(env "PATH=$PATH" \
+              GOCACHE=/tmp/noahsark-e2e-gocache GOMODCACHE=/tmp/noahsark-e2e-gomodcache \
+              go test ./internal/image/... ./internal/restore/... -run MemoryBounded -v -count=1 -timeout 15m)
+          if ! run_wrapped "${MEMTEST_CMD[@]}" 2>&1 | tee -a "$LOG"; then
+            status=fail
+          fi
         fi
         end=$(date +%s)
         echo "$CELL_NAME $status $((end - start))s" | tee "$RESULT"
