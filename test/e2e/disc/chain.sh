@@ -56,22 +56,20 @@ chain_media_order() {
 }
 
 # chain_media_pack_flags MEDIA prints the pack --capacity (and, for a
-# forced media, --physical-capacity) flags for one real disc, trimmed
-# about 3% below media_sectors' raw target: a real UDF filesystem's own
-# descriptors and extents need some of a disc's declared sectors too, on
-# top of every byte pack's own accounting already reserves, and this
-# scenario's packs otherwise fill a run to within a few thousand sectors
-# of the raw target. media_capacity_flags' preset names leave no room
-# to trim, so this builds the flags from media_sectors' numbers instead;
-# image build still images the disc at its full, untrimmed preset.
+# forced media, --physical-capacity) flags for one real disc, at
+# media_sectors' raw target: pack's own budget already reserves the
+# filesystem overhead a run needs, in whole FEC stripes, so packing at
+# the preset's full sector count leaves the run inside the real UDF
+# image mkudffs builds at the same capacity. media_capacity_flags'
+# preset names leave no room to compute a physical capacity for the
+# forced case, so this builds the flags from media_sectors' numbers
+# instead.
 chain_media_pack_flags() {
-	local media="$1" target physical margin reduced
+	local media="$1" target physical
 	read -r target physical <<<"$(media_sectors "$media")"
-	margin=$((target / 33))
-	reduced=$((target - margin))
 	case "$media" in
-	dvd+r | bd25) echo "--capacity=$reduced" ;;
-	bd25-forced-10g) echo "--capacity=$reduced --physical-capacity=$physical" ;;
+	dvd+r | bd25) echo "--capacity=$target" ;;
+	bd25-forced-10g) echo "--capacity=$target --physical-capacity=$physical" ;;
 	*) fail "unknown chain media: $media" ;;
 	esac
 }
