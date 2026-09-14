@@ -300,4 +300,93 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	if !strings.Contains(missing.Error(), uuidText([16]byte{1})) {
 		t.Fatalf("expected the error text to name disc 1, got %q", missing.Error())
 	}
+	if !missing.RootTreeMissing {
+		t.Fatal("expected RootTreeMissing: snap1's root tree is not on disc 2")
+	}
+	if !strings.Contains(missing.Error(), "the snapshot's root tree is not on the provided disc(s)") {
+		t.Fatalf("expected the root-tree wording, got %q", missing.Error())
+	}
+}
+
+// TestRestoreMultiKnownDiscsCandidateBothDirections restores from the
+// middle disc of a three-disc chain, with WithKnownDiscs naming both the
+// earlier and the later disc. Disc 2's own DISCS table only ever names
+// disc 1, since disc 3 did not exist yet when disc 2 was packed, so
+// disc 3 can only reach the candidate list through WithKnownDiscs.
+func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commitAndPack := func(fill byte, discUUID byte, name, label string) (object.ID, string) {
+		src := t.TempDir()
+		if err := os.WriteFile(filepath.Join(src, "f.bin"), bytes.Repeat([]byte{fill}, 500_000), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		w := object.NewWriter(stagingDir)
+		w.Now = multiFixedClock
+		snap, _, err := w.Commit(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		objs, err := image.CollectReachable(stagingDir, []object.ID{snap})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, o := range objs {
+			if err := l.EnsureStaged(o.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := t.TempDir()
+		sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
+		if _, err := image.Pack(image.PackOptions{
+			StagingDir:              stagingDir,
+			Snapshots:               []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
+			TargetCapacitySectors:   sectors,
+			PhysicalCapacitySectors: sectors,
+			OutputDir:               dir,
+			RepoUUID:                [16]byte{9, 9, 9},
+			DiscUUID:                [16]byte{discUUID},
+			Label:                   label,
+			FECEnabled:              true,
+			Now:                     multiFixedClock,
+			StageLog:                l,
+		}); err != nil {
+			t.Fatalf("pack disc %d: %v", discUUID, err)
+		}
+		return snap, dir
+	}
+
+	snap1, _ := commitAndPack(1, 1, "ONE", "disc-one")
+	_, disc2Dir := commitAndPack(2, 2, "TWO", "disc-two")
+	commitAndPack(3, 3, "THREE", "disc-three")
+
+	outDir := t.TempDir()
+	known := map[[16]byte]string{
+		{1}: "disc-one",
+		{3}: "disc-three",
+	}
+	_, err = RestoreMultiWithProgress([]string{disc2Dir}, snap1, outDir, nil, WithKnownDiscs(known))
+	if err == nil {
+		t.Fatal("expected a missing-disc error")
+	}
+	missing, ok := err.(*MissingDiscError)
+	if !ok {
+		t.Fatalf("expected *MissingDiscError, got %T: %v", err, err)
+	}
+	var sawOne, sawThree bool
+	for _, c := range missing.Candidates {
+		if c.UUID == ([16]byte{1}) {
+			sawOne = true
+		}
+		if c.UUID == ([16]byte{3}) {
+			sawThree = true
+		}
+	}
+	if !sawOne || !sawThree {
+		t.Fatalf("expected both disc 1 and disc 3 among candidates, got %v", missing.Candidates)
+	}
 }

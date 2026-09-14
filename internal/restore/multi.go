@@ -23,11 +23,15 @@ type MissingDiscError struct {
 	// UnnamedCount is the number of needed objects that no provided
 	// disc's INDEX or Prereqs names. Set only when ByDisc is empty.
 	UnnamedCount int
-	// Candidates lists discs named by a provided disc's DISCS table
-	// that were not themselves provided. It is the best guess at which
-	// disc to insert when no Prereqs row names the disc. Set only when
-	// ByDisc is empty.
+	// Candidates lists discs named by a provided disc's DISCS table, or
+	// by WithKnownDiscs, that were not themselves provided. It is the
+	// best guess at which disc to insert when no Prereqs row names the
+	// disc. Set only when ByDisc is empty.
 	Candidates []DiscCandidate
+	// RootTreeMissing is set when the snapshot's own root tree, not
+	// merely some object under it, could not be read from any provided
+	// disc.
+	RootTreeMissing bool
 }
 
 // DiscCandidate is one disc named by a DISCS table but not provided to
@@ -51,9 +55,13 @@ func (e *MissingDiscError) Error() string {
 		}
 		return s.String()
 	}
-	_, _ = fmt.Fprintf(&s, "%d object(s) not found on any provided disc and named by no provided disc's INDEX", e.UnnamedCount)
+	if e.RootTreeMissing {
+		s.WriteString("the snapshot's root tree is not on the provided disc(s)")
+	} else {
+		_, _ = fmt.Fprintf(&s, "%d object(s) not found on any provided disc and named by no provided disc's INDEX", e.UnnamedCount)
+	}
 	if len(e.Candidates) > 0 {
-		s.WriteString("; earlier disc(s) not provided, that may hold them:")
+		s.WriteString("; disc(s) not provided, that may hold them:")
 		for _, c := range e.Candidates {
 			_, _ = fmt.Fprintf(&s, " disc %s", uuidText(c.UUID))
 			if c.Label != "" {
@@ -123,6 +131,11 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 		return 0, err
 	}
 	src.wp = &writePolicy{overwrite: o.overwrite}
+	for u, l := range o.knownDiscs {
+		if _, ok := src.discLabels[u]; !ok {
+			src.discLabels[u] = l
+		}
+	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return 0, err
@@ -143,7 +156,11 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 
 	rootRaw, _, ok := src.read(object.ID(snap.RootTree), false)
 	if !ok {
-		return src.wp.skipped, src.finalError()
+		err := src.finalError()
+		if mde, isMissing := err.(*MissingDiscError); isMissing && len(mde.ByDisc) == 0 {
+			mde.RootTreeMissing = true
+		}
+		return src.wp.skipped, err
 	}
 	var rootTree format.Tree
 	if _, err := rootTree.Decode(rootRaw); err != nil {

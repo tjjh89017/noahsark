@@ -131,6 +131,9 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	}
 
 	opts := []restore.Option{restore.WithInclude(includeFlags), restore.WithOverwrite(*overwrite)}
+	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
+		opts = append(opts, restore.WithKnownDiscs(known))
+	}
 	skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)

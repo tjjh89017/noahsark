@@ -1,13 +1,16 @@
 package restore
 
+import "maps"
+
 // Option configures an optional restriction on a Restore or RestoreMulti
 // call.
 type Option func(*restoreOptions)
 
 // restoreOptions holds every optional restriction a restore call accepts.
 type restoreOptions struct {
-	includes  []string
-	overwrite bool
+	includes   []string
+	overwrite  bool
+	knownDiscs map[[16]byte]string
 }
 
 // WithInclude restricts a restore to these snapshot-relative paths, and
@@ -27,6 +30,20 @@ func WithInclude(paths []string) Option {
 func WithOverwrite(overwrite bool) Option {
 	return func(o *restoreOptions) {
 		o.overwrite = overwrite
+	}
+}
+
+// WithKnownDiscs names every disc the caller's own repository ledger or
+// cache knows about, uuid to label. A missing-disc error then names
+// candidates from this whole set, not only the discs a provided disc's
+// own DISCS table happens to mention, so a candidate list covers a disc
+// packed after every provided disc too, not only an earlier one.
+func WithKnownDiscs(discs map[[16]byte]string) Option {
+	return func(o *restoreOptions) {
+		if o.knownDiscs == nil {
+			o.knownDiscs = make(map[[16]byte]string, len(discs))
+		}
+		maps.Copy(o.knownDiscs, discs)
 	}
 }
 
