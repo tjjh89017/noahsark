@@ -274,8 +274,6 @@ var notYetImplementedFlags = map[string]map[string]bool{
 		"--plan":            true,
 		"--drives":          true,
 		"--staging-budget":  true,
-		"--interactive":     true,
-		"--no-eject":        true,
 		"--no-owner":        true,
 		"--numeric-owner":   true,
 		"--no-flags":        true,
