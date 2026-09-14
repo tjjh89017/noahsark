@@ -56,18 +56,25 @@ exits 0. Section 3 below has the same loop for a regular cycle.
 
 Burn two identical discs from `/srv/noahsark/plans/run1` (section 3
 below gives the exact command lines and the twin-A/twin-B naming), and
-verify each one by mounting it and running `noahsark verify`. On each
-disc's sleeve, in permanent marker, write:
+verify each one by mounting it and running `noahsark verify`. Before
+labelling, read the disc's own uuid, seq and label back from the
+repository:
 
+```sh
+./noahsark disc list --repo=/srv/noahsark/repo
+```
+
+On each disc's sleeve, in permanent marker, write:
+
+- the first 8 characters of the `uuid` field `disc list` printed
+- `seq` from that same line (the disc number, `0` for the first disc)
 - the label you gave `pack` (`2026-09-14 run1`)
-- the run and disc number `pack` printed (`packed run 1 on disc 1`)
 - the date
 - which twin it is, `A` or `B`
 
-`pack`'s internal disc uuid is not printed by any command in normal
-use; it surfaces only inside a `restore` or `rebuild-cache` error
-message naming a missing disc. The run/disc number and the label you
-chose are what you write and look for by hand.
+A `restore` or `rebuild-cache` error naming a missing disc also names
+its full uuid; the 8-character prefix on the sleeve is enough to match
+it back to `disc list`'s output.
 
 Take twin B off-site immediately: a second physical location, not a
 second shelf in the same room, is what makes the pair a real backup.
@@ -91,6 +98,7 @@ new objects: 183, existing objects: 51420
 unstable 2 branch=flagged
 skipped 0
 unstable: 2, skipped: 2
+staged: 51603 objects, 24800000000 bytes
 ```
 
 - **New objects** are freshly staged content; **existing objects** were
@@ -114,12 +122,16 @@ time; committing is not. Pack when either is true:
 - a fixed calendar interval has passed (for example, once a month)
   even if the next disc will be mostly empty.
 
-This build has no separate command that reports staged bytes ahead of
-a pack. `pack` itself is how you find out: it reports what it packed
-and, if anything did not fit, how much remains staged. In practice,
-track roughly how much new data you have committed (`du -sh` on what
-changed since the last pack) and use that as the trigger, falling back
-to the calendar interval either way.
+The `staged:` line every `commit` prints is the number to check: it is
+the repository-wide STAGED total, objects and bytes, waiting for the
+next pack. Compare it against the target disc's usable size (the
+`--capacity` preset you plan to pack with, from section 3's table).
+Between commits, or to check without committing anything, the same
+total is the last line of:
+
+```sh
+./noahsark disc list --repo=/srv/noahsark/repo
+```
 
 ## 3. Each pack
 
@@ -200,12 +212,18 @@ thrown away: burn a fresh replacement from the same source and verify
 that one instead. There is no raw carving recovery in this build; a
 disc that does not verify is not trusted.
 
-Label both discs (the label text, run/disc number, date, and A or B),
-and record the pack in a plain text log kept next to the repository,
-for example `/srv/noahsark/discs.log`:
+Read the new disc's uuid and seq back before labelling it:
+
+```sh
+./noahsark disc list --repo=/srv/noahsark/repo
+```
+
+Label both discs (the uuid prefix and seq from `disc list`, the label
+text, the date, and A or B), and record the pack in a plain text log
+kept next to the repository, for example `/srv/noahsark/discs.log`:
 
 ```
-2026-09-21  run2  label="2026-09-21 run2"  twin A: shelf  twin B: offsite box 3
+2026-09-21  disc c59ffe81 seq 1  label="2026-09-21 run2"  twin A: shelf  twin B: offsite box 3
 ```
 
 Take twin B off-site. Keep twin A where the next verify or restore
@@ -253,13 +271,10 @@ sudo mount /dev/sr0 /mnt/noahsark
 ```
 
 `log` prints, for each snapshot, its id, time, and the refs pointing at
-it (`refs: 2026-09-21`). `ls` and `log` accept that date-named ref
-directly, but `restore` only takes the snapshot's own id, so read the
-id off the matching line:
-
-```sh
-SNAP=$(./noahsark log /mnt/noahsark | grep 'refs: 2026-09-21' | awk '{print $1}')
-```
+it (`refs: 2026-09-21`). `ls`, `log` and `restore` all accept that
+date-named ref directly, in place of the snapshot's own id, so the
+ref from section 1 or 2's `commit --ref=...` is enough on its own; no
+need to read an id off `log`'s output first.
 
 List that snapshot's tree, and check for anything still flagged
 UNSTABLE from a commit that ran while a file was mid-write. Flags
@@ -274,7 +289,7 @@ Restore a few paths, not the whole snapshot, to a scratch directory:
 
 ```sh
 ./noahsark restore --include=srv/data/ledger.csv \
-    --include=srv/data/photos/2026 /mnt/noahsark "$SNAP" /tmp/restore-drill
+    --include=srv/data/photos/2026 /mnt/noahsark 2026-09-21 /tmp/restore-drill
 ```
 
 Compare against the live source:
@@ -295,8 +310,7 @@ end to end:
 sudo mkdir -p /mnt/noahsark-discs/run1 /mnt/noahsark-discs/run2
 sudo mount /dev/sr0 /mnt/noahsark-discs/run1
 # swap discs, mount the next one at /mnt/noahsark-discs/run2, and so on
-SNAP=$(./noahsark log --discs-dir=/mnt/noahsark-discs | grep 'refs: 2026-09-21' | awk '{print $1}')
-./noahsark restore --discs-dir=/mnt/noahsark-discs "$SNAP" /tmp/restore-full
+./noahsark restore --discs-dir=/mnt/noahsark-discs 2026-09-21 /tmp/restore-full
 diff -rq /tmp/restore-full/srv/data /srv/data
 ```
 
@@ -347,5 +361,6 @@ example `"2027-01-04 repo2 run1"`.
   packed disc.
 - **A restore says `missing disc(s)`.** It names each needed disc by
   uuid and how many objects it holds. Mount that disc (match it by the
-  run/disc number and label on its sleeve, from your text log) and
+  uuid prefix and seq on its sleeve, from your text log, or by running
+  `disc list` against the repository if it is still reachable) and
   restore again with `--disc` or `--discs-dir` including it.
