@@ -16,14 +16,20 @@ repository directory or a failed disc.
 
 Build the CLI, then commit a source tree, pack it, and build a UDF
 image. This experiment corrupts and heals a run, so it needs `--fec`:
-a run with no FEC (the default) has no parity for `heal` to repair from.
+a run with no FEC (the default) has no parity for `verify --heal` to
+repair from.
+
+This experiment needs the source tree, not just the built binary. It
+calls `go run ./test/e2e/disc/cmd/ci-corrupt` and `ci-heal` directly,
+two test-only tools that live under `test/e2e/disc/cmd`, and it must
+run from a checkout of this repository.
 
 ```sh
 go build -o noahsark ./cmd/noahsark
 ./noahsark init --repo=repo --capacity=25GB
 ./noahsark commit --repo=repo /path/to/source
 ./noahsark pack --repo=repo --capacity=25GB --fec --out=tree
-./noahsark image build --out=run.img --capacity=25GB tree
+sudo ./noahsark image build --out=run.img --capacity=25GB tree
 ```
 
 Mounting a UDF image and corrupting its blocks both need root, which
@@ -137,7 +143,7 @@ path, in the same form `restore --include` takes:
 A path copied from that output restores just that path:
 
 ```sh
-./noahsark restore tree0 --include=srv/data/etc SNAPSHOT-ID restored
+./noahsark restore --include=srv/data/etc tree0 SNAPSHOT-ID restored
 ```
 
 `restore` accepts that same snapshot id or ref name in place of
@@ -167,7 +173,7 @@ it. A multi-disc restore then asks only for the objects those paths
 need, so a disc holding none of them can stay out of the drive:
 
 ```sh
-./noahsark restore tree0 --include=srv/data/etc SNAPSHOT-ID restored
+./noahsark restore --include=srv/data/etc tree0 SNAPSHOT-ID restored
 ```
 
 ## Losing the repository directory
@@ -255,8 +261,9 @@ Capacity effect: a run with FEC off gives every usable sector, after
 the filesystem overhead estimate, to data, with no stripe rounding and
 no share held back for a checksum column or parity; a run with FEC on
 gives up `(m + 1) / (k + m + 1)`, about 9.4%, of that space to the
-checksum column and parity, rounded down to whole stripes. `heal`
-refuses a run with no FEC and says so; `verify` still checks every
+checksum column and parity, rounded down to whole stripes. There is
+no separate `heal` command; `verify --heal` refuses a run with no FEC
+and says so; `verify` still checks every
 object's content id and every file's hash either way.
 
 ## Dependencies

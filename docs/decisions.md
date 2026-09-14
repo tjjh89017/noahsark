@@ -239,25 +239,54 @@ on a FORMAT.md change.
 
 `mkudffs` only makes an empty UDF filesystem; populating it needs a loop
 mount, which needs root. `internal/image`'s `MakeImage` runs `mkudffs`
-itself (needs no root), then, only when the `NOAHSARK_CI` environment
-variable is set, shells out to `populate.sh` through `sudo` to loop-mount
-the image, copy the `NOAHSARK` tree in, and unmount. Outside CI,
-`MakeImage` builds the empty image and returns, so a build on a developer
-machine with no root still exercises the `mkudffs` step and never blocks.
-This follows option (c) from the task's own list turned into (a): a
+itself (needs no root), then always loop-mounts the image, copies the
+`NOAHSARK` tree in with Go's own `filepath.WalkDir`, and unmounts;
+populating is never optional and never gated by an environment
+variable. When the calling process is not root, `MakeImage` removes the
+partial image and returns `ErrPopulateNeedsRoot` rather than shelling
+out to `sudo` itself; `cmd/noahsark`'s `image build` turns that into a
+message naming the exact `sudo noahsark image build ...` line to run
+instead. This follows option (c) from the task's own list: a
 from-scratch Go UDF writer was not attempted, since `udftools`'s own
-`mkudffs` plus a root-only mount-and-copy step, run in CI where `sudo` is
-available, is the simplest path that reaches conforming UDF bytes with no
-new binary format code to maintain.
+`mkudffs` plus a root-only mount-and-copy step is the simplest path
+that reaches conforming UDF bytes with no new binary format code to
+maintain. The earlier design gated the copy step behind `NOAHSARK_CI`
+and left a non-root build with an empty, unpopulated image; that let a
+developer machine silently build a useless image, so it was dropped in
+favour of always populating and refusing loudly when root is missing.
 
 ## 16. CLI reference
 
 `cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
-`pack`, `image build`, `verify` and `restore`. Every command below keeps
+`pack`, `image build`, `verify`, `restore`, `ls`, `log`,
+`rebuild-cache` and `disc list`. Every command below keeps
 OPERATIONS.md's name; a flag is reduced or renamed only when the Go
 packages this build calls have no way to honour it yet, since no state
 log, ref log, catalog, cache, locality planner or burn plan exists in
 this build.
+
+`-h` and `--help` on any command exit 0 and print that command's
+positionals and flags; they never count as a usage error. A flag must
+come before a command's positional arguments; one placed after is
+refused by name (`flags must come before positional arguments`)
+instead of being silently read back as a positional string, since
+Go's own `flag` package stops parsing flags at the first positional
+argument. `--progress`, `--no-progress` and `--quiet`/`-q` are accepted
+by every command, before or after the command name, and control the
+progress line long-running commands write to stderr; progress is on by
+default only when the real process stderr is a terminal.
+
+A command name OPERATIONS.md defines that belongs to a later phase
+(`sync`, `append`, `close`, `watch`, `consolidate`, `reindex`,
+`catalog`, `import`) is refused by name, naming its phase, exit 2. A
+Phase 1 command name OPERATIONS.md defines that this build simply does
+not implement yet (`burn`, `scrub`, `health`, `plan`, `gc`) is refused
+the same way, saying it is not in this build yet, exit 2. The same two
+distinctions apply to individual flags and config keys: a later-phase
+flag or key is refused naming its phase; a Phase 1 flag or key this
+build does not implement yet is refused saying so, rather than either
+one failing with the raw, unhelpful error the `flag` package or the
+config loader would otherwise give.
 
 `init` accepts only `--repo` and `--capacity`. `--hash`, `--chunker`,
 `--fs-profile` and `--preset` choose among alternatives the fixed
@@ -272,18 +301,23 @@ holding only `repo.uuid`, `staging.dir` and `disc.force_capacity`
 this build does not implement, so the config loader refuses any other
 key by name rather than accept and ignore it.
 
-`commit` accepts a source path and `--ref`. `--from` and `--copy-first`
-are Phase 2 and refused by name; `--out` and `--catalog` are Backlog and
-refused by name. `-m`, `--checksum`/`--full-scan`, `--force`,
-`--source`, `--source-root`, `--exclude`, `--one-file-system`,
-`--source-type` and `--retry-unstable` are Phase 1 but need the quick
-check, metadata TLVs, or exclude rules `internal/object`'s `Writer`
-does not implement (see the "6.14 Snapshot" entry above); they are not
-defined, so passing one is a plain usage error naming the flag. Commit
-records the new snapshot under the given ref (default `LATEST`) in a
-flat local ref file, `<repo>/refs.txt`, standing in for the local ref
-log of section 2.1 and 5.1, since no ref history or state log exists in
-this build.
+`commit` accepts a source path, `--ref`, and `-m` (a message stored on
+the snapshot). `--from` and `--copy-first` are Phase 2 and refused by
+name; `--out` and `--catalog` are Backlog and refused by name.
+`--checksum`/`--full-scan`, `--force`, `--source`, `--source-root`,
+`--exclude`, `--one-file-system`, `--source-type` and
+`--retry-unstable` are Phase 1 but need the quick check, metadata
+TLVs, or exclude rules `internal/object`'s `Writer` does not implement
+(see the "6.14 Snapshot" entry above); they are not defined, so passing
+one is a plain usage error naming the flag. Commit records the new
+snapshot under the given ref (default `LATEST`, so a commit with no
+`--ref` moves `LATEST`; a commit with `--ref=NAME` moves only `NAME`,
+never `LATEST`) in a flat local ref file, `<repo>/refs.txt`, standing in
+for the local ref log of section 2.1 and 5.1, since no ref history or
+state log exists in this build. `commit` exits 1 when any file was
+unstable or skipped, matching OPERATIONS.md's exit code table; the data
+is still committed and safe either way, only flagged or left out of
+this one snapshot.
 
 `pack` cannot select objects by `disc.min_fill` or `disc.max_wait`,
 because no staging state log exists to age objects in. It instead takes
@@ -316,23 +350,52 @@ which sets the forced limit, `capacity_forced_sectors`; it defaults to
 physical disc needs only `--capacity`. `--disc` is refused by name: it
 means continuing an existing disc, Phase 2 append, which
 `internal/image`'s `Build` does not support. `--reserve`,
-`--extra-reserve`, `--preset`, `--now`, `--close` and `--dry-run` are
-not defined, since `Build` has no such options.
+`--extra-reserve`, `--preset`, `--now` and `--dry-run` are not defined,
+since `Build` has no such options.
+
+`--label` sets the disc's on-disc label text. `--media` names a
+FORMAT.md media type registry entry, or a `--capacity` preset name
+(`bd25`, `bd50`, `bd100`, `bd128`, `dvd+r`, `dvd-r`); when omitted, it
+is derived from the matching `--capacity` preset, else defaults to
+`BD-R-SL-25`. `--out` sets the packed tree directory; it defaults to
+`<repo>/staging/plans/<disc uuid>/tree` and is refused when it already
+holds files, so `pack` never overwrites another run's tree by
+accident. `--fec` and `--no-fec` override `fec.scheme` for one pack and
+are mutually exclusive. `--close` changes only the burn command line
+`pack` prints (`spare:none` and `-dvd-compat` instead of `spare:min`
+and no `-dvd-compat`): this build does not burn or track disc state, so
+`--close` has no other effect. `pack` refuses outright, exit 1, when
+nothing is left staged to pack, since a run with nothing in it burns
+no useful bytes.
+
+`pack` ends by printing a "next steps" block: the exact `sudo noahsark
+image build`, `growisofs`, and `noahsark verify` command lines for the
+run it just packed, so a user need not compose them by hand. The
+`growisofs` line always follows FORMAT.md's and OPERATIONS.md's
+open-by-default rule, `spare:min` and no `-dvd-compat`, unless `--close`
+was given.
 
 `image build` takes the packed tree directory directly, in place of
 OPERATIONS.md's `--run=SEQ`, because no run-sequence state exists to
 resolve a run number against; the tree directory is what `pack --out`
 already printed. `--capacity` is required for the same reason `pack`
 requires it: `MakeImage` needs an explicit sector length, and there is
-no stored run capacity to default to.
+no stored run capacity to default to. Populating the image it builds
+needs a loop mount, which needs root; `image build` never calls `sudo`
+itself, so when the calling process is not root it removes the partial
+image and prints the exact `sudo noahsark image build ...` line to run
+instead, rather than leaving an unpopulated image behind or silently
+elevating itself.
 
 `verify --image=PATH` repurposes `--image` to mean a mounted disc path
 or an unpacked NOAHSARK tree, the root `internal/image`'s `Read` and
 `internal/restore`'s `Heal` already accept, rather than a raw image
-file plus `--mapfile`: mounting an image file needs root, which this
-build never assumes outside CI. `--level`, `--drive`, `--report`,
-`--disc` and `--run` are not defined, since no drive or repository
-state exists for them to select among.
+file plus `--mapfile`: mounting an image file needs root, which
+`verify` never assumes, so it takes an already-mounted path (or a
+plain packed tree, for testing with no mount at all) instead of
+mounting one itself. `--level`, `--drive`, `--report`, `--disc` and
+`--run` are not defined, since no drive or repository state exists for
+them to select among.
 
 `restore` takes `DISC-ROOT SNAPSHOT OUT-DIR` positionally, in place of
 OPERATIONS.md's `restore SNAPSHOT TARGET`, because resolving `SNAPSHOT`
@@ -342,9 +405,14 @@ same root `internal/restore`'s `Restore` already takes. SNAPSHOT itself
 accepts a ref name as well as a snapshot id, resolved against the given
 discs' REFS table the same way `ls` and `log` resolve it. `--no-xattr`
 and `--no-acl` are Phase 2 and refused by name; `--translate-acl` is
-Phase 2 and refused by name. Every other restore flag
-(`--plan`, `--include`, `--drives`, `--staging-budget`, `--interactive`,
-`--no-eject`, `--overwrite`, `--no-owner`, `--numeric-owner`,
+Phase 2 and refused by name. `--include` (repeatable, a snapshot-relative
+path, restoring everything under it when it names a directory) and
+`--overwrite` are implemented: `restore` otherwise leaves an existing
+path alone rather than overwrite it, reports `skipped N existing
+path(s)` and exits 1 when any were left alone, so a repeated restore
+never silently overwrites unless asked. Every other restore flag
+(`--plan`, `--drives`, `--staging-budget`, `--interactive`,
+`--no-eject`, `--no-owner`, `--numeric-owner`,
 `--no-flags`, `--no-times`, `--no-hardlinks`, `--metadata-strict`,
 `--report`, `--report-replay`, `--strict-unstable`) is Phase 1 but not
 defined, since `Restore` takes no such option today.
