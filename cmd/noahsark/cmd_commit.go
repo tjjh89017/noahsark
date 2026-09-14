@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 
@@ -24,16 +23,23 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	if refuseLaterPhaseFlags("commit", args, stderr) {
 		return 2
 	}
+	if refuseNotYetImplementedFlags("commit", args, stderr) {
+		return 2
+	}
 
-	fs := flag.NewFlagSet("commit", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark commit SOURCE [--repo=PATH] [--ref=NAME] [-m MESSAGE]",
+		"Commit a source directory tree as a new snapshot.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "LATEST", "ref to move")
+	message := fs.String("m", "", "commit message, stored on the snapshot")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("commit", fs, stderr) {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit SOURCE [--repo=PATH] [--ref=NAME]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit SOURCE [--repo=PATH] [--ref=NAME] [-m MESSAGE]")
 		return 2
 	}
 	source := fs.Arg(0)
@@ -49,10 +55,21 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
+	commitStageLog, err := stage.Open(cfg.StagingDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 1
+	}
+
 	w := newWriter(cfg.StagingDir)
 	w.RestatAfterRead = cfg.RestatAfterRead
 	w.RetryUnstable = cfg.RetryUnstable
 	w.Progress = prog
+	w.Message = *message
+	w.Known = func(id object.ID) bool {
+		rec, ok := commitStageLog.Get(id)
+		return ok && (rec.State == stage.Staged || rec.State == stage.Packed)
+	}
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)

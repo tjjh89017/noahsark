@@ -521,3 +521,65 @@ func recomputeID(v any) (ID, error) {
 		return ID{}, errUnexpectedType
 	}
 }
+
+// TestCommitMessageStoredAsSnapshotMeta asserts that Writer.Message is
+// written as the snapshot's SnapshotMetaMessage TLV, and round-trips
+// through Decode; and that an empty Message writes no TLV at all.
+func TestCommitMessageStoredAsSnapshotMeta(t *testing.T) {
+	src := t.TempDir()
+	buildFixture(t, src)
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+	w.Message = "a test commit message"
+	id, _, err := w.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(staging, "snapshots", id.TextForm()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap format.Snapshot
+	if _, err := snap.Decode(raw); err != nil {
+		t.Fatal(err)
+	}
+	if snap.MetaCount != 1 || len(snap.Meta) != 1 {
+		t.Fatalf("meta count = %d, want 1", snap.MetaCount)
+	}
+	if snap.Meta[0].Tag != format.SnapshotMetaMessage {
+		t.Fatalf("meta tag = %d, want SnapshotMetaMessage", snap.Meta[0].Tag)
+	}
+	if got := string(snap.Meta[0].Value); got != w.Message {
+		t.Fatalf("meta value = %q, want %q", got, w.Message)
+	}
+}
+
+// TestCommitNoMessageWritesNoMeta asserts that an empty Message writes
+// no metadata TLV.
+func TestCommitNoMessageWritesNoMeta(t *testing.T) {
+	src := t.TempDir()
+	buildFixture(t, src)
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+	id, _, err := w.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(staging, "snapshots", id.TextForm()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap format.Snapshot
+	if _, err := snap.Decode(raw); err != nil {
+		t.Fatal(err)
+	}
+	if snap.MetaCount != 0 || len(snap.Meta) != 0 {
+		t.Fatalf("meta count = %d, want 0", snap.MetaCount)
+	}
+}

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"strconv"
@@ -21,8 +20,8 @@ import (
 // way restore and verify do. ls reads tree objects only; it never opens a
 // chunk.
 func cmdLs(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark ls DISC-ROOT SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]",
+		"List a snapshot's tree. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT.", stderr)
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to read from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
@@ -31,6 +30,9 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "print entries as a JSON array")
 	unstableOnly := fs.Bool("unstable-only", false, "list only UNSTABLE entries")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("ls", fs, stderr) {
 		return 2
 	}
 

@@ -142,7 +142,7 @@ func TestLaterPhaseCommandRefused(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
 	}
-	want := "noahsark: sync is a Phase 2 command; not available in Phase 1"
+	want := "noahsark: sync is a Phase 2 command; this build implements Phase 1"
 	if !strings.Contains(out, want) {
 		t.Fatalf("output = %q, want it to contain %q", out, want)
 	}
@@ -242,9 +242,11 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 	}
 }
 
-// TestProgressFlags checks commit's progress line appears by default,
-// disappears under --no-progress and --quiet, and that --progress and
-// --no-progress together is a usage error.
+// TestProgressFlags checks commit's progress line is off by default in a
+// test process (stderr is not a terminal), forced on by --progress,
+// forced off by --no-progress and --quiet even when --progress is not
+// given, and that --progress and --no-progress together is a usage
+// error.
 func TestProgressFlags(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -253,8 +255,12 @@ func TestProgressFlags(t *testing.T) {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 || !strings.Contains(out, "commit:") {
-		t.Fatalf("default: exit %d, expected a commit progress line, got %q", code, out)
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 || strings.Contains(out, "commit:") {
+		t.Fatalf("default (non-terminal stderr): exit %d, expected no commit progress line, got %q", code, out)
+	}
+
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--progress", src); code != 0 || !strings.Contains(out, "commit:") {
+		t.Fatalf("--progress: exit %d, expected a commit progress line, got %q", code, out)
 	}
 
 	if code, out := runCmd(t, "commit", "--repo="+repo, "--no-progress", src); code != 0 || strings.Contains(out, "commit:") {

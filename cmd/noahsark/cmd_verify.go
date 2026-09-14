@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 
@@ -17,12 +16,19 @@ import (
 // raw image file plus --mapfile. See docs/decisions.md,
 // "16. CLI reference".
 func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	if refuseNotYetImplementedFlags("verify", args, stderr) {
+		return 2
+	}
+
+	fs := newFlagSet("noahsark verify --image=PATH [--heal] [--out=DIR]",
+		"Read a disc tree back and check it, optionally healing it first.", stderr)
 	imagePath := fs.String("image", "", "mounted disc path or unpacked NOAHSARK tree")
 	heal := fs.Bool("heal", false, "repair the disc with Reed-Solomon parity before reporting")
 	healOut := fs.String("out", "", "heal into this directory instead of in place")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("verify", fs, stderr) {
 		return 2
 	}
 	if *imagePath == "" {

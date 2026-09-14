@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"sort"
@@ -21,14 +20,17 @@ import (
 // provided discs know, newest first; with one it prints that snapshot's
 // own details.
 func cmdLog(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("log", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark log DISC-ROOT [REF|SNAPSHOT] [--limit=N] [--json]",
+		"Print a snapshot's history. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT.", stderr)
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to read from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	limit := fs.Int("limit", 0, "print at most this many entries; 0 means no limit")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("log", fs, stderr) {
 		return 2
 	}
 

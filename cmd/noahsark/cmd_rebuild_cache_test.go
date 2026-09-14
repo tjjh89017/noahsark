@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -176,6 +179,71 @@ func TestRebuildCacheNoUsableDisc(t *testing.T) {
 	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+empty)
 	if code != 3 {
 		t.Fatalf("exit %d, want 3: %s", code, out)
+	}
+}
+
+// newObjectsFromCommit parses a commit's "new objects: N, existing
+// objects: M" line and returns N.
+func newObjectsFromCommit(t *testing.T, output string) int {
+	t.Helper()
+	for line := range strings.SplitSeq(output, "\n") {
+		var newObjects, existingObjects int
+		if _, err := fmt.Sscanf(line, "new objects: %d, existing objects: %d", &newObjects, &existingObjects); err == nil {
+			return newObjects
+		}
+	}
+	t.Fatalf("no \"new objects\" line in commit output: %q", output)
+	return -1
+}
+
+// TestCommitAfterRebuildCacheReportsNoNewObjects packs a commit, rebuilds
+// the repository from that disc alone, then commits the same source
+// again: every object the disc already carries must count as existing,
+// not new, even though rebuild-cache never restored the staging bytes
+// for them.
+func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	// Every commit stamps a fresh snapshot object with the current
+	// time and Phase 1 chains no parent, so two commits of unchanged
+	// content only produce byte-identical objects, snapshot included,
+	// when both run under the same fixed clock.
+	fixed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	oldNewWriter := newWriter
+	defer func() { newWriter = oldNewWriter }()
+	newWriter = func(stagingDir string) *object.Writer {
+		w := object.NewWriter(stagingDir)
+		w.Now = func() time.Time { return fixed }
+		return w
+	}
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	if code != 0 {
+		t.Fatalf("second commit: exit %d: %s", code, out)
+	}
+	if got := newObjectsFromCommit(t, out); got != 0 {
+		t.Fatalf("new objects = %d, want 0: %s", got, out)
 	}
 }
 

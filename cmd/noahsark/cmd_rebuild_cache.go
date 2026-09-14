@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/hex"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -26,8 +25,8 @@ import (
 // directory. See docs/decisions.md, "16. CLI reference" and
 // "2.5 Cache rebuild levels".
 func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := flag.NewFlagSet("rebuild-cache", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]",
+		"Rebuild the local repository state from one or more discs.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory to create or use")
 	level := fs.Int("level", 1, "cache rebuild level: 1, 2 or 3")
 	snapshot := fs.String("snapshot", "", "snapshot level 2 would cover; accepted and unused, since level 1 rebuilds every object regardless")
@@ -36,6 +35,9 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	fs.Var(&discFlags, "disc", "a disc root to rebuild from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("rebuild-cache", fs, stderr) {
 		return 2
 	}
 

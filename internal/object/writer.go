@@ -90,6 +90,19 @@ type Writer struct {
 	// Commit. A nil Progress reports nothing.
 	Progress *progress.Reporter
 
+	// Message is the commit message, stored as the snapshot's
+	// SnapshotMetaMessage TLV. Empty means no message TLV is written.
+	Message string
+
+	// Known reports whether id already belongs to the repository: the
+	// staging state log carries it as Staged or Packed. A nil Known
+	// leaves an object's Summary count to writeObjectFile's own
+	// on-disk check alone. A non-nil Known counts an object as
+	// existing whenever it reports true, even when rebuild-cache left
+	// no local staging file for a Packed object, so a re-commit after
+	// rebuild-cache reports the object as existing, not new.
+	Known func(id ID) bool
+
 	reachable map[ID]uint64
 	rootAbs   string
 }
@@ -395,7 +408,7 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 	if err != nil {
 		return ID{}, err
 	}
-	countObject(sum, isNew)
+	w.countObject(sum, id, isNew)
 	return id, nil
 }
 
@@ -431,7 +444,7 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	if err != nil {
 		return ID{}, err
 	}
-	countObject(sum, isNew)
+	w.countObject(sum, id, isNew)
 	return id, nil
 }
 
@@ -462,7 +475,7 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	if err != nil {
 		return ID{}, err
 	}
-	countObject(sum, isNew)
+	w.countObject(sum, id, isNew)
 	return id, nil
 }
 
@@ -490,6 +503,10 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 		// detection happened.
 		SourceFlags: format.SnapshotFlagNoSparse,
 	}
+	if w.Message != "" {
+		s.Meta = []format.SnapshotMeta{{Tag: format.SnapshotMetaMessage, Value: []byte(w.Message)}}
+		s.MetaCount = uint16(len(s.Meta))
+	}
 
 	buf := make([]byte, s.EncodedLen())
 	if _, err := s.Encode(buf); err != nil {
@@ -507,7 +524,7 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	if err != nil {
 		return ID{}, err
 	}
-	countObject(sum, isNew)
+	w.countObject(sum, id, isNew)
 	return id, nil
 }
 
@@ -585,7 +602,16 @@ func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 	return true, nil
 }
 
-func countObject(sum *Summary, isNew bool) {
+// countObject adds id to sum as new or existing. id counts as existing
+// when writeObjectFile found it already on disk, or when w.Known
+// reports it as already Staged or Packed in the repository's state
+// log; the state log answers for an object that rebuild-cache marked
+// Packed without restoring its local staging file.
+func (w *Writer) countObject(sum *Summary, id ID, wroteNew bool) {
+	isNew := wroteNew
+	if isNew && w.Known != nil && w.Known(id) {
+		isNew = false
+	}
 	if isNew {
 		sum.NewObjects++
 	} else {

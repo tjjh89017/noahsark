@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"sort"
@@ -22,6 +21,10 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json]")
 		return 2
+	}
+	if args[0] == "-h" || args[0] == "--help" {
+		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json]")
+		return 0
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -54,11 +57,13 @@ type discSummary struct {
 }
 
 func cmdDiscList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("disc list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark disc list [--json]", "List every disc the repository ledger knows.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	jsonOut := fs.Bool("json", false, "print discs as a JSON array")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("disc list", fs, stderr) {
 		return 2
 	}
 	if fs.NArg() != 0 {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -101,6 +102,52 @@ func TestDiscListJSON(t *testing.T) {
 	}
 	if parsed.StagedObjects != 0 {
 		t.Fatalf("staged_objects = %d, want 0", parsed.StagedObjects)
+	}
+}
+
+// TestDiscListUsedSectorsSurviveRebuildCache packs one disc, rebuilds
+// the repository from that disc alone, and checks "disc list" still
+// reports a nonzero used value: the disc's own DISCS.bin row always
+// carries used_sectors 0 for itself, so rebuild-cache must derive the
+// real value from the disc's own RUN.bin instead of copying the row
+// as-is.
+func TestDiscListUsedSectorsSurviveRebuildCache(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "disc", "list", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("disc list: exit %d: %s", code, out)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("disc list output = %q, want one disc line and one staged line", out)
+	}
+	m := discListLineRe.FindStringSubmatch(lines[0])
+	if m == nil {
+		t.Fatalf("disc line %q does not match the expected column order", lines[0])
+	}
+	if m[5] == "0" {
+		t.Fatalf("used = %q, want nonzero after rebuild-cache", m[5])
 	}
 }
 
