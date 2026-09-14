@@ -88,7 +88,9 @@ func (c *Cache) Complete(id object.ID) bool {
 type IncompleteError struct {
 	// Snapshot is the snapshot whose tree set is incomplete.
 	Snapshot object.ID
-	// MissingTree is the first tree id the walk could not find.
+	// MissingTree is the first tree id the walk could not find, or
+	// Snapshot itself when the cache never received the snapshot
+	// object at all.
 	MissingTree object.ID
 	// RunSeq is the run known to store MissingTree, resolved through a
 	// cached run's INDEX Objects or Prereqs table. Zero when unknown.
@@ -104,13 +106,13 @@ type IncompleteError struct {
 func (e *IncompleteError) Error() string {
 	switch {
 	case e.HasDiscUUID:
-		return fmt.Sprintf("snapshot %s: tree %s is missing from the cache; run %d, disc %s (%s) holds it",
+		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; run %d, disc %s (%s) holds it",
 			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq, uuidText(e.DiscUUID), e.Label)
 	case e.RunSeq != 0:
-		return fmt.Sprintf("snapshot %s: tree %s is missing from the cache; run %d holds it, but no cached DISCS row names its disc",
+		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; run %d holds it, but no cached DISCS row names its disc",
 			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq)
 	default:
-		return fmt.Sprintf("snapshot %s: tree %s is missing from the cache; no cached run's INDEX names the run that holds it",
+		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; no cached run's INDEX names the run that holds it",
 			e.Snapshot.TextForm(), e.MissingTree.TextForm())
 	}
 }
@@ -136,9 +138,16 @@ func (c *Cache) CheckComplete(id object.ID) error {
 // walkTrees walks every tree reachable from snapshot id's root tree,
 // using only trees already present in the cache. It returns the first
 // tree id it could not find and false, or a zero id and true when every
-// reachable tree is present.
+// reachable tree is present. A snapshot id the cache has never seen at
+// all is reported as missing, id itself, rather than a hard error: a
+// pack or a rebuild-cache that never saw this snapshot's disc leaves
+// exactly that gap, and CheckComplete resolves it the same way it
+// resolves a missing tree.
 func (c *Cache) walkTrees(id object.ID) (missing object.ID, complete bool, err error) {
 	snap, err := c.ReadSnapshot(id)
+	if os.IsNotExist(err) {
+		return id, false, nil
+	}
 	if err != nil {
 		return object.ID{}, false, err
 	}

@@ -2,26 +2,28 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// cmdLs implements "noahsark ls". OPERATIONS.md's "ls SNAPSHOT [PATH]"
-// resolves SNAPSHOT through a repository's catalog, which this build does
-// not keep; instead it takes one or more disc roots directly, the same
-// way restore and verify do. ls reads tree objects only; it never opens a
+// cmdLs implements "noahsark ls". With no DISC-ROOT, --disc or
+// --discs-dir, SNAPSHOT (an id or a ref name) resolves through the
+// local cache, so ls needs no disc present; give a disc root, --disc or
+// --discs-dir to read straight from a disc instead, the same way
+// restore and verify do. ls reads tree objects only; it never opens a
 // chunk.
 func cmdLs(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark ls DISC-ROOT SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]",
-		"List a snapshot's tree. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT.", stderr)
+	fs := newFlagSet("noahsark ls [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]",
+		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts --disc (repeatable), --discs-dir or a DISC-ROOT positional to read a disc instead.", stderr)
+	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to read from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
@@ -37,8 +39,25 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 	}
 
 	multi := len(discFlags) > 0 || *discsDir != ""
+	discRootGiven := !multi && fs.NArg() > 0 && looksLikeDiscRoot(fs.Arg(0))
+	cacheMode := !multi && !discRootGiven
+
+	var src snapshotSource
+	var cacheObj *cache.Cache
 	var positional []string
 	switch {
+	case cacheMode:
+		if fs.NArg() < 1 || fs.NArg() > 2 {
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]")
+			return 2
+		}
+		positional = fs.Args()
+		cs, c, err := openCacheSource(*repoFlag)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
+			return 1
+		}
+		src, cacheObj = cs, c
 	case multi:
 		if fs.NArg() < 1 || fs.NArg() > 2 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls --disc=ROOT [--disc=ROOT]... SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]")
@@ -52,16 +71,19 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 		}
 		positional = fs.Args()[1:]
 	}
-	discRoots, err := resolveDiscRoots(discFlags, *discsDir, fs.Args())
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-		return 2
-	}
 
-	src, err := restore.OpenSource(discRoots)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-		return 1
+	if !cacheMode {
+		discRoots, err := resolveDiscRoots(discFlags, *discsDir, fs.Args())
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
+			return 2
+		}
+		restoreSrc, err := restore.OpenSource(discRoots)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
+			return 1
+		}
+		src = restoreSrc
 	}
 
 	snapID, err := src.ParseSnapshotArg(positional[0])
@@ -76,33 +98,22 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 
 	snap, err := src.Snapshot(snapID)
 	if err != nil {
-		return reportLsError(stderr, err)
+		return reportSourceError("ls", stderr, err, cacheObj, snapID)
 	}
 
 	lister := &lsLister{src: src, stdout: stdout, long: *long, jsonOut: *jsonOut, unstableOnly: *unstableOnly}
 	if err := lister.run(object.ID(snap.RootTree), pathArg, *recursive); err != nil {
-		return reportLsError(stderr, err)
+		return reportSourceError("ls", stderr, err, cacheObj, snapID)
 	}
 	lister.finishJSON()
 	return 0
-}
-
-// reportLsError prints err and picks the exit code ls reports it with: 3
-// when a needed tree object lives only on a disc this call was not given,
-// 1 for every other failure.
-func reportLsError(stderr io.Writer, err error) int {
-	_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-	if _, ok := errors.AsType[*restore.MissingDiscError](err); ok {
-		return 3
-	}
-	return 1
 }
 
 // lsLister walks the part of a snapshot's tree ls was asked to list and
 // prints one line per entry as it is found, so a whole-snapshot
 // --recursive listing never holds the full entry list in memory.
 type lsLister struct {
-	src          *restore.Source
+	src          snapshotSource
 	stdout       io.Writer
 	long         bool
 	jsonOut      bool
@@ -255,7 +266,7 @@ var lsTypeNames = map[uint8]string{
 // own root path in full, whole segment by whole segment, and any
 // remaining segments name a path inside that root entry's own tree. It
 // returns the entry found and its full path.
-func resolveLsPath(src *restore.Source, rootEntries []format.TreeEntry, pathArg string) (*format.TreeEntry, string, error) {
+func resolveLsPath(src snapshotSource, rootEntries []format.TreeEntry, pathArg string) (*format.TreeEntry, string, error) {
 	segs := splitLsPath(pathArg)
 	if len(segs) == 0 {
 		return nil, "", fmt.Errorf("ls: empty path")
