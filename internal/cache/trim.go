@@ -10,10 +10,13 @@ import (
 )
 
 // NewestSnapshotsByTime returns up to n of the cache's snapshot ids,
-// ordered newest first by each snapshot's own TimeSec, breaking a tie by
-// text form for a stable order. n <= 0 returns every cached snapshot, in
-// the same newest-first order. A snapshot object the cache cannot read
-// is skipped rather than failing the whole call.
+// ordered newest first by each snapshot's own TimeSec and TimeNsec,
+// breaking a tie by text form for a stable order. Two commits inside the
+// same wall-clock second differ only in TimeNsec, so both fields must
+// order the list or the tie-break by hash can rank the older snapshot
+// first. n <= 0 returns every cached snapshot, in the same newest-first
+// order. A snapshot object the cache cannot read is skipped rather than
+// failing the whole call.
 func (c *Cache) NewestSnapshotsByTime(n int) ([]object.ID, error) {
 	ids, err := c.ListSnapshots()
 	if err != nil {
@@ -21,8 +24,9 @@ func (c *Cache) NewestSnapshotsByTime(n int) ([]object.ID, error) {
 	}
 
 	type dated struct {
-		id      object.ID
-		timeSec int64
+		id       object.ID
+		timeSec  int64
+		timeNsec uint32
 	}
 	all := make([]dated, 0, len(ids))
 	for _, id := range ids {
@@ -30,11 +34,14 @@ func (c *Cache) NewestSnapshotsByTime(n int) ([]object.ID, error) {
 		if err != nil {
 			continue
 		}
-		all = append(all, dated{id: id, timeSec: snap.TimeSec})
+		all = append(all, dated{id: id, timeSec: snap.TimeSec, timeNsec: snap.TimeNsec})
 	}
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].timeSec != all[j].timeSec {
 			return all[i].timeSec > all[j].timeSec
+		}
+		if all[i].timeNsec != all[j].timeNsec {
+			return all[i].timeNsec > all[j].timeNsec
 		}
 		return all[i].id.TextForm() < all[j].id.TextForm()
 	})
