@@ -254,3 +254,116 @@ func TestPackedCountByDisc(t *testing.T) {
 		t.Fatalf("counts has %d discs, want 2 (staged object must not appear)", len(counts))
 	}
 }
+
+func TestBurnedCleanTransitions(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk a"))
+	discUUID := [16]byte{0xAB}
+
+	if err := l.EnsureStaged(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id, 3, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 3, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := l.Get(id)
+	if !ok || rec.State != Burned || rec.RunSeq != 3 || rec.DiscUUID != discUUID {
+		t.Fatalf("got %+v, %v, want Burned run 3", rec, ok)
+	}
+
+	if _, ok := l.CleanTime(id); ok {
+		t.Fatal("CleanTime reported a time before MarkClean ran")
+	}
+	if err := l.MarkClean(id); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok = l.Get(id)
+	if !ok || rec.State != Clean || rec.RunSeq != 3 || rec.DiscUUID != discUUID {
+		t.Fatalf("got %+v, %v, want Clean run 3", rec, ok)
+	}
+	cleanAt, ok := l.CleanTime(id)
+	if !ok || cleanAt.IsZero() {
+		t.Fatalf("CleanTime after MarkClean: got %v, %v", cleanAt, ok)
+	}
+
+	// The clean time survives a reopen, replayed from the companion log.
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanAt2, ok := l2.CleanTime(id)
+	if !ok || !cleanAt2.Equal(cleanAt) {
+		t.Fatalf("reopened CleanTime: got %v, %v, want %v", cleanAt2, ok, cleanAt)
+	}
+}
+
+func TestVerifyFailedReturnsBurnedToPacked(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk a"))
+	discUUID := [16]byte{0xCD}
+
+	if err := l.EnsureStaged(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id, 5, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 5, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkVerifyFailed(id); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := l.Get(id)
+	if !ok || rec.State != Packed || rec.Reason != ReasonVerifyFailed || rec.RunSeq != 5 || rec.DiscUUID != discUUID {
+		t.Fatalf("got %+v, %v, want Packed run 5 reason ReasonVerifyFailed", rec, ok)
+	}
+}
+
+func TestGCEligibleAndDeleted(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk a"))
+	discUUID := [16]byte{0xEF}
+
+	if err := l.EnsureStaged(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id, 1, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 1, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkClean(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkGCEligible(id); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := l.Get(id)
+	if !ok || rec.State != GCEligible {
+		t.Fatalf("got %+v, %v, want GCEligible", rec, ok)
+	}
+	if err := l.MarkDeleted(id); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok = l.Get(id)
+	if !ok || rec.State != Deleted {
+		t.Fatalf("got %+v, %v, want Deleted", rec, ok)
+	}
+}
