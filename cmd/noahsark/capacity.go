@@ -37,18 +37,7 @@ func parseCapacity(s string) (uint64, error) {
 	if sectors, ok := capacityPresets[strings.ToLower(s)]; ok {
 		return sectors, nil
 	}
-	units := []struct {
-		suffix string
-		scale  uint64
-	}{
-		{"GiB", 1 << 30},
-		{"MiB", 1 << 20},
-		{"KiB", 1 << 10},
-		{"GB", 1_000_000_000},
-		{"MB", 1_000_000},
-		{"KB", 1_000},
-	}
-	for _, u := range units {
+	for _, u := range byteSizeUnits {
 		if numPart, ok := strings.CutSuffix(s, u.suffix); ok {
 			numPart = strings.TrimSpace(numPart)
 			n, err := strconv.ParseFloat(numPart, 64)
@@ -62,6 +51,44 @@ func parseCapacity(s string) (uint64, error) {
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("capacity: invalid value %q, expected a preset name, a sector count, or a size like 25GB", s)
+	}
+	return n, nil
+}
+
+// byteSizeUnits lists the unit suffixes --capacity and --staging-budget
+// both accept on a size value: a binary byte size (GiB, MiB, KiB) or a
+// decimal one (GB, MB, KB), the marketing convention optical media
+// capacities are named in.
+var byteSizeUnits = []struct {
+	suffix string
+	scale  uint64
+}{
+	{"GiB", 1 << 30},
+	{"MiB", 1 << 20},
+	{"KiB", 1 << 10},
+	{"GB", 1_000_000_000},
+	{"MB", 1_000_000},
+	{"KB", 1_000},
+}
+
+// parseByteSize parses a plain byte count, or a number followed by one of
+// byteSizeUnits' suffixes, into a byte count. Unlike parseCapacity, a bare
+// integer here is bytes, not sectors: --staging-budget and
+// restore.staging_budget are plain byte quantities, not media capacities.
+func parseByteSize(s string) (uint64, error) {
+	for _, u := range byteSizeUnits {
+		if numPart, ok := strings.CutSuffix(s, u.suffix); ok {
+			numPart = strings.TrimSpace(numPart)
+			n, err := strconv.ParseFloat(numPart, 64)
+			if err != nil {
+				return 0, fmt.Errorf("invalid size %q", s)
+			}
+			return uint64(n * float64(u.scale)), nil
+		}
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size %q, expected a byte count or a size like 4GiB", s)
 	}
 	return n, nil
 }

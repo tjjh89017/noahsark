@@ -46,9 +46,9 @@ type repoConfig struct {
 	// build only parses and stores the key; gc applies it later.
 	CacheSnapshotDepth int
 	// RestoreStagingBudget is restore.staging_budget, in bytes: the
-	// peak staging/restore/ size a restore should stay under. This
-	// build only warns above it; it does not split a restore into
-	// passes yet.
+	// peak staging/restore/ size a restore must stay under. A
+	// disc-swap restore splits a disc's reads into passes so spool
+	// usage never exceeds this.
 	RestoreStagingBudget uint64
 	// RetainAfterClean is staging.retain_after_clean: how long an
 	// object stays CLEAN before gc may move it to GC-ELIGIBLE.
@@ -232,7 +232,7 @@ func readConfig(path string) (repoConfig, error) {
 			}
 			c.CacheSnapshotDepth = n
 		case "restore.staging_budget":
-			n, err := strconv.ParseUint(value, 10, 64)
+			n, err := parseByteSize(value)
 			if err != nil {
 				return repoConfig{}, fmt.Errorf("config: restore.staging_budget: %w", err)
 			}
