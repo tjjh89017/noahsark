@@ -27,10 +27,12 @@ var FormatTxt []byte
 // mediaTypeNames names the media type registry, for README.txt's
 // {media_type} slot.
 var mediaTypeNames = map[format.MediaType]string{
-	format.MediaTypeBDRSL25GB:  "BD-R SL 25 GB",
-	format.MediaTypeBDRDL50GB:  "BD-R DL 50 GB",
-	format.MediaTypeBDRXL100GB: "BD-R XL 100 GB",
-	format.MediaTypeBDRXL128GB: "BD-R XL 128 GB",
+	format.MediaTypeBDRSL25GB:   "BD-R SL 25 GB",
+	format.MediaTypeBDRDL50GB:   "BD-R DL 50 GB",
+	format.MediaTypeBDRXL100GB:  "BD-R XL 100 GB",
+	format.MediaTypeBDRXL128GB:  "BD-R XL 128 GB",
+	format.MediaTypeDVDPlusRSL:  "DVD+R SL 4.7 GB",
+	format.MediaTypeDVDMinusRSL: "DVD-R SL 4.7 GB",
 }
 
 // fsProfileNames names the disc filesystem profile registry, for

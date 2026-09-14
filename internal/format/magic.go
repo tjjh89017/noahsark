@@ -99,10 +99,12 @@ const DiscFSProfileOneshot DiscFSProfile = 0
 type MediaType uint8
 
 const (
-	MediaTypeBDRSL25GB  MediaType = 1
-	MediaTypeBDRDL50GB  MediaType = 2
-	MediaTypeBDRXL100GB MediaType = 3
-	MediaTypeBDRXL128GB MediaType = 4
+	MediaTypeBDRSL25GB   MediaType = 1
+	MediaTypeBDRDL50GB   MediaType = 2
+	MediaTypeBDRXL100GB  MediaType = 3
+	MediaTypeBDRXL128GB  MediaType = 4
+	MediaTypeDVDPlusRSL  MediaType = 5
+	MediaTypeDVDMinusRSL MediaType = 6
 )
 
 // FECScheme is the FEC scheme registry.

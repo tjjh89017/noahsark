@@ -305,7 +305,9 @@ files of a run, not the catalog tables' own kinds, which section 2.2's
 | 2 | `BD-R DL 50 GB` | Phase 1. |
 | 3 | `BD-R XL 100 GB` | Phase 1. |
 | 4 | `BD-R XL 128 GB` | Phase 1. |
-| 5-255 | reserved | |
+| 5 | `DVD+R SL 4.7 GB` | Phase 1. |
+| 6 | `DVD-R SL 4.7 GB` | Phase 1. |
+| 7-255 | reserved | |
 
 `media_type` is informational. A reader never rejects a value it does not
 know, and no rule depends on it. Capacity comes from `capacity_sectors` and
