@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"syscall"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -26,6 +27,7 @@ type Manifest struct {
 	filesByChunk map[object.ID][]*pendingFile
 	dirsForMeta  []dirMeta
 	wp           *writePolicy
+	resumed      int
 }
 
 // pendingFile is one regular file the manifest still owes: its
@@ -148,22 +150,30 @@ func (m *Manifest) walkDir(c *cache.Cache, treeID object.ID, dest string, fs *fi
 	return nil
 }
 
-// addFile registers one regular file. A file that already exists and
-// overwrite is false is counted as skipped up front, so its chunks are
-// never spooled.
+// addFile registers one regular file. A killed disc-swap restore can
+// leave a file already fully written from an earlier run; with overwrite
+// not requested, such a file counts as resumed rather than skipped, so a
+// rerun reports success once every other file is in place. A file whose
+// size, mtime, or content disagrees with the tree entry counts as
+// skipped, the ordinary conflict a caller resolves with --overwrite.
 func (m *Manifest) addFile(c *cache.Cache, dest string, blobID object.ID, e format.TreeEntry) error {
-	if !m.wp.overwrite {
-		if _, err := os.Lstat(dest); err == nil {
-			m.wp.skipped++
-			return nil
-		}
-	}
 	blob, err := c.ReadBlob(blobID)
 	if err != nil {
 		return fmt.Errorf("blob %s: not held by the cache; disc-swap restore needs every blob cached: %w", blobID.TextForm(), err)
 	}
 	entries := append([]format.BlobEntry(nil), blob.Entries...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
+
+	if !m.wp.overwrite {
+		if fi, err := os.Lstat(dest); err == nil {
+			if fi.Mode().IsRegular() && fileAlreadyRestored(dest, fi, e, entries) {
+				m.resumed++
+			} else {
+				m.wp.skipped++
+			}
+			return nil
+		}
+	}
 
 	pf := &pendingFile{path: dest, entries: entries, remaining: make(map[object.ID]bool), treeEntry: e}
 	for _, be := range entries {
@@ -259,8 +269,65 @@ func (m *Manifest) Finish() {
 }
 
 // Skipped is the number of existing paths left alone because overwrite
-// was not requested.
+// was not requested and the path disagreed with the tree entry it must
+// match to count as already restored.
 func (m *Manifest) Skipped() int { return m.wp.skipped }
+
+// Resumed is the number of existing paths left alone because overwrite
+// was not requested, but the path already matches the tree entry: an
+// earlier, interrupted disc-swap restore already wrote it.
+func (m *Manifest) Resumed() int { return m.resumed }
+
+// fileAlreadyRestored reports whether dest, an existing regular file,
+// already holds e's data: either its size and mtime match e exactly, the
+// way applyMetadata leaves a file this restore wrote itself, or its
+// bytes hash to the same chunk ids entries names, checked straight from
+// dest with no disc access needed.
+func fileAlreadyRestored(dest string, fi os.FileInfo, e format.TreeEntry, entries []format.BlobEntry) bool {
+	if uint64(fi.Size()) != e.Size {
+		return false
+	}
+	sec, nsec := statMtime(fi)
+	if sec == e.MtimeSec && uint32(nsec) == e.MtimeNsec {
+		return true
+	}
+	return contentMatches(dest, entries)
+}
+
+// statMtime returns fi's mtime as seconds and nanoseconds, using the raw
+// stat when available for the same precision applyMetadata restores.
+func statMtime(fi os.FileInfo) (sec, nsec int64) {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return st.Mtim.Sec, st.Mtim.Nsec
+	}
+	return fi.ModTime().Unix(), int64(fi.ModTime().Nanosecond())
+}
+
+// contentMatches reports whether dest's bytes, split at entries' own
+// offsets and lengths, hash to the content id each entry names. It reads
+// dest, never a disc, so a resumed check never needs the drive back.
+func contentMatches(dest string, entries []format.BlobEntry) bool {
+	f, err := os.Open(dest)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+
+	buf := make([]byte, 0, 1<<20)
+	for _, be := range entries {
+		if cap(buf) < int(be.Length) {
+			buf = make([]byte, be.Length)
+		}
+		chunk := buf[:be.Length]
+		if _, err := f.ReadAt(chunk, int64(be.FileOffset)); err != nil {
+			return false
+		}
+		if object.ComputeID(chunk) != object.ID(be.ContentID) {
+			return false
+		}
+	}
+	return true
+}
 
 // Pending reports whether any file is still waiting on chunk data.
 func (m *Manifest) Pending() bool {

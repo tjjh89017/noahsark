@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
@@ -58,7 +59,22 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	}
 
 	multi := len(discFlags) > 0 || *discsDir != ""
+	if *mountFlag != "" && multi {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount cannot be combined with --disc or --discs-dir")
+		return 2
+	}
+	// A bare two positional arguments, with --mount given, is the
+	// disc-swap mode's SNAPSHOT OUT-DIR. Without --mount, the same two
+	// arguments are ambiguous: they could equally be a DISC-ROOT
+	// SNAPSHOT for the all-discs-at-once mode with OUT-DIR left off. This
+	// build resolves that only by requiring --mount for disc-swap, so a
+	// missing OUT-DIR reports the usage line instead of silently running
+	// the wrong mode.
 	if !multi && fs.NArg() == 2 {
+		if *mountFlag == "" {
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] SNAPSHOT OUT-DIR")
+			return 2
+		}
 		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *noEject, *interactive, fs.Arg(0), fs.Arg(1), stdout, stderr, prog)
 	}
 
@@ -281,11 +297,31 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 	m.Finish()
 
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
+	if m.Resumed() > 0 {
+		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", m.Resumed())
+	}
 	if m.Skipped() > 0 {
 		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", m.Skipped())
 		return 1
 	}
+	if err := removeEmptySpoolRoot(spoolRoot); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+	}
 	return 0
+}
+
+// removeEmptySpoolRoot removes a disc-swap restore's staging/restore/
+// <snapshot> directory once every file has been assembled and no spool
+// object remains under it. A failed or still-pending restore leaves the
+// directory in place, so a later resume still finds its spooled objects.
+func removeEmptySpoolRoot(spoolRoot string) error {
+	if err := os.Remove(filepath.Join(spoolRoot, "objects")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Remove(spoolRoot); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // wantedChunks returns the chunk object ids d's plan entry assigns that
@@ -390,13 +426,44 @@ func labelForUUID(c *cache.Cache, uuid [16]byte) string {
 	return ""
 }
 
-// ejectDrive unmounts and ejects mountDir. Either failing is a warning,
-// not a hard error: the operator can still remove the disc by hand.
+// ejectWarnedNoBinary and ejectWarnedPermission latch the two eject
+// warnings this loop can print, so a multi-disc restore prints each at
+// most once instead of once per disc.
+var ejectWarnedNoBinary, ejectWarnedPermission bool
+
+// ejectDrive unmounts and ejects mountDir. A missing eject binary is
+// skipped with one line, not a per-disc warning: it is expected on a
+// minimal host and the operator can still remove the disc by hand. An
+// unmount failure that looks like a permission problem prints one line
+// pointing at sudo or --no-eject, also at most once; the operator can
+// still remove the disc by hand either way.
 func ejectDrive(mountDir string, stderr io.Writer) {
-	if err := exec.Command("umount", mountDir).Run(); err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: umount %s: %v\n", mountDir, err)
+	if out, err := exec.Command("umount", mountDir).CombinedOutput(); err != nil {
+		if isPermissionDenied(out) {
+			if !ejectWarnedPermission {
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: umount %s failed for permission; run restore with sudo, or pass --no-eject\n", mountDir)
+				ejectWarnedPermission = true
+			}
+		} else {
+			_, _ = fmt.Fprintf(stderr, "warning: umount %s: %v\n", mountDir, err)
+		}
+	}
+	if _, err := exec.LookPath("eject"); err != nil {
+		if !ejectWarnedNoBinary {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore: eject: not found on PATH; skipping eject, remove the disc by hand")
+			ejectWarnedNoBinary = true
+		}
+		return
 	}
 	if err := exec.Command("eject", mountDir).Run(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "warning: eject %s: %v\n", mountDir, err)
 	}
+}
+
+// isPermissionDenied reports whether umount's own output names a
+// permission problem, the one umount failure this build gives its own,
+// more actionable hint for.
+func isPermissionDenied(output []byte) bool {
+	return strings.Contains(strings.ToLower(string(output)), "permission denied") ||
+		strings.Contains(strings.ToLower(string(output)), "must be superuser")
 }

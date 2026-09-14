@@ -256,13 +256,24 @@ func TestRestoreDiscSwapResume(t *testing.T) {
 	setRestoreStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) },
 	}})
-	// --overwrite: the interrupted run already wrote doneSub's files;
-	// a resumed run meets them again and this is not a real conflict.
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--overwrite", snapID, outDir)
+	// No --overwrite: the interrupted run already wrote doneSub's files
+	// with the right size and mtime, so this rerun must count them
+	// resumed, not skipped, and still exit 0.
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
-		t.Fatalf("restore (resumed): exit %d: %s", code, out)
+		t.Fatalf("restore (resumed): exit %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "resumed:") {
+		t.Fatalf("restore (resumed) output %q missing the resumed line", out)
+	}
+	if strings.Contains(out, "skipped") {
+		t.Fatalf("restore (resumed) output %q, want no skipped path", out)
 	}
 	compareTrees(t, filepath.Join(outDir, src), src)
+
+	if _, err := os.Stat(filepath.Join(repo, "staging", "restore", snapID)); !os.IsNotExist(err) {
+		t.Fatalf("staging/restore/%s still exists after a successful restore: %v", snapID, err)
+	}
 }
 
 // TestRestoreDiscSwapIncludeNarrowsToOneDisc checks that --include

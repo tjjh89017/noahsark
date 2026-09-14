@@ -64,3 +64,44 @@ func TestRestoreUnknownRefReportsTheSameError(t *testing.T) {
 		t.Fatalf("restore error %q, want same as ls error %q (ls exit %d)", restoreMsg, lsMsg, lsCode)
 	}
 }
+
+// TestRestoreMountWithDiscFlagsIsAnError checks that --mount combined
+// with --disc, or with --discs-dir, is refused: the two select
+// different, incompatible restore modes.
+func TestRestoreMountWithDiscFlagsIsAnError(t *testing.T) {
+	treeDir, snapID, _ := lsFixture(t)
+	restoredDir := filepath.Join(t.TempDir(), "restored")
+
+	code, out := runCmd(t, "restore", "--mount=/mnt/drive", "--disc="+treeDir, snapID, restoredDir)
+	if code != 2 {
+		t.Fatalf("restore --mount --disc: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "--mount") || !strings.Contains(out, "--disc") {
+		t.Fatalf("restore --mount --disc output %q, want it to name both flags", out)
+	}
+
+	discsDir := t.TempDir()
+	code, out = runCmd(t, "restore", "--mount=/mnt/drive", "--discs-dir="+discsDir, snapID, restoredDir)
+	if code != 2 {
+		t.Fatalf("restore --mount --discs-dir: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "--mount") || !strings.Contains(out, "--discs-dir") {
+		t.Fatalf("restore --mount --discs-dir output %q, want it to name both flags", out)
+	}
+}
+
+// TestRestoreTwoArgsWithNoMountPrintsUsage checks that "restore
+// DISC-ROOT SNAPSHOT", missing OUT-DIR and given no --mount, prints the
+// usage line instead of silently entering disc-swap mode with DISC-ROOT
+// misread as SNAPSHOT.
+func TestRestoreTwoArgsWithNoMountPrintsUsage(t *testing.T) {
+	treeDir, snapID, _ := lsFixture(t)
+
+	code, out := runCmd(t, "restore", treeDir, snapID)
+	if code != 2 {
+		t.Fatalf("restore DISC-ROOT SNAPSHOT (no OUT-DIR): exit %d, want 2: %s", code, out)
+	}
+	if !strings.HasPrefix(out, "usage: noahsark restore") {
+		t.Fatalf("restore DISC-ROOT SNAPSHOT (no OUT-DIR) output %q, want the usage line", out)
+	}
+}
