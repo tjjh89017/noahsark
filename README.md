@@ -178,9 +178,12 @@ need, so a disc holding none of them can stay out of the drive:
 
 ## Losing the repository directory
 
-`restore`, `verify`, `ls` and `log` never read `--repo`: they read the
-disc roots given to them, so losing the repository directory never
-loses the archive, and never blocks a restore.
+`restore` given a disc root, `ls DISC-ROOT` and `log DISC-ROOT` never
+read `--repo`: they read the disc roots given to them, so losing the
+repository directory never loses the archive. `verify` is the same.
+`restore --mount` (the single-drive, disc-swap mode) and `ls`, `log` or
+`plan` with no disc do need the repository: they resolve the snapshot
+through its state, not through a disc root on the command line.
 
 The repository directory does matter to `pack`: it holds the state log
 that lets a later `pack` skip objects an earlier disc already carries.

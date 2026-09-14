@@ -119,7 +119,9 @@ nonzero) or has gone all the way to CLEAN.
 
 On each disc's sleeve, in permanent marker, write:
 
-- the first 8 characters of the `uuid` field `disc list` printed
+- the first 8 characters of the uuid, the bare first column of each
+  `disc list` line (not a labelled field; `seq=`, `label=` and the rest
+  follow it)
 - `seq` from that same line (the disc number, `0` for the first disc)
 - the label you gave `pack` (`2026-09-14 run1`)
 - the date
@@ -127,7 +129,8 @@ On each disc's sleeve, in permanent marker, write:
 
 A `restore` or `rebuild-cache` error naming a missing disc also names
 its full uuid; the 8-character prefix on the sleeve is enough to match
-it back to `disc list`'s output.
+it back to `disc list`'s output. `disc burned`, though, takes the full
+uuid, not the 8-character prefix; copy it whole from `disc list`.
 
 Take twin B off-site immediately: a second physical location, not a
 second shelf in the same room, is what makes the pair a real backup.
@@ -370,10 +373,13 @@ describes, not writing more onto an existing one.
 `/srv/noahsark/repo` holds the config file (`repo.uuid`,
 `staging.dir`) and the staging store (`staging/objects`,
 `staging/snapshots`, and the state log that tracks which objects are
-already packed onto which disc). None of it is needed to read a
-backup back: `restore`, `verify`, `ls`, and `log` all read disc roots
-directly and never open `--repo`. Losing this directory never loses
-data already burned.
+already packed onto which disc). None of it is needed to read a backup
+back given a disc root: `restore` given a disc root, `verify`, `ls
+DISC-ROOT`, and `log DISC-ROOT` all read disc roots directly and never
+open `--repo`. Losing this directory never loses data already burned.
+(`restore --mount`, the single-drive mode, and `ls`, `log` or `plan`
+with no disc given, do open the repository, since they resolve the
+snapshot through its state instead.)
 
 It does matter for the next `pack`: without the state log, `pack` has
 no way to know an object is already sitting on disc 1, so a `commit`
@@ -401,13 +407,11 @@ With a single drive, mounting every disc at once is not possible: run
 `rebuild-cache --from-disc --disc=<mount point>` once per disc instead,
 swapping discs between runs, into the same `--repo`. Each run marks
 that disc's own objects packed in the state log, so feed every disc for
-the state log to end up complete. Every run before the last reports
-`rebuild is partial` and exits 1, naming the discs not yet provided;
-feed the discs newest first, or feed them in any order and expect exit
-1 until the very last one, since only the newest disc's own DISCS table
-carries every earlier disc's row, and the disc ledger and refs
-`rebuild-cache` saves each run reflect only the discs given so far, not
-also what an earlier run already saved.
+the state log to end up complete. Feed the discs in any order; every
+call merges into the ledger; the last call prints ok. A run before the
+last one still reports `rebuild is partial` and exits 1 when the disc
+it was given does not by itself account for every disc known so far,
+naming the discs not yet accounted for.
 
 ## 7. Disk space
 
@@ -524,7 +528,10 @@ need to read an id off `log`'s output first. A line reading
 `roots: (none)` does not mean the snapshot is empty: it means that
 snapshot's root tree object lives on a disc not given to this `log`
 call, so pass every disc of the chain, as above, before reading
-anything into `roots: (none)`.
+anything into `roots: (none)`. `log` with no disc given, reading the
+local cache, prints the same `roots: (none)` for a snapshot `gc
+--keep-snapshots=N` has since trimmed out of the cache; `rebuild-cache
+--from-disc` restores it.
 
 List that snapshot's tree, and check for anything still flagged
 UNSTABLE from a commit that ran while a file was mid-write. Flags
@@ -546,9 +553,11 @@ lives:
 ./noahsark plan 2026-09-21
 ```
 
-This prints one line per disc the restore would read, in the order it
-would read them, with each disc's uuid, label, object count and bytes,
-then a totals line. If nothing has ever been packed or rebuilt into
+This prints one line per disc the restore would read, ordered by bytes
+needed from that disc, largest first, with each disc's uuid, label,
+object count and bytes, then a totals line. The single-drive
+disc-swap restore below prompts for discs in this same order. If
+nothing has ever been packed or rebuilt into
 this machine's local cache, `plan` fails instead with `cache: no run is
 cached yet; run pack, or rebuild-cache --from-disc, first`: `plan`
 never reads a disc itself, so pack once from this repository, or run
@@ -617,13 +626,19 @@ that reassurance worth the extra keypress.
 If the session is interrupted partway through (a crashed terminal, a
 closed laptop lid), objects already read sit in
 `staging/restore/<snapshot-id>/` inside the repository directory.
-Running the same `restore` command again picks up where it left off:
+Running the same `restore` command again picks up where it left off,
+printing one line at the start naming what the spool already holds:
 
 ```
 resuming: 12 object(s) already spooled
 ```
 
-and only prompts for whichever disc the plan still needs.
+and only prompts for whichever disc the plan still needs. At the end,
+it also prints how many files that spool let it skip re-reading:
+
+```
+resumed: 4 file(s) already restored
+```
 
 Pass `--plan=FILE` with a plan `plan --out=FILE` already wrote, in
 place of letting `restore` build its own: useful when a script plans
@@ -723,6 +738,10 @@ noahsark image build --out=tree.img --capacity=bd25 tree` (root, for
 the loop mount, but still no drive), then loop-mount `tree.img` and
 `verify --image=` the mount point, as section 3 already shows for a
 real burn. Only the `growisofs` line itself needs a real drive.
+`image build` writes a real file of the full `--capacity`, though, so
+for a rehearsal pass `--capacity=1GB` to both `pack` and `image build`
+instead of a media preset like `bd25`, unless the point of the
+rehearsal is specifically to check a 25 GB image.
 
 ## 11. When the source changes a lot
 
