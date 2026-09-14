@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -63,4 +64,46 @@ func parseCapacity(s string) (uint64, error) {
 		return 0, fmt.Errorf("capacity: invalid value %q, expected a preset name, a sector count, or a size like 25GB", s)
 	}
 	return n, nil
+}
+
+// capacityPresetNames lists capacityPresets' keys, sorted, for help text
+// and error messages.
+func capacityPresetNames() []string {
+	names := make([]string, 0, len(capacityPresets))
+	for name := range capacityPresets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// capacityUnitSuffixes lists the byte-size unit suffixes parseCapacity
+// accepts, for help text and error messages.
+var capacityUnitSuffixes = []string{"GiB", "MiB", "KiB", "GB", "MB", "KB"}
+
+// capacityHelpText describes the accepted --capacity and --physical-capacity
+// spellings: the preset names and the unit suffixes. It is shared by the
+// flags' own usage text and by an error that rejects a parsed value.
+func capacityHelpText() string {
+	return fmt.Sprintf("a preset (%s), a plain sector count, or a size with a unit (%s)",
+		strings.Join(capacityPresetNames(), ", "), strings.Join(capacityUnitSuffixes, ", "))
+}
+
+// packFixedFileCount is the number of files every run writes before any
+// snapshot or staged object is counted: INDEX, RUN, DISC, README,
+// FORMAT, decoder, REFS and DISCS, plus the RUN2.bin header copy that
+// every run carries whether or not it has FEC.
+const packFixedFileCount = 8 + 1
+
+// checkCapacityMinimum refuses a capacity too small to hold even an
+// empty run's own fixed files and header copies. pack hits this same
+// floor as ErrCapacityTooSmall once it counts real objects; init checks
+// it up front, with no objects yet to count, so a too-small --capacity
+// is refused before it is written into the config instead of failing
+// every later pack.
+func checkCapacityMinimum(capacitySectors uint64) error {
+	if err := image.CheckCapacity(0, 0, 0, 2*image.RunFileLen, packFixedFileCount, capacitySectors); err != nil {
+		return fmt.Errorf("--capacity=%d sectors (%d bytes) is too small: %s", capacitySectors, capacitySectors*image.SectorSize, capacityHelpText())
+	}
+	return nil
 }
