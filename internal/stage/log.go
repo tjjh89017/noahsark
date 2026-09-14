@@ -177,6 +177,18 @@ func (l *Log) IDsInState(state State) []object.ID {
 	return ids
 }
 
+// PackedCountByDisc returns, for every disc uuid the log has a Packed
+// record for, the number of distinct objects currently Packed onto it.
+func (l *Log) PackedCountByDisc() map[[16]byte]int {
+	counts := make(map[[16]byte]int)
+	for _, rec := range l.current {
+		if rec.State == Packed {
+			counts[rec.DiscUUID]++
+		}
+	}
+	return counts
+}
+
 // append writes one record to state.db and updates the replayed state.
 func (l *Log) append(rec Record) error {
 	rec.Sequence = l.nextSeq

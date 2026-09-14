@@ -61,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdLog(rest, stdout, stderr)
 	case "rebuild-cache":
 		return cmdRebuildCache(rest, stdout, stderr, prog)
+	case "disc":
+		return cmdDisc(rest, stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "noahsark: unknown command %q\n", cmd)
 		printUsage(stderr)
@@ -112,6 +114,7 @@ Phase 1 commands:
   ls      DISC-ROOT SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
   log     DISC-ROOT [REF|SNAPSHOT] [--limit=N] [--json]
   rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]
+  disc list [--json]
 
 ls, log and rebuild-cache also accept --disc=ROOT (repeatable) or
 --discs-dir=DIR instead of a single DISC-ROOT, the same as restore.

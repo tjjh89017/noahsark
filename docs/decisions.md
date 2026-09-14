@@ -354,6 +354,24 @@ disc or a conforming reader accepts; they change only which command-line
 surface reaches the same Go calls the rest of this implementation
 already exposes.
 
+`disc list` reads the local disc ledger (`discs.bin`, the same rows a
+DISCS table carries) and the staging state log, since no catalog exists
+in this build either. It prints one line per disc_uuid, folding that
+disc's runs together: seq, label and forced capacity from the newest
+run, used_sectors summed across every run, the run count, and the
+packed object count from the state log, plus the same staged total line
+`commit` prints. `--json` prints the same fields, machine-readable.
+`disc label` and `disc mark-degraded` need a `notes.bin` this build does
+not keep, so both are refused with a clear message rather than silently
+doing nothing.
+
+The on-disc DISCS row a run carries for itself always writes
+`used_sectors` zero, the same way it leaves `run_hash` zero: the run's
+own final size is not known until the run is written. The local ledger
+row, built after the run is written, carries the real value, so every
+later run's copy of DISCS (and `disc list`) sees it from the next pack
+on.
+
 Burning the folder `pack` produces directly, without running `image
 build`, is a documented, supported use: see README.md, "Burning
 without UDF".

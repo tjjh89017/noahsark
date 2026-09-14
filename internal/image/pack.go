@@ -346,6 +346,11 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 	newRow := newDiscsRow(opts.asBuildOptions(), packTime, runSeq, discSeq)
 	newRow.RunHash = sha256.Sum256(runBuf[:format.RunLen])
+	// The on-disc DISCS row this run carries for itself still reads
+	// zero, matching run_hash: the run's own final size is not known
+	// until the run is written. The local ledger row, and so every
+	// later run's copy of DISCS, carries the real value from here on.
+	newRow.UsedSectors = blockCount(plan.streamBytesTotal)
 	ledger.Rows = append(ledger.Rows, newRow)
 	if err := SaveDiscsLedger(opts.StagingDir, opts.RepoUUID, ledger.Rows); err != nil {
 		return nil, err

@@ -214,3 +214,43 @@ func TestIDsInState(t *testing.T) {
 		t.Fatalf("IDsInState(Packed) = %v, want [%v]", got, packed)
 	}
 }
+
+func TestPackedCountByDisc(t *testing.T) {
+	dir := t.TempDir()
+	discA := [16]byte{0xA}
+	discB := [16]byte{0xB}
+	idA1 := object.ComputeID([]byte("a1"))
+	idA2 := object.ComputeID([]byte("a2"))
+	idB1 := object.ComputeID([]byte("b1"))
+	idStaged := object.ComputeID([]byte("staged"))
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []object.ID{idA1, idA2, idB1, idStaged} {
+		if err := l.EnsureStaged(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.MarkPacked(idA1, 1, discA); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(idA2, 1, discA); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(idB1, 2, discB); err != nil {
+		t.Fatal(err)
+	}
+
+	counts := l.PackedCountByDisc()
+	if counts[discA] != 2 {
+		t.Fatalf("counts[discA] = %d, want 2", counts[discA])
+	}
+	if counts[discB] != 1 {
+		t.Fatalf("counts[discB] = %d, want 1", counts[discB])
+	}
+	if len(counts) != 2 {
+		t.Fatalf("counts has %d discs, want 2 (staged object must not appear)", len(counts))
+	}
+}
