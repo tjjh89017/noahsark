@@ -44,6 +44,21 @@ const (
 	Deleted State = 6
 )
 
+// OnDisc reports whether an object in this state already has its data
+// written to some disc. Packed, Burned, Clean, GCEligible, and Deleted
+// all name an object a disc holds; only Staged does not. A caller asking
+// "is this object already on a disc" must use this, not a direct
+// comparison against Packed, so pack never copies or rebinds an object
+// a disc already holds.
+func (s State) OnDisc() bool {
+	switch s {
+	case Packed, Burned, Clean, GCEligible, Deleted:
+		return true
+	default:
+		return false
+	}
+}
+
 // Reason is why a record's transition happened.
 type Reason uint8
 
@@ -251,9 +266,35 @@ func (l *Log) IDsInState(state State) []object.ID {
 // PackedCountByDisc returns, for every disc uuid the log has a Packed
 // record for, the number of distinct objects currently Packed onto it.
 func (l *Log) PackedCountByDisc() map[[16]byte]int {
+	return l.CountByDiscInState(Packed)
+}
+
+// CleanCountByDisc returns, for every disc uuid the log has a Clean
+// record for, the number of distinct objects currently Clean on it.
+func (l *Log) CleanCountByDisc() map[[16]byte]int {
+	return l.CountByDiscInState(Clean)
+}
+
+// CountByDiscInState returns, for every disc uuid the log has a record
+// for at state, the number of distinct objects currently at state on
+// that disc.
+func (l *Log) CountByDiscInState(state State) map[[16]byte]int {
 	counts := make(map[[16]byte]int)
 	for _, rec := range l.current {
-		if rec.State == Packed {
+		if rec.State == state {
+			counts[rec.DiscUUID]++
+		}
+	}
+	return counts
+}
+
+// OnDiscCountByDisc returns, for every disc uuid the log has an on-disc
+// record for, the number of distinct objects the log currently places
+// on that disc: Packed, Burned, Clean, GCEligible, or Deleted.
+func (l *Log) OnDiscCountByDisc() map[[16]byte]int {
+	counts := make(map[[16]byte]int)
+	for _, rec := range l.current {
+		if rec.State.OnDisc() {
 			counts[rec.DiscUUID]++
 		}
 	}

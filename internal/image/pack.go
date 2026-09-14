@@ -162,7 +162,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	var candidates []packUnit
 	for _, u := range order {
 		rec, ok := opts.StageLog.Get(u.ID)
-		if ok && rec.State == stage.Packed {
+		if ok && rec.State.OnDisc() {
 			continue
 		}
 		if !ok {
@@ -262,7 +262,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	prereqs := make([]format.IndexPrereqRecord, 0, len(prereqIDs))
 	for id := range prereqIDs {
 		rec, ok := opts.StageLog.Get(id)
-		if !ok || rec.State != stage.Packed {
+		if !ok || !rec.State.OnDisc() {
 			return nil, fmt.Errorf("internal error: prerequisite %s is not packed", id.TextForm())
 		}
 		prereqs = append(prereqs, format.IndexPrereqRecord{ContentID: id, RunSeq: rec.RunSeq})

@@ -423,3 +423,22 @@ func TestBurnTime(t *testing.T) {
 		t.Fatalf("reopened BurnTime: got %v, %v, want %v", burnedAt2, ok, burnedAt)
 	}
 }
+
+// TestStateOnDisc checks that OnDisc names every state a disc already
+// holds an object's data for: Packed, Burned, Clean, GCEligible and
+// Deleted, and only those.
+func TestStateOnDisc(t *testing.T) {
+	onDisc := map[State]bool{
+		Staged:     false,
+		Packed:     true,
+		Burned:     true,
+		Clean:      true,
+		GCEligible: true,
+		Deleted:    true,
+	}
+	for state, want := range onDisc {
+		if got := state.OnDisc(); got != want {
+			t.Errorf("State(%d).OnDisc() = %v, want %v", state, got, want)
+		}
+	}
+}

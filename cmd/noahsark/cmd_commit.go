@@ -68,7 +68,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	w.Message = *message
 	w.Known = func(id object.ID) bool {
 		rec, ok := commitStageLog.Get(id)
-		return ok && (rec.State == stage.Staged || rec.State == stage.Packed)
+		return ok && (rec.State == stage.Staged || rec.State.OnDisc())
 	}
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
