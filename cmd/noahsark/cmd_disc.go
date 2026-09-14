@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -17,13 +19,20 @@ import (
 // staging state log instead. "disc label" and "disc mark-degraded" need
 // a notes.bin this build does not keep, so both are refused rather than
 // silently ignored. See docs/decisions.md, "16. CLI reference".
+//
+// "disc burned" is not an OPERATIONS.md command; it is this build's
+// explicit stand-in for the missing burn step (see docs/decisions.md,
+// "4. Staging state machine"): the operator burns with growisofs by
+// hand, and running it is how the staging state machine learns a disc
+// really was burned, since no on-disc structure records that moment
+// and this build has no `burn` command to record it automatically.
 func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json] | disc burned UUID [UUID...] [--undo]")
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json]")
+		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json] | disc burned UUID [UUID...] [--undo]")
 		return 0
 	}
 	sub := args[0]
@@ -32,6 +41,8 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "list":
 		return cmdDiscList(rest, stdout, stderr)
+	case "burned":
+		return cmdDiscBurned(rest, stdout, stderr)
 	case "label":
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc label: not in this build: the on-disc label is fixed at pack time, and notes.bin does not exist yet")
 		return 2
@@ -42,6 +53,147 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: disc: unknown subcommand %q\n", sub)
 		return 2
 	}
+}
+
+// parseDiscUUIDArg parses a disc uuid CLI argument, in either the
+// hyphenated text form uuidText prints or plain hex.
+func parseDiscUUIDArg(s string) ([16]byte, error) {
+	var out [16]byte
+	raw, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
+	if err != nil {
+		return out, fmt.Errorf("%q: not a uuid: %w", s, err)
+	}
+	if len(raw) != 16 {
+		return out, fmt.Errorf("%q: a uuid is 16 bytes, got %d", s, len(raw))
+	}
+	copy(out[:], raw)
+	return out, nil
+}
+
+// cmdDiscBurned implements "noahsark disc burned UUID [UUID...] [--undo]".
+// It moves every PACKED object of each named disc's runs to BURNED,
+// standing in for the missing `burn` command: the operator runs it
+// right after burning both twins by hand. --undo reverses that, for a
+// burn that turned out bad, moving BURNED objects back to PACKED with
+// the burn-failed reason.
+func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("noahsark disc burned UUID [UUID...] [--undo]",
+		"Mark a disc burned, moving its PACKED objects to BURNED.", stderr)
+	repoFlag := fs.String("repo", "", "repository root")
+	undo := fs.Bool("undo", false, "undo: move BURNED objects back to PACKED, for a burn that turned out bad")
+	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("disc burned", fs, stderr) {
+		return 2
+	}
+	if fs.NArg() == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned UUID [UUID...] [--undo]")
+		return 2
+	}
+
+	repoDir, err := discoverRepo(*repoFlag)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		return 2
+	}
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		return 2
+	}
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		return 1
+	}
+	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		return 1
+	}
+	stageLog, err := stage.Open(cfg.StagingDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		return 1
+	}
+
+	for _, arg := range fs.Args() {
+		discUUID, err := parseDiscUUIDArg(arg)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+			return 2
+		}
+		rows := discRowsForUUID(ledger.Rows, discUUID)
+		if len(rows) == 0 {
+			_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: unknown disc uuid %s\n", uuidText(discUUID))
+			return 1
+		}
+
+		for _, row := range rows {
+			var n int
+			var action string
+			if *undo {
+				n = undoBurnForRun(stageLog, discUUID, row.RunSeq)
+				action = "undo: returned to packed"
+			} else {
+				n = markBurnedForRun(stageLog, discUUID, row.RunSeq)
+				action = "marked burned"
+			}
+			_, _ = fmt.Fprintf(stdout, "disc %d %s: %s, %d objects\n",
+				row.DiscSeq, labelText(row.Label[:row.LabelLen]), action, n)
+		}
+		if !*undo {
+			if err := stageLog.RecordBurnTime(discUUID); err != nil {
+				_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+				return 1
+			}
+		}
+	}
+	return 0
+}
+
+// discRowsForUUID returns every ledger row for discUUID.
+func discRowsForUUID(rows []format.DiscsRow, discUUID [16]byte) []format.DiscsRow {
+	var out []format.DiscsRow
+	for _, r := range rows {
+		if r.DiscUUID == discUUID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// markBurnedForRun moves every object of run runSeq on disc discUUID
+// that is at PACKED to BURNED, and reports how many objects it moved.
+func markBurnedForRun(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
+	n := 0
+	for _, id := range l.IDsInState(stage.Packed) {
+		rec, ok := l.Get(id)
+		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+			continue
+		}
+		if err := l.MarkBurned(id, runSeq, discUUID); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// undoBurnForRun moves every object of run runSeq on disc discUUID that
+// is at BURNED back to PACKED, and reports how many objects it moved.
+func undoBurnForRun(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
+	n := 0
+	for _, id := range l.IDsInState(stage.Burned) {
+		rec, ok := l.Get(id)
+		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+			continue
+		}
+		if err := l.MarkBurnUndone(id); err == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // discSummary is one disc's row in "disc list": every run the ledger
