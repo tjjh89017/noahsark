@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -29,12 +30,13 @@ import (
 // internal/plan holds the planner itself, so "restore" can build the
 // same plan and read discs in the order it names.
 func cmdPlan(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark plan [--include=PATH]... [--out=FILE] SNAPSHOT",
+	fs := newFlagSet("noahsark plan [--include=PATH]... [--out=FILE] [--staging-budget=SIZE] SNAPSHOT",
 		"Compute a restore plan from the local cache: which discs a restore of SNAPSHOT would need, and what each holds.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	var includeFlags stringList
 	fs.Var(&includeFlags, "include", "plan only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
 	outFile := fs.String("out", "", "write the plan as JSON to this file")
+	stagingBudgetFlag := fs.String("staging-budget", "", "peak staging bytes allowed; overrides restore.staging_budget")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -42,8 +44,27 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark plan [--include=PATH]... [--out=FILE] SNAPSHOT")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark plan [--include=PATH]... [--out=FILE] [--staging-budget=SIZE] SNAPSHOT")
 		return 2
+	}
+
+	repoDir, err := discoverRepo(*repoFlag)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
+		return 1
+	}
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
+		return 1
+	}
+	stagingBudget := cfg.RestoreStagingBudget
+	if *stagingBudgetFlag != "" {
+		stagingBudget, err = parseByteSize(*stagingBudgetFlag)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: plan: --staging-budget:", err)
+			return 2
+		}
 	}
 
 	src, c, err := openCacheSource(*repoFlag)
@@ -78,10 +99,21 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	printPlanText(stdout, result)
+	passSplit, err := plan.ComputePasses(result.Discs, stagingBudget)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
+		return 1
+	}
+
+	printPlanText(stdout, result, passSplit)
 
 	if *outFile != "" {
-		doc := buildPlanDocument(snapID, includeFlags, result)
+		repoUUID, err := decodeUUID(cfg.RepoUUID)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
+			return 1
+		}
+		doc := buildPlanDocument(repoUUID, snapID, includeFlags, result, passSplit)
 		b, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
@@ -101,11 +133,11 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 }
 
 // printPlanText prints one line per disc, in plan order, then the
-// plan's totals.
-func printPlanText(stdout io.Writer, r *plan.Result) {
-	for _, d := range r.Discs {
-		_, _ = fmt.Fprintf(stdout, "disc_seq=%d uuid=%s label=%q objects=%d bytes=%d\n",
-			d.DiscSeq, plan.UUIDText(d.DiscUUID), d.Label, len(d.Objects), d.Bytes)
+// plan's totals, including the pass split a staging budget forces.
+func printPlanText(stdout io.Writer, r *plan.Result, ps plan.PassSplit) {
+	for i, d := range r.Discs {
+		_, _ = fmt.Fprintf(stdout, "disc_seq=%d uuid=%s label=%q objects=%d bytes=%d passes=%d\n",
+			d.DiscSeq, plan.UUIDText(d.DiscUUID), d.Label, len(d.Objects), d.Bytes, ps.DiscPasses[i])
 	}
 	for _, m := range r.Missing {
 		if m.RunSeq == 0 {
@@ -114,13 +146,14 @@ func printPlanText(stdout io.Writer, r *plan.Result) {
 		}
 		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on run %d, disc unknown\n", m.Objects, m.RunSeq)
 	}
-	_, _ = fmt.Fprintf(stdout, "totals: discs=%d objects=%d bytes=%d\n", len(r.Discs), r.TotalObjects, r.TotalBytes)
+	_, _ = fmt.Fprintf(stdout, "totals: discs=%d objects=%d bytes=%d passes=%d peak_staging_bytes=%d\n",
+		len(r.Discs), r.TotalObjects, r.TotalBytes, ps.Total, ps.PeakBytes)
 }
 
 // planDiscJSON is one disc of the JSON plan's discs array, the subset
 // of OPERATIONS.md "14.4 The plan file"'s discs[] fields this build
-// knows: order, disc_uuid, disc_seq, label, runs, objects_to_read and
-// bytes_to_read.
+// knows: order, disc_uuid, disc_seq, label, runs, objects_to_read,
+// bytes_to_read and pass, added here for the staging budget's split.
 type planDiscJSON struct {
 	Order         int      `json:"order"`
 	DiscUUID      string   `json:"disc_uuid"`
@@ -129,6 +162,7 @@ type planDiscJSON struct {
 	Runs          []uint64 `json:"runs"`
 	ObjectsToRead int      `json:"objects_to_read"`
 	BytesToRead   uint64   `json:"bytes_to_read"`
+	Passes        int      `json:"passes"`
 }
 
 // planMissingJSON is one missing_discs entry: run_seq when the object's
@@ -141,10 +175,13 @@ type planMissingJSON struct {
 
 // planDocument is the JSON plan --out writes: OPERATIONS.md "14.4 The
 // plan file"'s fields, as far as a cache-only, filter-less build knows
-// them.
+// them. RepoUUID and Created let "restore --plan" confirm a persisted
+// plan still matches the repository it is resumed against.
 type planDocument struct {
 	Format           string            `json:"format"`
 	Version          int               `json:"version"`
+	RepoUUID         string            `json:"repo_uuid"`
+	Created          string            `json:"created"`
 	Snapshot         string            `json:"snapshot"`
 	Include          []string          `json:"include,omitempty"`
 	Objects          int               `json:"objects"`
@@ -156,7 +193,7 @@ type planDocument struct {
 	MissingDiscs     []planMissingJSON `json:"missing_discs"`
 }
 
-func buildPlanDocument(snapID object.ID, includes []string, r *plan.Result) planDocument {
+func buildPlanDocument(repoUUID [16]byte, snapID object.ID, includes []string, r *plan.Result, ps plan.PassSplit) planDocument {
 	discs := make([]planDiscJSON, len(r.Discs))
 	for i, d := range r.Discs {
 		discs[i] = planDiscJSON{
@@ -167,6 +204,7 @@ func buildPlanDocument(snapID object.ID, includes []string, r *plan.Result) plan
 			Runs:          d.Runs,
 			ObjectsToRead: len(d.Objects),
 			BytesToRead:   d.Bytes,
+			Passes:        ps.DiscPasses[i],
 		}
 	}
 	missing := make([]planMissingJSON, len(r.Missing))
@@ -176,14 +214,20 @@ func buildPlanDocument(snapID object.ID, includes []string, r *plan.Result) plan
 	return planDocument{
 		Format:           "noahsark-restore-plan",
 		Version:          1,
+		RepoUUID:         plan.UUIDText(repoUUID),
+		Created:          planClock().UTC().Format(time.RFC3339),
 		Snapshot:         snapID.TextForm(),
 		Include:          includes,
 		Objects:          r.TotalObjects,
 		Bytes:            r.TotalBytes,
-		PeakStagingBytes: r.PeakStagingBytes,
+		PeakStagingBytes: ps.PeakBytes,
 		Switches:         len(r.Discs),
-		Passes:           1,
+		Passes:           ps.Total,
 		Discs:            discs,
 		MissingDiscs:     missing,
 	}
 }
+
+// planClock is the source of "created"'s timestamp. Tests may replace it
+// for a deterministic value.
+var planClock = time.Now
