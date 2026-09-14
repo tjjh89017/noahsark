@@ -265,21 +265,36 @@ from the same source (`run2.img` or the `run2` folder). The two discs
 must carry identical bytes; that pair is the backup's redundancy, not
 Reed-Solomon parity, which stays off unless a pack used `--fec`.
 
-Verify each disc by mounting it and reading it back through the
-filesystem:
+Tell the staging state machine the burn happened, then verify each disc
+by mounting it and reading it back through the filesystem:
 
 ```sh
+./noahsark disc burned --repo=/srv/noahsark/repo <disc uuid>
+
 sudo mkdir -p /mnt/noahsark
 sudo mount /dev/sr0 /mnt/noahsark
-./noahsark verify --image=/mnt/noahsark
+./noahsark verify --repo=/srv/noahsark/repo --image=/mnt/noahsark
 sudo umount /mnt/noahsark
 ```
 
-`verify: ok` means this disc reads back exactly what was packed. A
-disc that fails to mount, or that `verify` reports a failure for, is
-thrown away: burn a fresh replacement from the same source and verify
-that one instead. There is no raw carving recovery in this build; a
-disc that does not verify is not trusted.
+`disc burned` is the step that moves this run's objects from PACKED to
+BURNED; `pack`'s own next-steps output already prints the exact command
+line, uuid included. It has to be a separate, explicit step: `verify`
+never assumes a tree it can read is a burned disc just because its uuid
+is in the ledger, since `pack` writes the ledger before anyone burns
+anything, and section 10 below has you loop-mount and verify the image
+*before* burning it. Running `verify` without `disc burned` first still
+checks the disc, but leaves every object PACKED, and prints which `disc
+burned` command to run.
+
+`verify: ok`, with no PACKED objects left over, means this disc reads
+back exactly what was packed, and `--repo` has moved the run's objects
+on to CLEAN, the first step toward freeing their staging copies later
+(section 7 below). A disc that fails to mount, or that `verify` reports
+a failure for, is thrown away: burn a fresh replacement from the same
+source, run `disc burned` on the new uuid, and verify that one instead.
+There is no raw carving recovery in this build; a disc that does not
+verify is not trusted.
 
 Read the new disc's uuid and seq back before labelling it:
 
@@ -302,13 +317,19 @@ drill can reach it.
 
 Once both twins are burned, the sequence for each is always the same:
 
-1. Mount it and run `noahsark verify --image=<mount point>`, as above.
-   Do this before the disc leaves the room.
-2. Once it reads `verify: ok`, label the sleeve from `disc list`'s
-   output (uuid prefix, seq, label text, date, A or B).
-3. Store the second copy (twin B) off-site. A shelf in the same
+1. Run `noahsark disc burned --repo=/srv/noahsark/repo <disc uuid>`,
+   the exact command line `pack` printed. This moves the run's objects
+   from PACKED to BURNED.
+2. Mount it and run `noahsark verify --repo=/srv/noahsark/repo
+   --image=<mount point>`, as above. Do this before the disc leaves the
+   room. On success this moves the same objects on to CLEAN; see
+   section 7 for what that starts.
+3. Once it reads `verify: ok`, with no PACKED objects left over, label
+   the sleeve from `disc list`'s output (uuid prefix, seq, label text,
+   date, A or B).
+4. Store the second copy (twin B) off-site. A shelf in the same
    building is not a second location.
-4. Record the pack in the plain text log kept next to the repository.
+5. Record the pack in the plain text log kept next to the repository.
 
 The packed tree directory (`--out`, `/srv/noahsark/plans/run2` above)
 is not needed to read the backup back once both twins verify: a disc
@@ -370,22 +391,59 @@ local refs from the discs regardless of what survived.
 
 ## 7. Disk space
 
-Nothing in `staging/objects` is ever deleted automatically: this build
-keeps no garbage collector (`gc` is a Phase 1 command not yet in this
-build), so every object ever committed stays in the staging store even
-after it is packed onto a disc. Check the staging store's size with:
+Nothing in `staging/objects` is deleted just because it was packed onto
+a disc. An object leaves the staging store only after this full cycle:
+
+1. **Burn** both twins, as section 4 above already describes.
+2. **Mark it burned**: `noahsark disc burned --repo=/srv/noahsark/repo
+   <disc uuid>`. This moves the run's objects from PACKED to BURNED. It
+   has to be a separate step from verify: a loop-mounted image checked
+   before burning (section 10) has the same disc uuid already in the
+   ledger, so verify cannot treat a ledger match alone as proof that a
+   disc exists.
+3. **Mount** the twin and run `noahsark verify --repo=/srv/noahsark/repo
+   --image=<mount point>`. `--repo` is what lets verify update the
+   staging state, not just report `verify: ok`; without it, verify
+   still checks the disc, but changes nothing in staging. On success,
+   every BURNED object of that run moves on to CLEAN; verify warns
+   instead, naming the `disc burned` command, if any object is still
+   PACKED.
+4. **Wait** out `staging.retain_after_clean` (7 days by default). A
+   CLEAN object is not deletable yet; the retention period is the
+   window for a mistake to surface before the only copy on disk is the
+   one on the discs themselves.
+5. **Run `gc`**:
+
+   ```sh
+   noahsark gc --repo=/srv/noahsark/repo
+   ```
+
+   `gc` deletes every object that has stayed CLEAN past the retention
+   period, after confirming each one is really present in its run's
+   catalog. Run `noahsark gc --repo=/srv/noahsark/repo --dry-run` first
+   to see what it would free without deleting anything.
+
+Check the staging store's size at any point with:
 
 ```sh
 du -sh /srv/noahsark/repo/staging
 ```
 
-If space runs out, do not delete files out of `staging/objects` or
-`staging/snapshots` by hand: `pack` and `commit` both depend on the
-state log matching what is actually there. The safe way to start fresh
-is a new repository directory (section 11 below shows this for a
-changed source); burn a full new backup into it, and keep or discard
-the old repository's staging store once its discs are no longer
-being packed further.
+If space runs out before a disc's retention period has passed, do not
+delete files out of `staging/objects` or `staging/snapshots` by hand:
+`pack`, `commit` and `gc` all depend on the state log matching what is
+actually there. The safe way to start fresh is a new repository
+directory (section 11 below shows this for a changed source); burn a
+full new backup into it, and keep or discard the old repository's
+staging store once its discs are no longer being packed further.
+
+`gc` also trims the local cache (`~/.cache/noahsark/<repo-uuid>/` by
+default), which is a separate, smaller amount of space from staging:
+pass `--keep-snapshots=N` to keep only the newest N snapshots' trees
+and blobs in the cache, or leave it out (or set `cache.snapshot_depth`
+in the config) to keep the cache as is. Nothing about trimming the
+cache touches a disc or the staging store: `rebuild-cache --from-disc`
+always restores whatever the trim dropped.
 
 ## 8. Restore drill every few months
 

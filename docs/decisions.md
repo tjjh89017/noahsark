@@ -259,12 +259,16 @@ favour of always populating and refusing loudly when root is missing.
 
 `cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
 `pack`, `image build`, `verify`, `restore`, `ls`, `log`, `plan`,
-`rebuild-cache` and `disc list`. Every command below keeps
-OPERATIONS.md's name; a flag is reduced or renamed only when the Go
-packages this build calls have no way to honour it yet, since no state
-log, ref log, locality planner or burn plan exists in this build. A
-local cache does now exist (`internal/cache`), so `ls`, `log` and
-`plan` resolve SNAPSHOT through it when no disc is given; the
+`rebuild-cache`, `disc list`, `disc burned` and `gc`. Every command
+below keeps OPERATIONS.md's name; a flag is reduced or renamed only
+when the Go packages this build calls have no way to honour it yet,
+since no ref log, locality planner or burn plan exists in this build.
+`disc burned` is not an OPERATIONS.md command; it is this build's
+stand-in for the missing `burn` step, explained in "4. Staging state
+machine" above. A staging state log (`internal/stage`) and a local
+cache (`internal/cache`) do now exist, so `ls`, `log` and `plan`
+resolve SNAPSHOT through the cache when no disc is given, and `disc
+burned`, `verify` and `gc` drive the staging state machine; the
 paragraphs below on those commands describe both paths.
 
 `-h` and `--help` on any command exit 0 and print that command's
@@ -282,7 +286,7 @@ A command name OPERATIONS.md defines that belongs to a later phase
 (`sync`, `append`, `close`, `watch`, `consolidate`, `reindex`,
 `catalog`, `import`) is refused by name, naming its phase, exit 2. A
 Phase 1 command name OPERATIONS.md defines that this build simply does
-not implement yet (`burn`, `scrub`, `health`, `gc`) is refused
+not implement yet (`burn`, `scrub`, `health`) is refused
 the same way, saying it is not in this build yet, exit 2. The same two
 distinctions apply to individual flags and config keys: a later-phase
 flag or key is refused naming its phase; a Phase 1 flag or key this
@@ -509,11 +513,7 @@ path and not a reason to keep partial or torn content.
 
 OPERATIONS.md names the states (STAGED, PACKED, BURNED, CLEAN,
 GC-ELIGIBLE, DELETED) and the transitions, and gives `state.db` an
-append-only role, but no byte layout. This build has no burn step and no
-verify-after-burn step, so it implements only the Phase 1 part of the
-machine: STAGED at commit, PACKED once a run includes an object, and the
-run and disc that hold it. BURNED, CLEAN, GC-ELIGIBLE and DELETED, and
-every GC rule, are out of scope until a burn command exists.
+append-only role, but no byte layout.
 
 `internal/stage` picks the simplest deterministic record: fixed-width,
 70 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
@@ -523,7 +523,14 @@ matching the "truncated log" rule; a record after a bad one is ignored.
 The newest record per content id, by file order (equivalently by
 `sequence`), is that object's current state. `EnsureStaged` never
 overwrites an existing record, so a re-commit of already-packed content
-can never resurrect it to STAGED.
+can never resurrect it to STAGED. The record still carries no
+timestamp, so a CLEAN transition's wall time goes into a second,
+append-only companion file, `clean_times.db` (content id, unix
+nanoseconds, crc32c), replayed the same way. Burning happens per disc,
+not per object, and the disc ledger row this build keeps is the same
+struct as an on-disc DISCS row, which has no burn time field either, so
+a third companion file, `burn_times.db` (disc uuid, unix nanoseconds,
+crc32c), records when `disc burned` ran for a disc.
 
 `cmd_commit` calls `internal/image.CollectReachable` after a commit and
 marks every object it returns STAGED, rather than having `Writer` itself
@@ -535,6 +542,52 @@ summary, the repository-wide STAGED total from `image.StagedTotals`, so
 the "pack when staged data nears one disc" rule of OPERATIONS.md's
 packing guidance has a number to check against without waiting for a
 `pack` to report it. `disc list` (below) prints the same line.
+
+This build has no `burn` or `close` command: the operator burns with
+`growisofs` by hand, following the command `pack` prints. Something
+still has to tell the staging state machine that the burn happened, and
+it cannot be a disc-uuid check inside `verify`: the walkthrough has an
+operator loop-mount and verify the image before burning it, to catch a
+build problem early, and that loop-mounted tree's disc uuid is already
+in the ledger, because `pack` writes the ledger, not a burn step. A
+verify that treated a ledger match alone as proof of burning would mark
+that pre-burn image CLEAN, and `gc` would later delete staging objects
+for a disc that was never actually written.
+
+`noahsark disc burned UUID [UUID...] [--undo]` is the explicit step
+that closes this gap. It moves every PACKED object of each named disc's
+runs to BURNED, and records the burn time (see above). `pack`'s
+next-steps block prints it between the `growisofs` line and the
+`verify` line, so the ordinary flow always runs it right after the
+physical burn. `--undo` reverses it, moving BURNED objects back to
+PACKED with the burn-failed reason, for a burn that turned out bad
+before anyone got as far as `verify`.
+
+`verify` never moves PACKED to BURNED itself. When `--repo` resolves to
+a repository and DISC.bin's uuid matches a row in its disc ledger, a
+passing verify moves the run's BURNED objects to CLEAN and leaves any
+PACKED object of that run alone, printing a line naming the `disc
+burned` command to run when one remains PACKED; a failing verify moves
+BURNED objects back to PACKED with the verify-failed reason, unchanged
+from before. A verify against a tree whose disc uuid the ledger has
+never seen at all, or run with no `--repo`, changes no staging state.
+
+`gc [--dry-run] [--keep-snapshots=N]` implements section 4.5's GC
+rules: a CLEAN object becomes GC-ELIGIBLE once
+`staging.retain_after_clean` has passed since its CLEAN time, and only
+a GC-ELIGIBLE object is ever deleted, after confirming its presence in
+the cached INDEX of the run the state log says holds it; an object
+whose run is not cached is left alone and reported separately, never
+deleted on trust. OPERATIONS.md's own CLI reference (16.20) gives `gc`
+only `--dry-run` and `--force-after`; this build adds `--keep-snapshots`
+instead of `--force-after`, since 17.12 already says `gc` applies
+`cache.snapshot_depth`, and `--keep-snapshots` is that same knob as a
+one-off override: it keeps the cached trees and blobs reachable from
+only the newest N snapshots and drops the rest, recomputing every
+cached snapshot's completeness afterward so `ls` reports a dropped
+snapshot's cache copy incomplete again. `--force-after` is not
+implemented; shortening retention for one run needs an interactive
+confirmation this build has no prompt path for yet.
 
 ## 8. Packing and locality, and 11.1 INDEX Prereqs
 
