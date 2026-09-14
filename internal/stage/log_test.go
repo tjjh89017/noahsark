@@ -185,3 +185,32 @@ func TestTruncatedTailStopsReplay(t *testing.T) {
 		t.Fatal("id2's record was corrupted and must not replay")
 	}
 }
+
+func TestIDsInState(t *testing.T) {
+	dir := t.TempDir()
+	staged := object.ComputeID([]byte("staged"))
+	packed := object.ComputeID([]byte("packed"))
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(staged); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(packed); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(packed, 1, [16]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := l.IDsInState(Staged)
+	if len(got) != 1 || got[0] != staged {
+		t.Fatalf("IDsInState(Staged) = %v, want [%v]", got, staged)
+	}
+	got = l.IDsInState(Packed)
+	if len(got) != 1 || got[0] != packed {
+		t.Fatalf("IDsInState(Packed) = %v, want [%v]", got, packed)
+	}
+}

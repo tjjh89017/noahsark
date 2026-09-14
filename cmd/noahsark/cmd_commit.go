@@ -79,10 +79,28 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		_, _ = fmt.Fprintf(stdout, "skipped %s\n", p)
 	}
 	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
+
+	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
+
 	if len(sum.Unstable) > 0 || len(sum.Skipped) > 0 {
 		return 1
 	}
 	return 0
+}
+
+// stagedTotals reports the repository-wide STAGED total: how many
+// objects still wait for a pack, and their combined byte size.
+func stagedTotals(stagingDir string) (objects int, bytes uint64, err error) {
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		return 0, 0, err
+	}
+	return image.StagedTotals(stagingDir, l)
 }
 
 // markStaged appends a Staged state.db record for every object snapID

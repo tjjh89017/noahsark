@@ -412,6 +412,12 @@ marks every object it returns STAGED, rather than having `Writer` itself
 own state.db; this keeps the object writer free of a staging-state
 dependency, at the cost of re-walking the tree once per commit.
 
+`commit` prints a `staged: N objects, B bytes` line after its own
+summary, the repository-wide STAGED total from `image.StagedTotals`, so
+the "pack when staged data nears one disc" rule of OPERATIONS.md's
+packing guidance has a number to check against without waiting for a
+`pack` to report it. `disc list` (below) prints the same line.
+
 ## 8. Packing and locality, and 11.1 INDEX Prereqs
 
 `pack` no longer requires the caller to name which snapshot to pack in

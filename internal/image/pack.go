@@ -497,6 +497,26 @@ func objectByteLen(stagingDir string, u packUnit) (uint64, error) {
 	return uint64(fi.Size()), nil
 }
 
+// StagedTotals sums the repository-wide STAGED objects stageLog knows:
+// how many, and their total on-disk byte length. It is the same count
+// the next pack would still have left to place.
+func StagedTotals(stagingDir string, stageLog *stage.Log) (objects int, bytes uint64, err error) {
+	objectsRoot := filepath.Join(stagingDir, "objects")
+	snapshotsRoot := filepath.Join(stagingDir, "snapshots")
+	for _, id := range stageLog.IDsInState(stage.Staged) {
+		fi, statErr := os.Stat(stagedObjectPath(objectsRoot, id))
+		if os.IsNotExist(statErr) {
+			fi, statErr = os.Stat(filepath.Join(snapshotsRoot, id.TextForm()))
+		}
+		if statErr != nil {
+			return 0, 0, fmt.Errorf("image: %s: %w", id.TextForm(), statErr)
+		}
+		objects++
+		bytes += uint64(fi.Size())
+	}
+	return objects, bytes, nil
+}
+
 // listSnapshots returns every snapshot id in stagingDir/snapshots,
 // sorted ascending by id bytes.
 func listSnapshots(stagingDir string) ([]object.ID, error) {

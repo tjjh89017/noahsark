@@ -165,6 +165,18 @@ func (l *Log) CountState(state State) int {
 	return n
 }
 
+// IDsInState returns every object id whose current state is state, in
+// no particular order.
+func (l *Log) IDsInState(state State) []object.ID {
+	var ids []object.ID
+	for id, rec := range l.current {
+		if rec.State == state {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // append writes one record to state.db and updates the replayed state.
 func (l *Log) append(rec Record) error {
 	rec.Sequence = l.nextSeq
