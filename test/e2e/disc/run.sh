@@ -7,7 +7,7 @@
 # Usage: run.sh SCENARIO [MEDIA] [ORDER]
 #   SCENARIO  media | corrupt-heal | corrupt-parity | corrupt-max |
 #             corrupt-over | cli | iso | chain | chain-small | lowmem |
-#             incremental
+#             incremental | rebuild
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
 #             fixture at dvd+r's real sector counts. lowmem ignores it
@@ -26,6 +26,8 @@ HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 . "$HERE/iso.sh"
 # shellcheck source=test/e2e/disc/incremental.sh
 . "$HERE/incremental.sh"
+# shellcheck source=test/e2e/disc/rebuild.sh
+. "$HERE/rebuild.sh"
 
 # FIXED_MEDIA is the media preset every scenario but media builds its
 # fixture at: real, but small enough that fixture size never depends on
@@ -365,6 +367,7 @@ main() {
 		scenario_media "bd25" 1
 		;;
 	incremental) scenario_incremental ;;
+	rebuild) scenario_rebuild ;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac
 }

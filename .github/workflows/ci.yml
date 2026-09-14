@@ -65,6 +65,7 @@ jobs:
           - { scenario: chain, order: bd25-bd10-dvd, name: chain/bd25-bd10-dvd, slug: chain-bd25-bd10-dvd }
           - { scenario: lowmem, media: '', name: lowmem, slug: lowmem }
           - { scenario: incremental, media: '', name: incremental, slug: incremental }
+          - { scenario: rebuild, media: '', name: rebuild, slug: rebuild }
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
