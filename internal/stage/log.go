@@ -85,6 +85,19 @@ const cleanTimeFileName = "clean_times.db"
 // cleanTimeRecordLen is the fixed size of one clean_times.db record.
 const cleanTimeRecordLen = 32 + 8 + 4
 
+// burnTimeFileName is the burn time companion log's file name inside a
+// staging directory. Burning happens per disc, not per object, and the
+// ledger row this build keeps (image.LoadDiscsLedger) is the same
+// struct as the on-disc DISCS row, which carries no burn time field, so
+// this build never writes one there. Instead it records the moment
+// "disc burned" ran for a disc uuid in this second, append-only file:
+// disc uuid (16), unix nanoseconds (8), crc32c (4), replayed the same
+// way state.db is.
+const burnTimeFileName = "burn_times.db"
+
+// burnTimeRecordLen is the fixed size of one burn_times.db record.
+const burnTimeRecordLen = 16 + 8 + 4
+
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Record is one state.db record: an object's state as of Sequence, and,
@@ -132,6 +145,8 @@ type Log struct {
 	nextSeq   uint64
 	cleanPath string
 	cleanAt   map[object.ID]time.Time
+	burnPath  string
+	burnAt    map[[16]byte]time.Time
 }
 
 // Open reads and replays stagingDir's state.db, if one exists, and
@@ -146,6 +161,8 @@ func Open(stagingDir string) (*Log, error) {
 		nextSeq:   1,
 		cleanPath: filepath.Join(stagingDir, cleanTimeFileName),
 		cleanAt:   make(map[object.ID]time.Time),
+		burnPath:  filepath.Join(stagingDir, burnTimeFileName),
+		burnAt:    make(map[[16]byte]time.Time),
 	}
 	data, err := os.ReadFile(l.path)
 	if err != nil {
@@ -165,6 +182,9 @@ func Open(stagingDir string) (*Log, error) {
 		}
 	}
 	if err := l.loadCleanTimes(); err != nil {
+		return nil, err
+	}
+	if err := l.loadBurnTimes(); err != nil {
 		return nil, err
 	}
 	return l, nil
@@ -275,6 +295,18 @@ func (l *Log) MarkVerifyFailed(id object.ID) error {
 	return l.append(rec)
 }
 
+// MarkBurnUndone appends a Packed record for id with ReasonBurnFailed,
+// carrying forward its current run and disc. This is the Burned to
+// Packed transition "disc burned --undo" drives, for a burn that
+// turned out bad after it was marked burned.
+func (l *Log) MarkBurnUndone(id object.ID) error {
+	rec := l.current[id]
+	rec.ContentID = id
+	rec.State = Packed
+	rec.Reason = ReasonBurnFailed
+	return l.append(rec)
+}
+
 // MarkGCEligible appends a GCEligible record for id, carrying forward
 // its current run and disc. gc calls this once an object has stayed
 // Clean for at least staging.retain_after_clean.
@@ -302,6 +334,63 @@ func (l *Log) MarkDeleted(id object.ID) error {
 func (l *Log) CleanTime(id object.ID) (time.Time, bool) {
 	t, ok := l.cleanAt[id]
 	return t, ok
+}
+
+// RecordBurnTime appends a record to the burn time companion log,
+// naming when "disc burned" ran for discUUID.
+func (l *Log) RecordBurnTime(discUUID [16]byte) error {
+	buf := make([]byte, burnTimeRecordLen)
+	copy(buf[0:16], discUUID[:])
+	binary.LittleEndian.PutUint64(buf[16:24], uint64(time.Now().UnixNano()))
+	crc := crc32.Checksum(buf[0:24], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[24:28], crc)
+
+	if err := os.MkdirAll(filepath.Dir(l.burnPath), 0o755); err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	f, err := os.OpenFile(l.burnPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(buf); err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+
+	l.burnAt[discUUID] = time.Unix(0, int64(binary.LittleEndian.Uint64(buf[16:24])))
+	return nil
+}
+
+// BurnTime returns the time "disc burned" last ran for discUUID, and
+// whether the burn time companion log has a record for it.
+func (l *Log) BurnTime(discUUID [16]byte) (time.Time, bool) {
+	t, ok := l.burnAt[discUUID]
+	return t, ok
+}
+
+// loadBurnTimes reads and replays the burn time companion log, if one
+// exists. A record with a bad CRC ends the replay, matching state.db's
+// own truncated-tail rule.
+func (l *Log) loadBurnTimes() error {
+	data, err := os.ReadFile(l.burnPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stage: %w", err)
+	}
+	for off := 0; off+burnTimeRecordLen <= len(data); off += burnTimeRecordLen {
+		rec := data[off : off+burnTimeRecordLen]
+		crc := binary.LittleEndian.Uint32(rec[24:28])
+		if crc != crc32.Checksum(rec[0:24], crc32cTable) {
+			break
+		}
+		var discUUID [16]byte
+		copy(discUUID[:], rec[0:16])
+		nanos := int64(binary.LittleEndian.Uint64(rec[16:24]))
+		l.burnAt[discUUID] = time.Unix(0, nanos)
+	}
+	return nil
 }
 
 // append writes one record to state.db and updates the replayed state.

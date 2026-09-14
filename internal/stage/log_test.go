@@ -367,3 +367,59 @@ func TestGCEligibleAndDeleted(t *testing.T) {
 		t.Fatalf("got %+v, %v, want Deleted", rec, ok)
 	}
 }
+
+func TestBurnUndoReturnsBurnedToPacked(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk a"))
+	discUUID := [16]byte{0x12}
+
+	if err := l.EnsureStaged(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id, 4, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 4, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurnUndone(id); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := l.Get(id)
+	if !ok || rec.State != Packed || rec.Reason != ReasonBurnFailed || rec.RunSeq != 4 || rec.DiscUUID != discUUID {
+		t.Fatalf("got %+v, %v, want Packed run 4 reason ReasonBurnFailed", rec, ok)
+	}
+}
+
+func TestBurnTime(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discUUID := [16]byte{0x34}
+
+	if _, ok := l.BurnTime(discUUID); ok {
+		t.Fatal("BurnTime reported a time before RecordBurnTime ran")
+	}
+	if err := l.RecordBurnTime(discUUID); err != nil {
+		t.Fatal(err)
+	}
+	burnedAt, ok := l.BurnTime(discUUID)
+	if !ok || burnedAt.IsZero() {
+		t.Fatalf("BurnTime after RecordBurnTime: got %v, %v", burnedAt, ok)
+	}
+
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	burnedAt2, ok := l2.BurnTime(discUUID)
+	if !ok || !burnedAt2.Equal(burnedAt) {
+		t.Fatalf("reopened BurnTime: got %v, %v, want %v", burnedAt2, ok, burnedAt)
+	}
+}
