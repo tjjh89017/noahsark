@@ -34,6 +34,16 @@ type repoConfig struct {
 	// two identical discs is the primary redundancy; FEC is a reserve
 	// feature a repository opts into.
 	FECEnabled bool
+	// CacheDir is cache.dir: an override for the local cache location.
+	// Empty means the default of cache.ResolveDir.
+	CacheDir string
+	// CacheFormatVersion is cache.format_version. A cache whose stored
+	// version differs is deleted and rebuilt, never migrated.
+	CacheFormatVersion int
+	// CacheSnapshotDepth is cache.snapshot_depth: how many of the newest
+	// snapshots the cache keeps trees for. 0 means unlimited. This
+	// build only parses and stores the key; gc applies it later.
+	CacheSnapshotDepth int
 }
 
 // laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
@@ -73,11 +83,21 @@ var knownConfigKeys = map[string]bool{
 	"commit.restat_after_read": true,
 	"commit.retry_unstable":    true,
 	"fec.scheme":               true,
+	"cache.dir":                true,
+	"cache.format_version":     true,
+	"cache.snapshot_depth":     true,
 }
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
 // when the config file does not set the key.
 const defaultRetryUnstable = 1
+
+// defaultCacheFormatVersion is cache.format_version's Phase 1 default.
+const defaultCacheFormatVersion = 1
+
+// defaultCacheSnapshotDepth is cache.snapshot_depth's Phase 1 default:
+// 0, unlimited. gc reads this key later; this build only stores it.
+const defaultCacheSnapshotDepth = 0
 
 // writeConfig writes repository config file with the given keys, one
 // key=value pair per line, in a fixed order.
@@ -100,8 +120,10 @@ func readConfig(path string) (repoConfig, error) {
 	defer func() { _ = f.Close() }()
 
 	c := repoConfig{
-		RestatAfterRead: true,
-		RetryUnstable:   defaultRetryUnstable,
+		RestatAfterRead:    true,
+		RetryUnstable:      defaultRetryUnstable,
+		CacheFormatVersion: defaultCacheFormatVersion,
+		CacheSnapshotDepth: defaultCacheSnapshotDepth,
 	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -155,6 +177,23 @@ func readConfig(path string) (repoConfig, error) {
 			default:
 				return repoConfig{}, fmt.Errorf("config: fec.scheme: unknown value %q, want none or rs255-gf8", value)
 			}
+		case "cache.dir":
+			c.CacheDir = value
+		case "cache.format_version":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: cache.format_version: %w", err)
+			}
+			c.CacheFormatVersion = n
+		case "cache.snapshot_depth":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: cache.snapshot_depth: %w", err)
+			}
+			if n < 0 {
+				return repoConfig{}, fmt.Errorf("config: cache.snapshot_depth: must not be negative")
+			}
+			c.CacheSnapshotDepth = n
 		}
 	}
 	if err := sc.Err(); err != nil {
