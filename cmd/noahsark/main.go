@@ -1,8 +1,8 @@
 // Command noahsark is the NoahsArk command-line tool. This build
 // implements the Phase 1 subset of OPERATIONS.md's CLI reference: init,
-// commit, pack, image build, verify, restore, ls, log, rebuild-cache and
-// disc list. Every other command name, and every flag or config key of a
-// later phase, is refused.
+// commit, pack, image build, verify, restore, ls, log, plan,
+// rebuild-cache and disc list. Every other command name, and every
+// flag or config key of a later phase, is refused.
 package main
 
 import (
@@ -68,6 +68,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdLog(rest, stdout, stderr)
 	case "rebuild-cache":
 		return cmdRebuildCache(rest, stdout, stderr, prog)
+	case "plan":
+		return cmdPlan(rest, stdout, stderr)
 	case "disc":
 		return cmdDisc(rest, stdout, stderr)
 	default:
@@ -136,16 +138,19 @@ Phase 1 commands:
   image build --out=FILE [--capacity=N] TREE-DIR
   verify  --image=PATH [--heal] [--out=DIR]
   restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
-  ls      DISC-ROOT SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
-  log     DISC-ROOT [REF|SNAPSHOT] [--limit=N] [--json]
+  ls      [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
+  log     [DISC-ROOT] [REF|SNAPSHOT] [--limit=N] [--json]
+  plan    [--include=PATH]... [--out=FILE] SNAPSHOT
   rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]
   disc list [--json]
 
-ls, log and rebuild-cache also accept --disc=ROOT (repeatable) or
---discs-dir=DIR instead of a single DISC-ROOT, the same as restore.
+ls and log resolve SNAPSHOT through the local cache when no disc is
+given; give a DISC-ROOT, or --disc=ROOT (repeatable) or --discs-dir=DIR
+as rebuild-cache and restore also accept, to read a disc instead. plan
+always reads the local cache; it takes no disc.
 
 Not yet implemented (Phase 1 commands OPERATIONS.md defines, absent from
-this build): burn, scrub, health, plan, gc.
+this build): burn, scrub, health, gc.
 
 Every command also accepts --progress, --no-progress and --quiet (-q),
 which control the progress line a long-running command writes to
@@ -176,7 +181,6 @@ var notYetInBuildCommands = map[string]bool{
 	"burn":   true,
 	"scrub":  true,
 	"health": true,
-	"plan":   true,
 	"gc":     true,
 }
 
