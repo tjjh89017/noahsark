@@ -142,6 +142,29 @@ func (l *Log) MarkPacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
 	return l.append(Record{ContentID: id, State: Packed, RunSeq: runSeq, DiscUUID: discUUID})
 }
 
+// EnsurePacked appends a Packed record for id, naming runSeq and
+// discUUID, unless id's current record already carries that exact run
+// and disc. This makes repeated rebuilding from the same discs
+// idempotent: it never grows the log when nothing has changed.
+func (l *Log) EnsurePacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
+	if rec, ok := l.current[id]; ok && rec.State == Packed && rec.RunSeq == runSeq && rec.DiscUUID == discUUID {
+		return nil
+	}
+	return l.MarkPacked(id, runSeq, discUUID)
+}
+
+// CountState returns the number of distinct objects whose current state
+// is state.
+func (l *Log) CountState(state State) int {
+	n := 0
+	for _, rec := range l.current {
+		if rec.State == state {
+			n++
+		}
+	}
+	return n
+}
+
 // append writes one record to state.db and updates the replayed state.
 func (l *Log) append(rec Record) error {
 	rec.Sequence = l.nextSeq

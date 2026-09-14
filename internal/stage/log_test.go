@@ -77,6 +77,75 @@ func TestOpenReplaysAcrossOpens(t *testing.T) {
 	}
 }
 
+func TestEnsurePackedIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk a"))
+	var discUUID [16]byte
+	discUUID[0] = 0xCD
+
+	if err := l.EnsurePacked(id, 5, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsurePacked(id, 5, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsurePacked(id, 5, discUUID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, ok := l.Get(id)
+	if !ok || rec.State != Packed || rec.RunSeq != 5 || rec.DiscUUID != discUUID || rec.Sequence != 1 {
+		t.Fatalf("got %+v, %v, want a single Packed record at sequence 1", rec, ok)
+	}
+
+	// A different run or disc still appends: EnsurePacked only skips a
+	// write that would record exactly what is already current.
+	discUUID2 := discUUID
+	discUUID2[1] = 0xEF
+	if err := l.EnsurePacked(id, 6, discUUID2); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok = l.Get(id)
+	if !ok || rec.RunSeq != 6 || rec.DiscUUID != discUUID2 || rec.Sequence != 2 {
+		t.Fatalf("got %+v, %v, want run 6 at sequence 2", rec, ok)
+	}
+}
+
+func TestCountState(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id1 := object.ComputeID([]byte("one"))
+	id2 := object.ComputeID([]byte("two"))
+	id3 := object.ComputeID([]byte("three"))
+
+	if err := l.EnsureStaged(id1); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(id2); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id2, 1, [16]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id3, 1, [16]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := l.CountState(Staged); n != 1 {
+		t.Fatalf("CountState(Staged) = %d, want 1", n)
+	}
+	if n := l.CountState(Packed); n != 2 {
+		t.Fatalf("CountState(Packed) = %d, want 2", n)
+	}
+}
+
 func TestTruncatedTailStopsReplay(t *testing.T) {
 	dir := t.TempDir()
 	id1 := object.ComputeID([]byte("one"))
