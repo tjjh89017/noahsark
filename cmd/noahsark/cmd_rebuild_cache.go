@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -73,6 +74,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	// uses whatever discs it can read, and only refuses outright when
 	// none of them yielded anything.
 	var results []*image.ReadResult
+	var readRoots []string
 	for _, root := range discRoots {
 		rr, err := image.ReadWithProgress(root, prog)
 		if err != nil {
@@ -80,6 +82,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 			continue
 		}
 		results = append(results, rr)
+		readRoots = append(readRoots, root)
 	}
 	if len(results) == 0 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: no usable disc found")
@@ -104,6 +107,12 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
+	}
+
+	if err := rebuildCacheFromRoots(cfg, repoUUID, readRoots); err != nil {
+		// The cache is only an accelerator: a failure to populate it
+		// never fails rebuild-cache itself.
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: cache:", err)
 	}
 
 	var packedObjects int
@@ -152,6 +161,30 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 
 	_, _ = fmt.Fprintln(stdout, "rebuild-cache: ok")
 	return 0
+}
+
+// rebuildCacheFromRoots copies every one of readRoots' run catalog,
+// snapshots and trees into the local cache, so rebuild-cache leaves ls
+// and plan able to run with no disc present, the same way pack does
+// right after building a run.
+func rebuildCacheFromRoots(cfg repoConfig, repoUUID [16]byte, readRoots []string) error {
+	if len(readRoots) == 0 {
+		return nil
+	}
+	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
+	if err != nil {
+		return err
+	}
+	c, err := cache.Open(dir)
+	if err != nil {
+		return err
+	}
+	for _, root := range readRoots {
+		if _, err := cache.WriteFromRoot(c, root); err != nil {
+			return fmt.Errorf("%s: %w", root, err)
+		}
+	}
+	return nil
 }
 
 // rebuildTargetRepoDir resolves the repository directory rebuild-cache

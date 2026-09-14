@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -248,6 +249,13 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 1
 	}
 
+	if err := populateCache(cfg, repoUUID, absOut); err != nil {
+		// The cache is only an accelerator: a failure to populate it
+		// never fails the pack, since every command must still work
+		// with the cache absent or stale.
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack: cache:", err)
+	}
+
 	if fecEnabled {
 		_, _ = fmt.Fprintf(stdout, "fec: on, budget used: %d stream blocks across %d stripes\n", result.StreamBlocks, result.StripeCount)
 	} else {
@@ -374,6 +382,22 @@ func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image
 		haveName[n] = true
 	}
 	return named, nil
+}
+
+// populateCache copies the run just packed at runRoot, every known
+// snapshot, and every tree it reaches, into the local cache, so a
+// later ls or plan can run with no disc present.
+func populateCache(cfg repoConfig, repoUUID [16]byte, runRoot string) error {
+	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
+	if err != nil {
+		return err
+	}
+	c, err := cache.Open(dir)
+	if err != nil {
+		return err
+	}
+	_, err = cache.WriteFromRoot(c, runRoot)
+	return err
 }
 
 func decodeUUID(s string) ([16]byte, error) {
