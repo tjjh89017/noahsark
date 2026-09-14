@@ -38,6 +38,10 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 
 	multi := len(discFlags) > 0 || *discsDir != ""
 	discRootGiven := !multi && fs.NArg() > 0 && looksLikeDiscRoot(fs.Arg(0))
+	if !multi && !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
+		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", fs.Arg(0))
+		return 2
+	}
 	cacheMode := !multi && !discRootGiven
 
 	var src snapshotSource

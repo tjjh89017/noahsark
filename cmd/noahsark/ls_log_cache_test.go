@@ -116,3 +116,29 @@ func repoDirFromTreeDir(t *testing.T, treeDir string) string {
 	t.Helper()
 	return filepath.Join(filepath.Dir(treeDir), "repo")
 }
+
+// TestLsNonexistentPathReportsNoSuchDiscRoot checks that a nonexistent
+// path given as ls's first positional is reported as a missing disc
+// root, not resolved as a SNAPSHOT arg through cache mode.
+func TestLsNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-disc")
+	code, out := runCmd(t, "ls", missing, "SOMESNAP")
+	if code != 2 {
+		t.Fatalf("ls: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "no such disc root: "+missing) {
+		t.Fatalf("ls output %q does not name the missing disc root", out)
+	}
+}
+
+// TestLogNonexistentPathReportsNoSuchDiscRoot is TestLsNonexistentPathReportsNoSuchDiscRoot for log.
+func TestLogNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-disc")
+	code, out := runCmd(t, "log", missing)
+	if code != 2 {
+		t.Fatalf("log: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "no such disc root: "+missing) {
+		t.Fatalf("log output %q does not name the missing disc root", out)
+	}
+}
