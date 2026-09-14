@@ -44,6 +44,11 @@ type repoConfig struct {
 	// snapshots the cache keeps trees for. 0 means unlimited. This
 	// build only parses and stores the key; gc applies it later.
 	CacheSnapshotDepth int
+	// RestoreStagingBudget is restore.staging_budget, in bytes: the
+	// peak staging/restore/ size a restore should stay under. This
+	// build only warns above it; it does not split a restore into
+	// passes yet.
+	RestoreStagingBudget uint64
 }
 
 // laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
@@ -86,6 +91,7 @@ var knownConfigKeys = map[string]bool{
 	"cache.dir":                true,
 	"cache.format_version":     true,
 	"cache.snapshot_depth":     true,
+	"restore.staging_budget":   true,
 }
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
@@ -98,6 +104,10 @@ const defaultCacheFormatVersion = 1
 // defaultCacheSnapshotDepth is cache.snapshot_depth's Phase 1 default:
 // 0, unlimited. gc reads this key later; this build only stores it.
 const defaultCacheSnapshotDepth = 0
+
+// defaultRestoreStagingBudget is restore.staging_budget's Phase 1
+// default: 16 GiB.
+const defaultRestoreStagingBudget = 16 * 1024 * 1024 * 1024
 
 // writeConfig writes repository config file with the given keys, one
 // key=value pair per line, in a fixed order.
@@ -120,10 +130,11 @@ func readConfig(path string) (repoConfig, error) {
 	defer func() { _ = f.Close() }()
 
 	c := repoConfig{
-		RestatAfterRead:    true,
-		RetryUnstable:      defaultRetryUnstable,
-		CacheFormatVersion: defaultCacheFormatVersion,
-		CacheSnapshotDepth: defaultCacheSnapshotDepth,
+		RestatAfterRead:      true,
+		RetryUnstable:        defaultRetryUnstable,
+		CacheFormatVersion:   defaultCacheFormatVersion,
+		CacheSnapshotDepth:   defaultCacheSnapshotDepth,
+		RestoreStagingBudget: defaultRestoreStagingBudget,
 	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -194,6 +205,12 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: cache.snapshot_depth: must not be negative")
 			}
 			c.CacheSnapshotDepth = n
+		case "restore.staging_budget":
+			n, err := strconv.ParseUint(value, 10, 64)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: restore.staging_budget: %w", err)
+			}
+			c.RestoreStagingBudget = n
 		}
 	}
 	if err := sc.Err(); err != nil {
