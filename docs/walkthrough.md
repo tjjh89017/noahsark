@@ -453,6 +453,15 @@ a disc. An object leaves the staging store only after this full cycle:
    real `gc` run exits 1 when nothing was eligible to delete, 2 on
    failure, and 0 once it deletes something.
 
+   `--force-after=DURATION` shortens the retention to `DURATION` for
+   this one `gc` run only, ignoring `staging.retain_after_clean`,
+   useful when space is short and you are willing to accept a shorter
+   window before the next real disaster: `gc --force-after=1h`. It asks
+   for confirmation on stderr first (`delete N object(s), B bytes?
+   [y/N]`), read from stdin, unless `--dry-run` is also given; it
+   refuses outright, rather than guessing, when stdin is not a terminal
+   and `--yes` is not given.
+
 Check the staging store's size at any point with:
 
 ```sh
@@ -615,6 +624,23 @@ resuming: 12 object(s) already spooled
 ```
 
 and only prompts for whichever disc the plan still needs.
+
+Pass `--plan=FILE` with a plan `plan --out=FILE` already wrote, in
+place of letting `restore` build its own: useful when a script plans
+once, on a machine with the cache handy, and hands the plan file to
+whoever runs the actual restore. `restore --plan` refuses a plan file
+written for a different repository, or naming a snapshot this
+repository's cache does not know, rather than guessing.
+
+`--staging-budget=SIZE` caps how much of `staging/restore/` a
+disc-swap restore ever uses at once, overriding `restore.staging_budget`
+for this run; it takes the same units as `--capacity` (`4GiB`, `500MB`,
+or a plain byte count). When one disc's share would go over the
+budget, `restore` reads it in more than one pass, printing `pass 1/2`
+and so on, assembling and freeing whatever files complete between
+passes, without prompting again for the same disc. A file whose own
+chunks alone are bigger than the budget is refused up front, naming the
+file, before any disc is read.
 
 Restore a few paths, not the whole snapshot, to a scratch directory:
 

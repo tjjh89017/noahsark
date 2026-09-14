@@ -583,22 +583,39 @@ disc already fully CLEAN, or one still fully PACKED, has nothing to
 report there. A verify against a tree whose disc uuid the ledger has
 never seen at all, or run with no `--repo`, changes no staging state.
 
-`gc [--dry-run] [--keep-snapshots=N]` implements section 4.5's GC
-rules: a CLEAN object becomes GC-ELIGIBLE once
-`staging.retain_after_clean` has passed since its CLEAN time, and only
-a GC-ELIGIBLE object is ever deleted, after confirming its presence in
-the cached INDEX of the run the state log says holds it; an object
-whose run is not cached is left alone and reported separately, never
-deleted on trust. OPERATIONS.md's own CLI reference (16.20) gives `gc`
-only `--dry-run` and `--force-after`; this build adds `--keep-snapshots`
-instead of `--force-after`, since 17.12 already says `gc` applies
-`cache.snapshot_depth`, and `--keep-snapshots` is that same knob as a
-one-off override: it keeps the cached trees and blobs reachable from
-only the newest N snapshots and drops the rest, recomputing every
-cached snapshot's completeness afterward so `ls` reports a dropped
-snapshot's cache copy incomplete again. `--force-after` is not
-implemented; shortening retention for one run needs an interactive
-confirmation this build has no prompt path for yet.
+`gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]`
+implements section 4.5's GC rules: a CLEAN object becomes GC-ELIGIBLE
+once `staging.retain_after_clean` has passed since its CLEAN time, and
+only a GC-ELIGIBLE object is ever deleted, after confirming its
+presence in the cached INDEX of the run the state log says holds it; an
+object whose run is not cached is left alone and reported separately,
+never deleted on trust. OPERATIONS.md's own CLI reference (16.20) gives
+`gc` only `--dry-run` and `--force-after`; this build adds
+`--keep-snapshots` alongside them, since 17.12 already says `gc`
+applies `cache.snapshot_depth`, and `--keep-snapshots` is that same
+knob as a one-off override: it keeps the cached trees and blobs
+reachable from only the newest N snapshots and drops the rest,
+recomputing every cached snapshot's completeness afterward so `ls`
+reports a dropped snapshot's cache copy incomplete again.
+
+`--force-after=DURATION` substitutes DURATION for
+`staging.retain_after_clean` for this one run, using the same duration
+syntax (a whole number of days with a `d` suffix, or anything
+`time.ParseDuration` accepts). `gc` computes what it would delete under
+that shortened window exactly as it always does (`gcPlanStagingObjects`,
+shared with the ordinary path), then, unless `--dry-run` was also
+given, prints the confirmation OPERATIONS.md's CLI reference names,
+`delete N object(s), B bytes? [y/N]`, on stderr and reads one line from
+stdin. `--dry-run` skips the confirmation outright: it changes nothing
+either way, so there is nothing for the operator to approve. A `--yes`
+flag skips the confirmation for a real run too, for a scripted or cron
+`gc --force-after`; without `--yes`, a stdin that is not a terminal
+(the same character-device check `internal/progress` already uses for
+its own terminal detection) is refused rather than silently deleting
+under a shortened retention, since a killed or redirected session must
+never read an empty line as consent. Answering anything but `y` or
+`yes` deletes nothing and exits 2, the same code as the refusal, since
+both leave `gc` having done nothing the operator did not ask for.
 
 OPERATIONS.md's own exit codes for `gc` (16.20) are 0 on success, 1
 when nothing was eligible, 2 on failure, with no separate case for
@@ -860,10 +877,57 @@ unreadable `DISC.bin` (drive still settling, or nothing mounted yet) is
 retried a few times with a short pause before it prompts. `--mount` has
 no config default: OPERATIONS.md's configuration reference names no
 `restore.mount` key, so the flag is required in this mode.
-`restore.staging_budget` is read from config the same way `plan` would
-use it; a disc whose assigned bytes exceed it only gets a warning in
-this build, since splitting a restore into passes is not implemented
-yet.
+
+`restore.staging_budget`, or `--staging-budget` (same unit suffixes as
+`--capacity`, parsed by the new, shared `parseByteSize`), bounds
+`staging/restore/`'s peak size, section 14.3's staging budget. The
+disc-swap loop tracks a running spool-bytes total itself (seeded from
+whatever `resumeSpool` finds already on disk) rather than statting the
+directory on every write: `Manifest.WriteReady` now also returns the
+bytes it just freed, so the total moves by exactly what was written and
+freed, no re-scan needed. `internal/plan.ComputePasses` buckets each
+disc's chunk objects, in the plan's own order, into passes of at most
+budget bytes; it is a conservative, cache-only estimate (it assumes no
+freeing until a whole pass finishes, since `plan` builds no per-file
+manifest), so a real restore, which frees a file's chunks the moment
+that file is complete, may need fewer passes than predicted but never
+more. Both `plan` and `restore` print the resulting `passes` and
+`peak_staging_bytes`; `restore`'s own loop prints `pass N/M` between
+passes on the same disc, with no re-detection and no new prompt, since
+the disc never left the drive.
+
+Before any disc is read, `restore` also checks every pending file's own
+chunk total against the budget (`Manifest.FileExceedingBudget`): no
+split of one file's chunks across passes can keep it under a budget
+smaller than the file itself, so this is refused up front, naming the
+file and the budget, at exit code 2, rather than discovered mid-restore
+after some other disc has already been read.
+
+`restore --plan=FILE` resumes a plan `plan --out=FILE` wrote, instead
+of building one: it takes the file's `snapshot`, `include` and disc
+order (matched back to a freshly built `internal/plan.Result` by disc
+uuid, so the actual object-to-disc assignment still comes from the
+current cache, only the order is pinned) rather than recomputing them.
+The positional argument becomes `OUT-DIR` alone; `SNAPSHOT` would be
+redundant with the plan file and `--include` is refused alongside
+`--plan` for the same reason, one source of truth for what gets
+restored. The plan file's `repo_uuid` (hyphenated lowercase, matching
+`internal/plan.UUIDText`) and `created` (RFC 3339, from a package-level
+clock a test can replace) are new plan-JSON fields, added so a resumed
+plan can be checked against the repository it is resumed into: a
+`repo_uuid` mismatch, or a `snapshot` the cache does not have complete,
+is refused by name rather than silently replanning against the wrong
+repository.
+
+`ejectDrive`'s permission hint used to string-match `umount`'s own
+stderr for "permission denied" or "must be superuser", which is
+locale- and version-dependent output to key behavior on. It now checks
+only `umount`'s exit status together with `os.Geteuid() != 0`: an
+`umount` failure while not running as root is treated as the
+permission problem, and the one informational line (pointing at sudo
+or `--no-eject`) still prints at most once per restore; `umount`'s own
+output is instead folded into the generic warning for every other
+failure, so it is not lost, just no longer parsed.
 
 A destination file that already exists, with `--overwrite` not given,
 is not automatically a conflict in this mode: `internal/restore.Manifest`
