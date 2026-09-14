@@ -7,6 +7,11 @@ them back years later. Reed-Solomon parity is available per run but off
 by default: see "FEC: off by default" below for why, and how to turn
 it on.
 
+`docs/walkthrough.md` walks the actual backup routine end to end, on
+real discs: first backup, the regular commit-and-pack cycle, burning
+and verifying a twin pair, restore drills, and recovery from a lost
+repository directory or a failed disc.
+
 ## Running the restore and heal experiment
 
 Build the CLI, then commit a source tree, pack it, and build a UDF
