@@ -539,6 +539,22 @@ FORMAT.md's new "10.8 Scheme 0: no FEC" subsection. `restore.Heal`
 reads the run header first and refuses a non-`rs255-gf8` run with an
 error naming the run seq, before opening any FEC file.
 
+The default was confirmed after the pack optimization. The checksum
+digest pass is fused into object placement; parity still reads the
+placed stream a second time because the column-major stream layout
+scatters one stripe's blocks across the whole run. Measured on the CI
+runner, media/bd25 cell, 1.26 GB fixture:
+
+| Mode | Before | After |
+|---|---|---|
+| FEC off | 5.38 s, 234 MB/s | 1.94 s, 648 MB/s |
+| FEC on | 11.94 s, 105 MB/s | 4.21 s, 299 MB/s |
+
+Under the 512 MB lowmem cap FEC on runs at 87 MB/s. A 25 GB disc packs
+in about 40 s without FEC and about 85 s with it. The user kept the
+default off: two identical discs are the primary redundancy, FEC costs
+9% of capacity, and small hosts pay three times the pack time.
+
 `reference/decoder.py`'s `cmd_verify` never implemented a checksum-column
 or parity check of its own; it already conformed to the scheme 0 rule by
 construction. Its `parse_run` was missing a `fec_scheme` key in the
