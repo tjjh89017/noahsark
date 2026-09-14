@@ -59,6 +59,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdLs(rest, stdout, stderr)
 	case "log":
 		return cmdLog(rest, stdout, stderr)
+	case "rebuild-cache":
+		return cmdRebuildCache(rest, stdout, stderr, prog)
 	default:
 		_, _ = fmt.Fprintf(stderr, "noahsark: unknown command %q\n", cmd)
 		printUsage(stderr)
@@ -109,9 +111,10 @@ Phase 1 commands:
   restore DISC-ROOT [--include=PATH]... SNAPSHOT OUT-DIR
   ls      DISC-ROOT SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
   log     DISC-ROOT [REF|SNAPSHOT] [--limit=N] [--json]
+  rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]
 
-ls and log also accept --disc=ROOT (repeatable) or --discs-dir=DIR
-instead of a single DISC-ROOT, the same as restore.
+ls, log and rebuild-cache also accept --disc=ROOT (repeatable) or
+--discs-dir=DIR instead of a single DISC-ROOT, the same as restore.
 
 Every command also accepts --progress, --no-progress and --quiet (-q),
 which control the progress line a long-running command writes to
