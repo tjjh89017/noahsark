@@ -87,6 +87,15 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 			StageLog:                l,
 		}
 		if _, err := image.Pack(opts); err != nil {
+			// A capacity large enough to finish every remaining object
+			// in one run leaves nothing for a later, smaller capacity
+			// in the same sequence to pack. That is a valid outcome
+			// for a fixture this small, not a test failure: stop
+			// packing early and let the caller restore from whatever
+			// discs exist so far.
+			if strings.Contains(err.Error(), "nothing to pack") {
+				break
+			}
 			t.Fatalf("pack %d: %v", i, err)
 		}
 		roots = append(roots, outDir)
@@ -133,7 +142,7 @@ func TestRestoreMultiAcrossThreeDiscs(t *testing.T) {
 	roots := packSequence(t, stagingDir, snapID, []uint64{7_000_000, 7_000_000, 10_000_000})
 
 	outDir := t.TempDir()
-	if err := RestoreMulti(roots, snapID, outDir); err != nil {
+	if _, err := RestoreMulti(roots, snapID, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcDir, filepath.Join(outDir, srcDir))
@@ -144,7 +153,7 @@ func TestRestoreMultiCapacityOrderDoesNotMatterForResult(t *testing.T) {
 	roots := packSequence(t, stagingDir, snapID, []uint64{10_000_000, 7_000_000, 7_000_000})
 
 	outDir := t.TempDir()
-	if err := RestoreMulti(roots, snapID, outDir); err != nil {
+	if _, err := RestoreMulti(roots, snapID, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcDir, filepath.Join(outDir, srcDir))
@@ -158,7 +167,7 @@ func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 	partial := []string{roots[0], roots[2]}
 
 	outDir := t.TempDir()
-	err := RestoreMulti(partial, snapID, outDir)
+	_, err := RestoreMulti(partial, snapID, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -265,7 +274,7 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	// INDEX and Prereqs never reference snap1's objects, so the only
 	// way to name disc 1 is disc 2's DISCS table.
 	outDir := t.TempDir()
-	err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
+	_, err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}

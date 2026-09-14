@@ -29,7 +29,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := restore.Restore(root, snapID, outDir); err != nil {
+	if _, err := restore.Restore(root, snapID, outDir); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "ci-restore:", err)
 		os.Exit(1)
 	}

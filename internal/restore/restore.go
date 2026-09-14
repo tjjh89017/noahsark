@@ -24,8 +24,16 @@ import (
 // discRoot/NOAHSARK. Restore verifies every object's content id before
 // using its bytes; a chunk, blob, tree or snapshot that does not verify
 // is a hard error.
-func Restore(discRoot string, snapshotID object.ID, outDir string, opts ...Option) error {
+func Restore(discRoot string, snapshotID object.ID, outDir string, opts ...Option) (skipped int, err error) {
 	return RestoreWithProgress(discRoot, snapshotID, outDir, nil, opts...)
+}
+
+// writePolicy carries the overwrite rule of section 15.6 through the
+// restore walk, plus the running count of paths left alone because they
+// already existed and --overwrite was not given.
+type writePolicy struct {
+	overwrite bool
+	skipped   int
 }
 
 // RestoreWithProgress is Restore, reporting bytes written through prog.
@@ -38,49 +46,49 @@ func Restore(discRoot string, snapshotID object.ID, outDir string, opts ...Optio
 // tree, reading only tree objects, before any directory is created or
 // file written. A path that matches nothing fails the whole call with an
 // *UnmatchedIncludeError naming every such path.
-func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) error {
+func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) (skipped int, err error) {
 	o := newRestoreOptions(opts)
 	cache := image.NewNameCache()
 	base, err := findNoahsark(discRoot, cache)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
+		return 0, err
 	}
 	absOut, err := filepath.Abs(outDir)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	snapRaw, _, err := readVerified(base, snapshotID, true, cache)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var snap format.Snapshot
 	if _, err := snap.Decode(snapRaw); err != nil {
-		return fmt.Errorf("restore: snapshot %s: %w", snapshotID.TextForm(), err)
+		return 0, fmt.Errorf("snapshot %s: %w", snapshotID.TextForm(), err)
 	}
 
 	rootRaw, _, err := readVerified(base, object.ID(snap.RootTree), false, cache)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var rootTree format.Tree
 	if _, err := rootTree.Decode(rootRaw); err != nil {
-		return fmt.Errorf("restore: tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
+		return 0, fmt.Errorf("tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
 	fs, err := newFilterState(o.includes)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if fs != nil {
 		if err := resolveIncludes(base, rootTree.Entries, fs, cache); err != nil {
-			return err
+			return 0, err
 		}
 		if unmatched := unmatchedIncludes(fs, o.includes); len(unmatched) > 0 {
-			return &UnmatchedIncludeError{Paths: unmatched}
+			return 0, &UnmatchedIncludeError{Paths: unmatched}
 		}
 	}
 
@@ -98,12 +106,13 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 	prog.Start("restore: bytes written", int64(total))
 	defer prog.Done()
 
+	wp := &writePolicy{overwrite: o.overwrite}
 	for _, e := range rootTree.Entries {
-		if err := restoreRootEntry(base, absOut, e, prog, cache, fs); err != nil {
-			return err
+		if err := restoreRootEntry(base, absOut, e, prog, cache, fs, wp); err != nil {
+			return wp.skipped, err
 		}
 	}
-	return nil
+	return wp.skipped, nil
 }
 
 // sumRegularSizes recursively sums every regular file entry's recorded
@@ -168,7 +177,7 @@ func resolveIncludesDir(base string, treeID object.ID, fs *filterState, cache *i
 	}
 	var t format.Tree
 	if _, err := t.Decode(raw); err != nil {
-		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
+		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
 		child, include := stepInto(fs, []string{string(e.Name)})
@@ -187,13 +196,13 @@ func resolveIncludesDir(base string, treeID object.ID, fs *filterState, cache *i
 // entry's root-path TLV, joined under outDir; its content is the
 // entry's own directory tree, restored directly into that destination
 // rather than one level below it.
-func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, fs *filterState) error {
+func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, fs *filterState, wp *writePolicy) error {
 	if e.EntryType != format.EntryTypeDirectory {
-		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
+		return fmt.Errorf("root entry %q: expected a directory", e.Name)
 	}
 	rootPath := rootPathOf(e)
 	if rootPath == "" {
-		return fmt.Errorf("restore: root entry %q: no root path TLV", e.Name)
+		return fmt.Errorf("root entry %q: no root path TLV", e.Name)
 	}
 	childFS, include := stepInto(fs, splitPath(rootPath))
 	if !include {
@@ -206,7 +215,7 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Re
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return err
 	}
-	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache, childFS); err != nil {
+	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache, childFS, wp); err != nil {
 		return err
 	}
 	applyMetadata(dest, e)
@@ -215,21 +224,21 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Re
 
 // restoreDirContents decodes the tree at treeID and restores every entry
 // fs leaves in scope as a child of dest, which already exists.
-func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter, cache *image.NameCache, fs *filterState) error {
+func restoreDirContents(base string, treeID object.ID, dest string, prog *progress.Reporter, cache *image.NameCache, fs *filterState, wp *writePolicy) error {
 	raw, _, err := readVerified(base, treeID, false, cache)
 	if err != nil {
 		return err
 	}
 	var t format.Tree
 	if _, err := t.Decode(raw); err != nil {
-		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
+		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
 		childFS, include := stepInto(fs, []string{string(e.Name)})
 		if !include {
 			continue
 		}
-		if err := restoreEntry(base, dest, e, prog, cache, childFS); err != nil {
+		if err := restoreEntry(base, dest, e, prog, cache, childFS, wp); err != nil {
 			return err
 		}
 	}
@@ -239,7 +248,7 @@ func restoreDirContents(base string, treeID object.ID, dest string, prog *progre
 // restoreEntry writes one tree entry as a child of dir. The caller has
 // already decided the entry is in scope; fs is only used for a directory
 // entry's own children.
-func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, fs *filterState) error {
+func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, fs *filterState, wp *writePolicy) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -250,14 +259,20 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 		if err := os.MkdirAll(child, 0o755); err != nil {
 			return err
 		}
-		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog, cache, fs); err != nil {
+		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog, cache, fs, wp); err != nil {
 			return err
 		}
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		if err := restoreFile(base, child, object.ID(e.ContentID), prog, cache); err != nil {
+		skipped, err := restoreFile(base, child, object.ID(e.ContentID), prog, cache, wp)
+		if err != nil {
 			return err
+		}
+		if skipped {
+			// The path already existed and --overwrite was not given;
+			// leave it exactly as found.
+			return nil
 		}
 		applyMetadata(child, e)
 		return nil
@@ -269,53 +284,83 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 			}
 		}
 		if target == "" {
-			return fmt.Errorf("restore: symlink %q has no target TLV", name)
+			return fmt.Errorf("symlink %q has no target TLV", name)
 		}
 		if err := os.RemoveAll(child); err != nil {
 			return err
 		}
 		return os.Symlink(target, child)
 	default:
-		return fmt.Errorf("restore: entry %q: entry type %d is not restored", name, e.EntryType)
+		return fmt.Errorf("entry %q: entry type %d is not restored", name, e.EntryType)
 	}
 }
 
 // restoreFile reassembles blobID's chunks into dest, in blob entry order,
-// verifying every chunk's content id before writing its bytes.
-func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter, cache *image.NameCache) error {
+// verifying every chunk's content id before writing its bytes. It
+// reports skipped true, and leaves dest untouched, when dest already
+// existed and wp.overwrite is false.
+func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter, cache *image.NameCache, wp *writePolicy) (skipped bool, err error) {
 	raw, _, err := readVerified(base, blobID, false, cache)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var blob format.Blob
 	if _, err := blob.Decode(raw); err != nil {
-		return fmt.Errorf("restore: blob %s: %w", blobID.TextForm(), err)
+		return false, fmt.Errorf("blob %s: %w", blobID.TextForm(), err)
 	}
 
 	entries := append([]format.BlobEntry(nil), blob.Entries...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
 
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, skipped, err := openForWrite(dest, wp)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if skipped {
+		return true, nil
 	}
 	defer func() { _ = f.Close() }()
 
 	for _, be := range entries {
 		_, payload, err := readVerified(base, object.ID(be.ContentID), false, cache)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if uint64(len(payload)) != be.Length {
-			return fmt.Errorf("restore: chunk %s: length %d, blob entry says %d",
+			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d",
 				object.ID(be.ContentID).TextForm(), len(payload), be.Length)
 		}
 		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
-			return err
+			return false, err
 		}
 		prog.Add(int64(len(payload)))
 	}
-	return nil
+	return false, nil
+}
+
+// openForWrite creates dest for a restore write, following the path
+// safety rule of OPERATIONS.md's metadata restore policy: without
+// --overwrite, an existing path is never opened for truncation, so
+// O_EXCL either creates the file or reports it already there; with
+// --overwrite, the existing path is unlinked first and then created.
+// A file created this way is always new, so O_TRUNC is never needed.
+func openForWrite(dest string, wp *writePolicy) (f *os.File, skipped bool, err error) {
+	if wp != nil && wp.overwrite {
+		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+			return nil, false, err
+		}
+	}
+	f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			if wp != nil {
+				wp.skipped++
+			}
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	return f, false, nil
 }
 
 // applyMetadata sets mode and mtime from e. Ownership is applied best
@@ -335,7 +380,7 @@ func joinSafe(dir, name string) (string, error) {
 	dest := filepath.Join(dir, name)
 	rel, err := filepath.Rel(dir, dest)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("restore: path %q escapes the output directory", name)
+		return "", fmt.Errorf("path %q escapes the output directory", name)
 	}
 	return dest, nil
 }
@@ -347,7 +392,7 @@ func joinSafe(dir, name string) (string, error) {
 func findNoahsark(root string, cache *image.NameCache) (string, error) {
 	base, err := image.FindNoahsark(root, cache)
 	if err != nil {
-		return "", fmt.Errorf("restore: %w", err)
+		return "", fmt.Errorf("%w", err)
 	}
 	return base, nil
 }
@@ -377,30 +422,30 @@ func readVerified(base string, id object.ID, snapshot bool, cache *image.NameCac
 func readVerifiedAt(path string, id object.ID) (raw, payload []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("restore: %s: %w", id.TextForm(), err)
+		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
 	}
 	var ch format.CommonHeader
 	if err := ch.Decode(data); err != nil {
-		return nil, nil, fmt.Errorf("restore: %s: %w", id.TextForm(), err)
+		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
 	}
 	if len(data) < format.CommonHeaderLen+format.ObjectHeaderLen {
-		return nil, nil, fmt.Errorf("restore: %s: file too short", id.TextForm())
+		return nil, nil, fmt.Errorf("%s: file too short", id.TextForm())
 	}
 	var oh format.ObjectHeader
 	if err := oh.Decode(data[format.CommonHeaderLen:]); err != nil {
-		return nil, nil, fmt.Errorf("restore: %s: %w", id.TextForm(), err)
+		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
 	}
 	headerLen := uint64(format.CommonHeaderLen + format.ObjectHeaderLen)
 	if uint64(len(data)) < headerLen+oh.StoredLen {
-		return nil, nil, fmt.Errorf("restore: %s: file too short", id.TextForm())
+		return nil, nil, fmt.Errorf("%s: file too short", id.TextForm())
 	}
 	stored := data[headerLen : headerLen+oh.StoredLen]
 	payload, err = object.Decompress(stored, oh.Compression, oh.PayloadLen)
 	if err != nil {
-		return nil, nil, fmt.Errorf("restore: %s: %w", id.TextForm(), err)
+		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
 	}
 	if object.ComputeID(payload) != id {
-		return nil, nil, fmt.Errorf("restore: %s: content id does not verify", id.TextForm())
+		return nil, nil, fmt.Errorf("%s: content id does not verify", id.TextForm())
 	}
 	return data, payload, nil
 }

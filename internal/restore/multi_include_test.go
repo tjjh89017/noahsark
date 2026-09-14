@@ -57,7 +57,7 @@ func TestRestoreMultiIncludeOmittedDiscHoldsOnlyExcluded(t *testing.T) {
 
 	outDir := t.TempDir()
 	inc := includePath(srcDir, "sub1/f.bin")
-	if err := RestoreMulti([]string{roots[1]}, snapID, outDir, WithInclude([]string{inc})); err != nil {
+	if _, err := RestoreMulti([]string{roots[1]}, snapID, outDir, WithInclude([]string{inc})); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestRestoreMultiIncludeOmittedDiscHoldsIncluded(t *testing.T) {
 
 	outDir := t.TempDir()
 	inc := includePath(srcDir, "sub0/f.bin")
-	err := RestoreMulti([]string{roots[1]}, snapID, outDir, WithInclude([]string{inc}))
+	_, err := RestoreMulti([]string{roots[1]}, snapID, outDir, WithInclude([]string{inc}))
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}

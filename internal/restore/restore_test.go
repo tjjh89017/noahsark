@@ -85,7 +85,7 @@ func TestRestoreFromImageAfterStagingDeleted(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir); err != nil {
 		t.Fatal(err)
 	}
 	compareRestoredTree(t, srcDir, outDir)
@@ -106,7 +106,7 @@ func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	flipByte(t, chunkPath, 70) // inside the payload, past the 64-byte header
 
 	outDir := t.TempDir()
-	err = Restore(treeDir, snapID, outDir)
+	_, err = Restore(treeDir, snapID, outDir)
 	if err == nil {
 		t.Fatal("expected Restore to fail on a corrupted chunk")
 	}
@@ -145,4 +145,52 @@ func findAChunkFile(t *testing.T, base string) string {
 		t.Fatal("no chunk file found under objects/")
 	}
 	return found
+}
+
+// TestRestoreSkipsExistingPathWithoutOverwrite asserts that Restore
+// leaves a pre-existing file alone and counts it skipped when
+// WithOverwrite is not given, and replaces it when WithOverwrite(true)
+// is given.
+func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
+	srcDir := buildFixtureSrc(t)
+	_, treeDir, snapID := buildFixtureTree(t, srcDir)
+
+	outDir := t.TempDir()
+	preexisting := filepath.Join(outDir, srcDir, "small.txt")
+	if err := os.MkdirAll(filepath.Dir(preexisting), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(preexisting, []byte("not the source content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	skipped, err := Restore(treeDir, snapID, outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", skipped)
+	}
+	got, err := os.ReadFile(preexisting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "not the source content" {
+		t.Fatalf("existing file was modified without WithOverwrite: %q", got)
+	}
+
+	skipped, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 0 {
+		t.Fatalf("skipped = %d, want 0 with WithOverwrite", skipped)
+	}
+	got, err = os.ReadFile(preexisting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) == "not the source content" {
+		t.Fatalf("WithOverwrite did not replace the existing file")
+	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,6 +23,27 @@ func TestRestoreAcceptsARefName(t *testing.T) {
 	if code, out := runCmd(t, "restore", treeDir, snapID, restoredByID); code != 0 {
 		t.Fatalf("restore snapID: exit %d: %s", code, out)
 	}
+}
+
+// TestRestoreDiscsDirFollowsASymlinkedDiscRoot checks that --discs-dir
+// finds a disc root reached through a symlink, not only a real
+// directory: os.ReadDir's entries report a symlink's own type, not the
+// directory it points to, so resolveDiscRoots must stat through it.
+func TestRestoreDiscsDirFollowsASymlinkedDiscRoot(t *testing.T) {
+	treeDir, snapID, src := lsFixture(t)
+
+	discsDir := t.TempDir()
+	link := filepath.Join(discsDir, "disc-link")
+	if err := os.Symlink(treeDir, link); err != nil {
+		t.Fatal(err)
+	}
+
+	restoredDir := filepath.Join(t.TempDir(), "restored")
+	code, out := runCmd(t, "restore", "--discs-dir="+discsDir, snapID, restoredDir)
+	if code != 0 {
+		t.Fatalf("restore --discs-dir with a symlinked disc root: exit %d: %s", code, out)
+	}
+	compareTrees(t, filepath.Join(restoredDir, src), src)
 }
 
 // TestRestoreUnknownRefReportsTheSameError checks that an unknown ref

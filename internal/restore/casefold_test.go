@@ -82,7 +82,7 @@ func TestCaseFoldedTreeReadsListsAndRestores(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if err := Restore(foldedDir, snapID, outDir); err != nil {
+	if _, err := Restore(foldedDir, snapID, outDir); err != nil {
 		t.Fatalf("Restore on the case-folded tree: %v", err)
 	}
 	compareRestoredTree(t, srcDir, outDir)

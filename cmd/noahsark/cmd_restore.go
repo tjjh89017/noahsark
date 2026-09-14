@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -31,14 +30,18 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR",
+		"Restore a snapshot to a directory. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT.", stderr)
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to restore from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	var includeFlags stringList
 	fs.Var(&includeFlags, "include", "restore only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
+	overwrite := fs.Bool("overwrite", false, "unlink an existing path first and then create it; without this, an existing path is left alone")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("restore", fs, stderr) {
 		return 2
 	}
 
@@ -47,13 +50,13 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	switch {
 	case multi:
 		if fs.NArg() != 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore --disc=ROOT [--disc=ROOT]... [--include=PATH]... SNAPSHOT OUT-DIR")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] --disc=ROOT [--disc=ROOT]... SNAPSHOT OUT-DIR")
 			return 2
 		}
 		positional = fs.Args()
 	default:
 		if fs.NArg() != 3 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore DISC-ROOT [--include=PATH]... SNAPSHOT OUT-DIR")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR")
 			return 2
 		}
 		positional = fs.Args()[1:]
@@ -77,13 +80,18 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	opts := []restore.Option{restore.WithInclude(includeFlags)}
-	if err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...); err != nil {
+	opts := []restore.Option{restore.WithInclude(includeFlags), restore.WithOverwrite(*overwrite)}
+	skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
+	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
 
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", skipped)
+		return 1
+	}
 	return 0
 }
 
@@ -106,8 +114,19 @@ func resolveDiscRoots(discFlags stringList, discsDir string, positional []string
 			return nil, fmt.Errorf("--discs-dir %s: %w", discsDir, err)
 		}
 		for _, e := range entries {
-			if e.IsDir() {
-				roots = append(roots, filepath.Join(discsDir, e.Name()))
+			path := filepath.Join(discsDir, e.Name())
+			isDir := e.IsDir()
+			if !isDir && e.Type()&os.ModeSymlink != 0 {
+				// A symlinked disc root (a mounted image linked in
+				// under --discs-dir) reports as a symlink, not a
+				// directory, from ReadDir's own lstat. Stat through
+				// it so a symlinked mount is not skipped.
+				if info, err := os.Stat(path); err == nil {
+					isDir = info.IsDir()
+				}
+			}
+			if isDir {
+				roots = append(roots, path)
 			}
 		}
 	}

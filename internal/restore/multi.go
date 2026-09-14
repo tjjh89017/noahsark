@@ -40,7 +40,7 @@ type DiscCandidate struct {
 func (e *MissingDiscError) Error() string {
 	var s strings.Builder
 	if len(e.ByDisc) > 0 {
-		s.WriteString("restore: missing disc(s):")
+		s.WriteString("missing disc(s):")
 		uuids := make([][16]byte, 0, len(e.ByDisc))
 		for u := range e.ByDisc {
 			uuids = append(uuids, u)
@@ -51,7 +51,7 @@ func (e *MissingDiscError) Error() string {
 		}
 		return s.String()
 	}
-	_, _ = fmt.Fprintf(&s, "restore: %d object(s) not found on any provided disc and named by no provided disc's INDEX", e.UnnamedCount)
+	_, _ = fmt.Fprintf(&s, "%d object(s) not found on any provided disc and named by no provided disc's INDEX", e.UnnamedCount)
 	if len(e.Candidates) > 0 {
 		s.WriteString("; earlier disc(s) not provided, that may hold them:")
 		for _, c := range e.Candidates {
@@ -87,6 +87,7 @@ type multiSource struct {
 	names          *image.NameCache
 	provided       map[[16]byte]bool   // uuids of the discs RestoreMulti was given
 	discLabels     map[[16]byte]string // every disc uuid named by any provided disc's DISCS table, with its label
+	wp             *writePolicy        // the overwrite rule for this restore, and its running skipped count
 }
 
 // RestoreMulti reads snapshotID's tree from whichever of discRoots holds
@@ -99,7 +100,7 @@ type multiSource struct {
 // RestoreMulti returns a *MissingDiscError naming every needed disc and
 // every needed object once the walk finishes, instead of stopping at the
 // first miss.
-func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts ...Option) error {
+func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts ...Option) (skipped int, err error) {
 	return RestoreMultiWithProgress(discRoots, snapshotID, outDir, nil, opts...)
 }
 
@@ -112,55 +113,56 @@ func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts 
 // found during that check, or during the restore itself, is reported as
 // a *MissingDiscError; a path that matches nothing in the snapshot is
 // reported as an *UnmatchedIncludeError.
-func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) error {
+func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) (skipped int, err error) {
 	o := newRestoreOptions(opts)
 	if len(discRoots) == 0 {
-		return fmt.Errorf("restore: at least one disc root is required")
+		return 0, fmt.Errorf("at least one disc root is required")
 	}
 	src, err := newMultiSource(discRoots)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	src.wp = &writePolicy{overwrite: o.overwrite}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
+		return 0, err
 	}
 	absOut, err := filepath.Abs(outDir)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	snapRaw, _, ok := src.read(snapshotID, true)
 	if !ok {
-		return src.finalError()
+		return src.wp.skipped, src.finalError()
 	}
 	var snap format.Snapshot
 	if _, err := snap.Decode(snapRaw); err != nil {
-		return fmt.Errorf("restore: snapshot %s: %w", snapshotID.TextForm(), err)
+		return src.wp.skipped, fmt.Errorf("snapshot %s: %w", snapshotID.TextForm(), err)
 	}
 
 	rootRaw, _, ok := src.read(object.ID(snap.RootTree), false)
 	if !ok {
-		return src.finalError()
+		return src.wp.skipped, src.finalError()
 	}
 	var rootTree format.Tree
 	if _, err := rootTree.Decode(rootRaw); err != nil {
-		return fmt.Errorf("restore: tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
+		return src.wp.skipped, fmt.Errorf("tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
 	fs, err := newFilterState(o.includes)
 	if err != nil {
-		return err
+		return src.wp.skipped, err
 	}
 	if fs != nil {
 		if err := src.resolveIncludes(rootTree.Entries, fs); err != nil {
-			return err
+			return src.wp.skipped, err
 		}
 		if err := src.finalError(); err != nil {
-			return err
+			return src.wp.skipped, err
 		}
 		if unmatched := unmatchedIncludes(fs, o.includes); len(unmatched) > 0 {
-			return &UnmatchedIncludeError{Paths: unmatched}
+			return src.wp.skipped, &UnmatchedIncludeError{Paths: unmatched}
 		}
 	}
 
@@ -174,10 +176,10 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 
 	for _, e := range rootTree.Entries {
 		if err := src.restoreRootEntry(absOut, e, prog, fs); err != nil {
-			return err
+			return src.wp.skipped, err
 		}
 	}
-	return src.finalError()
+	return src.wp.skipped, src.finalError()
 }
 
 // resolveIncludes checks every include path fs carries against
@@ -213,7 +215,7 @@ func (src *multiSource) resolveIncludesDir(treeID object.ID, fs *filterState) er
 	}
 	var t format.Tree
 	if _, err := t.Decode(raw); err != nil {
-		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
+		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
 		child, include := stepInto(fs, []string{string(e.Name)})
@@ -246,11 +248,11 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		}
 		discBuf, err := os.ReadFile(filepath.Join(base, src.names.Resolve(base, "DISC.bin")))
 		if err != nil {
-			return nil, fmt.Errorf("restore: %s: %w", base, err)
+			return nil, fmt.Errorf("%s: %w", base, err)
 		}
 		var disc format.Disc
 		if err := disc.Decode(discBuf); err != nil {
-			return nil, fmt.Errorf("restore: %s: %w", base, err)
+			return nil, fmt.Errorf("%s: %w", base, err)
 		}
 		runDir, err := image.NewestRunDir(src.names.Join(base, "runs"))
 		if err != nil {
@@ -260,11 +262,11 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		src.provided[disc.DiscUUID] = true
 		idxBuf, err := os.ReadFile(filepath.Join(runDir, src.names.Resolve(runDir, "INDEX.bin")))
 		if err != nil {
-			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
+			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
 		var idx format.Index
 		if _, err := idx.Decode(idxBuf); err != nil {
-			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
+			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
 		for _, row := range idx.Objects {
 			src.contentToRun[object.ID(row.ContentID)] = idx.RunSeq
@@ -279,11 +281,11 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		catalogDir := src.names.Join(runDir, "catalog")
 		discsBuf, err := os.ReadFile(filepath.Join(catalogDir, src.names.Resolve(catalogDir, "DISCS.bin")))
 		if err != nil {
-			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
+			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
 		var discs format.DiscsTable
 		if _, err := discs.Decode(discsBuf); err != nil {
-			return nil, fmt.Errorf("restore: %s: %w", runDir, err)
+			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
 		for _, row := range discs.Rows {
 			src.runSeqToUUID[row.RunSeq] = row.DiscUUID
@@ -360,11 +362,11 @@ func (src *multiSource) finalError() error {
 // of one fixed base.
 func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState) error {
 	if e.EntryType != format.EntryTypeDirectory {
-		return fmt.Errorf("restore: root entry %q: expected a directory", e.Name)
+		return fmt.Errorf("root entry %q: expected a directory", e.Name)
 	}
 	rootPath := rootPathOf(e)
 	if rootPath == "" {
-		return fmt.Errorf("restore: root entry %q: no root path TLV", e.Name)
+		return fmt.Errorf("root entry %q: no root path TLV", e.Name)
 	}
 	childFS, include := stepInto(fs, splitPath(rootPath))
 	if !include {
@@ -394,7 +396,7 @@ func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *
 	}
 	var t format.Tree
 	if _, err := t.Decode(raw); err != nil {
-		return fmt.Errorf("restore: tree %s: %w", treeID.TextForm(), err)
+		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range t.Entries {
 		childFS, include := stepInto(fs, []string{string(e.Name)})
@@ -425,8 +427,14 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		if err := src.restoreFile(child, object.ID(e.ContentID), prog); err != nil {
+		skipped, err := src.restoreFile(child, object.ID(e.ContentID), prog)
+		if err != nil {
 			return err
+		}
+		if skipped {
+			// The path already existed and --overwrite was not given;
+			// leave it exactly as found.
+			return nil
 		}
 		applyMetadata(child, e)
 		return nil
@@ -438,35 +446,38 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 			}
 		}
 		if target == "" {
-			return fmt.Errorf("restore: symlink %q has no target TLV", name)
+			return fmt.Errorf("symlink %q has no target TLV", name)
 		}
 		if err := os.RemoveAll(child); err != nil {
 			return err
 		}
 		return os.Symlink(target, child)
 	default:
-		return fmt.Errorf("restore: entry %q: entry type %d is not restored", name, e.EntryType)
+		return fmt.Errorf("entry %q: entry type %d is not restored", name, e.EntryType)
 	}
 }
 
-func (src *multiSource) restoreFile(dest string, blobID object.ID, prog *progress.Reporter) error {
+func (src *multiSource) restoreFile(dest string, blobID object.ID, prog *progress.Reporter) (skipped bool, err error) {
 	raw, _, ok := src.read(blobID, false)
 	if !ok {
 		// The blob itself is unreachable; record it (already done by
 		// read) and skip this file so the rest of the tree restores.
-		return nil
+		return false, nil
 	}
 	var blob format.Blob
 	if _, err := blob.Decode(raw); err != nil {
-		return fmt.Errorf("restore: blob %s: %w", blobID.TextForm(), err)
+		return false, fmt.Errorf("blob %s: %w", blobID.TextForm(), err)
 	}
 
 	entries := append([]format.BlobEntry(nil), blob.Entries...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
 
-	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, skipped, err := openForWrite(dest, src.wp)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if skipped {
+		return true, nil
 	}
 	defer func() { _ = f.Close() }()
 
@@ -478,18 +489,18 @@ func (src *multiSource) restoreFile(dest string, blobID object.ID, prog *progres
 			continue
 		}
 		if uint64(len(payload)) != be.Length {
-			return fmt.Errorf("restore: chunk %s: length %d, blob entry says %d",
+			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d",
 				object.ID(be.ContentID).TextForm(), len(payload), be.Length)
 		}
 		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
-			return err
+			return false, err
 		}
 		prog.Add(int64(len(payload)))
 	}
 	if !complete {
 		// Leave the partially written file in place; the missing-disc
 		// error already names what is needed to finish it.
-		return nil
+		return false, nil
 	}
-	return nil
+	return false, nil
 }
