@@ -179,7 +179,10 @@ which falls back to `~/.cache/noahsark/<repo-uuid>/`. `--cache-dir` and
 |---|---|
 | `index.bin` | Merged sorted index over all runs. The manifest record plus `run_seq`. |
 | `filters/<seq>.bin` | Copies of run filters. |
-| `manifests/<seq>.bin` | Copies of run manifests, accumulated as discs are mounted. |
+| `runs/<seq>/INDEX.bin`, `REFS.bin`, `DISCS.bin` | Byte copies of run `seq`'s catalog, accumulated as discs are mounted. FORMAT.md's "The run index and the catalog" replaced the manifest, the filter, the layout table and the catalog container with one structure, INDEX; this replaces the older `manifests/<seq>.bin` item with the file that structure actually names. |
+| `snapshots/<id>` | A byte copy of every cached snapshot object. |
+| `trees/<id>` | A byte copy of every tree object reachable from a cached snapshot: from staging when `pack` writes it, from a disc's own objects when `rebuild-cache` writes it. |
+| `state.txt` | Per snapshot id, whether its tree set is complete in the cache. |
 | `snapshots.bin` | A copy of the snapshot table. |
 | `refs.bin` | A copy of the ref table. |
 | `runs.bin` | A copy of the run table. |
@@ -3311,6 +3314,7 @@ Every key appears exactly once, in exactly one table below.
 | `commitbundle.catalog_max_age` | duration | 30 days | Backlog | no | Warn when `commit --out` uses an older exported catalog. |
 | `cache.dir` | path | see section 2.4 | 1 | no | Local cache location. |
 | `cache.format_version` | integer | 1 | 1 | no | Delete and rebuild on a mismatch. |
+| `cache.snapshot_depth` | integer | 0 | 1 | no | How many of the newest snapshots the cache keeps trees for; 0 means unlimited. gc applies it; this build only stores the key. |
 
 ### 17.13 Restore
 
