@@ -23,6 +23,10 @@ import (
 // docs/decisions.md, "12. Disc lifecycle, closing and appending".
 const discsLedgerName = "discs.bin"
 
+// DiscsLedgerName is discsLedgerName, exported for rebuild-cache, which
+// reports the ledger path it rewrote.
+const DiscsLedgerName = discsLedgerName
+
 // PackOptions holds everything Pack needs to select the next run's
 // objects from the staging store and lay it out.
 type PackOptions struct {
@@ -131,7 +135,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		candidates = append(candidates, u)
 	}
 
-	ledger, err := loadDiscsLedger(opts.StagingDir, opts.RepoUUID)
+	ledger, err := LoadDiscsLedger(opts.StagingDir, opts.RepoUUID)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +347,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	newRow := newDiscsRow(opts.asBuildOptions(), packTime, runSeq, discSeq)
 	newRow.RunHash = sha256.Sum256(runBuf[:format.RunLen])
 	ledger.Rows = append(ledger.Rows, newRow)
-	if err := saveDiscsLedger(opts.StagingDir, opts.RepoUUID, ledger.Rows); err != nil {
+	if err := SaveDiscsLedger(opts.StagingDir, opts.RepoUUID, ledger.Rows); err != nil {
 		return nil, err
 	}
 
@@ -613,9 +617,10 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 	return nil
 }
 
-// loadDiscsLedger reads the local disc ledger, or returns an empty one
-// for a repository with no disc packed yet.
-func loadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, error) {
+// LoadDiscsLedger reads the local disc ledger, or returns an empty one
+// for a repository with no disc packed yet. rebuild-cache also calls
+// this to inspect the ledger it is about to replace.
+func LoadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, error) {
 	data, err := os.ReadFile(filepath.Join(stagingDir, discsLedgerName))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -630,8 +635,10 @@ func loadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, e
 	return t, nil
 }
 
-// saveDiscsLedger writes the local disc ledger.
-func saveDiscsLedger(stagingDir string, repoUUID [16]byte, rows []format.DiscsRow) error {
+// SaveDiscsLedger writes the local disc ledger: the rows a later Pack
+// call reads back as prior rows for its own DISCS table. rebuild-cache
+// also calls this to restore the ledger from discs.
+func SaveDiscsLedger(stagingDir string, repoUUID [16]byte, rows []format.DiscsRow) error {
 	t := format.DiscsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs,
