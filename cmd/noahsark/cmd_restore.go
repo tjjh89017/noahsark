@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -39,7 +40,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] SNAPSHOT OUT-DIR",
+	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] [--plan=FILE] [--staging-budget=SIZE] SNAPSHOT OUT-DIR",
 		"Restore a snapshot to a directory. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT for the all-discs-at-once mode.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	var discFlags stringList
@@ -51,6 +52,8 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	mountFlag := fs.String("mount", "", "the directory where the drive is mounted; required for the disc-swap mode")
 	noEject := fs.Bool("no-eject", false, "do not eject after each disc")
 	interactive := fs.Bool("interactive", false, "prompt on every disc, not only on a mismatch")
+	planFlag := fs.String("plan", "", "resume a plan file written by \"plan --out\", instead of building one")
+	stagingBudgetFlag := fs.String("staging-budget", "", "peak staging bytes allowed; overrides restore.staging_budget")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -62,6 +65,21 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	if *mountFlag != "" && multi {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount cannot be combined with --disc or --discs-dir")
 		return 2
+	}
+	if *planFlag != "" && multi {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --plan cannot be combined with --disc or --discs-dir")
+		return 2
+	}
+	if *planFlag != "" {
+		if *mountFlag == "" {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --plan requires --mount")
+			return 2
+		}
+		if fs.NArg() != 1 {
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore --plan=FILE --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR")
+			return 2
+		}
+		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *noEject, *interactive, "", fs.Arg(0), *planFlag, *stagingBudgetFlag, stdout, stderr, prog)
 	}
 	// A bare two positional arguments, with --mount given, is the
 	// disc-swap mode's SNAPSHOT OUT-DIR. Without --mount, the same two
@@ -75,7 +93,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] SNAPSHOT OUT-DIR")
 			return 2
 		}
-		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *noEject, *interactive, fs.Arg(0), fs.Arg(1), stdout, stderr, prog)
+		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *noEject, *interactive, fs.Arg(0), fs.Arg(1), "", *stagingBudgetFlag, stdout, stderr, prog)
 	}
 
 	var discRoots, positional []string
@@ -174,10 +192,22 @@ func resolveDiscRoots(discFlags stringList, discsDir string, positional []string
 // spooled left in place for a later resume.
 var errStdinClosed = fmt.Errorf("stdin closed while waiting for the next disc")
 
+// restoreSpoolBytesObserved, when set, is called after every change to
+// the disc-swap loop's running spool total, so a test can record the
+// peak without polling the filesystem. It is nil (a no-op) outside
+// tests.
+var restoreSpoolBytesObserved func(current uint64)
+
 // cmdRestoreDiscSwap runs the single-drive restore of OPERATIONS.md's
 // "14.2 Disc-major order": build the same plan "plan" would print, then
 // read one disc at a time, prompting the operator between discs.
-func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mountDir string, noEject, interactive bool, snapshotArg, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+//
+// planFile, when set, resumes a persisted plan instead of building one:
+// snapshotArg is then ignored (empty), and the plan's own snapshot,
+// include list and disc order apply. stagingBudgetOverride, when set,
+// overrides restore.staging_budget for this run, in the same units
+// --capacity accepts.
+func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mountDir string, noEject, interactive bool, snapshotArg, outDir, planFile, stagingBudgetOverride string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if mountDir == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount is required; OPERATIONS.md's configuration reference names no restore.mount key")
 		return 2
@@ -193,20 +223,106 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
+	stagingBudget := cfg.RestoreStagingBudget
+	if stagingBudgetOverride != "" {
+		stagingBudget, err = parseByteSize(stagingBudgetOverride)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --staging-budget:", err)
+			return 2
+		}
+	}
 
 	src, c, err := openCacheSource(repoFlag)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
+
+	var planDiscOrder []string
+	if planFile != "" {
+		if len(includes) > 0 {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --include cannot be combined with --plan; the plan file already fixes the include list")
+			return 2
+		}
+		doc, err := readRestorePlanFile(planFile)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+			return 2
+		}
+		repoUUID, err := decodeUUID(cfg.RepoUUID)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+			return 1
+		}
+		wantUUID := plan.UUIDText(repoUUID)
+		if !strings.EqualFold(doc.RepoUUID, wantUUID) {
+			_, _ = fmt.Fprintf(stderr, "noahsark: restore: --plan=%s is for repository %s, this repository is %s\n", planFile, doc.RepoUUID, wantUUID)
+			return 2
+		}
+		snapID, err := object.ParseID(doc.Snapshot)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "noahsark: restore: --plan=%s names snapshot %q, which is not a valid snapshot id: %v\n", planFile, doc.Snapshot, err)
+			return 2
+		}
+		includes = doc.Include
+		for _, d := range doc.Discs {
+			planDiscOrder = append(planDiscOrder, strings.ToLower(d.DiscUUID))
+		}
+		return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, planDiscOrder, planFile, stagingBudget, overwrite, mountDir, noEject, interactive, outDir, stdout, stderr, prog)
+	}
+
 	snapID, err := src.ParseSnapshotArg(snapshotArg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}
+	return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, nil, "", stagingBudget, overwrite, mountDir, noEject, interactive, outDir, stdout, stderr, prog)
+}
+
+// readRestorePlanFile reads and parses a plan file "plan --out" wrote.
+func readRestorePlanFile(path string) (*planDocument, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("--plan=%s: %w", path, err)
+	}
+	var doc planDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("--plan=%s: %w", path, err)
+	}
+	return &doc, nil
+}
+
+// reorderDiscsForPlan reorders discs to match wantOrder, a list of
+// lower-case hex disc uuids in the order a persisted plan named them.
+// It fails when a named disc is not among discs: the cache no longer
+// agrees with the persisted plan, most often because it was rebuilt
+// from a different set of discs since the plan was written.
+func reorderDiscsForPlan(discs []plan.DiscEntry, wantOrder []string) ([]plan.DiscEntry, error) {
+	byUUID := make(map[string]plan.DiscEntry, len(discs))
+	for _, d := range discs {
+		byUUID[strings.ToLower(plan.UUIDText(d.DiscUUID))] = d
+	}
+	ordered := make([]plan.DiscEntry, 0, len(wantOrder))
+	for _, uuid := range wantOrder {
+		d, ok := byUUID[uuid]
+		if !ok {
+			return nil, fmt.Errorf("plan names disc %s, which the current cache's plan for this snapshot does not need; rebuild-cache and re-plan", uuid)
+		}
+		ordered = append(ordered, d)
+	}
+	return ordered, nil
+}
+
+// cmdRestoreDiscSwapRun is cmdRestoreDiscSwap's body once snapID,
+// includes and, when resuming a persisted plan, planDiscOrder are known.
+func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, includes []string, planDiscOrder []string, planFile string, stagingBudget uint64, overwrite bool, mountDir string, noEject, interactive bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if err := c.CheckComplete(snapID); err != nil {
 		if ie, ok := err.(*cache.IncompleteError); ok {
-			_, _ = fmt.Fprintln(stderr, formatIncompleteError("restore", ie))
+			msg := formatIncompleteError("restore", ie)
+			if planFile != "" {
+				msg = fmt.Sprintf("noahsark: restore: --plan=%s names a snapshot not known to this repository's cache: %s", planFile, msg)
+			}
+			_, _ = fmt.Fprintln(stderr, msg)
 			return 3
 		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
@@ -222,22 +338,38 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
-	printPlanText(stdout, result)
+	if planDiscOrder != nil {
+		result.Discs, err = reorderDiscsForPlan(result.Discs, planDiscOrder)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+			return 2
+		}
+	}
+	passSplit, err := plan.ComputePasses(result.Discs, stagingBudget)
+	if err != nil {
+		// A single object above the budget is refused for real, with the
+		// exact file it belongs to, once the manifest is built below;
+		// this conservative, per-object check is not fatal by itself.
+		passSplit = plan.PassSplit{DiscPasses: make([]int, len(result.Discs)), Total: 1}
+		for i := range passSplit.DiscPasses {
+			passSplit.DiscPasses[i] = 1
+		}
+	}
+	printPlanText(stdout, result, passSplit)
 	if len(result.Missing) > 0 {
 		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d object(s) have no run known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
 		return 3
 	}
 
-	for _, d := range result.Discs {
-		if d.Bytes > cfg.RestoreStagingBudget {
-			_, _ = fmt.Fprintf(stderr, "noahsark: restore: disc %s needs %d bytes of staging, above restore.staging_budget (%d); this build does not split passes yet\n",
-				plan.UUIDText(d.DiscUUID), d.Bytes, cfg.RestoreStagingBudget)
-		}
-	}
-
 	m, err := restore.BuildManifest(c, snap, outDir, includes, overwrite)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 2
+	}
+
+	if path, need, ok := m.FileExceedingBudget(stagingBudget); ok {
+		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s alone needs %d bytes of staging, above the staging budget of %d bytes; no split of one file's own chunks can honour it\n",
+			path, need, stagingBudget)
 		return 2
 	}
 
@@ -247,7 +379,7 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}
-	resumed, err := resumeSpool(spoolDir, m, prog)
+	resumed, spoolBytes, err := resumeSpool(spoolDir, m, prog)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
@@ -255,10 +387,11 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 	if resumed > 0 {
 		_, _ = fmt.Fprintf(stdout, "resuming: %d object(s) already spooled\n", resumed)
 	}
+	reportSpoolBytes(spoolBytes)
 
 	scanner := bufio.NewScanner(restoreStdin)
-	for _, d := range result.Discs {
-		wanted := wantedChunks(d, m)
+	for i, d := range result.Discs {
+		wanted := wantedChunkEntries(d, m)
 		if len(wanted) == 0 {
 			continue
 		}
@@ -266,21 +399,37 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 			return 2
 		}
-		for _, id := range wanted {
-			payload, err := restore.ReadChunkFromRoot(mountDir, id)
+
+		totalPasses := passSplit.DiscPasses[i]
+		passNum := 0
+		idx := 0
+		for idx < len(wanted) {
+			passNum++
+			if totalPasses > 1 {
+				_, _ = fmt.Fprintf(stdout, "disc %d %s: pass %d/%d\n", d.DiscSeq, d.Label, passNum, totalPasses)
+			}
+			batch := nextBudgetBatch(wanted, &idx, stagingBudget, spoolBytes)
+			for _, o := range batch {
+				payload, err := restore.ReadChunkFromRoot(mountDir, o.ID)
+				if err != nil {
+					_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+					return 2
+				}
+				if err := os.WriteFile(restore.SpoolObjectPath(spoolDir, o.ID), payload, 0o644); err != nil {
+					_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+					return 2
+				}
+				m.MarkSpooled(o.ID)
+				spoolBytes += o.Bytes
+				reportSpoolBytes(spoolBytes)
+			}
+			_, freed, err := m.WriteReady(spoolDir, prog)
 			if err != nil {
 				_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 				return 2
 			}
-			if err := os.WriteFile(restore.SpoolObjectPath(spoolDir, id), payload, 0o644); err != nil {
-				_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-				return 2
-			}
-			m.MarkSpooled(id)
-		}
-		if _, err := m.WriteReady(spoolDir, prog); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-			return 2
+			spoolBytes -= freed
+			reportSpoolBytes(spoolBytes)
 		}
 		if !noEject {
 			ejectDrive(mountDir, stderr)
@@ -324,45 +473,87 @@ func removeEmptySpoolRoot(spoolRoot string) error {
 	return nil
 }
 
-// wantedChunks returns the chunk object ids d's plan entry assigns that
-// the manifest still needs. Only chunk payloads are read from a mounted
-// disc: BuildManifest already resolved every tree and blob from the
-// cache.
-func wantedChunks(d plan.DiscEntry, m *restore.Manifest) []object.ID {
-	var out []object.ID
+// wantedChunkEntries returns the chunk objects d's plan entry assigns
+// that the manifest still needs, in their existing plan order. Only
+// chunk payloads are read from a mounted disc: BuildManifest already
+// resolved every tree and blob from the cache. Each entry's Bytes is
+// how many spool bytes reading it will cost, the figure the staging
+// budget's pass split is measured against.
+func wantedChunkEntries(d plan.DiscEntry, m *restore.Manifest) []plan.ObjectEntry {
+	var out []plan.ObjectEntry
 	for _, o := range d.Objects {
 		if o.Kind != format.ObjectKindChunk {
 			continue
 		}
 		if m.NeedsChunk(o.ID) {
-			out = append(out, o.ID)
+			out = append(out, o)
 		}
 	}
 	return out
 }
 
+// nextBudgetBatch consumes wanted[*idx:] up to the point where adding
+// one more object would push spoolBytes over budget, and returns that
+// batch. A budget of 0 means unlimited: the whole remainder is one
+// batch. It always takes at least one object, so a single object
+// larger than what is left of the budget still makes progress rather
+// than looping forever; FileExceedingBudget has already refused the
+// one case that guarantees this can never fit, a file whose own total
+// is above the whole budget.
+func nextBudgetBatch(wanted []plan.ObjectEntry, idx *int, budget, spoolBytes uint64) []plan.ObjectEntry {
+	start := *idx
+	if budget == 0 {
+		*idx = len(wanted)
+		return wanted[start:]
+	}
+	cur := spoolBytes
+	for *idx < len(wanted) {
+		o := wanted[*idx]
+		if *idx > start && cur+o.Bytes > budget {
+			break
+		}
+		cur += o.Bytes
+		*idx++
+	}
+	return wanted[start:*idx]
+}
+
+// reportSpoolBytes tells restoreSpoolBytesObserved, when a test has set
+// it, the disc-swap loop's current running spool total.
+func reportSpoolBytes(current uint64) {
+	if restoreSpoolBytesObserved != nil {
+		restoreSpoolBytesObserved(current)
+	}
+}
+
 // resumeSpool marks every object already spooled from an earlier,
 // interrupted run, and assembles any file that completes as a result.
-// It returns how many spooled objects it found.
-func resumeSpool(spoolDir string, m *restore.Manifest, prog *progress.Reporter) (int, error) {
+// It returns how many spooled objects it found and their total bytes,
+// so the disc-swap loop's running spool total starts accurate.
+func resumeSpool(spoolDir string, m *restore.Manifest, prog *progress.Reporter) (count int, bytes uint64, err error) {
 	entries, err := os.ReadDir(spoolDir)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(entries) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	for _, e := range entries {
 		id, err := object.ParseID(e.Name())
 		if err != nil {
 			continue
 		}
+		if fi, err := e.Info(); err == nil {
+			bytes += uint64(fi.Size())
+		}
 		m.MarkSpooled(id)
 	}
-	if _, err := m.WriteReady(spoolDir, prog); err != nil {
-		return len(entries), err
+	_, freed, err := m.WriteReady(spoolDir, prog)
+	if err != nil {
+		return len(entries), bytes, err
 	}
-	return len(entries), nil
+	bytes -= freed
+	return len(entries), bytes, nil
 }
 
 // discSwapRetries is how many times detectDisc retries an unreadable
@@ -431,21 +622,26 @@ func labelForUUID(c *cache.Cache, uuid [16]byte) string {
 // most once instead of once per disc.
 var ejectWarnedNoBinary, ejectWarnedPermission bool
 
+// geteuid is os.Geteuid, a seam so a test can stand in for a non-root
+// process without actually running as one.
+var geteuid = os.Geteuid
+
 // ejectDrive unmounts and ejects mountDir. A missing eject binary is
 // skipped with one line, not a per-disc warning: it is expected on a
 // minimal host and the operator can still remove the disc by hand. An
-// unmount failure that looks like a permission problem prints one line
-// pointing at sudo or --no-eject, also at most once; the operator can
-// still remove the disc by hand either way.
+// unmount failure while not running as root is almost always a
+// permission problem, so it prints one line pointing at sudo or
+// --no-eject, at most once; the operator can still remove the disc by
+// hand either way.
 func ejectDrive(mountDir string, stderr io.Writer) {
 	if out, err := exec.Command("umount", mountDir).CombinedOutput(); err != nil {
-		if isPermissionDenied(out) {
+		if geteuid() != 0 {
 			if !ejectWarnedPermission {
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: umount %s failed for permission; run restore with sudo, or pass --no-eject\n", mountDir)
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: umount %s failed; run restore with sudo, or pass --no-eject\n", mountDir)
 				ejectWarnedPermission = true
 			}
 		} else {
-			_, _ = fmt.Fprintf(stderr, "warning: umount %s: %v\n", mountDir, err)
+			_, _ = fmt.Fprintf(stderr, "warning: umount %s: %v: %s\n", mountDir, err, out)
 		}
 	}
 	if _, err := exec.LookPath("eject"); err != nil {
@@ -458,12 +654,4 @@ func ejectDrive(mountDir string, stderr io.Writer) {
 	if err := exec.Command("eject", mountDir).Run(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "warning: eject %s: %v\n", mountDir, err)
 	}
-}
-
-// isPermissionDenied reports whether umount's own output names a
-// permission problem, the one umount failure this build gives its own,
-// more actionable hint for.
-func isPermissionDenied(output []byte) bool {
-	return strings.Contains(strings.ToLower(string(output)), "permission denied") ||
-		strings.Contains(strings.ToLower(string(output)), "must be superuser")
 }
