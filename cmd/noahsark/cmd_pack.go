@@ -235,8 +235,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	result, err := image.Pack(opts)
 	if err != nil {
-		var tooSmall *image.ErrCapacityTooSmall
-		if errors.As(err, &tooSmall) {
+		if _, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
 			given := *capacityStr
 			if given == "" {
 				given = fmt.Sprintf("%d (from config)", capacitySectors)

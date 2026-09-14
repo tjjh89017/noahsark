@@ -164,7 +164,7 @@ func populateImage(dir, imagePath string, sectors uint64, prog *progress.Reporte
 	if err != nil {
 		return fmt.Errorf("populate: %w", err)
 	}
-	defer os.Remove(mnt)
+	defer func() { _ = os.Remove(mnt) }()
 
 	if out, err := newMountCmd(imagePath, mnt).CombinedOutput(); err != nil {
 		return fmt.Errorf("populate: mount: %w: %s", err, out)
@@ -245,7 +245,7 @@ func copyFile(src, dest string, info os.FileInfo) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {

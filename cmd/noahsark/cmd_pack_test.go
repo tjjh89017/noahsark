@@ -146,8 +146,8 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 func packedIntoPath(t *testing.T, output string) string {
 	t.Helper()
 	for line := range strings.SplitSeq(output, "\n") {
-		if idx := strings.Index(line, " into "); idx != -1 && strings.HasPrefix(line, "packed run") {
-			return line[idx+len(" into "):]
+		if _, after, found := strings.Cut(line, " into "); found && strings.HasPrefix(line, "packed run") {
+			return after
 		}
 	}
 	t.Fatalf("no \"packed run ... into PATH\" line in pack output: %q", output)
