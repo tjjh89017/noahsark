@@ -438,6 +438,35 @@ come before the snapshot argument, not after:
 ./noahsark ls --recursive --unstable-only --discs-dir=/mnt/noahsark-discs 2026-09-21
 ```
 
+### Plan a restore before you fetch the discs
+
+`plan` answers "which discs do I need" before you mount anything: it
+reads the local cache the earlier `pack` and `rebuild-cache` calls left
+behind, never a disc, so run it first, from wherever the repository
+lives:
+
+```sh
+./noahsark plan 2026-09-21
+```
+
+This prints one line per disc the restore would read, in the order it
+would read them, with each disc's uuid, label, object count and bytes,
+then a totals line. Narrow it to the same paths you plan to restore
+with `--include`, the same flag `restore` takes:
+
+```sh
+./noahsark plan --include=srv/data/ledger.csv \
+    --include=srv/data/photos/2026 2026-09-21
+```
+
+Go fetch and mount exactly the discs the plan named, under
+`--discs-dir` as above, before running `restore`. If the cache itself
+is incomplete for this snapshot, `plan` says so and names
+`rebuild-cache --from-disc` as the fix, the same message `ls` and
+`log` give; run it from whichever disc the message names, then plan
+again. `--out=FILE` writes the same plan as JSON, useful for a script
+that mounts discs on its own.
+
 Restore a few paths, not the whole snapshot, to a scratch directory:
 
 ```sh

@@ -258,12 +258,14 @@ favour of always populating and refusing loudly when root is missing.
 ## 16. CLI reference
 
 `cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
-`pack`, `image build`, `verify`, `restore`, `ls`, `log`,
+`pack`, `image build`, `verify`, `restore`, `ls`, `log`, `plan`,
 `rebuild-cache` and `disc list`. Every command below keeps
 OPERATIONS.md's name; a flag is reduced or renamed only when the Go
 packages this build calls have no way to honour it yet, since no state
-log, ref log, catalog, cache, locality planner or burn plan exists in
-this build.
+log, ref log, locality planner or burn plan exists in this build. A
+local cache does now exist (`internal/cache`), so `ls`, `log` and
+`plan` resolve SNAPSHOT through it when no disc is given; the
+paragraphs below on those commands describe both paths.
 
 `-h` and `--help` on any command exit 0 and print that command's
 positionals and flags; they never count as a usage error. A flag must
@@ -280,7 +282,7 @@ A command name OPERATIONS.md defines that belongs to a later phase
 (`sync`, `append`, `close`, `watch`, `consolidate`, `reindex`,
 `catalog`, `import`) is refused by name, naming its phase, exit 2. A
 Phase 1 command name OPERATIONS.md defines that this build simply does
-not implement yet (`burn`, `scrub`, `health`, `plan`, `gc`) is refused
+not implement yet (`burn`, `scrub`, `health`, `gc`) is refused
 the same way, saying it is not in this build yet, exit 2. The same two
 distinctions apply to individual flags and config keys: a later-phase
 flag or key is refused naming its phase; a Phase 1 flag or key this
@@ -416,6 +418,36 @@ never silently overwrites unless asked. Every other restore flag
 `--no-flags`, `--no-times`, `--no-hardlinks`, `--metadata-strict`,
 `--report`, `--report-replay`, `--strict-unstable`) is Phase 1 but not
 defined, since `Restore` takes no such option today.
+
+`ls`, `log` and `plan` resolve SNAPSHOT through `internal/cache` when
+no disc root, `--disc` or `--discs-dir` is given: `looksLikeDiscRoot`
+tells a `DISC-ROOT` positional apart from a snapshot id or ref name by
+testing whether the argument is an existing directory, since a disc
+root always is one and the other two never are in ordinary use. `ls`
+and `log` keep their old disc-reading path unchanged when a disc is
+named; `plan` reads the cache only, matching OPERATIONS.md's "reads
+nothing from a disc beyond the catalog." All three report the same
+incomplete-cache message and exit code 3 through the shared
+`reportSourceError`/`formatIncompleteError` helpers, resolving the
+disc to insert through `cache.LocateObject` and `cache.DiscForRun`
+where a cached run's INDEX or DISCS table allows it.
+
+`plan` groups every object a restore of SNAPSHOT (or of `--include`'s
+paths alone) would need by the disc that holds it, walking cached tree
+and blob objects; a blob the cache does not hold still counts as one
+object, since blob caching only covers what pack or rebuild-cache
+processed after it was added, and its own absence is not, by itself,
+an incomplete cache the way a missing tree is. `--drives`,
+`--staging-budget`, `--score` and `--target` are not defined, since no
+multi-drive planner, staging budget model or byte-vs-object scoring
+exists yet, and `plan` records no restore target. The JSON `--out`
+writes covers `discs[]`'s `order`, `disc_uuid`, `disc_seq`, `label`,
+`runs`, `objects_to_read` and `bytes_to_read`, `missing_discs`,
+`peak_staging_bytes` (the largest single object of known size),
+`switches` and `passes`; every other "14.4 The plan file" field
+(`objects_exact`, `objects_probable`, `estimated_seconds`,
+`degraded_runs` and the rest) needs a filter, a time model or a health
+report this build does not have.
 
 None of these reductions change any byte a conforming writer puts on a
 disc or a conforming reader accepts; they change only which command-line
