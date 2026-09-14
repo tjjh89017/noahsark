@@ -105,9 +105,48 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if objDeleted == 0 && treesDeleted == 0 {
+		if *dryRun {
+			if uncached == 0 {
+				printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean)
+			}
+			return 0
+		}
 		return 1
 	}
 	return 0
+}
+
+// printNothingEligibleYet prints gc's dry-run message for a repository
+// where nothing is eligible for deletion yet, naming the earliest date
+// a CLEAN object reaches retainAfterClean and becomes eligible, when the
+// staging log holds a CLEAN object to measure that from.
+func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration) {
+	when, ok := earliestEligibleAt(l, retainAfterClean, gcClock())
+	if !ok {
+		_, _ = fmt.Fprintln(stdout, "gc: nothing is eligible yet")
+		return
+	}
+	_, _ = fmt.Fprintf(stdout, "gc: nothing is eligible yet; earliest eligible date: %s\n", when.Format(time.RFC3339))
+}
+
+// earliestEligibleAt returns the earliest time some CLEAN object reaches
+// retainAfterClean and becomes GC-ELIGIBLE, and whether the staging log
+// holds any CLEAN object to measure that from.
+func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, now time.Time) (time.Time, bool) {
+	var earliest time.Time
+	found := false
+	for _, id := range l.IDsInState(stage.Clean) {
+		cleanAt, ok := l.CleanTime(id)
+		if !ok {
+			continue
+		}
+		eligibleAt := cleanAt.Add(retainAfterClean)
+		if !found || eligibleAt.Before(earliest) {
+			earliest = eligibleAt
+			found = true
+		}
+	}
+	return earliest, found
 }
 
 // gcCandidates returns every object id eligible for deletion: already

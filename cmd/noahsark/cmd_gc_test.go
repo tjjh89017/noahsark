@@ -67,14 +67,21 @@ func TestGCRetentionGate(t *testing.T) {
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	// Before the retention period: nothing is eligible.
+	// Before the retention period: nothing is eligible. --dry-run always
+	// exits 0, and names when the run's objects will become eligible.
 	gcClock = func() time.Time { return before.Add(30 * time.Minute) }
 	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
-	if code != 1 {
-		t.Fatalf("gc --dry-run (before retention): exit %d, want 1: %s", code, out)
+	if code != 0 {
+		t.Fatalf("gc --dry-run (before retention): exit %d, want 0: %s", code, out)
 	}
 	if !strings.Contains(out, "would delete 0 object") {
 		t.Fatalf("gc --dry-run (before retention) output %q, want 0 objects", out)
+	}
+	if !strings.Contains(out, "gc: nothing is eligible yet") {
+		t.Fatalf("gc --dry-run (before retention) output %q, want the nothing-eligible-yet message", out)
+	}
+	if !strings.Contains(out, "earliest eligible date:") {
+		t.Fatalf("gc --dry-run (before retention) output %q, want the earliest eligible date", out)
 	}
 
 	// After the retention period: dry-run reports what it would do,
