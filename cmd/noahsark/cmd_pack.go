@@ -148,9 +148,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --ref and --snapshot are mutually exclusive")
 		return 2
 	}
-	if *ref == "" && len(snapIDs) == 0 {
-		*ref = "LATEST"
-	}
+	explicitTarget := *ref != "" || len(snapIDs) > 0
 
 	var snapshots []image.SnapshotRef
 	now := time.Now()
@@ -181,6 +179,18 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
+	}
+
+	// With no --ref and no --snapshot, addPendingRefs above already
+	// carried forward every ref pack has not yet moved onto a run. Fall
+	// back to LATEST only when that left nothing pending, and only when
+	// LATEST itself resolves; a repository whose commits always name
+	// their own --ref never creates a LATEST ref, and pack must not
+	// fail on that account.
+	if !explicitTarget && len(snapshots) == 0 {
+		if id, latestErr := resolveRef(repoDir, "LATEST"); latestErr == nil {
+			snapshots = append(snapshots, image.SnapshotRef{Name: "LATEST", ID: id, Time: now})
+		}
 	}
 
 	discUUIDBytes := make([]byte, 16)
