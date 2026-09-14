@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // configFileName is the config file name inside a repository directory.
@@ -49,6 +50,9 @@ type repoConfig struct {
 	// build only warns above it; it does not split a restore into
 	// passes yet.
 	RestoreStagingBudget uint64
+	// RetainAfterClean is staging.retain_after_clean: how long an
+	// object stays CLEAN before gc may move it to GC-ELIGIBLE.
+	RetainAfterClean time.Duration
 }
 
 // laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
@@ -82,16 +86,17 @@ var laterPhaseConfigKeys = map[string]string{
 // knownConfigKeys names every key this build reads. A key present in the
 // file that is neither here nor in laterPhaseConfigKeys is unknown.
 var knownConfigKeys = map[string]bool{
-	"repo.uuid":                true,
-	"staging.dir":              true,
-	"disc.force_capacity":      true,
-	"commit.restat_after_read": true,
-	"commit.retry_unstable":    true,
-	"fec.scheme":               true,
-	"cache.dir":                true,
-	"cache.format_version":     true,
-	"cache.snapshot_depth":     true,
-	"restore.staging_budget":   true,
+	"repo.uuid":                  true,
+	"staging.dir":                true,
+	"disc.force_capacity":        true,
+	"commit.restat_after_read":   true,
+	"commit.retry_unstable":      true,
+	"fec.scheme":                 true,
+	"cache.dir":                  true,
+	"cache.format_version":       true,
+	"cache.snapshot_depth":       true,
+	"restore.staging_budget":     true,
+	"staging.retain_after_clean": true,
 }
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
@@ -108,6 +113,26 @@ const defaultCacheSnapshotDepth = 0
 // defaultRestoreStagingBudget is restore.staging_budget's Phase 1
 // default: 16 GiB.
 const defaultRestoreStagingBudget = 16 * 1024 * 1024 * 1024
+
+// defaultRetainAfterClean is staging.retain_after_clean's default: 7
+// days.
+const defaultRetainAfterClean = 7 * 24 * time.Hour
+
+// parseRetentionDuration parses a duration for staging.retain_after_clean:
+// a plain integer with a "d" suffix for whole days, since
+// time.ParseDuration has no day unit and a retention period is
+// ordinarily counted in days, or any duration string time.ParseDuration
+// itself accepts.
+func parseRetentionDuration(s string) (time.Duration, error) {
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.ParseUint(days, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("%q: not a whole number of days", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
 
 // writeConfig writes repository config file with the given keys, one
 // key=value pair per line, in a fixed order.
@@ -135,6 +160,7 @@ func readConfig(path string) (repoConfig, error) {
 		CacheFormatVersion:   defaultCacheFormatVersion,
 		CacheSnapshotDepth:   defaultCacheSnapshotDepth,
 		RestoreStagingBudget: defaultRestoreStagingBudget,
+		RetainAfterClean:     defaultRetainAfterClean,
 	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -211,6 +237,12 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: restore.staging_budget: %w", err)
 			}
 			c.RestoreStagingBudget = n
+		case "staging.retain_after_clean":
+			d, err := parseRetentionDuration(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: staging.retain_after_clean: %w", err)
+			}
+			c.RetainAfterClean = d
 		}
 	}
 	if err := sc.Err(); err != nil {

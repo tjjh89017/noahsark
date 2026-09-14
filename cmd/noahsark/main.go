@@ -1,7 +1,7 @@
 // Command noahsark is the NoahsArk command-line tool. This build
 // implements the Phase 1 subset of OPERATIONS.md's CLI reference: init,
 // commit, pack, image build, verify, restore, ls, log, plan,
-// rebuild-cache and disc list. Every other command name, and every
+// rebuild-cache, disc list and gc. Every other command name, and every
 // flag or config key of a later phase, is refused.
 package main
 
@@ -72,6 +72,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdPlan(rest, stdout, stderr)
 	case "disc":
 		return cmdDisc(rest, stdout, stderr)
+	case "gc":
+		return cmdGC(rest, stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "noahsark: unknown command %q\n", cmd)
 		printUsage(stderr)
@@ -143,6 +145,8 @@ Phase 1 commands:
   plan    [--include=PATH]... [--out=FILE] SNAPSHOT
   rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]
   disc list [--json]
+  disc burned UUID [UUID...] [--undo]
+  gc      [--dry-run] [--keep-snapshots=N]
 
 ls and log resolve SNAPSHOT through the local cache when no disc is
 given; give a DISC-ROOT, or --disc=ROOT (repeatable) or --discs-dir=DIR
@@ -150,7 +154,7 @@ as rebuild-cache and restore also accept, to read a disc instead. plan
 always reads the local cache; it takes no disc.
 
 Not yet implemented (Phase 1 commands OPERATIONS.md defines, absent from
-this build): burn, scrub, health, gc.
+this build): burn, scrub, health.
 
 Every command also accepts --progress, --no-progress and --quiet (-q),
 which control the progress line a long-running command writes to
@@ -181,7 +185,6 @@ var notYetInBuildCommands = map[string]bool{
 	"burn":   true,
 	"scrub":  true,
 	"health": true,
-	"gc":     true,
 }
 
 // refuseLaterPhaseFlags scans args for any flag name later than Phase 1,
