@@ -639,9 +639,13 @@ reason 1, deletes the partial plan directory, and takes the next `run_seq`.
 
 1. `commit` appends one record per moved ref, with `run_seq` 0, after it has
    written the snapshot object into staging and recorded it STAGED.
-2. `pack` copies every local record whose `run_seq` is 0, and whose snapshot
-   object it puts into the run, into the run's `refs.bin` with `run_seq` set to
-   the run, and appends the same record to the local log.
+2. `pack` carries forward, unchanged, the current record for every ref name
+   the repository already knows, keeping each record's own `run_seq`. It also
+   copies every local record whose `run_seq` is 0, and whose snapshot object
+   it puts into the run, with `run_seq` set to the run, and appends the same
+   record to the local log. The run's `refs.bin` holds the union of both
+   groups, one record per name, so a reader with only the newest disc still
+   finds every ref FORMAT.md's run index and catalog section promises.
 3. The current value of a ref resolves in the order local log, then cache, then
    discs. Inside the local log the newest record is the highest `sequence`.
    Inside an on-disc `refs.bin`, or the cache's copy of it, the newest record

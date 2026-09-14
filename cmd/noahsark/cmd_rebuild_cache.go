@@ -117,12 +117,18 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	}
 
 	discRows, missing := mergeDiscsRows(results)
+	discRows = fillUsedSectorsFromRuns(discRows, results)
 	if err := image.SaveDiscsLedger(cfg.StagingDir, repoUUID, discRows); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
 	}
 
-	refs := mergeRefs(results)
+	refRecords := bestRefRecords(results)
+	if err := image.SaveRefsLedger(cfg.StagingDir, repoUUID, refRecords); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+	refs := mergeRefs(refRecords)
 	if err := writeRefs(repoDir, refs); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
@@ -228,6 +234,29 @@ func mergeDiscsRows(results []*image.ReadResult) (rows []format.DiscsRow, missin
 	return rows, missing
 }
 
+// fillUsedSectorsFromRuns fills in used_sectors for a provided disc's
+// own row. A disc's own DISCS.bin always carries used_sectors 0 for
+// itself, since that run's final size is not known until after it is
+// written (docs/decisions.md, "12. Disc lifecycle, closing and
+// appending"); only a later run's copy of the row carries the real
+// value. rebuild-cache instead reads it straight from that disc's own
+// RUN.bin, which does carry the run's actual stream_bytes, converted to
+// whole sectors the same way pack itself does.
+func fillUsedSectorsFromRuns(rows []format.DiscsRow, results []*image.ReadResult) []format.DiscsRow {
+	streamBytesByUUID := make(map[[16]byte]uint64, len(results))
+	for _, rr := range results {
+		streamBytesByUUID[rr.Disc.DiscUUID] = rr.Run.StreamBytes
+	}
+	for i, row := range rows {
+		streamBytes, ok := streamBytesByUUID[row.DiscUUID]
+		if !ok {
+			continue
+		}
+		rows[i].UsedSectors = (streamBytes + image.SectorSize - 1) / image.SectorSize
+	}
+	return rows
+}
+
 // refKey orders REFS records the way FORMAT.md's ref resolution rule
 // does: the highest run_seq, then the highest time_sec, then the
 // highest time_nsec.
@@ -250,19 +279,39 @@ func (k refKey) newer(other refKey) bool {
 
 // mergeRefs takes, for every ref name any provided disc's REFS table
 // carries, the newest record under refKey's ordering.
-func mergeRefs(results []*image.ReadResult) map[string]string {
-	best := make(map[string]refKey)
-	out := make(map[string]string)
+// bestRefRecords returns one REFS record per ref name, the newest by
+// refKey ordering across every provided disc. rebuild-cache uses this
+// both to restore the flat local ref file and to restore the refs
+// ledger a later pack extends.
+func bestRefRecords(results []*image.ReadResult) []format.RefRecord {
+	type keyed struct {
+		key refKey
+		rec format.RefRecord
+	}
+	best := make(map[string]keyed)
 	for _, rr := range results {
 		for _, rec := range rr.Refs.Records {
 			name := string(rec.Name[:rec.NameLen])
 			k := refKey{runSeq: rec.RunSeq, timeSec: rec.TimeSec, timeNsec: rec.TimeNsec}
-			if cur, ok := best[name]; ok && !k.newer(cur) {
+			if cur, ok := best[name]; ok && !k.newer(cur.key) {
 				continue
 			}
-			best[name] = k
-			out[name] = object.ID(rec.SnapshotID).TextForm()
+			best[name] = keyed{key: k, rec: rec}
 		}
+	}
+	recs := make([]format.RefRecord, 0, len(best))
+	for _, kv := range best {
+		recs = append(recs, kv.rec)
+	}
+	return recs
+}
+
+// mergeRefs turns REFS records into the name-to-id-text map the flat
+// local ref file holds.
+func mergeRefs(records []format.RefRecord) map[string]string {
+	out := make(map[string]string, len(records))
+	for _, rec := range records {
+		out[string(rec.Name[:rec.NameLen])] = object.ID(rec.SnapshotID).TextForm()
 	}
 	return out
 }

@@ -76,23 +76,33 @@ func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash 
 	return out, nil
 }
 
-func buildRefs(opts BuildOptions) ([]byte, [32]byte, error) {
-	recs := make([]format.RefRecord, len(opts.Snapshots))
-	for i, s := range opts.Snapshots {
+// refRecordsFromSnapshots turns each named snapshot into one REFS
+// record stamped with runSeq, the run whose refs.bin will carry it.
+func refRecordsFromSnapshots(snapshots []SnapshotRef, runSeq uint64) []format.RefRecord {
+	recs := make([]format.RefRecord, len(snapshots))
+	for i, s := range snapshots {
 		var name [format.RefNameLen]byte
 		n := copy(name[:], s.Name)
 		recs[i] = format.RefRecord{
 			SnapshotID: s.ID, TimeSec: s.Time.Unix(), TimeNsec: uint32(s.Time.Nanosecond()),
-			NameLen: uint16(n), HashAlgo: format.HashAlgoSHA256, Name: name, RunSeq: buildRunSeq,
+			NameLen: uint16(n), HashAlgo: format.HashAlgoSHA256, Name: name, RunSeq: runSeq,
 		}
 	}
+	return recs
+}
+
+// encodeRefsTable sorts recs and encodes REFS from them. Every caller
+// that writes a run's refs.bin goes through this, whether the records
+// come straight from this run's own snapshots or from a merge with
+// refs carried forward from earlier runs.
+func encodeRefsTable(repoUUID [16]byte, recs []format.RefRecord) ([]byte, [32]byte, error) {
 	sortRefRecords(recs)
 	t := format.RefsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs,
 			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.RefsHeaderLen,
 		},
-		RepoUUID: opts.RepoUUID, RecordCount: uint64(len(recs)), RecordSize: format.RefRecordLen,
+		RepoUUID: repoUUID, RecordCount: uint64(len(recs)), RecordSize: format.RefRecordLen,
 		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Records: recs,
 	}
 	buf := make([]byte, t.EncodedLen())
@@ -100,6 +110,14 @@ func buildRefs(opts BuildOptions) ([]byte, [32]byte, error) {
 		return nil, [32]byte{}, err
 	}
 	return buf, sha256sum(buf), nil
+}
+
+// buildRefs builds REFS from opts.Snapshots alone, every record stamped
+// with runSeq. Build uses this: a one-shot build has no earlier run to
+// carry refs forward from.
+func buildRefs(opts BuildOptions, runSeq uint64) ([]byte, [32]byte, error) {
+	recs := refRecordsFromSnapshots(opts.Snapshots, runSeq)
+	return encodeRefsTable(opts.RepoUUID, recs)
 }
 
 // sortRefRecords orders records the way REFS requires: name bytes

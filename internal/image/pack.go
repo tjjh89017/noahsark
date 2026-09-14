@@ -27,6 +27,18 @@ const discsLedgerName = "discs.bin"
 // reports the ledger path it rewrote.
 const DiscsLedgerName = discsLedgerName
 
+// refsLedgerName is the local repository ledger of every ref pack has
+// already written into a run's refs.bin. It reuses REFS's own container
+// format directly, the same way discsLedgerName mirrors DISCS: a fresh
+// pack loads it, merges in the refs named on its own command line, and
+// saves the merged set back, so every run's refs.bin carries every ref
+// the repository knows, not only the ones packed this time.
+const refsLedgerName = "refslog.bin"
+
+// RefsLedgerName is refsLedgerName, exported for rebuild-cache, which
+// reports the ledger path it rewrote.
+const RefsLedgerName = refsLedgerName
+
 // PackOptions holds everything Pack needs to select the next run's
 // objects from the staging store and lay it out.
 type PackOptions struct {
@@ -146,7 +158,13 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	refsBuf, refsHash, err := buildRefs(opts.asBuildOptions())
+	refsLedger, err := LoadRefsLedger(opts.StagingDir, opts.RepoUUID)
+	if err != nil {
+		return nil, err
+	}
+	newRefRecords := refRecordsFromSnapshots(opts.Snapshots, runSeq)
+	mergedRefRecords := mergeRefRecords(refsLedger.Records, newRefRecords)
+	refsBuf, refsHash, err := encodeRefsTable(opts.RepoUUID, mergedRefRecords)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +371,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	newRow.UsedSectors = blockCount(plan.streamBytesTotal)
 	ledger.Rows = append(ledger.Rows, newRow)
 	if err := SaveDiscsLedger(opts.StagingDir, opts.RepoUUID, ledger.Rows); err != nil {
+		return nil, err
+	}
+	if err := SaveRefsLedger(opts.StagingDir, opts.RepoUUID, mergedRefRecords); err != nil {
 		return nil, err
 	}
 
@@ -677,6 +698,55 @@ func SaveDiscsLedger(stagingDir string, repoUUID [16]byte, rows []format.DiscsRo
 		return err
 	}
 	return os.WriteFile(filepath.Join(stagingDir, discsLedgerName), buf, 0o644)
+}
+
+// LoadRefsLedger reads the local refs ledger, or returns an empty one
+// for a repository with no ref packed yet.
+func LoadRefsLedger(stagingDir string, repoUUID [16]byte) (format.RefsTable, error) {
+	data, err := os.ReadFile(filepath.Join(stagingDir, refsLedgerName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return format.RefsTable{RepoUUID: repoUUID}, nil
+		}
+		return format.RefsTable{}, fmt.Errorf("%s: %w", refsLedgerName, err)
+	}
+	var t format.RefsTable
+	if _, err := t.Decode(data); err != nil {
+		return format.RefsTable{}, fmt.Errorf("%s: %w", refsLedgerName, err)
+	}
+	return t, nil
+}
+
+// SaveRefsLedger writes the local refs ledger: the records a later Pack
+// call reads back as the refs earlier runs already carry, so it can
+// carry them into its own refs.bin unchanged. rebuild-cache also calls
+// this to restore the ledger from discs.
+func SaveRefsLedger(stagingDir string, repoUUID [16]byte, recs []format.RefRecord) error {
+	buf, _, err := encodeRefsTable(repoUUID, append([]format.RefRecord(nil), recs...))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(stagingDir, refsLedgerName), buf, 0o644)
+}
+
+// mergeRefRecords unions carried and fresh REFS records by name: a name
+// in both keeps only the fresh record, since a ref packed again on this
+// run points at a newer snapshot and this run's run_seq. A name found
+// only in carried keeps its own run_seq from the run that packed it.
+// The result is unsorted; encodeRefsTable orders it before writing.
+func mergeRefRecords(carried, fresh []format.RefRecord) []format.RefRecord {
+	byName := make(map[string]format.RefRecord, len(carried)+len(fresh))
+	for _, r := range carried {
+		byName[string(r.Name[:r.NameLen])] = r
+	}
+	for _, r := range fresh {
+		byName[string(r.Name[:r.NameLen])] = r
+	}
+	merged := make([]format.RefRecord, 0, len(byName))
+	for _, r := range byName {
+		merged = append(merged, r)
+	}
+	return merged
 }
 
 // blockCount returns the number of fec.BlockSize blocks that hold n

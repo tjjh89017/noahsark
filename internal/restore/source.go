@@ -58,22 +58,49 @@ func (s *Source) Snapshot(id object.ID) (*format.Snapshot, error) {
 	return &snap, nil
 }
 
-// Refs reads REFS, the repository-wide table of named pointers to
-// snapshots. REFS is replicated in full on every run, so the first
-// provided disc's copy already names every ref every provided disc
-// knows.
+// Refs reads REFS from every provided disc and merges the results by
+// ref name: when two discs disagree on a name, the record with the
+// higher run_seq wins. A pack that has not yet carried an older disc's
+// ref forward can still leave a disc's REFS short of the full name set,
+// so Refs does not trust any one disc's copy alone.
 func (s *Source) Refs() (*format.RefsTable, error) {
-	b := s.src.bases[0]
-	catalogDir := s.src.names.Join(b.runDir, "catalog")
-	buf, err := os.ReadFile(filepath.Join(catalogDir, s.src.names.Resolve(catalogDir, "REFS.bin")))
-	if err != nil {
-		return nil, fmt.Errorf("restore: %s: %w", catalogDir, err)
+	var merged *format.RefsTable
+	byName := make(map[string]format.RefRecord)
+	for _, b := range s.src.bases {
+		catalogDir := s.src.names.Join(b.runDir, "catalog")
+		buf, err := os.ReadFile(filepath.Join(catalogDir, s.src.names.Resolve(catalogDir, "REFS.bin")))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", catalogDir, err)
+		}
+		var refs format.RefsTable
+		if _, err := refs.Decode(buf); err != nil {
+			return nil, fmt.Errorf("%s: %w", catalogDir, err)
+		}
+		if merged == nil {
+			merged = &format.RefsTable{Header: refs.Header, RepoUUID: refs.RepoUUID, RecordSize: refs.RecordSize, HashAlgo: refs.HashAlgo, DigestLen: refs.DigestLen}
+		}
+		for _, r := range refs.Records {
+			name := string(r.Name[:r.NameLen])
+			cur, ok := byName[name]
+			if !ok || r.RunSeq > cur.RunSeq {
+				byName[name] = r
+			}
+		}
 	}
-	var refs format.RefsTable
-	if _, err := refs.Decode(buf); err != nil {
-		return nil, fmt.Errorf("restore: %s: %w", catalogDir, err)
+	if merged == nil {
+		return nil, fmt.Errorf("no disc root provided")
 	}
-	return &refs, nil
+	records := make([]format.RefRecord, 0, len(byName))
+	for _, r := range byName {
+		records = append(records, r)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		a, b := records[i], records[j]
+		return string(a.Name[:a.NameLen]) < string(b.Name[:b.NameLen])
+	})
+	merged.Records = records
+	merged.RecordCount = uint64(len(records))
+	return merged, nil
 }
 
 // SnapshotIDs returns the content id of every snapshot object the
@@ -92,7 +119,7 @@ func (s *Source) SnapshotIDs() ([]object.ID, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("restore: %s: %w", dir, err)
+			return nil, fmt.Errorf("%s: %w", dir, err)
 		}
 		for _, e := range entries {
 			if e.IsDir() {

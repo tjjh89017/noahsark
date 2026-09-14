@@ -98,13 +98,13 @@ type fileRow struct {
 // full NOAHSARK tree under opts.OutputDir as ordinary files.
 func Build(opts BuildOptions) (*Result, error) {
 	if opts.StagingDir == "" || opts.OutputDir == "" {
-		return nil, fmt.Errorf("image: staging directory and output directory are required")
+		return nil, fmt.Errorf("staging directory and output directory are required")
 	}
 	if len(opts.Snapshots) == 0 {
-		return nil, fmt.Errorf("image: at least one snapshot is required")
+		return nil, fmt.Errorf("at least one snapshot is required")
 	}
 	if opts.TargetCapacitySectors == 0 {
-		return nil, fmt.Errorf("image: target capacity is required and must not be zero")
+		return nil, fmt.Errorf("target capacity is required and must not be zero")
 	}
 	now := opts.Now
 	if now == nil {
@@ -135,7 +135,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		} else {
 			h, err = hashFile(StagedPath(opts.StagingDir, r.ID, r.Kind))
 			if err != nil {
-				return nil, fmt.Errorf("image: %s: %w", r.ID.TextForm(), err)
+				return nil, fmt.Errorf("%s: %w", r.ID.TextForm(), err)
 			}
 		}
 		hashed[i] = hashedObject{ReachableObject: r, hash: h}
@@ -166,7 +166,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	readmeBuf := buildReadme(opts, packTime, label[:labelLen])
 	readmeHash := sha256.Sum256(readmeBuf)
 	formatHash := sha256.Sum256(FormatTxt)
-	refsBuf, refsHash, err := buildRefs(opts)
+	refsBuf, refsHash, err := buildRefs(opts, buildRunSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +249,7 @@ func Build(opts BuildOptions) (*Result, error) {
 			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
 		}
 		if err != nil {
-			return nil, fmt.Errorf("image: %s: %w", h.ID.TextForm(), err)
+			return nil, fmt.Errorf("%s: %w", h.ID.TextForm(), err)
 		}
 		var flags uint16
 		if h.Kind != format.ObjectKindChunk {
@@ -290,7 +290,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		return nil, err
 	}
 	if len(indexBuf) != indexLen {
-		return nil, fmt.Errorf("image: internal error: index length mismatch, predicted %d, actual %d", indexLen, len(indexBuf))
+		return nil, fmt.Errorf("internal error: index length mismatch, predicted %d, actual %d", indexLen, len(indexBuf))
 	}
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
