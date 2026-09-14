@@ -163,6 +163,26 @@ need, so a disc holding none of them can stay out of the drive:
 ./noahsark restore tree0 --include=srv/data/etc SNAPSHOT-ID restored
 ```
 
+## Losing the repository directory
+
+`restore`, `verify`, `ls` and `log` never read `--repo`: they read the
+disc roots given to them, so losing the repository directory never
+loses the archive, and never blocks a restore.
+
+The repository directory does matter to `pack`: it holds the state log
+that lets a later `pack` skip objects an earlier disc already carries.
+Losing it, then packing again from the same source, would burn every
+object a second time. `rebuild-cache --from-disc` rebuilds that state
+from the discs themselves, so the next `pack` dedups correctly again:
+
+```sh
+./noahsark rebuild-cache --from-disc --repo=repo --disc=tree0 --disc=tree1
+```
+
+Give it every disc the repository has burned; a disc left out makes the
+rebuild partial, reported as exit 1 naming the missing disc's uuid.
+`rebuild-cache` also accepts `--discs-dir`, the same way `restore` does.
+
 ## Disc capacity
 
 Marketing sizes are not the real capacity. A "25 GB" BD-R actually holds
