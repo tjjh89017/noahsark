@@ -140,7 +140,9 @@ A path copied from that output restores just that path:
 ./noahsark restore tree0 --include=srv/data/etc SNAPSHOT-ID restored
 ```
 
-`restore` reads from one disc root by default:
+`restore` accepts that same snapshot id or ref name in place of
+`SNAPSHOT-ID`, resolved the same way `ls` and `log` resolve it. It
+reads from one disc root by default:
 
 ```sh
 ./noahsark restore tree0 SNAPSHOT-ID restored

@@ -14,9 +14,12 @@ import (
 // cmdRestore implements "noahsark restore". OPERATIONS.md's
 // "restore SNAPSHOT TARGET" resolves SNAPSHOT through a repository's
 // catalog and cache, which this build does not keep; instead it takes
-// one or more disc roots directly, alongside the snapshot id and the
-// output directory. See docs/decisions.md, "16. CLI reference" and
+// one or more disc roots directly, alongside the snapshot argument and
+// the output directory. See docs/decisions.md, "16. CLI reference" and
 // "14. Restore".
+//
+// SNAPSHOT accepts a snapshot id or a ref name, resolved the same way
+// ls and log resolve it, against the REFS table of the given discs.
 //
 // A restore that needs only one disc keeps the old positional form,
 // "restore DISC-ROOT SNAPSHOT OUT-DIR". A restore spanning several discs
@@ -63,7 +66,12 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	}
 	snapshotArg, outDir := positional[0], positional[1]
 
-	snapID, err := parseSnapshotID(snapshotArg)
+	src, err := restore.OpenSource(discRoots)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	snapID, err := src.ParseSnapshotArg(snapshotArg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
