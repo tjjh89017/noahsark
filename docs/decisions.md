@@ -327,8 +327,15 @@ this one snapshot.
 
 `pack` cannot select objects by `disc.min_fill` or `disc.max_wait`,
 because no staging state log exists to age objects in. It instead takes
-the snapshot(s) to place explicitly, by `--ref` (default `LATEST`,
-resolved through the local ref file) or repeated `--snapshot`.
+the snapshot(s) to place explicitly, by `--ref` (resolved through the
+local ref file) or repeated `--snapshot`. With neither given, `pack`
+does not default to `LATEST`: a repository whose every commit names its
+own `--ref` (a date, say) never creates a `LATEST` ref at all, and
+`pack` must not fail looking for one. Instead it carries forward every
+ref not yet moved onto a run (see `addPendingRefs`, and section 8
+below), the same set a `--ref`ed pack's own carry-forward step already
+adds; `LATEST` is used only as a last resort, when that leaves nothing
+pending and `LATEST` itself resolves.
 `--capacity` accepts a bare integer as a sector count, an integer
 suffixed `GiB`/`MiB`/`KiB` (binary) or `GB`/`MB`/`KB` (decimal, the
 marketing convention optical media capacities like "25GB" are named
@@ -554,7 +561,7 @@ verify that treated a ledger match alone as proof of burning would mark
 that pre-burn image CLEAN, and `gc` would later delete staging objects
 for a disc that was never actually written.
 
-`noahsark disc burned UUID [UUID...] [--undo]` is the explicit step
+`noahsark disc burned [--undo] UUID [UUID...]` is the explicit step
 that closes this gap. It moves every PACKED object of each named disc's
 runs to BURNED, and records the burn time (see above). `pack`'s
 next-steps block prints it between the `growisofs` line and the
@@ -567,9 +574,13 @@ before anyone got as far as `verify`.
 a repository and DISC.bin's uuid matches a row in its disc ledger, a
 passing verify moves the run's BURNED objects to CLEAN and leaves any
 PACKED object of that run alone, printing a line naming the `disc
-burned` command to run when one remains PACKED; a failing verify moves
-BURNED objects back to PACKED with the verify-failed reason, unchanged
-from before. A verify against a tree whose disc uuid the ledger has
+burned --repo=<repo>` command to run when one remains PACKED, after the
+`verify: ok` line rather than ahead of it when no object was BURNED
+this pass; a failing verify moves BURNED objects back to PACKED with
+the verify-failed reason, unchanged from before. The `marked N
+object(s) CLEAN` line itself prints only when N is at least 1, since a
+disc already fully CLEAN, or one still fully PACKED, has nothing to
+report there. A verify against a tree whose disc uuid the ledger has
 never seen at all, or run with no `--repo`, changes no staging state.
 
 `gc [--dry-run] [--keep-snapshots=N]` implements section 4.5's GC
@@ -588,6 +599,30 @@ cached snapshot's completeness afterward so `ls` reports a dropped
 snapshot's cache copy incomplete again. `--force-after` is not
 implemented; shortening retention for one run needs an interactive
 confirmation this build has no prompt path for yet.
+
+OPERATIONS.md's own exit codes for `gc` (16.20) are 0 on success, 1
+when nothing was eligible, 2 on failure, with no separate case for
+`--dry-run`. A dry run only reports what a real run would do; it never
+changes anything, so failing to find something to delete is not a
+`--dry-run` failure the way it is a real run's. `--dry-run` always
+exits 0, printing `gc: nothing is eligible yet` and the earliest date
+some CLEAN object reaches `staging.retain_after_clean`, when nothing is
+eligible and every candidate's run is cached (an object skipped because
+its run is not cached prints that separate line instead, since
+"nothing is eligible" would misstate why nothing was deleted). A real
+`gc` run keeps exit 1 for that case, matching OPERATIONS.md.
+
+A staging object at PACKED, BURNED, CLEAN, GC-ELIGIBLE, or DELETED all
+name an object a disc already holds; only STAGED does not.
+`stage.State.OnDisc()` names this test once, so `pack`'s two "is this
+object already on a disc" checks, `cmd_commit`'s `Known` callback, and
+`disc list`'s on-disc object count all agree with each other. Before
+this existed, both of `pack`'s checks compared against PACKED alone: an
+object `disc burned` and `verify` had already moved to BURNED or CLEAN
+looked unpacked again to the next `pack`, which copied it a second time
+and rebound it, with `MarkPacked`, to the new disc, silently losing
+cross-disc dedup for every object a burn-and-verify cycle had already
+completed.
 
 ## 8. Packing and locality, and 11.1 INDEX Prereqs
 
@@ -829,3 +864,16 @@ no config default: OPERATIONS.md's configuration reference names no
 use it; a disc whose assigned bytes exceed it only gets a warning in
 this build, since splitting a restore into passes is not implemented
 yet.
+
+A destination file that already exists, with `--overwrite` not given,
+is not automatically a conflict in this mode: `internal/restore.Manifest`
+checks it against the tree entry it must match, either by size and
+mtime (the way `applyMetadata` leaves a file this restore wrote itself)
+or by hashing dest's bytes at each blob entry's own offset and length
+and comparing against that entry's content id, which needs no disc
+access. A match counts as resumed, not skipped, so a rerun after a
+killed session reports `resumed: N file(s) already restored` and exits
+0 once nothing else is wrong; only a genuine mismatch still counts as
+skipped and keeps the exit-1, `--overwrite`-to-replace behavior. Once
+every file is written and the run finishes, the now-empty
+`staging/restore/<snapshot-id>/` directory is removed.

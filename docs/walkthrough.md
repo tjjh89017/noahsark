@@ -109,6 +109,14 @@ repository:
 ./noahsark disc list --repo=/srv/noahsark/repo
 ```
 
+Each disc's line ends `objects=N packed=N clean=N`: `objects` is every
+object the staging state machine still places on that disc (PACKED,
+BURNED, CLEAN, GC-ELIGIBLE, or already DELETED from staging, since the
+disc itself never loses the bytes); `packed` and `clean` break that
+same total down by current state, so you can see at a glance whether a
+disc's run has been marked burned and verified yet (`packed` still
+nonzero) or has gone all the way to CLEAN.
+
 On each disc's sleeve, in permanent marker, write:
 
 - the first 8 characters of the `uuid` field `disc list` printed
@@ -389,6 +397,18 @@ deleted state log alone, with the config file and `refs.txt` untouched,
 since `rebuild-cache` rewrites the state log, the disc ledger, and the
 local refs from the discs regardless of what survived.
 
+With a single drive, mounting every disc at once is not possible: run
+`rebuild-cache --from-disc --disc=<mount point>` once per disc instead,
+swapping discs between runs, into the same `--repo`. Each run marks
+that disc's own objects packed in the state log, so feed every disc for
+the state log to end up complete. Every run before the last reports
+`rebuild is partial` and exits 1, naming the discs not yet provided;
+feed the discs newest first, or feed them in any order and expect exit
+1 until the very last one, since only the newest disc's own DISCS table
+carries every earlier disc's row, and the disc ledger and refs
+`rebuild-cache` saves each run reflect only the discs given so far, not
+also what an earlier run already saved.
+
 ## 7. Disk space
 
 Nothing in `staging/objects` is deleted just because it was packed onto
@@ -411,7 +431,11 @@ a disc. An object leaves the staging store only after this full cycle:
 4. **Wait** out `staging.retain_after_clean` (7 days by default). A
    CLEAN object is not deletable yet; the retention period is the
    window for a mistake to surface before the only copy on disk is the
-   one on the discs themselves.
+   one on the discs themselves. The config value is a whole number of
+   days with a `d` suffix (`7d`), or any duration `time.ParseDuration`
+   accepts (`1h`); to try this whole cycle without actually waiting a
+   week, set `staging.retain_after_clean = 0d` in the config, burn and
+   verify a disc, and its objects are eligible immediately.
 5. **Run `gc`**:
 
    ```sh
@@ -420,8 +444,14 @@ a disc. An object leaves the staging store only after this full cycle:
 
    `gc` deletes every object that has stayed CLEAN past the retention
    period, after confirming each one is really present in its run's
-   catalog. Run `noahsark gc --repo=/srv/noahsark/repo --dry-run` first
-   to see what it would free without deleting anything.
+   catalog; an object whose run's catalog is not in the local cache is
+   left alone and counted separately, never deleted on a guess. Run
+   `noahsark gc --repo=/srv/noahsark/repo --dry-run` first to see what
+   it would free without deleting anything: `--dry-run` always exits 0,
+   printing `gc: nothing is eligible yet` and the earliest date some
+   object reaches the retention period when nothing is eligible yet. A
+   real `gc` run exits 1 when nothing was eligible to delete, 2 on
+   failure, and 0 once it deletes something.
 
 Check the staging store's size at any point with:
 
@@ -509,7 +539,15 @@ lives:
 
 This prints one line per disc the restore would read, in the order it
 would read them, with each disc's uuid, label, object count and bytes,
-then a totals line. Narrow it to the same paths you plan to restore
+then a totals line. If nothing has ever been packed or rebuilt into
+this machine's local cache, `plan` fails instead with `cache: no run is
+cached yet; run pack, or rebuild-cache --from-disc, first`: `plan`
+never reads a disc itself, so pack once from this repository, or run
+`rebuild-cache --from-disc` against a disc you have on hand (section 6
+above), before planning a restore on a machine that has never packed
+anything.
+
+Narrow it to the same paths you plan to restore
 with `--include`, the same flag `restore` takes:
 
 ```sh
@@ -545,13 +583,13 @@ against the plan. When the right disc is already mounted, it prints one
 line and moves on:
 
 ```
-disc 0 run1: found
+disc 0 2026-09-14 run1: found
 ```
 
 Otherwise it prompts on stderr and waits for a line on stdin:
 
 ```
-insert disc 1 "run2" (uuid 85f302d6-b864-478f-fbb4-dd02f0d78674) into /mnt/noahsark-drive and press Enter
+insert disc 1 "2026-09-21 run2" (uuid 85f302d6-b864-478f-fbb4-dd02f0d78674) into /mnt/noahsark-drive and press Enter
 ```
 
 Unmount the current disc, put in the one the prompt names, mount it
@@ -559,7 +597,7 @@ again at the same `--mount` directory, and press Enter. If the wrong
 disc goes in, `restore` says so and prompts again:
 
 ```
-expected disc 85f302d6-b864-478f-fbb4-dd02f0d78674 (run2), found 34d8de68-32f1-c77e-2219-37fb1133b882 (run1)
+expected disc 85f302d6-b864-478f-fbb4-dd02f0d78674 (2026-09-21 run2), found 34d8de68-32f1-c77e-2219-37fb1133b882 (2026-09-14 run1)
 ```
 
 `restore` unmounts and ejects the drive itself after each disc, unless
