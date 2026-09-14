@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-var discListLineRe = regexp.MustCompile(`^([0-9a-f-]{36})  seq=(\d+)  label="([^"]*)"  capacity=(\d+)  used=(\d+)  runs=(\d+)  objects=(\d+)$`)
+var discListLineRe = regexp.MustCompile(`^([0-9a-f-]{36})  seq=(\d+)  label="([^"]*)"  capacity=(\d+)  used=(\d+)  runs=(\d+)  objects=(\d+)  packed=(\d+)  clean=(\d+)$`)
 
 // TestDiscListReportsPackedDiscs packs one disc and checks that
 // "disc list" prints its uuid, seq, label, capacity, used bytes, run

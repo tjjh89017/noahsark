@@ -28,11 +28,11 @@ import (
 // and this build has no `burn` command to record it automatically.
 func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json] | disc burned UUID [UUID...] [--undo]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json] | disc burned [--undo] UUID [UUID...]")
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json] | disc burned UUID [UUID...] [--undo]")
+		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json] | disc burned [--undo] UUID [UUID...]")
 		return 0
 	}
 	sub := args[0]
@@ -70,14 +70,14 @@ func parseDiscUUIDArg(s string) ([16]byte, error) {
 	return out, nil
 }
 
-// cmdDiscBurned implements "noahsark disc burned UUID [UUID...] [--undo]".
+// cmdDiscBurned implements "noahsark disc burned [--undo] UUID [UUID...]".
 // It moves every PACKED object of each named disc's runs to BURNED,
 // standing in for the missing `burn` command: the operator runs it
 // right after burning both twins by hand. --undo reverses that, for a
 // burn that turned out bad, moving BURNED objects back to PACKED with
 // the burn-failed reason.
 func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark disc burned UUID [UUID...] [--undo]",
+	fs := newFlagSet("noahsark disc burned [--undo] UUID [UUID...]",
 		"Mark a disc burned, moving its PACKED objects to BURNED.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	undo := fs.Bool("undo", false, "undo: move BURNED objects back to PACKED, for a burn that turned out bad")
@@ -88,7 +88,7 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned UUID [UUID...] [--undo]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned [--undo] UUID [UUID...]")
 		return 2
 	}
 
@@ -131,17 +131,19 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 		}
 
 		for _, row := range rows {
-			var n int
-			var action string
+			label := labelText(row.Label[:row.LabelLen])
 			if *undo {
-				n = undoBurnForRun(stageLog, discUUID, row.RunSeq)
-				action = "undo: returned to packed"
-			} else {
-				n = markBurnedForRun(stageLog, discUUID, row.RunSeq)
-				action = "marked burned"
+				n := undoBurnForRun(stageLog, discUUID, row.RunSeq)
+				_, _ = fmt.Fprintf(stdout, "disc %d %s: undo: returned to packed, %d objects\n",
+					row.DiscSeq, label, n)
+				continue
 			}
-			_, _ = fmt.Fprintf(stdout, "disc %d %s: %s, %d objects\n",
-				row.DiscSeq, labelText(row.Label[:row.LabelLen]), action, n)
+			n := markBurnedForRun(stageLog, discUUID, row.RunSeq)
+			if n == 0 {
+				_, _ = fmt.Fprintf(stdout, "disc %d %s: already burned, 0 objects to mark\n", row.DiscSeq, label)
+				continue
+			}
+			_, _ = fmt.Fprintf(stdout, "disc %d %s: marked burned, %d objects\n", row.DiscSeq, label, n)
 		}
 		if !*undo {
 			if err := stageLog.RecordBurnTime(discUUID); err != nil {
@@ -205,7 +207,9 @@ type discSummary struct {
 	CapacityBytes uint64 `json:"capacity_bytes"`
 	UsedBytes     uint64 `json:"used_bytes"`
 	Runs          int    `json:"runs"`
+	OnDiscObjects int    `json:"on_disc_objects"`
 	PackedObjects int    `json:"packed_objects"`
+	CleanObjects  int    `json:"clean_objects"`
 }
 
 func cmdDiscList(args []string, stdout, stderr io.Writer) int {
@@ -249,9 +253,11 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
 		return 1
 	}
+	onDiscByDisc := stageLog.OnDiscCountByDisc()
 	packedByDisc := stageLog.PackedCountByDisc()
+	cleanByDisc := stageLog.CleanCountByDisc()
 
-	discs := summarizeDiscs(ledger.Rows, packedByDisc)
+	discs := summarizeDiscs(ledger.Rows, onDiscByDisc, packedByDisc, cleanByDisc)
 
 	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
 	if err != nil {
@@ -275,8 +281,8 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 	}
 
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "%s  seq=%d  label=%q  capacity=%d  used=%d  runs=%d  objects=%d\n",
-			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.Runs, d.PackedObjects)
+		_, _ = fmt.Fprintf(stdout, "%s  seq=%d  label=%q  capacity=%d  used=%d  runs=%d  objects=%d  packed=%d  clean=%d\n",
+			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.Runs, d.OnDiscObjects, d.PackedObjects, d.CleanObjects)
 	}
 	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
 	return 0
@@ -286,8 +292,8 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 // ascending disc_seq order, and folds each disc's rows into one
 // discSummary: the label and forced capacity of its newest run, the sum
 // of used_sectors across every run, the run count, and the disc's
-// packed object count from packedByDisc.
-func summarizeDiscs(rows []format.DiscsRow, packedByDisc map[[16]byte]int) []discSummary {
+// on-disc, packed, and clean object counts.
+func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByDisc map[[16]byte]int) []discSummary {
 	order := make([]string, 0)
 	byUUID := make(map[string][]format.DiscsRow)
 	for _, r := range rows {
@@ -316,7 +322,9 @@ func summarizeDiscs(rows []format.DiscsRow, packedByDisc map[[16]byte]int) []dis
 			CapacityBytes: newest.CapacityForcedSectors * image.SectorSize,
 			UsedBytes:     usedSectors * image.SectorSize,
 			Runs:          len(discRows),
+			OnDiscObjects: onDiscByDisc[newest.DiscUUID],
 			PackedObjects: packedByDisc[newest.DiscUUID],
+			CleanObjects:  cleanByDisc[newest.DiscUUID],
 		})
 	}
 	return discs
