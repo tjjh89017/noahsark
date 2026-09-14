@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
@@ -19,6 +21,22 @@ import (
 // rules without waiting.
 var gcClock = time.Now
 
+// gcStdin is where gc's --force-after confirmation reads the operator's
+// answer from. Tests replace it with a pipe.
+var gcStdin io.Reader = os.Stdin
+
+// gcStdinIsTerminal reports whether gc's real stdin is a terminal, using
+// only the standard library: stdin is a terminal when its mode carries
+// the character-device bit. Tests replace this to exercise the
+// confirmation prompt without a real terminal attached.
+var gcStdinIsTerminal = func() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
 // cmdGC implements "noahsark gc". OPERATIONS.md's own CLI reference
 // (16.20) gives gc only --dry-run and --force-after; this build adds
 // --keep-snapshots, an explicit override of cache.snapshot_depth
@@ -27,11 +45,13 @@ var gcClock = time.Now
 // alone would leave no way to try a different depth without editing the
 // repository. See docs/decisions.md, "4. Staging state machine".
 func cmdGC(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark gc [--dry-run] [--keep-snapshots=N]",
+	fs := newFlagSet("noahsark gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]",
 		"Delete GC-ELIGIBLE staging objects and trim the local cache.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	dryRun := fs.Bool("dry-run", false, "print what would be deleted, and free nothing")
 	keepSnapshots := fs.Int("keep-snapshots", -1, "keep cache trees and blobs reachable from only the newest N snapshots; default cache.snapshot_depth")
+	forceAfter := fs.String("force-after", "", "shorten retention to this duration for this run only, ignoring staging.retain_after_clean; requires confirmation")
+	yes := fs.Bool("yes", false, "skip --force-after's interactive confirmation")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -39,12 +59,21 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--keep-snapshots=N]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]")
 		return 2
 	}
 	if *keepSnapshots < -1 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc: --keep-snapshots must not be negative")
 		return 2
+	}
+	retainAfterCleanOverride := time.Duration(-1)
+	if *forceAfter != "" {
+		d, err := parseRetentionDuration(*forceAfter)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after:", err)
+			return 2
+		}
+		retainAfterCleanOverride = d
 	}
 
 	repoDir, err := discoverRepo(*repoFlag)
@@ -78,7 +107,18 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	objDeleted, objBytes, uncached := gcStagingObjects(stageLog, c, cfg.StagingDir, cfg.RetainAfterClean, *dryRun, stdout)
+	retainAfterClean := cfg.RetainAfterClean
+	if retainAfterCleanOverride >= 0 {
+		retainAfterClean = retainAfterCleanOverride
+	}
+
+	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, retainAfterClean, gcClock())
+	if retainAfterCleanOverride >= 0 && !*dryRun && len(candidates) > 0 {
+		if code, ok := confirmForceAfter(candidates, *yes, stdout, stderr); !ok {
+			return code
+		}
+	}
+	objDeleted, objBytes := gcApplyStagingObjects(stageLog, candidates, *dryRun, stdout)
 
 	depth := cfg.CacheSnapshotDepth
 	if *keepSnapshots >= 0 {
@@ -168,12 +208,24 @@ func gcCandidates(l *stage.Log, retainAfterClean time.Duration, now time.Time) [
 	return ids
 }
 
-// gcStagingObjects deletes every eligible staging object gc's rules
-// allow. An object whose run's INDEX is not cached is left alone and
-// counted separately: OPERATIONS.md's GC rules require confirming
-// presence through the cached manifest before every delete.
-func gcStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAfterClean time.Duration, dryRun bool, stdout io.Writer) (deleted int, bytesFreed uint64, uncached int) {
-	now := gcClock()
+// gcObj is one staging object gc's rules allow deleting: its id, the
+// path to its staged file, the size to report and free, the run it
+// belongs to, and whether it must still be promoted from CLEAN to
+// GC-ELIGIBLE before a real (non-dry-run) delete.
+type gcObj struct {
+	id       object.ID
+	path     string
+	size     uint64
+	runSeq   uint64
+	wasClean bool
+}
+
+// gcPlanStagingObjects lists every staging object gc's rules allow
+// deleting as of now, without changing any state. An object whose run's
+// INDEX is not cached is left off the list and counted separately:
+// OPERATIONS.md's GC rules require confirming presence through the
+// cached manifest before every delete.
+func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAfterClean time.Duration, now time.Time) (objs []gcObj, uncached int) {
 	for _, id := range gcCandidates(l, retainAfterClean, now) {
 		rec, ok := l.Get(id)
 		if !ok {
@@ -190,35 +242,78 @@ func gcStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAft
 			continue
 		}
 
-		if !dryRun && rec.State == stage.Clean {
-			if err := l.MarkGCEligible(id); err != nil {
-				continue
-			}
-		}
-
 		path := image.StagedPath(stagingDir, id, row.Kind)
 		size := row.StoredLen
 		if fi, err := os.Stat(path); err == nil {
 			size = uint64(fi.Size())
 		}
+		objs = append(objs, gcObj{id: id, path: path, size: size, runSeq: rec.RunSeq, wasClean: rec.State == stage.Clean})
+	}
+	return objs, uncached
+}
 
+// gcApplyStagingObjects deletes (or, under dryRun, reports) every object
+// gcPlanStagingObjects listed.
+func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool, stdout io.Writer) (deleted int, bytesFreed uint64) {
+	for _, o := range objs {
 		if dryRun {
-			_, _ = fmt.Fprintf(stdout, "would delete %s (%d bytes, run %d)\n", id.TextForm(), size, rec.RunSeq)
+			_, _ = fmt.Fprintf(stdout, "would delete %s (%d bytes, run %d)\n", o.id.TextForm(), o.size, o.runSeq)
 			deleted++
-			bytesFreed += size
+			bytesFreed += o.size
 			continue
 		}
 
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if o.wasClean {
+			if err := l.MarkGCEligible(o.id); err != nil {
+				continue
+			}
+		}
+		if err := os.Remove(o.path); err != nil && !os.IsNotExist(err) {
 			continue
 		}
-		if err := l.MarkDeleted(id); err != nil {
+		if err := l.MarkDeleted(o.id); err != nil {
 			continue
 		}
 		deleted++
-		bytesFreed += size
+		bytesFreed += o.size
 	}
-	return deleted, bytesFreed, uncached
+	return deleted, bytesFreed
+}
+
+// gcTotalBytes sums every object's size in objs.
+func gcTotalBytes(objs []gcObj) uint64 {
+	var total uint64
+	for _, o := range objs {
+		total += o.size
+	}
+	return total
+}
+
+// confirmForceAfter asks the operator to confirm a --force-after delete
+// on stderr, reading the answer from gcStdin, unless yes is already
+// given. It refuses outright when gc's stdin is not a terminal and yes
+// was not given: a killed or scripted session must not silently delete
+// under a shortened retention. It reports ok=false, with the exit code
+// to return, when the run should stop instead of deleting.
+func confirmForceAfter(objs []gcObj, yes bool, stdout, stderr io.Writer) (exitCode int, ok bool) {
+	if yes {
+		return 0, true
+	}
+	if !gcStdinIsTerminal() {
+		_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after needs an interactive confirmation; stdin is not a terminal, pass --yes")
+		return 2, false
+	}
+	_, _ = fmt.Fprintf(stderr, "delete %d object(s), %d bytes? [y/N] ", len(objs), gcTotalBytes(objs))
+	scanner := bufio.NewScanner(gcStdin)
+	answer := ""
+	if scanner.Scan() {
+		answer = strings.TrimSpace(strings.ToLower(scanner.Text()))
+	}
+	if answer != "y" && answer != "yes" {
+		_, _ = fmt.Fprintln(stdout, "gc: --force-after not confirmed; nothing deleted")
+		return 2, false
+	}
+	return 0, true
 }
 
 // findObjectRow returns idx's Objects row for id, confirming the object
