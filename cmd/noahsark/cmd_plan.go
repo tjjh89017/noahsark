@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
@@ -268,7 +269,7 @@ func buildPlan(c *cache.Cache, needed map[object.ID]format.ObjectKind) *planResu
 			e = &discPlanEntry{discSeq: row.DiscSeq, discUUID: row.DiscUUID, label: discRowLabel(row), created: row.CreatedSec}
 			byDisc[row.DiscUUID] = e
 		}
-		if !containsRun(e.runs, loc.RunSeq) {
+		if !slices.Contains(e.runs, loc.RunSeq) {
 			e.runs = append(e.runs, loc.RunSeq)
 		}
 		e.objects++
@@ -282,7 +283,7 @@ func buildPlan(c *cache.Cache, needed map[object.ID]format.ObjectKind) *planResu
 
 	discs := make([]discPlanEntry, 0, len(byDisc))
 	for _, e := range byDisc {
-		sort.Slice(e.runs, func(i, j int) bool { return e.runs[i] < e.runs[j] })
+		slices.Sort(e.runs)
 		discs = append(discs, *e)
 	}
 	sort.Slice(discs, func(i, j int) bool {
@@ -304,7 +305,7 @@ func buildPlan(c *cache.Cache, needed map[object.ID]format.ObjectKind) *planResu
 	for seq := range missingByRun {
 		runSeqs = append(runSeqs, seq)
 	}
-	sort.Slice(runSeqs, func(i, j int) bool { return runSeqs[i] < runSeqs[j] })
+	slices.Sort(runSeqs)
 	for _, seq := range runSeqs {
 		r.missing = append(r.missing, missingEntry{runSeq: seq, objects: missingByRun[seq]})
 	}
@@ -312,21 +313,9 @@ func buildPlan(c *cache.Cache, needed map[object.ID]format.ObjectKind) *planResu
 	return r
 }
 
-func containsRun(runs []uint64, seq uint64) bool {
-	for _, r := range runs {
-		if r == seq {
-			return true
-		}
-	}
-	return false
-}
-
 // discRowLabel trims a DISCS row's fixed-width label field.
 func discRowLabel(row format.DiscsRow) string {
-	n := len(row.Label)
-	if int(row.LabelLen) < n {
-		n = int(row.LabelLen)
-	}
+	n := min(int(row.LabelLen), len(row.Label))
 	return string(row.Label[:n])
 }
 

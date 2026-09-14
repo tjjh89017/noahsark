@@ -67,4 +67,7 @@ tmp/
 
 # Local plans, never committed
 .plan/
+
+# Agent worktrees, never committed
+.claude/worktrees/
 __pycache__/

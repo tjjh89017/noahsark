@@ -93,7 +93,7 @@ func TestPlanTwoDiscChainIncludeNarrows(t *testing.T) {
 // line's objects value from plan's text output.
 func planTotalObjects(t *testing.T, out string) int {
 	t.Helper()
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if !strings.HasPrefix(line, "totals:") {
 			continue
 		}

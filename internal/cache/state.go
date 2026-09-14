@@ -280,9 +280,6 @@ func (c *Cache) DiscForRun(runSeq uint64) (format.DiscsRow, bool) {
 // discLabelText trims a DISCS row's fixed-width label field to its
 // stored length.
 func discLabelText(row format.DiscsRow) string {
-	n := len(row.Label)
-	if int(row.LabelLen) < n {
-		n = int(row.LabelLen)
-	}
+	n := min(int(row.LabelLen), len(row.Label))
 	return string(row.Label[:n])
 }
