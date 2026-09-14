@@ -26,7 +26,13 @@ func updateRef(repoDir, name string, id object.ID) error {
 		return err
 	}
 	refs[name] = id.TextForm()
+	return writeRefs(repoDir, refs)
+}
 
+// writeRefs replaces repoDir's ref file with exactly the name-to-id-text
+// pairs in refs. rebuild-cache uses this to restore every ref a disc's
+// REFS table names in one write, instead of one updateRef call per name.
+func writeRefs(repoDir string, refs map[string]string) error {
 	names := make([]string, 0, len(refs))
 	for n := range refs {
 		names = append(names, n)
