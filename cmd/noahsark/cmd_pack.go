@@ -269,7 +269,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	if imageCapacityArg == "" {
 		imageCapacityArg = fmt.Sprintf("%d", capacitySectors)
 	}
-	printNextSteps(stdout, absOut, imageCapacityArg, *closeDisc)
+	printNextSteps(stdout, repoDir, absOut, imageCapacityArg, uuidText(discUUID), *closeDisc)
 
 	if result.RemainingObjects > 0 {
 		_, _ = fmt.Fprintf(stdout, "remaining staged: %d objects, %d bytes\n", result.RemainingObjects, result.RemainingBytes)
@@ -298,15 +298,21 @@ const (
 	burnerDefaultSpeed  = 4
 )
 
-// printNextSteps prints the three copy-ready commands that turn a packed
-// tree into a burned, verified disc: building the UDF image, burning it,
-// and verifying the mount. This build stops at pack, so these are printed
+// printNextSteps prints the four copy-ready commands that turn a packed
+// tree into a burned, verified disc: building the UDF image, burning
+// it, telling the staging state machine the burn happened, and
+// verifying the mount. This build stops at pack, so these are printed
 // rather than run.
 //
 // The burn line follows FORMAT.md's and OPERATIONS.md's open-by-default
 // rule: spare:min and no -dvd-compat, unless close is true, which is the
 // only way this build ever prints -dvd-compat or spare:none.
-func printNextSteps(stdout io.Writer, treeDir, capacityArg string, sealDisc bool) {
+//
+// `disc burned` comes before `verify`: verify never moves an object
+// from PACKED to BURNED itself, since a loop-mounted image checked
+// before burning has the same disc uuid and would otherwise look
+// burned too. See docs/decisions.md, "4. Staging state machine".
+func printNextSteps(stdout io.Writer, repoDir, treeDir, capacityArg, discUUID string, sealDisc bool) {
 	imagePath := treeDir + ".img"
 	spareMode := "spare:min"
 	dvdCompat := ""
@@ -318,7 +324,8 @@ func printNextSteps(stdout io.Writer, treeDir, capacityArg string, sealDisc bool
 	_, _ = fmt.Fprintf(stdout, "  sudo noahsark image build --out=%s --capacity=%s %s\n", imagePath, capacityArg, treeDir)
 	_, _ = fmt.Fprintf(stdout, "  growisofs -speed=%d -use-the-force-luke=%s,tty %s-Z %s=%s\n",
 		burnerDefaultSpeed, spareMode, dvdCompat, burnerDefaultDevice, imagePath)
-	_, _ = fmt.Fprintln(stdout, "  noahsark verify --image=<mount point>")
+	_, _ = fmt.Fprintf(stdout, "  noahsark disc burned --repo=%s %s\n", repoDir, discUUID)
+	_, _ = fmt.Fprintf(stdout, "  noahsark verify --repo=%s --image=<mount point>\n", repoDir)
 }
 
 // dirIsEmptyOrMissing reports whether path does not exist yet, or exists

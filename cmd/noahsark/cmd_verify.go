@@ -3,10 +3,16 @@ package main
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"time"
 
+	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/restore"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // cmdVerify implements "noahsark verify --image=PATH". A drive mount
@@ -15,6 +21,20 @@ import (
 // image.Read and restore.Heal already accept, instead of OPERATIONS.md's
 // raw image file plus --mapfile. See docs/decisions.md,
 // "16. CLI reference".
+//
+// verify never moves an object from PACKED to BURNED itself: the
+// walkthrough has an operator loop-mount and verify an image before it
+// is burned, and that tree's disc uuid is already in the ledger (pack
+// writes the ledger, not a burn step), so treating a ledger match alone
+// as proof of burning would let verify, and then gc, act on a disc that
+// does not exist yet. `noahsark disc burned UUID` is the explicit step
+// that records a burn; verify only ever reads that state. When --repo
+// resolves to a repository, and DISC.bin's uuid matches a row in that
+// repository's disc ledger, a successful verify moves every BURNED
+// object of the newest run to CLEAN, and warns when a PACKED object of
+// that run remains, naming the `disc burned` command to run. A failed
+// verify moves any object still at BURNED back to PACKED, with the
+// verify-failed reason.
 func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if refuseNotYetImplementedFlags("verify", args, stderr) {
 		return 2
@@ -22,6 +42,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 
 	fs := newFlagSet("noahsark verify --image=PATH [--heal] [--out=DIR]",
 		"Read a disc tree back and check it, optionally healing it first.", stderr)
+	repoFlag := fs.String("repo", "", "repository directory, to update its staging state on a burned disc")
 	imagePath := fs.String("image", "", "mounted disc path or unpacked NOAHSARK tree")
 	heal := fs.Bool("heal", false, "repair the disc with Reed-Solomon parity before reporting")
 	healOut := fs.String("out", "", "heal into this directory instead of in place")
@@ -52,9 +73,16 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		}
 	}
 
-	rr, err := image.ReadWithProgress(target, prog)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
+	ident, identOK := identifyDiscAndRun(target)
+
+	rr, verifyErr := image.ReadWithProgress(target, prog)
+
+	if repoDir, err := discoverRepo(*repoFlag); err == nil {
+		applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, stdout, stderr)
+	}
+
+	if verifyErr != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", verifyErr)
 		return 1
 	}
 
@@ -69,4 +97,226 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 
 func labelText(b []byte) string {
 	return string(b)
+}
+
+// discIdentity is DISC.bin's uuid and the newest run's run_seq and disc
+// uuid, read straight off target without running the full object and
+// FEC checks a verify performs. It lets a failed verify still resolve
+// which run to move back to PACKED.
+type discIdentity struct {
+	DiscUUID [16]byte
+	RunSeq   uint64
+}
+
+// identifyDiscAndRun reads DISC.bin and the newest run's RUN.bin under
+// target, and reports the disc and run identity, and whether both were
+// readable. A read failure here is not itself a verify failure; it only
+// means the caller cannot resolve a run to move back to PACKED.
+func identifyDiscAndRun(target string) (discIdentity, bool) {
+	names := image.NewNameCache()
+	base, err := image.FindNoahsark(target, names)
+	if err != nil {
+		return discIdentity{}, false
+	}
+	discBuf, err := os.ReadFile(filepath.Join(base, names.Resolve(base, "DISC.bin")))
+	if err != nil {
+		return discIdentity{}, false
+	}
+	var disc format.Disc
+	if err := disc.Decode(discBuf); err != nil {
+		return discIdentity{}, false
+	}
+
+	runsDir := filepath.Join(base, names.Resolve(base, "runs"))
+	runDir, err := image.NewestRunDir(runsDir)
+	if err != nil {
+		return discIdentity{DiscUUID: disc.DiscUUID}, false
+	}
+	runBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "RUN.bin")))
+	if err != nil {
+		return discIdentity{DiscUUID: disc.DiscUUID}, false
+	}
+	var run format.Run
+	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
+		return discIdentity{DiscUUID: disc.DiscUUID}, false
+	}
+	return discIdentity{DiscUUID: disc.DiscUUID, RunSeq: run.RunSeq}, true
+}
+
+// applyVerifyOutcome updates repoDir's staging state and disc ledger for
+// a verify of target, when target's disc uuid is in the repository's
+// disc ledger; it prints one line reporting what it did, or that it did
+// nothing because target's disc uuid is unknown. verifyErr is the
+// error, if any, that the full verify reported; it is nil for a clean
+// pass.
+func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool, verifyErr error, stdout, stderr io.Writer) {
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		return
+	}
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		return
+	}
+
+	if !identOK || !ledgerHasDiscUUID(cfg.StagingDir, repoUUID, ident.DiscUUID) {
+		_, _ = fmt.Fprintln(stdout, "verify: this tree is not a burned disc; the staging state was not changed")
+		return
+	}
+
+	stageLog, err := stage.Open(cfg.StagingDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
+		return
+	}
+
+	if verifyErr != nil {
+		n := markVerifyFailed(stageLog, ident.DiscUUID, ident.RunSeq)
+		_, _ = fmt.Fprintf(stdout, "verify: disc %s failed; returned %d object(s) from BURNED to PACKED\n", uuidText(ident.DiscUUID), n)
+		return
+	}
+
+	n, err := markVerifyClean(stageLog, ident.DiscUUID, ident.RunSeq)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
+		return
+	}
+	if n > 0 {
+		if err := recordLedgerVerify(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
+		}
+		if err := cacheRunFromDisc(cfg, repoUUID, target); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
+		}
+	}
+	_, _ = fmt.Fprintf(stdout, "verify: marked %d object(s) CLEAN (disc %s, run %d)\n", n, uuidText(ident.DiscUUID), ident.RunSeq)
+
+	if stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID, ident.RunSeq); stillPacked > 0 {
+		row, found := ledgerRow(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq)
+		discSeq := uint64(0)
+		if found {
+			discSeq = row.DiscSeq
+		}
+		_, _ = fmt.Fprintf(stdout, "verify: disc %d is not marked burned; run: noahsark disc burned %s\n", discSeq, uuidText(ident.DiscUUID))
+	}
+}
+
+// ledgerHasDiscUUID reports whether stagingDir's disc ledger names a
+// row for discUUID.
+func ledgerHasDiscUUID(stagingDir string, repoUUID, discUUID [16]byte) bool {
+	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+	if err != nil {
+		return false
+	}
+	for _, row := range ledger.Rows {
+		if row.DiscUUID == discUUID {
+			return true
+		}
+	}
+	return false
+}
+
+// ledgerRow returns stagingDir's ledger row for discUUID and runSeq.
+func ledgerRow(stagingDir string, repoUUID, discUUID [16]byte, runSeq uint64) (format.DiscsRow, bool) {
+	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+	if err != nil {
+		return format.DiscsRow{}, false
+	}
+	for _, row := range ledger.Rows {
+		if row.DiscUUID == discUUID && row.RunSeq == runSeq {
+			return row, true
+		}
+	}
+	return format.DiscsRow{}, false
+}
+
+// countInState counts the objects of run runSeq on disc discUUID that
+// are currently in state.
+func countInState(l *stage.Log, state stage.State, discUUID [16]byte, runSeq uint64) int {
+	n := 0
+	for _, id := range l.IDsInState(state) {
+		rec, ok := l.Get(id)
+		if ok && rec.RunSeq == runSeq && rec.DiscUUID == discUUID {
+			n++
+		}
+	}
+	return n
+}
+
+// markVerifyClean moves every object of run runSeq on disc discUUID
+// that is at BURNED to CLEAN, and reports how many objects it moved. An
+// object already CLEAN is left alone, so a repeat verify of an
+// already-clean disc is a no-op. A PACKED object of the same run is
+// left untouched: verify never marks anything BURNED itself, only
+// `disc burned` does.
+func markVerifyClean(l *stage.Log, discUUID [16]byte, runSeq uint64) (int, error) {
+	n := 0
+	for _, id := range l.IDsInState(stage.Burned) {
+		rec, ok := l.Get(id)
+		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+			continue
+		}
+		if err := l.MarkClean(id); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// markVerifyFailed moves every object of run runSeq on disc discUUID
+// that is still only at BURNED back to PACKED, with the verify-failed
+// reason, and reports how many objects it moved.
+func markVerifyFailed(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
+	n := 0
+	for _, id := range l.IDsInState(stage.Burned) {
+		rec, ok := l.Get(id)
+		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+			continue
+		}
+		if err := l.MarkVerifyFailed(id); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// recordLedgerVerify sets LastVerifySec to now on the disc ledger row
+// for runSeq, and writes the ledger back. OPERATIONS.md's local cache
+// layout also allows a health log; this build reuses the ledger row's
+// own LastVerifySec field instead of adding a second file for the same
+// fact.
+func recordLedgerVerify(stagingDir string, repoUUID, discUUID [16]byte, runSeq uint64) error {
+	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range ledger.Rows {
+		if ledger.Rows[i].RunSeq == runSeq && ledger.Rows[i].DiscUUID == discUUID {
+			ledger.Rows[i].LastVerifySec = time.Now().Unix()
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return image.SaveDiscsLedger(stagingDir, repoUUID, ledger.Rows)
+}
+
+// cacheRunFromDisc copies target's run catalog, snapshots and trees
+// into the local cache, the same way rebuild-cache does, so gc can
+// later confirm an object's presence through the cached INDEX without
+// asking for the disc again.
+func cacheRunFromDisc(cfg repoConfig, repoUUID [16]byte, target string) error {
+	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
+	if err != nil {
+		return err
+	}
+	c, err := cache.Open(dir)
+	if err != nil {
+		return err
+	}
+	_, err = cache.WriteFromRoot(c, target)
+	return err
 }
