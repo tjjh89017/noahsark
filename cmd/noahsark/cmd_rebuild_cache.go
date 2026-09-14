@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -127,19 +128,47 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		}
 	}
 
-	discRows, missing := mergeDiscsRows(results)
+	// Load every ledger and ref this repository already carries before
+	// replacing them, so a call fed only some of the discs merges into
+	// what earlier calls already recorded instead of erasing it. A
+	// rebuild-cache call otherwise never sees another call's own state.
+	existingDiscs, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+	existingRefsLedger, err := image.LoadRefsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+	existingLocalRefs, err := readRefs(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+
+	discRows, missing := mergeDiscsRows(results, existingDiscs.Rows)
 	discRows = fillUsedSectorsFromRuns(discRows, results)
 	if err := image.SaveDiscsLedger(cfg.StagingDir, repoUUID, discRows); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
 	}
 
-	refRecords := bestRefRecords(results)
+	refRecords := bestRefRecords(results, existingRefsLedger.Records)
 	if err := image.SaveRefsLedger(cfg.StagingDir, repoUUID, refRecords); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
 	}
-	refs := mergeRefs(refRecords)
+	// A local ref name whose snapshot was never packed onto any disc
+	// never appears in refRecords: keep it, rather than let a disc
+	// replay erase a commit rebuild-cache has no way to see. A name
+	// a disc does carry always takes the disc's value.
+	refs := existingLocalRefs
+	if refs == nil {
+		refs = make(map[string]string)
+	}
+	maps.Copy(refs, mergeRefs(refRecords))
 	if err := writeRefs(repoDir, refs); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
@@ -242,31 +271,62 @@ func ensureRebuildRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 	return cfg, nil
 }
 
-// mergeDiscsRows unions every provided disc's DISCS rows, keyed by
-// DiscUUID (a run burns exactly one disc in this build, so DiscUUID and
-// RunSeq name the same row), sorted by RunSeq ascending so a later Pack
-// call appends after them in the same order it would have burned them
-// in. It also reports which of those rows name a disc that was not
-// actually provided: a rebuild that finds any is partial.
-func mergeDiscsRows(results []*image.ReadResult) (rows []format.DiscsRow, missing map[[16]byte]bool) {
-	byUUID := make(map[[16]byte]format.DiscsRow)
+// mergeDiscsRows unions every provided disc's DISCS rows with existing,
+// the rows the local ledger already carried from an earlier call, keyed
+// by DiscUUID (a run burns exactly one disc in this build, so DiscUUID
+// and RunSeq name the same row). Between two rows for the same uuid,
+// rowNewer picks the one to keep. The result is sorted by RunSeq
+// ascending so a later Pack call appends after them in the same order
+// it would have burned them in.
+//
+// It also reports which of the newly read discs' own DISCS rows name a
+// disc that was provided neither this call nor any earlier one: a
+// rebuild that finds any is partial. A disc already known from a
+// previous call's saved ledger is not missing, even when this call did
+// not provide it again, so feeding one disc per call still ends with
+// every disc known once every disc has been fed once, in any order.
+func mergeDiscsRows(results []*image.ReadResult, existing []format.DiscsRow) (rows []format.DiscsRow, missing map[[16]byte]bool) {
+	byUUID := make(map[[16]byte]format.DiscsRow, len(existing))
+	knownBefore := make(map[[16]byte]bool, len(existing))
+	for _, row := range existing {
+		byUUID[row.DiscUUID] = row
+		knownBefore[row.DiscUUID] = true
+	}
+
 	provided := make(map[[16]byte]bool, len(results))
+	seenThisCall := make(map[[16]byte]bool)
 	for _, rr := range results {
 		provided[rr.Disc.DiscUUID] = true
 		for _, row := range rr.Discs.Rows {
-			byUUID[row.DiscUUID] = row
+			seenThisCall[row.DiscUUID] = true
+			if cur, ok := byUUID[row.DiscUUID]; !ok || rowNewer(row, cur) {
+				byUUID[row.DiscUUID] = row
+			}
 		}
 	}
+
 	rows = make([]format.DiscsRow, 0, len(byUUID))
 	missing = make(map[[16]byte]bool)
 	for u, row := range byUUID {
 		rows = append(rows, row)
-		if !provided[u] {
+		if seenThisCall[u] && !provided[u] && !knownBefore[u] {
 			missing[u] = true
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RunSeq < rows[j].RunSeq })
 	return rows, missing
+}
+
+// rowNewer reports whether a should replace b when both name the same
+// disc: the row with the later last-verify time wins, and a tie goes to
+// the row that already carries a real used-sectors count over one that
+// still carries the zero placeholder a disc's own DISCS copy of itself
+// always holds.
+func rowNewer(a, b format.DiscsRow) bool {
+	if a.LastVerifySec != b.LastVerifySec {
+		return a.LastVerifySec > b.LastVerifySec
+	}
+	return a.UsedSectors > b.UsedSectors
 }
 
 // fillUsedSectorsFromRuns fills in used_sectors for a provided disc's
@@ -312,27 +372,32 @@ func (k refKey) newer(other refKey) bool {
 	return k.timeNsec > other.timeNsec
 }
 
-// mergeRefs takes, for every ref name any provided disc's REFS table
-// carries, the newest record under refKey's ordering.
 // bestRefRecords returns one REFS record per ref name, the newest by
-// refKey ordering across every provided disc. rebuild-cache uses this
-// both to restore the flat local ref file and to restore the refs
-// ledger a later pack extends.
-func bestRefRecords(results []*image.ReadResult) []format.RefRecord {
+// refKey ordering across every provided disc and existing, the records
+// the local refs ledger already carried from an earlier call.
+// rebuild-cache uses this both to restore the flat local ref file and
+// to restore the refs ledger a later pack extends.
+func bestRefRecords(results []*image.ReadResult, existing []format.RefRecord) []format.RefRecord {
 	type keyed struct {
 		key refKey
 		rec format.RefRecord
 	}
 	best := make(map[string]keyed)
+	consider := func(rec format.RefRecord) {
+		name := string(rec.Name[:rec.NameLen])
+		k := refKey{runSeq: rec.RunSeq, timeSec: rec.TimeSec, timeNsec: rec.TimeNsec}
+		if cur, ok := best[name]; ok && !k.newer(cur.key) {
+			return
+		}
+		best[name] = keyed{key: k, rec: rec}
+	}
 	for _, rr := range results {
 		for _, rec := range rr.Refs.Records {
-			name := string(rec.Name[:rec.NameLen])
-			k := refKey{runSeq: rec.RunSeq, timeSec: rec.TimeSec, timeNsec: rec.TimeNsec}
-			if cur, ok := best[name]; ok && !k.newer(cur.key) {
-				continue
-			}
-			best[name] = keyed{key: k, rec: rec}
+			consider(rec)
 		}
+	}
+	for _, rec := range existing {
+		consider(rec)
 	}
 	recs := make([]format.RefRecord, 0, len(best))
 	for _, kv := range best {

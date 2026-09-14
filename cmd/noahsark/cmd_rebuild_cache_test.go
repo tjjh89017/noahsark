@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -272,5 +273,147 @@ func TestRebuildCacheRefusesLevel2And3(t *testing.T) {
 		if !strings.Contains(out, "no object cache") {
 			t.Fatalf("level %s: output %q does not explain the missing cache", level, out)
 		}
+	}
+}
+
+// discListUUIDCount runs "disc list --json" and returns how many discs
+// the ledger reports.
+func discListUUIDCount(t *testing.T, repo string) int {
+	t.Helper()
+	code, out := runCmd(t, "disc", "list", "--repo="+repo, "--json")
+	if code != 0 {
+		t.Fatalf("disc list: exit %d: %s", code, out)
+	}
+	var listed struct {
+		Discs []struct {
+			UUID string `json:"uuid"`
+		} `json:"discs"`
+	}
+	if err := json.Unmarshal([]byte(out), &listed); err != nil {
+		t.Fatalf("disc list output: %v: %s", err, out)
+	}
+	return len(listed.Discs)
+}
+
+// TestRebuildCacheOneDiscAtATimeMergesLedger packs a three-disc chain,
+// then rebuilds the repository state one disc at a time, in both
+// newest-first and oldest-first order. A rebuild-cache call must merge
+// into whatever an earlier call already saved, not replace it: before
+// the fix, each single-disc call overwrote the ledger and the refs with
+// only that call's own disc, so the last call always left the ledger
+// down to one disc.
+func TestRebuildCacheOneDiscAtATimeMergesLedger(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeMultiDiscFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+
+	var discRoots []string
+	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
+	for i, cap := range capacities {
+		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
+		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
+			if code == 2 {
+				t.Fatalf("pack %d: exit %d: %s", i, code, out)
+			}
+		}
+		discRoots = append(discRoots, treeDir)
+	}
+
+	for _, order := range []struct {
+		name string
+		seq  []int
+	}{
+		{"newest-first", []int{2, 1, 0}},
+		{"oldest-first", []int{0, 1, 2}},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			if err := os.RemoveAll(repo); err != nil {
+				t.Fatal(err)
+			}
+
+			var lastCode int
+			var lastOut string
+			for _, i := range order.seq {
+				lastCode, lastOut = runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discRoots[i])
+			}
+			if lastCode != 0 {
+				t.Fatalf("last rebuild-cache call: exit %d, want 0: %s", lastCode, lastOut)
+			}
+			if !strings.Contains(lastOut, "rebuild-cache: ok") {
+				t.Fatalf("last rebuild-cache call output %q does not say ok", lastOut)
+			}
+
+			if got := discListUUIDCount(t, repo); got != 3 {
+				t.Fatalf("disc list shows %d disc(s), want 3", got)
+			}
+
+			// The next pack must take the next free disc_seq, not
+			// reuse one already in the ledger.
+			if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+				t.Fatalf("re-commit: exit %d: %s", code, out)
+			}
+			fourthDir := filepath.Join(t.TempDir(), "disc3")
+			if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+packSectors(10_000_000), "--out="+fourthDir); code != 0 {
+				t.Fatalf("fourth pack: exit %d: %s", code, out)
+			}
+			if got := discListUUIDCount(t, repo); got != 4 {
+				t.Fatalf("disc list shows %d disc(s) after the fourth pack, want 4", got)
+			}
+		})
+	}
+}
+
+// TestRebuildCacheKeepsUnpackedRef commits a ref that is never packed,
+// then runs rebuild-cache from an unrelated packed disc. The unpacked
+// ref must survive in refs.txt, and a following pack must carry it.
+// Before the fix, writeRefs replaced refs.txt with only the names found
+// on the provided disc, dropping the unpacked one.
+func TestRebuildCacheKeepsUnpackedRef(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	baseSrc := writeRefsCarryFixture(t, "base")
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=BASE", baseSrc); code != 0 {
+		t.Fatalf("commit BASE: exit %d: %s", code, out)
+	}
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=BASE", "--out="+treeDir); code != 0 {
+		t.Fatalf("pack BASE: exit %d: %s", code, out)
+	}
+
+	xSrc := writeRefsCarryFixture(t, "x")
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=X", xSrc); code != 0 {
+		t.Fatalf("commit X: exit %d: %s", code, out)
+	}
+
+	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	}
+
+	if _, err := resolveRef(repo, "X"); err != nil {
+		t.Fatalf("resolveRef(X) after rebuild-cache: %v, want the unpacked ref to survive", err)
+	}
+
+	secondTree := filepath.Join(work, "tree2")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=X", "--out="+secondTree); code != 0 {
+		t.Fatalf("pack X: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "log", secondTree)
+	if code != 0 {
+		t.Fatalf("log: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "X") {
+		t.Fatalf("log output does not mention ref X: %s", out)
 	}
 }
