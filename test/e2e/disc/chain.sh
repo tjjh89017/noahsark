@@ -150,7 +150,7 @@ chain_pack_one() {
 	CHAIN_REMAINING_BYTES="$(grep -oE 'remaining staged: [0-9]+ objects, [0-9]+ bytes' "$logf" | grep -oE '[0-9]+ bytes' | grep -oE '[0-9]+')"
 	log "chain: disc $n: $(grep 'remaining staged:' "$logf")"
 
-	"$BIN" image build --out="$image" "--capacity=$imagecap" "$tree"
+	sudo "$BIN" image build --out="$image" "--capacity=$imagecap" "$tree"
 	mount_populate "$image" "$tree" "$mnt"
 	# Unmount whether verify passes or fails: a failure must not leave
 	# the mount busy for the runner's own cleanup.

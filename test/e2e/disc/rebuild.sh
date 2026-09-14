@@ -49,7 +49,7 @@ scenario_rebuild() {
 	size1="$(du -sb "$tree1" | cut -f1)"
 	log "rebuild: disc 1 packed tree size: $size1 bytes"
 
-	"$BIN" image build --out="$image1" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree1"
+	sudo "$BIN" image build --out="$image1" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree1"
 	mount_populate "$image1" "$tree1" "$mnt1"
 	"$BIN" verify --image="$mnt1"
 
@@ -136,7 +136,7 @@ scenario_rebuild() {
 		fail "rebuild: disc 2 size $size2 is not under 25% of disc 1's $size1; rebuild-cache did not prevent re-packing disc 1's content"
 	fi
 
-	"$BIN" image build --out="$image2" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree2"
+	sudo "$BIN" image build --out="$image2" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree2"
 	mount_populate "$image2" "$tree2" "$mnt2"
 	local verify_out2
 	verify_out2="$("$BIN" verify --image="$mnt2")"
