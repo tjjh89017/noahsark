@@ -338,7 +338,9 @@ state exists for them to select among.
 OPERATIONS.md's `restore SNAPSHOT TARGET`, because resolving `SNAPSHOT`
 through a repository's catalog and cache needs both, and neither exists
 in this build; the caller instead names the disc root directly, the
-same root `internal/restore`'s `Restore` already takes. `--no-xattr`
+same root `internal/restore`'s `Restore` already takes. SNAPSHOT itself
+accepts a ref name as well as a snapshot id, resolved against the given
+discs' REFS table the same way `ls` and `log` resolve it. `--no-xattr`
 and `--no-acl` are Phase 2 and refused by name; `--translate-acl` is
 Phase 2 and refused by name. Every other restore flag
 (`--plan`, `--include`, `--drives`, `--staging-budget`, `--interactive`,
