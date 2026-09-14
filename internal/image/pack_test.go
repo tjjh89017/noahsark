@@ -1,10 +1,12 @@
 package image
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/chunker"
@@ -251,5 +253,81 @@ func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 		if p.RunSeq == 0 || p.RunSeq > uint64(len(discRoots)) {
 			t.Fatalf("prereq names run_seq %d, out of range for %d built runs", p.RunSeq, len(discRoots))
 		}
+	}
+}
+
+// TestPackNothingToPackRefusesEmptyRun packs a snapshot in full, then
+// packs the same ref again. Every object of that ref is already Packed,
+// so the second call must refuse rather than write a zero-object run,
+// and the local discs ledger must still hold only the first run.
+func TestPackNothingToPackRefusesEmptyRun(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID := commitNamedFixture(t, stagingDir, "only")
+	markStagedFromCommit(t, stagingDir, snapID, l)
+
+	firstOut := t.TempDir()
+	opts := packOpts(stagingDir, snapID, firstOut, sectorsFor(50_000_000), 1, l)
+	res, err := Pack(opts)
+	if err != nil {
+		t.Fatalf("first pack: %v", err)
+	}
+	if res.RemainingObjects != 0 {
+		t.Fatalf("first pack left %d objects STAGED, want a full pack", res.RemainingObjects)
+	}
+
+	secondOut := t.TempDir()
+	opts2 := packOpts(stagingDir, snapID, secondOut, sectorsFor(50_000_000), 2, l)
+	if _, err := Pack(opts2); err == nil {
+		t.Fatal("second pack: expected an error, got none")
+	} else if !strings.Contains(err.Error(), "nothing to pack") || !strings.Contains(err.Error(), "already on a disc") {
+		t.Fatalf("second pack: got error %q, want it to say nothing to pack", err)
+	}
+
+	if entries, err := os.ReadDir(secondOut); err == nil && len(entries) != 0 {
+		t.Fatalf("second pack: %s is not empty, a run was written despite the error", secondOut)
+	}
+
+	ledger, err := LoadDiscsLedger(stagingDir, opts.RepoUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Rows) != 1 {
+		t.Fatalf("discs ledger has %d rows after the refused pack, want 1", len(ledger.Rows))
+	}
+}
+
+// TestPackCapacityTooSmall packs into a target capacity too small to
+// hold even the run's own fixed files. Pack must report
+// ErrCapacityTooSmall, distinct from an internal-error wrap, and write
+// no run.
+func TestPackCapacityTooSmall(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID := commitNamedFixture(t, stagingDir, "tiny-capacity")
+	markStagedFromCommit(t, stagingDir, snapID, l)
+
+	outDir := t.TempDir()
+	opts := packOpts(stagingDir, snapID, outDir, 25, 1, l)
+	_, err = Pack(opts)
+	if err == nil {
+		t.Fatal("expected an error packing into a 25-sector capacity")
+	}
+	var tooSmall *ErrCapacityTooSmall
+	if !errors.As(err, &tooSmall) {
+		t.Fatalf("got error %q, want an ErrCapacityTooSmall", err)
+	}
+	if tooSmall.TargetSectors != 25 {
+		t.Fatalf("ErrCapacityTooSmall.TargetSectors = %d, want 25", tooSmall.TargetSectors)
+	}
+
+	if entries, err := os.ReadDir(outDir); err == nil && len(entries) != 0 {
+		t.Fatalf("%s is not empty, a run was written despite the error", outDir)
 	}
 }

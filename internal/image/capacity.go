@@ -123,13 +123,13 @@ func DataBudgetBlocksNoFEC(targetSectors uint64, fileCount int) uint64 {
 // added. targetSectors of zero is always refused.
 func CheckCapacity(streamBytes, checksumBytes, parityBytes, runHeaderCopyBytes uint64, fileCount int, targetSectors uint64) error {
 	if targetSectors == 0 {
-		return fmt.Errorf("image: target capacity is required and must not be zero")
+		return fmt.Errorf("target capacity is required and must not be zero")
 	}
 	overhead := EstimateFilesystemOverhead(fileCount, targetSectors)
 	total := streamBytes + checksumBytes + parityBytes + runHeaderCopyBytes + overhead
 	limit := targetSectors * SectorSize
 	if total > limit {
-		return fmt.Errorf("image: run needs %d bytes (including %d bytes of estimated filesystem overhead), target capacity is %d bytes", total, overhead, limit)
+		return fmt.Errorf("run needs %d bytes (including %d bytes of estimated filesystem overhead), target capacity is %d bytes", total, overhead, limit)
 	}
 	return nil
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -17,11 +16,14 @@ import (
 // recover sequence numbers from existing discs, which no multi-disc
 // state exists yet to scan. See docs/decisions.md, "16. CLI reference".
 func cmdInit(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark init [--repo=PATH] [--capacity=N]",
+		"Create a new, empty repository directory.", stderr)
 	repoPath := fs.String("repo", ".", "repository directory to create")
 	capacityStr := fs.String("capacity", "", "default target capacity for pack (sectors, or e.g. 25GB)")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("init", fs, stderr) {
 		return 2
 	}
 
@@ -40,6 +42,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	if *capacityStr != "" {
 		capacitySectors, err = parseCapacity(*capacityStr)
 		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
+			return 2
+		}
+		if err := checkCapacityMinimum(capacitySectors); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 			return 2
 		}

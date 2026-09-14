@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/fec"
@@ -82,6 +83,34 @@ type PackResult struct {
 	RemainingBytes   uint64
 }
 
+// ErrCapacityTooSmall reports a target capacity that cannot place even
+// one object: the run's own fixed files (INDEX, RUN, DISC, README,
+// FORMAT, decoder, REFS, DISCS and every snapshot object) already use
+// the whole budget, or the smallest candidate object still does not
+// fit what is left. Pack returns this instead of an internal error
+// whenever selectRun places nothing.
+type ErrCapacityTooSmall struct {
+	TargetSectors uint64
+}
+
+func (e *ErrCapacityTooSmall) Error() string {
+	return fmt.Sprintf("target capacity of %d sectors (%d bytes) is too small to hold even one object",
+		e.TargetSectors, e.TargetSectors*SectorSize)
+}
+
+// refNamesText joins snapshots' ref names for an error message, as
+// "ref X" for one snapshot or "refs X, Y" for several.
+func refNamesText(snapshots []SnapshotRef) string {
+	names := make([]string, len(snapshots))
+	for i, s := range snapshots {
+		names[i] = s.Name
+	}
+	if len(names) == 1 {
+		return "ref " + names[0]
+	}
+	return "refs " + strings.Join(names, ", ")
+}
+
 // packUnit is one candidate object in dependency order: a tree, blob,
 // chunk or snapshot, with the direct child ids a metadata object (tree,
 // blob or snapshot) references, and the object's own file bytes when
@@ -146,6 +175,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		}
 		candidates = append(candidates, u)
 	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("nothing to pack: every object of %s is already on a disc", refNamesText(opts.Snapshots))
+	}
 
 	ledger, err := LoadDiscsLedger(opts.StagingDir, opts.RepoUUID)
 	if err != nil {
@@ -199,8 +231,8 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(selected) == 0 && len(candidates) > 0 {
-		return nil, fmt.Errorf("image: target capacity %d sectors is too small to hold even one object", opts.TargetCapacitySectors)
+	if len(selected) == 0 {
+		return nil, &ErrCapacityTooSmall{TargetSectors: opts.TargetCapacitySectors}
 	}
 
 	// A selected chunk's hash is read by streaming its staged file; its

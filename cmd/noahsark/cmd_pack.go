@@ -3,14 +3,18 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
@@ -22,6 +26,43 @@ var mediaTypes = map[string]format.MediaType{
 	"BD-R-DL-50":  format.MediaTypeBDRDL50GB,
 	"BD-R-XL-100": format.MediaTypeBDRXL100GB,
 	"BD-R-XL-128": format.MediaTypeBDRXL128GB,
+	"DVD+R-SL":    format.MediaTypeDVDPlusRSL,
+	"DVD-R-SL":    format.MediaTypeDVDMinusRSL,
+}
+
+// mediaPresetAliases maps a --capacity preset name to the media type a
+// pack built with that preset should record. --media accepts the same
+// names, case insensitive.
+var mediaPresetAliases = map[string]format.MediaType{
+	"bd25":  format.MediaTypeBDRSL25GB,
+	"bd50":  format.MediaTypeBDRDL50GB,
+	"bd100": format.MediaTypeBDRXL100GB,
+	"bd128": format.MediaTypeBDRXL128GB,
+	"dvd+r": format.MediaTypeDVDPlusRSL,
+	"dvd-r": format.MediaTypeDVDMinusRSL,
+}
+
+// resolveMediaType picks the media type a pack records. An explicit
+// --media value is matched first against the registry names of
+// mediaTypes, then against a capacity preset name (case insensitive).
+// With no --media, the media type is derived from the matching
+// --capacity preset; media_type is informational (FORMAT.md's media
+// type registry), so every preset, BD or DVD, has an entry and none is
+// ever refused on that basis.
+func resolveMediaType(mediaGiven bool, media, capacityStr string) (format.MediaType, error) {
+	if mediaGiven {
+		if mt, ok := mediaTypes[strings.ToUpper(media)]; ok {
+			return mt, nil
+		}
+		if mt, ok := mediaPresetAliases[strings.ToLower(media)]; ok {
+			return mt, nil
+		}
+		return 0, fmt.Errorf("unknown media type %q", media)
+	}
+	if mt, ok := mediaPresetAliases[strings.ToLower(capacityStr)]; ok {
+		return mt, nil
+	}
+	return mediaTypes["BD-R-SL-25"], nil
 }
 
 // cmdPack implements "noahsark pack". It reduces OPERATIONS.md's pack
@@ -35,20 +76,24 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
-	fs := flag.NewFlagSet("pack", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]",
+		"Pack staged objects into the next run.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "", "ref naming the snapshot to pack, default LATEST")
 	var snapshotFlags stringList
 	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
-	capacityStr := fs.String("capacity", "", "target capacity (sectors, a preset like bd25, or e.g. 25GB); falls back to the config default")
+	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); falls back to the config default")
 	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity (sectors, a preset, or a byte size); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
 	label := fs.String("label", "", "human label for the disc")
-	media := fs.String("media", "BD-R-SL-25", "media type name")
-	outDir := fs.String("out", "", "output directory for the packed tree; default <repo>/staging/plans/1/tree")
+	media := fs.String("media", "", "media type: a FORMAT.md registry name (e.g. BD-R-SL-25), or a --capacity preset name (bd25, bd50, bd100, bd128, dvd+r, dvd-r); default derived from --capacity, else BD-R-SL-25")
+	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <repo>/staging/plans/<disc uuid>/tree")
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
 	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
+	closeDisc := fs.Bool("close", false, "seal the disc when it is burned: spare:none and -dvd-compat, no later append. Only the printed burn command changes; this build does not burn or track disc state")
 	if err := fs.Parse(args); err != nil {
+		return exitForFlagParse(err)
+	}
+	if checkPositionalsForFlags("pack", fs, stderr) {
 		return 2
 	}
 	if *fecOn && *fecOff {
@@ -91,9 +136,9 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		}
 	}
 
-	mediaType, ok := mediaTypes[*media]
-	if !ok {
-		_, _ = fmt.Fprintf(stderr, "noahsark: pack: unknown media type %q\n", *media)
+	mediaType, err := resolveMediaType(*media != "", *media, *capacityStr)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
 
@@ -125,20 +170,18 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		snapshots = append(snapshots, image.SnapshotRef{Name: id.TextForm(), ID: id, Time: now})
 	}
 
-	if *outDir == "" {
-		*outDir = filepath.Join(repoDir, "staging", "plans", "1", "tree")
-	}
-	absOut, err := filepath.Abs(*outDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
-
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
+
+	snapshots, err = addPendingRefs(repoDir, cfg.StagingDir, repoUUID, snapshots, now)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+
 	discUUIDBytes := make([]byte, 16)
 	if _, err := rand.Read(discUUIDBytes); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -146,6 +189,22 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	var discUUID [16]byte
 	copy(discUUID[:], discUUIDBytes)
+
+	if *outDir == "" {
+		*outDir = filepath.Join(repoDir, "staging", "plans", hex.EncodeToString(discUUIDBytes), "tree")
+	}
+	absOut, err := filepath.Abs(*outDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	if empty, err := dirIsEmptyOrMissing(absOut); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	} else if !empty {
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: --out=%s already holds files; choose another --out\n", absOut)
+		return 2
+	}
 
 	stageLog, err := stage.Open(cfg.StagingDir)
 	if err != nil {
@@ -176,6 +235,16 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	result, err := image.Pack(opts)
 	if err != nil {
+		var tooSmall *image.ErrCapacityTooSmall
+		if errors.As(err, &tooSmall) {
+			given := *capacityStr
+			if given == "" {
+				given = fmt.Sprintf("%d (from config)", capacitySectors)
+			}
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes) is too small: %s\n",
+				given, capacitySectors*image.SectorSize, capacityHelpText())
+			return 2
+		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
@@ -188,6 +257,13 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	_, _ = fmt.Fprintf(stdout, "packed run %d on disc %d into %s\n", result.RunSeq, result.DiscSeq, absOut)
 	_, _ = fmt.Fprintf(stdout, "objects: %d, files: %d, stream blocks: %d, stripes: %d\n",
 		result.ObjectCount, result.FileCount, result.StreamBlocks, result.StripeCount)
+
+	imageCapacityArg := *capacityStr
+	if imageCapacityArg == "" {
+		imageCapacityArg = fmt.Sprintf("%d", capacitySectors)
+	}
+	printNextSteps(stdout, absOut, imageCapacityArg, *closeDisc)
+
 	if result.RemainingObjects > 0 {
 		_, _ = fmt.Fprintf(stdout, "remaining staged: %d objects, %d bytes\n", result.RemainingObjects, result.RemainingBytes)
 		return 1
@@ -203,6 +279,102 @@ func (s *stringList) String() string { return fmt.Sprint([]string(*s)) }
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
 	return nil
+}
+
+// burnerDefaultDevice and burnerDefaultSpeed match burner.device and
+// burner.speed's own defaults (OPERATIONS.md's configuration reference).
+// This build has no burn command and no burner config keys, so the
+// printed burn line always uses these defaults; a user with a different
+// device or speed edits the printed line before running it.
+const (
+	burnerDefaultDevice = "/dev/sr0"
+	burnerDefaultSpeed  = 4
+)
+
+// printNextSteps prints the three copy-ready commands that turn a packed
+// tree into a burned, verified disc: building the UDF image, burning it,
+// and verifying the mount. This build stops at pack, so these are printed
+// rather than run.
+//
+// The burn line follows FORMAT.md's and OPERATIONS.md's open-by-default
+// rule: spare:min and no -dvd-compat, unless close is true, which is the
+// only way this build ever prints -dvd-compat or spare:none.
+func printNextSteps(stdout io.Writer, treeDir, capacityArg string, sealDisc bool) {
+	imagePath := treeDir + ".img"
+	spareMode := "spare:min"
+	dvdCompat := ""
+	if sealDisc {
+		spareMode = "spare:none"
+		dvdCompat = "-dvd-compat "
+	}
+	_, _ = fmt.Fprintln(stdout, "next steps:")
+	_, _ = fmt.Fprintf(stdout, "  sudo noahsark image build --out=%s --capacity=%s %s\n", imagePath, capacityArg, treeDir)
+	_, _ = fmt.Fprintf(stdout, "  growisofs -speed=%d -use-the-force-luke=%s,tty %s-Z %s=%s\n",
+		burnerDefaultSpeed, spareMode, dvdCompat, burnerDefaultDevice, imagePath)
+	_, _ = fmt.Fprintln(stdout, "  noahsark verify --image=<mount point>")
+}
+
+// dirIsEmptyOrMissing reports whether path does not exist yet, or exists
+// as an empty directory. Pack refuses to write into a directory a run is
+// already packed into, so it never rewrites another run's DISC.bin or
+// README.txt.
+func dirIsEmptyOrMissing(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
+// addPendingRefs implements OPERATIONS.md's rule that pack carries
+// forward every local ref record whose run_seq is still 0: a ref that
+// commit moved since the last pack. named holds the refs already
+// selected by --ref or --snapshot; addPendingRefs appends every other
+// ref name whose current snapshot the refs ledger does not already
+// carry under that name, so a pack picks up every pending ref, not
+// only the one named on its command line.
+func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image.SnapshotRef, now time.Time) ([]image.SnapshotRef, error) {
+	allRefs, err := readRefs(repoDir)
+	if err != nil {
+		return named, err
+	}
+	ledger, err := image.LoadRefsLedger(stagingDir, repoUUID)
+	if err != nil {
+		return named, err
+	}
+	carried := make(map[string]object.ID, len(ledger.Records))
+	for _, rec := range ledger.Records {
+		carried[string(rec.Name[:rec.NameLen])] = object.ID(rec.SnapshotID)
+	}
+	haveName := make(map[string]bool, len(named))
+	for _, s := range named {
+		haveName[s.Name] = true
+	}
+
+	names := make([]string, 0, len(allRefs))
+	for n := range allRefs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	for _, n := range names {
+		if haveName[n] {
+			continue
+		}
+		id, err := parseSnapshotID(allRefs[n])
+		if err != nil {
+			return named, fmt.Errorf("ref %q: %w", n, err)
+		}
+		if cur, ok := carried[n]; ok && cur == id {
+			continue // already carried forward with its own run_seq
+		}
+		named = append(named, image.SnapshotRef{Name: n, ID: id, Time: now})
+		haveName[n] = true
+	}
+	return named, nil
 }
 
 func decodeUUID(s string) ([16]byte, error) {
