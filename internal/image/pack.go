@@ -132,13 +132,13 @@ type packUnit struct {
 // whatever its own state.
 func Pack(opts PackOptions) (*PackResult, error) {
 	if opts.StagingDir == "" || opts.OutputDir == "" {
-		return nil, fmt.Errorf("image: staging directory and output directory are required")
+		return nil, fmt.Errorf("staging directory and output directory are required")
 	}
 	if opts.TargetCapacitySectors == 0 {
-		return nil, fmt.Errorf("image: target capacity is required and must not be zero")
+		return nil, fmt.Errorf("target capacity is required and must not be zero")
 	}
 	if opts.StageLog == nil {
-		return nil, fmt.Errorf("image: a staging state log is required")
+		return nil, fmt.Errorf("a staging state log is required")
 	}
 	now := opts.Now
 	if now == nil {
@@ -151,7 +151,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, err
 	}
 	if len(allSnapshotIDs) == 0 {
-		return nil, fmt.Errorf("image: no snapshot has been committed")
+		return nil, fmt.Errorf("no snapshot has been committed")
 	}
 
 	order, snapshotBytes, err := buildPackOrder(opts.StagingDir, allSnapshotIDs)
@@ -252,7 +252,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 			var err error
 			h, err = hashFile(StagedPath(opts.StagingDir, u.ID, u.Kind))
 			if err != nil {
-				return nil, fmt.Errorf("image: chunk %s: %w", u.ID.TextForm(), err)
+				return nil, fmt.Errorf("chunk %s: %w", u.ID.TextForm(), err)
 			}
 		}
 		hashed[i] = hashedUnit{packUnit: u, hash: h}
@@ -263,7 +263,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	for id := range prereqIDs {
 		rec, ok := opts.StageLog.Get(id)
 		if !ok || rec.State != stage.Packed {
-			return nil, fmt.Errorf("image: internal error: prerequisite %s is not packed", id.TextForm())
+			return nil, fmt.Errorf("internal error: prerequisite %s is not packed", id.TextForm())
 		}
 		prereqs = append(prereqs, format.IndexPrereqRecord{ContentID: id, RunSeq: rec.RunSeq})
 	}
@@ -322,7 +322,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	run2RowIdx := plan.run2RowIdx
 
 	if err := CheckCapacity(plan.streamBytesTotal, plan.checksumLen, uint64(fec.M)*plan.parityFileLen, 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
-		return nil, fmt.Errorf("image: internal error: selected run does not fit after all: %w", err)
+		return nil, fmt.Errorf("internal error: selected run does not fit after all: %w", err)
 	}
 
 	objRows := make([]format.IndexObjectRecord, objectCount)
@@ -336,7 +336,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
 		}
 		if err != nil {
-			return nil, fmt.Errorf("image: %s: %w", h.ID.TextForm(), err)
+			return nil, fmt.Errorf("%s: %w", h.ID.TextForm(), err)
 		}
 		var flags uint16
 		if h.Kind != format.ObjectKindChunk {
@@ -370,7 +370,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, err
 	}
 	if len(indexBuf) != indexLen {
-		return nil, fmt.Errorf("image: internal error: index length mismatch, predicted %d, actual %d", indexLen, len(indexBuf))
+		return nil, fmt.Errorf("internal error: index length mismatch, predicted %d, actual %d", indexLen, len(indexBuf))
 	}
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
@@ -550,7 +550,7 @@ func objectByteLen(stagingDir string, u packUnit) (uint64, error) {
 	}
 	fi, err := os.Stat(stagedObjectPath(filepath.Join(stagingDir, "objects"), u.ID))
 	if err != nil {
-		return 0, fmt.Errorf("image: %s: %w", u.ID.TextForm(), err)
+		return 0, fmt.Errorf("%s: %w", u.ID.TextForm(), err)
 	}
 	return uint64(fi.Size()), nil
 }
@@ -567,7 +567,7 @@ func StagedTotals(stagingDir string, stageLog *stage.Log) (objects int, bytes ui
 			fi, statErr = os.Stat(filepath.Join(snapshotsRoot, id.TextForm()))
 		}
 		if statErr != nil {
-			return 0, 0, fmt.Errorf("image: %s: %w", id.TextForm(), statErr)
+			return 0, 0, fmt.Errorf("%s: %w", id.TextForm(), statErr)
 		}
 		objects++
 		bytes += uint64(fi.Size())
@@ -583,7 +583,7 @@ func listSnapshots(stagingDir string) ([]object.ID, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("image: staging snapshots directory: %w", err)
+		return nil, fmt.Errorf("staging snapshots directory: %w", err)
 	}
 	ids := make([]object.ID, 0, len(entries))
 	for _, e := range entries {
@@ -620,11 +620,11 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID) ([]packUnit, map
 		}
 		data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
 		if err != nil {
-			return fmt.Errorf("image: tree %s: %w", id.TextForm(), err)
+			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
 		var tree format.Tree
 		if _, err := tree.Decode(data); err != nil {
-			return fmt.Errorf("image: tree %s: %w", id.TextForm(), err)
+			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
 		var children []object.ID
 		for _, entry := range tree.Entries {
@@ -649,12 +649,12 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID) ([]packUnit, map
 	for _, snapID := range snapshotIDs {
 		data, err := readObjectFile(filepath.Join(snapshotsRoot, snapID.TextForm()))
 		if err != nil {
-			return nil, nil, fmt.Errorf("image: snapshot %s: %w", snapID.TextForm(), err)
+			return nil, nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
 		snapshotBytes[snapID] = data
 		var snap format.Snapshot
 		if _, err := snap.Decode(data); err != nil {
-			return nil, nil, fmt.Errorf("image: snapshot %s: %w", snapID.TextForm(), err)
+			return nil, nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
 		if err := visitTree(object.ID(snap.RootTree)); err != nil {
 			return nil, nil, err
@@ -675,11 +675,11 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 	}
 	data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
 	if err != nil {
-		return fmt.Errorf("image: blob %s: %w", id.TextForm(), err)
+		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}
 	var blob format.Blob
 	if _, err := blob.Decode(data); err != nil {
-		return fmt.Errorf("image: blob %s: %w", id.TextForm(), err)
+		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}
 	children := make([]object.ID, 0, len(blob.Entries))
 	for _, e := range blob.Entries {
@@ -704,11 +704,11 @@ func LoadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, e
 		if os.IsNotExist(err) {
 			return format.DiscsTable{RepoUUID: repoUUID}, nil
 		}
-		return format.DiscsTable{}, fmt.Errorf("image: %s: %w", discsLedgerName, err)
+		return format.DiscsTable{}, fmt.Errorf("%s: %w", discsLedgerName, err)
 	}
 	var t format.DiscsTable
 	if _, err := t.Decode(data); err != nil {
-		return format.DiscsTable{}, fmt.Errorf("image: %s: %w", discsLedgerName, err)
+		return format.DiscsTable{}, fmt.Errorf("%s: %w", discsLedgerName, err)
 	}
 	return t, nil
 }

@@ -71,11 +71,11 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 		}
 		data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
 		if err != nil {
-			return fmt.Errorf("image: tree %s: %w", id.TextForm(), err)
+			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
 		var tree format.Tree
 		if _, err := tree.Decode(data); err != nil {
-			return fmt.Errorf("image: tree %s: %w", id.TextForm(), err)
+			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
 		add(id, format.ObjectKindTree, data, uint64(len(data)))
 		for _, entry := range tree.Entries {
@@ -96,11 +96,11 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 	for _, snapID := range snapshotIDs {
 		data, err := readObjectFile(filepath.Join(snapshotsRoot, snapID.TextForm()))
 		if err != nil {
-			return nil, fmt.Errorf("image: snapshot %s: %w", snapID.TextForm(), err)
+			return nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
 		var snap format.Snapshot
 		if _, err := snap.Decode(data); err != nil {
-			return nil, fmt.Errorf("image: snapshot %s: %w", snapID.TextForm(), err)
+			return nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
 		add(snapID, format.ObjectKindSnapshot, data, uint64(len(data)))
 		if err := walkTree(object.ID(snap.RootTree)); err != nil {
@@ -117,18 +117,18 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 func walkBlob(objectsRoot string, id object.ID, add func(object.ID, format.ObjectKind, []byte, uint64)) error {
 	data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
 	if err != nil {
-		return fmt.Errorf("image: blob %s: %w", id.TextForm(), err)
+		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}
 	var blob format.Blob
 	if _, err := blob.Decode(data); err != nil {
-		return fmt.Errorf("image: blob %s: %w", id.TextForm(), err)
+		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}
 	add(id, format.ObjectKindBlob, data, uint64(len(data)))
 	for _, e := range blob.Entries {
 		chunkID := object.ID(e.ContentID)
 		fi, err := os.Stat(stagedObjectPath(objectsRoot, chunkID))
 		if err != nil {
-			return fmt.Errorf("image: chunk %s: %w", chunkID.TextForm(), err)
+			return fmt.Errorf("chunk %s: %w", chunkID.TextForm(), err)
 		}
 		add(chunkID, format.ObjectKindChunk, nil, uint64(fi.Size()))
 	}

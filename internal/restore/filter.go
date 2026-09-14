@@ -39,7 +39,7 @@ func newFilterState(includes []string) (*filterState, error) {
 	for i, inc := range includes {
 		segs := splitPath(inc)
 		if len(segs) == 0 {
-			return nil, fmt.Errorf("restore: --include %q: empty path", inc)
+			return nil, fmt.Errorf("--include %q: empty path", inc)
 		}
 		tails[i] = tail{idx: i, segs: segs}
 	}
@@ -112,7 +112,7 @@ type UnmatchedIncludeError struct {
 }
 
 func (e *UnmatchedIncludeError) Error() string {
-	return fmt.Sprintf("restore: --include path(s) matched nothing: %s", strings.Join(e.Paths, ", "))
+	return fmt.Sprintf("--include path(s) matched nothing: %s", strings.Join(e.Paths, ", "))
 }
 
 // splitPath splits a forward-slash snapshot-relative path into segments,

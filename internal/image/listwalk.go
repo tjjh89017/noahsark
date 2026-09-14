@@ -59,11 +59,11 @@ func ListSnapshot(root string, snapID object.ID) ([]ListEntry, error) {
 func walkListTree(objectsDir string, treeID object.ID, prefix string, out *[]ListEntry) error {
 	data, err := os.ReadFile(filepath.Join(objectsDir, treeID.FanoutByte(), treeID.TextForm()))
 	if err != nil {
-		return fmt.Errorf("image: tree %s: %w", treeID.TextForm(), err)
+		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
 	var tree format.Tree
 	if _, err := tree.Decode(data); err != nil {
-		return fmt.Errorf("image: tree %s: %w", treeID.TextForm(), err)
+		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
 	for _, e := range tree.Entries {
 		name := string(e.Name)

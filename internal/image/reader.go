@@ -49,11 +49,11 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 
 	discBuf, err := os.ReadFile(filepath.Join(base, cache.Resolve(base, "DISC.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("image: DISC.bin: %w", err)
+		return nil, fmt.Errorf("DISC.bin: %w", err)
 	}
 	var disc format.Disc
 	if err := disc.Decode(discBuf); err != nil {
-		return nil, fmt.Errorf("image: DISC.bin: %w", err)
+		return nil, fmt.Errorf("DISC.bin: %w", err)
 	}
 
 	runsDir := filepath.Join(base, cache.Resolve(base, "runs"))
@@ -64,55 +64,55 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 
 	runBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("image: RUN.bin: %w", err)
+		return nil, fmt.Errorf("RUN.bin: %w", err)
 	}
 	if len(runBuf) != RunFileLen {
-		return nil, fmt.Errorf("image: RUN.bin: want %d bytes, got %d", RunFileLen, len(runBuf))
+		return nil, fmt.Errorf("RUN.bin: want %d bytes, got %d", RunFileLen, len(runBuf))
 	}
 	var run format.Run
 	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
-		return nil, fmt.Errorf("image: RUN.bin: %w", err)
+		return nil, fmt.Errorf("RUN.bin: %w", err)
 	}
 
 	run2Buf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("image: RUN2.bin: %w", err)
+		return nil, fmt.Errorf("RUN2.bin: %w", err)
 	}
 	runCopies := 1
 	if !bytes.Equal(runBuf, run2Buf) {
-		return nil, fmt.Errorf("image: RUN2.bin does not match RUN.bin")
+		return nil, fmt.Errorf("RUN2.bin does not match RUN.bin")
 	}
 	runCopies++
 
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("image: INDEX.bin: %w", err)
+		return nil, fmt.Errorf("INDEX.bin: %w", err)
 	}
 	var idx format.Index
 	if _, err := idx.Decode(indexBuf); err != nil {
-		return nil, fmt.Errorf("image: INDEX.bin: %w", err)
+		return nil, fmt.Errorf("INDEX.bin: %w", err)
 	}
 	if run.IndexBytes != uint64(len(indexBuf)) || run.IndexHash != sha256sum(indexBuf) {
-		return nil, fmt.Errorf("image: RUN.bin index_hash does not match INDEX.bin")
+		return nil, fmt.Errorf("RUN.bin index_hash does not match INDEX.bin")
 	}
 
 	catalogDir := cache.Join(runDir, "catalog")
 	refsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "REFS.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("image: REFS.bin: %w", err)
+		return nil, fmt.Errorf("REFS.bin: %w", err)
 	}
 	var refs format.RefsTable
 	if _, err := refs.Decode(refsBuf); err != nil {
-		return nil, fmt.Errorf("image: REFS.bin: %w", err)
+		return nil, fmt.Errorf("REFS.bin: %w", err)
 	}
 
 	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "DISCS.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("image: DISCS.bin: %w", err)
+		return nil, fmt.Errorf("DISCS.bin: %w", err)
 	}
 	var discs format.DiscsTable
 	if _, err := discs.Decode(discsBuf); err != nil {
-		return nil, fmt.Errorf("image: DISCS.bin: %w", err)
+		return nil, fmt.Errorf("DISCS.bin: %w", err)
 	}
 
 	// Every parity file's header block must match RUN.bin exactly. Read
@@ -127,16 +127,16 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 			path := filepath.Join(parityDir, cache.Resolve(parityDir, name))
 			f, err := os.Open(path)
 			if err != nil {
-				return nil, fmt.Errorf("image: parity column %d: %w", j, err)
+				return nil, fmt.Errorf("parity column %d: %w", j, err)
 			}
 			header := make([]byte, RunFileLen)
 			_, err = io.ReadFull(f, header)
 			_ = f.Close()
 			if err != nil {
-				return nil, fmt.Errorf("image: parity column %d: %w", j, err)
+				return nil, fmt.Errorf("parity column %d: %w", j, err)
 			}
 			if !bytes.Equal(header, runBuf) {
-				return nil, fmt.Errorf("image: parity column %d header does not match RUN.bin", j)
+				return nil, fmt.Errorf("parity column %d header does not match RUN.bin", j)
 			}
 			runCopies++
 		}
@@ -169,7 +169,7 @@ func FindNoahsark(root string, cache *NameCache) (string, error) {
 	if _, err := os.Stat(filepath.Join(nested, cache.Resolve(nested, "DISC.bin"))); err == nil {
 		return nested, nil
 	}
-	return "", fmt.Errorf("image: no DISC.bin under %s or %s", root, nested)
+	return "", fmt.Errorf("no DISC.bin under %s or %s", root, nested)
 }
 
 // NewestRunDir returns the run directory with the highest numeric
@@ -178,7 +178,7 @@ func FindNoahsark(root string, cache *NameCache) (string, error) {
 func NewestRunDir(runsDir string) (string, error) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
-		return "", fmt.Errorf("image: runs directory: %w", err)
+		return "", fmt.Errorf("runs directory: %w", err)
 	}
 	var seqs []int64
 	byName := make(map[int64]string)
@@ -194,7 +194,7 @@ func NewestRunDir(runsDir string) (string, error) {
 		byName[n] = e.Name()
 	}
 	if len(seqs) == 0 {
-		return "", fmt.Errorf("image: no run directory under %s", runsDir)
+		return "", fmt.Errorf("no run directory under %s", runsDir)
 	}
 	sort.Slice(seqs, func(i, j int) bool { return seqs[i] > seqs[j] })
 	return filepath.Join(runsDir, byName[seqs[0]]), nil
@@ -238,19 +238,19 @@ func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cach
 func verifyOneObject(path string, id object.ID, offset, storedLen uint64, compression format.Compression, headerLen int64) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+		return fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
 	defer func() { _ = f.Close() }()
 
 	if _, err := f.Seek(headerLen+int64(offset), io.SeekStart); err != nil {
-		return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+		return fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
 	got, err := object.HashStreamed(f, compression, storedLen)
 	if err != nil {
-		return fmt.Errorf("image: object %s: %w", id.TextForm(), err)
+		return fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
 	if object.ID(got) != id {
-		return fmt.Errorf("image: object %s: content id does not verify", id.TextForm())
+		return fmt.Errorf("object %s: content id does not verify", id.TextForm())
 	}
 	return nil
 }
@@ -313,14 +313,14 @@ func StreamFilesWithCache(base, runDir string, cache *NameCache) (paths []string
 		switch row.Role {
 		case format.FileRoleSnapobj:
 			if snapIdx >= len(snapobjPaths) {
-				return nil, nil, nil, fmt.Errorf("image: fewer snapobj files than INDEX rows")
+				return nil, nil, nil, fmt.Errorf("fewer snapobj files than INDEX rows")
 			}
 			path, inStream = snapobjPaths[snapIdx], true
 			snapIdx++
 		case format.FileRoleObject:
 			p, ok := objectPathByFileIndex[i]
 			if !ok {
-				return nil, nil, nil, fmt.Errorf("image: no Objects row names file_index %d", i)
+				return nil, nil, nil, fmt.Errorf("no Objects row names file_index %d", i)
 			}
 			path, inStream = p, true
 		default:
@@ -347,10 +347,10 @@ func verifyFEC(base, runDir string, prog *progress.Reporter, cache *NameCache) e
 	for i, p := range streamPaths {
 		fi, err := os.Stat(p)
 		if err != nil {
-			return fmt.Errorf("image: stream file %d: %w", i, err)
+			return fmt.Errorf("stream file %d: %w", i, err)
 		}
 		if uint64(fi.Size()) != streamSizes[i] {
-			return fmt.Errorf("image: stream file %d: length changed since INDEX was built", i)
+			return fmt.Errorf("stream file %d: length changed since INDEX was built", i)
 		}
 	}
 	sources := make([]streamSource, len(streamPaths))
@@ -414,10 +414,10 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 		parityFiles[j] = f
 		headerBuf := make([]byte, RunFileLen)
 		if _, err := io.ReadFull(f, headerBuf); err != nil {
-			return fmt.Errorf("image: parity column %d: %w", j, err)
+			return fmt.Errorf("parity column %d: %w", j, err)
 		}
 		if !bytes.Equal(headerBuf, runHeaderCopy) {
-			return fmt.Errorf("image: parity column %d header does not match RUN.bin", j)
+			return fmt.Errorf("parity column %d header does not match RUN.bin", j)
 		}
 	}
 
@@ -442,10 +442,10 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 			return err
 		}
 		if _, err := io.ReadFull(checksumFile, gotRec); err != nil {
-			return fmt.Errorf("image: checksum.bin: stripe %d: %w", i, err)
+			return fmt.Errorf("checksum.bin: stripe %d: %w", i, err)
 		}
 		if !bytes.Equal(wantRec, gotRec) {
-			return fmt.Errorf("image: checksum.bin does not match the recomputed checksum column")
+			return fmt.Errorf("checksum.bin does not match the recomputed checksum column")
 		}
 
 		parityBlocks, err := codec.Encode(data)
@@ -455,10 +455,10 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 		for j := range parityBlocks {
 			copy(wantParity, parityBlocks[j])
 			if _, err := io.ReadFull(parityFiles[j], gotParity); err != nil {
-				return fmt.Errorf("image: parity column %d: stripe %d: %w", j, i, err)
+				return fmt.Errorf("parity column %d: stripe %d: %w", j, i, err)
 			}
 			if !bytes.Equal(wantParity, gotParity) {
-				return fmt.Errorf("image: parity column %d does not match the recomputed parity", j)
+				return fmt.Errorf("parity column %d does not match the recomputed parity", j)
 			}
 		}
 		prog.Add(1)

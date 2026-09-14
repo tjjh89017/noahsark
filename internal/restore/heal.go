@@ -78,7 +78,7 @@ func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]Strip
 		return nil, err
 	}
 	if run.FECScheme != format.FECSchemeRS255GF8 {
-		return nil, fmt.Errorf("restore: heal: run %d has no FEC", run.RunSeq)
+		return nil, fmt.Errorf("run %d has no FEC", run.RunSeq)
 	}
 
 	paths, sizes, _, err := image.StreamFilesWithCache(base, runDir, cache)
@@ -95,7 +95,7 @@ func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]Strip
 	for i, p := range paths {
 		f, err := os.OpenFile(p, os.O_RDWR, 0)
 		if err != nil {
-			return nil, fmt.Errorf("restore: heal: %s: %w", p, err)
+			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 		defer func() { _ = f.Close() }()
 		streamFiles[i] = f
@@ -150,18 +150,18 @@ func healStripe(
 ) (*StripeReport, error) {
 	recBuf := make([]byte, format.ChecksumRecordLen)
 	if _, err := checksumFile.ReadAt(recBuf, int64(stripe)*format.ChecksumRecordLen); err != nil {
-		return nil, fmt.Errorf("restore: heal: stripe %d: checksum record: %w", stripe, err)
+		return nil, fmt.Errorf("stripe %d: checksum record: %w", stripe, err)
 	}
 	var rec format.ChecksumRecord
 	if err := rec.Decode(recBuf); err != nil {
-		return nil, fmt.Errorf("restore: heal: stripe %d: checksum record unusable: %w", stripe, err)
+		return nil, fmt.Errorf("stripe %d: checksum record unusable: %w", stripe, err)
 	}
 
 	dataBlocks := make([][]byte, fec.K)
 	for c := range fec.K {
 		b, err := readStreamBlock(streamFiles, sizes, layout, uint64(c)*L+stripe)
 		if err != nil {
-			return nil, fmt.Errorf("restore: heal: stripe %d: data column %d: %w", stripe, c, err)
+			return nil, fmt.Errorf("stripe %d: data column %d: %w", stripe, c, err)
 		}
 		dataBlocks[c] = b
 	}
@@ -169,17 +169,17 @@ func healStripe(
 	for j := range fec.M {
 		buf := make([]byte, fec.BlockSize)
 		if _, err := parityFiles[j].ReadAt(buf, int64(1+stripe)*fec.BlockSize); err != nil {
-			return nil, fmt.Errorf("restore: heal: stripe %d: parity column %d: %w", stripe, j, err)
+			return nil, fmt.Errorf("stripe %d: parity column %d: %w", stripe, j, err)
 		}
 		parityBlocks[j] = buf
 	}
 
 	badData, err := fec.VerifyBlocks(&rec, dataBlocks)
 	if err != nil {
-		return nil, fmt.Errorf("restore: heal: stripe %d: %w", stripe, err)
+		return nil, fmt.Errorf("stripe %d: %w", stripe, err)
 	}
 	if len(badData) > fec.M {
-		return nil, fmt.Errorf("restore: heal: stripe %d: %d bad data blocks, more than the %d parity blocks can recover", stripe, len(badData), fec.M)
+		return nil, fmt.Errorf("stripe %d: %d bad data blocks, more than the %d parity blocks can recover", stripe, len(badData), fec.M)
 	}
 	inBad := make(map[int]bool, len(badData))
 	for _, c := range badData {
@@ -220,13 +220,13 @@ func healStripe(
 		}
 	}
 	if !ok {
-		return nil, fmt.Errorf("restore: heal: stripe %d is not decodable", stripe)
+		return nil, fmt.Errorf("stripe %d is not decodable", stripe)
 	}
 
 	report := &StripeReport{Stripe: stripe}
 	for _, c := range badData {
 		if err := writeStreamBlock(streamFiles, sizes, layout, uint64(c)*L+stripe, recData[c]); err != nil {
-			return nil, fmt.Errorf("restore: heal: stripe %d: writing data column %d: %w", stripe, c, err)
+			return nil, fmt.Errorf("stripe %d: writing data column %d: %w", stripe, c, err)
 		}
 		report.DataColumns = append(report.DataColumns, c)
 	}
@@ -235,7 +235,7 @@ func healStripe(
 			continue
 		}
 		if _, err := parityFiles[j].WriteAt(recParity[j], int64(1+stripe)*fec.BlockSize); err != nil {
-			return nil, fmt.Errorf("restore: heal: stripe %d: writing parity column %d: %w", stripe, j, err)
+			return nil, fmt.Errorf("stripe %d: writing parity column %d: %w", stripe, j, err)
 		}
 		report.ParityColumns = append(report.ParityColumns, j)
 	}
