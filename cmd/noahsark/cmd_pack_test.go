@@ -156,8 +156,9 @@ func packedIntoPath(t *testing.T, output string) string {
 
 // TestPackCapacityTooSmallMessage packs with a capacity too small to
 // hold even the run's own fixed files. The message must name the given
-// value, the parsed byte count, and the accepted presets and suffixes,
-// rather than the internal "does not fit after all" wording.
+// value, the parsed byte and sector counts, and the minimum sector and
+// byte counts this run actually needs, rather than the internal "does
+// not fit after all" wording or a generic list of presets and suffixes.
 func TestPackCapacityTooSmallMessage(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -178,7 +179,7 @@ func TestPackCapacityTooSmallMessage(t *testing.T) {
 	if strings.Contains(out, "internal error") {
 		t.Fatalf("pack: output %q leaked the internal-error wording", out)
 	}
-	for _, want := range []string{"25", "51200", "bd25", "GiB"} {
+	for _, want := range []string{"25", "51200", "this run needs at least"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pack: output %q missing %q", out, want)
 		}

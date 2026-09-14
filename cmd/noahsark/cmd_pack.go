@@ -80,7 +80,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]",
 		"Pack staged objects into the next run.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
-	ref := fs.String("ref", "", "ref naming the snapshot to pack, default LATEST")
+	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
 	var snapshotFlags stringList
 	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
 	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); falls back to the config default")
@@ -246,13 +246,14 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	result, err := image.Pack(opts)
 	if err != nil {
-		if _, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
+		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
 			given := *capacityStr
 			if given == "" {
 				given = fmt.Sprintf("%d (from config)", capacitySectors)
 			}
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes) is too small: %s\n",
-				given, capacitySectors*image.SectorSize, capacityHelpText())
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes, %d sectors) is too small; this run needs at least %d sectors (%d bytes)\n",
+				given, capacitySectors*image.SectorSize, capacitySectors,
+				tooSmall.NeededSectors, tooSmall.NeededSectors*image.SectorSize)
 			return 2
 		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)

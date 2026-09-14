@@ -88,9 +88,12 @@ type PackResult struct {
 // FORMAT, decoder, REFS, DISCS and every snapshot object) already use
 // the whole budget, or the smallest candidate object still does not
 // fit what is left. Pack returns this instead of an internal error
-// whenever selectRun places nothing.
+// whenever selectRun places nothing. NeededSectors, when nonzero, is
+// the smallest target capacity that would let this same run place its
+// first object.
 type ErrCapacityTooSmall struct {
 	TargetSectors uint64
+	NeededSectors uint64
 }
 
 func (e *ErrCapacityTooSmall) Error() string {
@@ -176,6 +179,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		candidates = append(candidates, u)
 	}
 	if len(candidates) == 0 {
+		if len(opts.Snapshots) == 0 {
+			return nil, fmt.Errorf("nothing to pack: no staged object remains")
+		}
 		return nil, fmt.Errorf("nothing to pack: every object of %s is already on a disc", refNamesText(opts.Snapshots))
 	}
 
@@ -232,7 +238,11 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, err
 	}
 	if len(selected) == 0 {
-		return nil, &ErrCapacityTooSmall{TargetSectors: opts.TargetCapacitySectors}
+		needed, needErr := minimumSectorsToPlaceOne(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
+		if needErr != nil {
+			return nil, needErr
+		}
+		return nil, &ErrCapacityTooSmall{TargetSectors: opts.TargetCapacitySectors, NeededSectors: needed}
 	}
 
 	// A selected chunk's hash is read by streaming its staged file; its
@@ -539,6 +549,52 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 		objectCount = len(round)
 	}
 	return selected, prereqSet, nil
+}
+
+// minimumSectorsToPlaceOne finds the smallest target capacity at which
+// selectRun, run over these same candidates and fixed sizes, places at
+// least one object. It calls selectRun itself at each trial capacity,
+// rather than re-deriving its fixed-point budget algebraically, since
+// selectRun's own iteration can dip back to nothing at a capacity right
+// at the edge before settling; only selectRun's own answer is
+// authoritative. A binary search assumes that answer turns and stays
+// positive once capacity grows enough, which holds once the trial
+// capacity clears the edge region.
+func minimumSectorsToPlaceOne(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uint64, fixedFileCount int) (uint64, error) {
+	placesOne := func(targetSectors uint64) (bool, error) {
+		trial := opts
+		trial.TargetCapacitySectors = targetSectors
+		selected, _, err := selectRun(trial, candidates, fixedBlocksExclIndex, fixedFileCount)
+		if err != nil {
+			return false, err
+		}
+		return len(selected) > 0, nil
+	}
+
+	lo, hi := uint64(1), uint64(1)
+	for {
+		ok, err := placesOne(hi)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			break
+		}
+		hi *= 2
+	}
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		ok, err := placesOne(mid)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return hi, nil
 }
 
 // objectByteLen returns the encoded byte length of unit's own staged

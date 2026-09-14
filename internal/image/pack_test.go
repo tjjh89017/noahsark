@@ -326,8 +326,39 @@ func TestPackCapacityTooSmall(t *testing.T) {
 	if tooSmall.TargetSectors != 25 {
 		t.Fatalf("ErrCapacityTooSmall.TargetSectors = %d, want 25", tooSmall.TargetSectors)
 	}
+	if tooSmall.NeededSectors <= tooSmall.TargetSectors {
+		t.Fatalf("ErrCapacityTooSmall.NeededSectors = %d, want more than TargetSectors (%d)", tooSmall.NeededSectors, tooSmall.TargetSectors)
+	}
 
 	if entries, err := os.ReadDir(outDir); err == nil && len(entries) != 0 {
 		t.Fatalf("%s is not empty, a run was written despite the error", outDir)
+	}
+}
+
+// TestPackCapacityNeededSectorsActuallyWork checks that
+// ErrCapacityTooSmall.NeededSectors is not just a number: packing the
+// same run again with exactly that many sectors of target capacity
+// must succeed.
+func TestPackCapacityNeededSectorsActuallyWork(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID := commitNamedFixture(t, stagingDir, "needed-check")
+	markStagedFromCommit(t, stagingDir, snapID, l)
+
+	outDir := t.TempDir()
+	opts := packOpts(stagingDir, snapID, outDir, 25, 1, l)
+	_, err = Pack(opts)
+	var tooSmall *ErrCapacityTooSmall
+	if !errors.As(err, &tooSmall) {
+		t.Fatalf("got %v, want ErrCapacityTooSmall", err)
+	}
+
+	outDir2 := t.TempDir()
+	opts2 := packOpts(stagingDir, snapID, outDir2, tooSmall.NeededSectors, 2, l)
+	if _, err := Pack(opts2); err != nil {
+		t.Fatalf("pack with NeededSectors=%d still failed: %v", tooSmall.NeededSectors, err)
 	}
 }
