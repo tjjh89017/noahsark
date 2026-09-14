@@ -2944,7 +2944,7 @@ filter negative proves an object absent from every run.
 ```
 noahsark restore SNAPSHOT TARGET [--plan=FILE] [--include=PATH]...
                  [--drives=N] [--staging-budget=BYTES] [--interactive]
-                 [--no-eject] [--overwrite]
+                 [--mount=DIR] [--no-eject] [--overwrite]
                  [--no-owner] [--numeric-owner] [--no-xattr]
                  [--xattr-exclude=PATTERN] [--no-acl] [--no-flags]
                  [--no-times] [--no-hardlinks] [--metadata-strict]
@@ -2960,6 +2960,7 @@ Runs the restore pipeline of section 14.7.
 | `--drives` | Number of drives to use. |
 | `--staging-budget` | Peak staging allowed. |
 | `--interactive` | Prompt on every disc, not only on a mismatch. |
+| `--mount` | The directory a single drive is mounted at, for the one-drive disc-swap mode: no `TARGET`-preceding disc root, `--disc`, or `--discs-dir`, one disc read at a time, with a prompt between discs. Required in that mode; there is no config default. |
 | `--no-eject` | Do not eject after each disc. |
 | `--overwrite` | Unlink an existing path first and then create it. |
 | `--no-owner`, `--no-flags`, `--no-times` | Skip that metadata field. |

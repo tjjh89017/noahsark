@@ -722,3 +722,57 @@ reading tolerates a burner's own folding.
 This reading has a bearing on the later profile 2 filesystem work: a
 profile that relies on FAT-family case-insensitivity, or on a burner
 that folds names, can reuse this same tolerance instead of a new rule.
+
+## 14. Restore, single-drive disc swap
+
+With no `DISC-ROOT`, `--disc` or `--discs-dir`, and exactly `SNAPSHOT`
+and `OUT-DIR` left over, `restore` resolves `SNAPSHOT` through the
+local cache and builds the same plan `plan` prints, by sharing
+`internal/plan` (moved out of `cmd/noahsark/cmd_plan.go` so both
+commands call the same planner). It then walks the plan's discs in
+order, one at a time, prompting the operator between them: the
+single-drive shape OPERATIONS.md's disc-major order describes, driven
+like an old multi-volume installer instead of needing every disc
+mounted at once.
+
+`internal/restore.BuildManifest` reads every tree and blob the
+restore needs straight from the cache: `CheckComplete` already proved
+every tree is cached, and a blob is cached for any snapshot `pack` or
+`rebuild-cache` has touched since blob caching was added. Only chunk
+payloads still need a disc, so a mounted disc is read for its assigned
+chunk objects alone (`internal/restore.ReadChunkFromRoot`, the same
+canonical `objects/<fanout>/<id>` path `Restore` and `RestoreMulti`
+already use); every directory and symlink is created immediately, and
+regular files wait in a `pendingFile` list, keyed by the chunk ids they
+still need, until every chunk has arrived. A chunk shared by several
+files (dedup) stays spooled until the last file needing it is written,
+then is deleted; a blob the cache does not hold is a hard error in this
+mode, since there is no path yet to fetch a blob object from a mounted
+disc mid-walk.
+
+Spooled chunk payloads live flat under
+`staging/restore/<snapshot-id>/objects/<id>`, keyed by content id alone
+(no run or disc structure), since a chunk's payload is content-addressed
+already. On start, `restore` marks every object already sitting there
+as spooled and tries to finish any file that completes as a result,
+printing `resuming: N object(s) already spooled`; a disc every one of
+whose assigned chunks is already resolved (by an earlier interrupted
+run, or by `--include` narrowing the manifest so that disc holds
+nothing the manifest still needs) is skipped with no detection and no
+prompt.
+
+Disc detection (`cmd/noahsark`'s `detectDisc`) reads
+`--mount`'s `NOAHSARK/DISC.bin` and compares its uuid: a match prints
+`disc <seq> <label>: found` and moves on with no prompt, unless
+`--interactive` is set, in which case it prompts once and accepts the
+next matching read. A mismatch reports the expected and found uuid and
+label (the found label comes from the cache's own `DISCS` table, when
+that disc is one the cache already knows) and prompts again. An
+unreadable `DISC.bin` (drive still settling, or nothing mounted yet) is
+retried a few times with a short pause before it prompts. `--mount` has
+no config default: OPERATIONS.md's configuration reference names no
+`restore.mount` key, so the flag is required in this mode.
+`restore.staging_budget` is read from config the same way `plan` would
+use it; a disc whose assigned bytes exceed it only gets a warning in
+this build, since splitting a restore into passes is not implemented
+yet.

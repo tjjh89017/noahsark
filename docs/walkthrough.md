@@ -467,6 +467,59 @@ is incomplete for this snapshot, `plan` says so and names
 again. `--out=FILE` writes the same plan as JSON, useful for a script
 that mounts discs on its own.
 
+### One drive: let restore ask for each disc
+
+With only one optical drive, mounting every disc of a chain at once is
+not possible. Give `restore` a single `--mount=DIR` instead of
+`--discs-dir` or `--disc`, and leave off the disc root entirely: it
+builds the same plan `plan` would, from the local cache, prints it, and
+then works through the plan one disc at a time, the way an old game
+installer asks for the next volume.
+
+```sh
+sudo mkdir -p /mnt/noahsark-drive
+sudo mount /dev/sr0 /mnt/noahsark-drive
+./noahsark restore --mount=/mnt/noahsark-drive 2026-09-21 /tmp/restore-drill
+```
+
+For each disc, `restore` checks `/mnt/noahsark-drive/NOAHSARK/DISC.bin`
+against the plan. When the right disc is already mounted, it prints one
+line and moves on:
+
+```
+disc 0 run1: found
+```
+
+Otherwise it prompts on stderr and waits for a line on stdin:
+
+```
+insert disc 1 "run2" (uuid 85f302d6-b864-478f-fbb4-dd02f0d78674) into /mnt/noahsark-drive and press Enter
+```
+
+Unmount the current disc, put in the one the prompt names, mount it
+again at the same `--mount` directory, and press Enter. If the wrong
+disc goes in, `restore` says so and prompts again:
+
+```
+expected disc 85f302d6-b864-478f-fbb4-dd02f0d78674 (run2), found 34d8de68-32f1-c77e-2219-37fb1133b882 (run1)
+```
+
+`restore` unmounts and ejects the drive itself after each disc, unless
+`--no-eject` is given; `--interactive` prompts before every disc, even
+one already correctly mounted, useful when handling discs by hand makes
+that reassurance worth the extra keypress.
+
+If the session is interrupted partway through (a crashed terminal, a
+closed laptop lid), objects already read sit in
+`staging/restore/<snapshot-id>/` inside the repository directory.
+Running the same `restore` command again picks up where it left off:
+
+```
+resuming: 12 object(s) already spooled
+```
+
+and only prompts for whichever disc the plan still needs.
+
 Restore a few paths, not the whole snapshot, to a scratch directory:
 
 ```sh
