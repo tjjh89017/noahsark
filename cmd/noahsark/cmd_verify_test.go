@@ -83,11 +83,14 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify (unburned): exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "not marked burned") || !strings.Contains(out, "disc burned "+discUUID) {
-		t.Fatalf("verify (unburned) output %q missing the not-marked-burned line for %s", out, discUUID)
+	if !strings.Contains(out, "not marked burned") || !strings.Contains(out, "disc burned --repo="+repo+" "+discUUID) {
+		t.Fatalf("verify (unburned) output %q missing the not-marked-burned line, with --repo, for %s", out, discUUID)
 	}
-	if !strings.Contains(out, "marked 0 object(s) CLEAN") {
-		t.Fatalf("verify (unburned) output %q marked something CLEAN before disc burned ran", out)
+	if strings.Contains(out, "marked 0 object(s) CLEAN") {
+		t.Fatalf("verify (unburned) output %q prints marked 0 object(s) CLEAN; want it omitted when nothing was BURNED", out)
+	}
+	if i := strings.Index(out, "verify: ok"); i < 0 || i > strings.Index(out, "not marked burned") {
+		t.Fatalf("verify (unburned) output %q, want the not-marked-burned hint after the ok line", out)
 	}
 }
 
@@ -137,13 +140,14 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	}
 
 	// A second verify of the same disc is idempotent: every object is
-	// already CLEAN, so nothing more is marked.
+	// already CLEAN, so nothing more is marked, and the CLEAN line does
+	// not print at all, since no object was BURNED this time.
 	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
 	if code != 0 {
 		t.Fatalf("verify (mounted, second pass): exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "marked 0 object") {
-		t.Fatalf("verify (mounted, second pass) output %q, want marked 0 object(s)", out)
+	if strings.Contains(out, "marked") && strings.Contains(out, "CLEAN") {
+		t.Fatalf("verify (mounted, second pass) output %q, want no marked-CLEAN line when nothing was BURNED", out)
 	}
 }
 
