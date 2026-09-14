@@ -200,3 +200,25 @@ func TestPlanMissingRun(t *testing.T) {
 		t.Fatalf("plan output %q does not name what is missing", out)
 	}
 }
+
+// TestPlanEmptyCacheNamesTheFix checks that "plan" against a repository
+// that has never packed or rebuilt anything fails with a message naming
+// the fix, not a bare "no run is cached" with no next step.
+func TestPlanEmptyCacheNamesTheFix(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "plan", "--repo="+repo, "LATEST")
+	if code == 0 {
+		t.Fatalf("plan (empty cache): exit 0, want a failure: %s", out)
+	}
+	if !strings.Contains(out, "no run is cached yet") {
+		t.Fatalf("plan (empty cache) output %q missing \"no run is cached yet\"", out)
+	}
+	if !strings.Contains(out, "rebuild-cache --from-disc") {
+		t.Fatalf("plan (empty cache) output %q missing the fix, rebuild-cache --from-disc", out)
+	}
+}

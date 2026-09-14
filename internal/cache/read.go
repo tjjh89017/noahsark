@@ -69,7 +69,7 @@ func (c *Cache) newestRunSeq() (uint64, error) {
 		return 0, err
 	}
 	if len(seqs) == 0 {
-		return 0, fmt.Errorf("cache: no run is cached yet")
+		return 0, fmt.Errorf("cache: no run is cached yet; run pack, or rebuild-cache --from-disc, first")
 	}
 	return seqs[len(seqs)-1], nil
 }
