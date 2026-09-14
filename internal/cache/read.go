@@ -136,6 +136,22 @@ func (c *Cache) ReadTree(id object.ID) (*format.Tree, error) {
 	return &t, nil
 }
 
+// ReadBlob reads and decodes one cached blob object. A blob not yet in
+// the cache reports the plain os.ErrNotExist-wrapped error, since a
+// blob's absence does not by itself mean the cache is incomplete: only
+// tree reachability counts toward Complete and CheckComplete.
+func (c *Cache) ReadBlob(id object.ID) (*format.Blob, error) {
+	buf, err := os.ReadFile(filepath.Join(c.blobsDir(), id.TextForm()))
+	if err != nil {
+		return nil, err
+	}
+	var b format.Blob
+	if _, err := b.Decode(buf); err != nil {
+		return nil, fmt.Errorf("cache: blob %s: %w", id.TextForm(), err)
+	}
+	return &b, nil
+}
+
 // ReadSnapshot reads and decodes one cached snapshot object.
 func (c *Cache) ReadSnapshot(id object.ID) (*format.Snapshot, error) {
 	buf, err := os.ReadFile(filepath.Join(c.snapshotsDir(), id.TextForm()))

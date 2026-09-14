@@ -97,13 +97,15 @@ type IncompleteError struct {
 	// cached DISCS table. HasDiscUUID is false when unknown.
 	DiscUUID    [16]byte
 	HasDiscUUID bool
+	// Label is that disc's on-disc label, when HasDiscUUID is true.
+	Label string
 }
 
 func (e *IncompleteError) Error() string {
 	switch {
 	case e.HasDiscUUID:
-		return fmt.Sprintf("snapshot %s: tree %s is missing from the cache; run %d, disc %s holds it",
-			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq, uuidText(e.DiscUUID))
+		return fmt.Sprintf("snapshot %s: tree %s is missing from the cache; run %d, disc %s (%s) holds it",
+			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq, uuidText(e.DiscUUID), e.Label)
 	case e.RunSeq != 0:
 		return fmt.Sprintf("snapshot %s: tree %s is missing from the cache; run %d holds it, but no cached DISCS row names its disc",
 			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq)
@@ -177,56 +179,101 @@ func (c *Cache) refreshComplete(id object.ID) error {
 }
 
 // incompleteError builds an IncompleteError for snapshot id and its
-// first missing tree, resolving the tree's owning run through every
-// cached run's INDEX, and that run's disc through the newest cached
-// DISCS table.
+// first missing tree, resolving the tree's owning run and disc through
+// LocateObject and DiscForRun.
 func (c *Cache) incompleteError(id, missingTree object.ID) *IncompleteError {
 	e := &IncompleteError{Snapshot: id, MissingTree: missingTree}
 
-	seqs, err := c.cachedRunSeqs()
-	if err != nil {
+	loc, found := c.LocateObject(missingTree)
+	if !found {
 		return e
 	}
+	e.RunSeq = loc.RunSeq
+
+	row, found := c.DiscForRun(loc.RunSeq)
+	if !found {
+		return e
+	}
+	e.DiscUUID = row.DiscUUID
+	e.HasDiscUUID = true
+	e.Label = discLabelText(row)
+	return e
+}
+
+// ObjectLocation reports where a cached run's INDEX says one object
+// lives.
+type ObjectLocation struct {
+	// RunSeq is the run that stores the object.
+	RunSeq uint64
+	// PayloadLen is the object's uncompressed size. SizeKnown is true
+	// only when the run named by RunSeq is itself cached, so its own
+	// Objects row, which carries the size, was read directly; a run
+	// known only through another cached run's Prereqs table names the
+	// run but not the size.
+	PayloadLen uint64
+	SizeKnown  bool
+}
+
+// LocateObject looks across every cached run's INDEX for id, first in
+// each run's own Objects table, then, failing that, in each run's
+// Prereqs table, and reports the run_seq that stores it. An Objects
+// table match is preferred and returned at once, since it also carries
+// the object's size; a Prereqs table match is kept only as a fallback,
+// in case some other cached run's Objects table still resolves the
+// same id with its size.
+func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
+	seqs, err := c.cachedRunSeqs()
+	if err != nil {
+		return ObjectLocation{}, false
+	}
+	var fallback ObjectLocation
+	haveFallback := false
 	for _, seq := range seqs {
 		idx, err := c.IndexForRun(seq)
 		if err != nil {
 			continue
 		}
-		if runSeq, found := findOwningRun(idx, missingTree); found {
-			e.RunSeq = runSeq
-			break
+		for _, row := range idx.Objects {
+			if object.ID(row.ContentID) == id {
+				return ObjectLocation{RunSeq: idx.RunSeq, PayloadLen: row.PayloadLen, SizeKnown: true}, true
+			}
+		}
+		if !haveFallback {
+			for _, row := range idx.Prereqs {
+				if object.ID(row.ContentID) == id {
+					fallback = ObjectLocation{RunSeq: row.RunSeq}
+					haveFallback = true
+					break
+				}
+			}
 		}
 	}
-	if e.RunSeq == 0 {
-		return e
+	if haveFallback {
+		return fallback, true
 	}
-
-	discs, err := c.Discs()
-	if err != nil {
-		return e
-	}
-	for _, row := range discs.Rows {
-		if row.RunSeq == e.RunSeq {
-			e.DiscUUID = row.DiscUUID
-			e.HasDiscUUID = true
-			break
-		}
-	}
-	return e
+	return ObjectLocation{}, false
 }
 
-// findOwningRun looks for id in idx's Objects table, then its Prereqs
-// table, and reports the run_seq that stores it directly.
-func findOwningRun(idx *format.Index, id object.ID) (runSeq uint64, found bool) {
-	for _, row := range idx.Objects {
-		if object.ID(row.ContentID) == id {
-			return idx.RunSeq, true
+// DiscForRun looks up run_seq's row in the newest cached DISCS table.
+func (c *Cache) DiscForRun(runSeq uint64) (format.DiscsRow, bool) {
+	discs, err := c.Discs()
+	if err != nil {
+		return format.DiscsRow{}, false
+	}
+	for _, row := range discs.Rows {
+		if row.RunSeq == runSeq {
+			return row, true
 		}
 	}
-	for _, row := range idx.Prereqs {
-		if object.ID(row.ContentID) == id {
-			return row.RunSeq, true
-		}
+	return format.DiscsRow{}, false
+}
+
+// discLabelText trims a DISCS row's fixed-width label field to its
+// stored length.
+func discLabelText(row format.DiscsRow) string {
+	n := len(row.Label)
+	if int(row.LabelLen) < n {
+		n = int(row.LabelLen)
 	}
-	return 0, false
+	return string(row.Label[:n])
 }

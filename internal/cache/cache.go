@@ -11,6 +11,13 @@
 // container with one structure, INDEX. This package stores that file,
 // byte for byte, as "runs/<seq>/INDEX.bin", beside that run's own copy
 // of REFS.bin and DISCS.bin.
+//
+// The cache also holds every blob object reachable from a cached
+// snapshot, under "blobs/<id>", alongside "trees/<id>": a blob is small,
+// tree-sized metadata, the ordered chunk id list of one file, not the
+// chunk data itself. plan reads it to resolve a file down to the chunk
+// ids a restore needs, with no disc present. A chunk's own bulk payload
+// is never cached.
 package cache
 
 import (
@@ -24,6 +31,7 @@ const (
 	runsDirName      = "runs"
 	snapshotsDirName = "snapshots"
 	treesDirName     = "trees"
+	blobsDirName     = "blobs"
 	stateFileName    = "state.txt"
 )
 
@@ -94,6 +102,15 @@ func (c *Cache) snapshotsDir() string {
 // treesDir returns the directory holding cached tree objects.
 func (c *Cache) treesDir() string {
 	return filepath.Join(c.dir, treesDirName)
+}
+
+// blobsDir returns the directory holding cached blob objects. A blob
+// carries only an ordered chunk id list, the same small, tree-sized
+// metadata as a tree object; the cache holds it for the same reason it
+// holds trees, so plan can resolve a file's chunk ids without a disc.
+// A chunk's own bulk payload is never cached.
+func (c *Cache) blobsDir() string {
+	return filepath.Join(c.dir, blobsDirName)
 }
 
 // statePath returns the path of the snapshot completeness record.

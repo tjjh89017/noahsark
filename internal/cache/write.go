@@ -44,6 +44,15 @@ func (c *Cache) WriteTree(id object.ID, raw []byte) error {
 	return nil
 }
 
+// WriteBlob copies one blob object's whole encoded bytes into the
+// cache.
+func (c *Cache) WriteBlob(id object.ID, raw []byte) error {
+	if err := atomicWriteFile(filepath.Join(c.blobsDir(), id.TextForm()), raw); err != nil {
+		return fmt.Errorf("cache: blob %s: %w", id.TextForm(), err)
+	}
+	return nil
+}
+
 // WriteFromRoot copies one run's catalog, every snapshot object under
 // its catalog/snapobj, and every object its own INDEX lists as a tree,
 // into the cache. root is a freshly packed run tree or a mounted disc
@@ -111,17 +120,23 @@ func WriteFromRoot(c *Cache, root string) (*image.ReadResult, error) {
 
 	objectsDir := names.Join(base, "objects")
 	for _, row := range rr.Index.Objects {
-		if row.Kind != format.ObjectKindTree {
+		if row.Kind != format.ObjectKindTree && row.Kind != format.ObjectKindBlob {
 			continue
 		}
 		id := object.ID(row.ContentID)
-		treeDir := names.Join(objectsDir, id.FanoutByte())
-		raw, err := os.ReadFile(filepath.Join(treeDir, names.Resolve(treeDir, id.TextForm())))
+		objDir := names.Join(objectsDir, id.FanoutByte())
+		raw, err := os.ReadFile(filepath.Join(objDir, names.Resolve(objDir, id.TextForm())))
 		if err != nil {
-			return nil, fmt.Errorf("cache: tree %s: %w", id.TextForm(), err)
+			return nil, fmt.Errorf("cache: object %s: %w", id.TextForm(), err)
 		}
-		if err := c.WriteTree(id, raw); err != nil {
-			return nil, err
+		if row.Kind == format.ObjectKindTree {
+			if err := c.WriteTree(id, raw); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := c.WriteBlob(id, raw); err != nil {
+				return nil, err
+			}
 		}
 	}
 
