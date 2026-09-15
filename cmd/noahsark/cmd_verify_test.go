@@ -452,3 +452,42 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 		t.Fatal("verify against an unknown disc wrote a state log")
 	}
 }
+
+// TestVerifyAcceptsPositionalDiscRoot checks that a bare DISC-ROOT
+// works exactly like --image=DISC-ROOT, and that giving both is
+// refused rather than silently picking one.
+func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	stagedTree := packedTreeDir(t, packOut)
+	mounted := filepath.Join(work, "mounted")
+	copyTree(t, stagedTree, mounted)
+
+	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	if code != 0 {
+		t.Fatalf("verify DISC-ROOT: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "verify: ok") {
+		t.Fatalf("verify DISC-ROOT output %q missing verify: ok", out)
+	}
+
+	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted, mounted)
+	if code != 2 {
+		t.Fatalf("verify DISC-ROOT and --image together: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "not both") {
+		t.Fatalf("verify DISC-ROOT and --image together output %q missing the not-both refusal", out)
+	}
+}

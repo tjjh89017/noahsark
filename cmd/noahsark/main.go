@@ -133,7 +133,7 @@ Phase 1 commands:
   commit  SOURCE [--ref=NAME]
   pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]
   image build --out=FILE [--capacity=N] TREE-DIR
-  verify  --image=PATH [--heal] [--out=DIR]
+  verify  [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]
   restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
   restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] SNAPSHOT OUT-DIR
   restore --plan=FILE --mount=DIR [--overwrite] [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
