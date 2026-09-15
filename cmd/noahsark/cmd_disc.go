@@ -1,12 +1,10 @@
 package main
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
-	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -53,21 +51,6 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: disc: unknown subcommand %q\n", sub)
 		return 2
 	}
-}
-
-// parseDiscUUIDArg parses a disc uuid CLI argument, in either the
-// hyphenated text form uuidText prints or plain hex.
-func parseDiscUUIDArg(s string) ([16]byte, error) {
-	var out [16]byte
-	raw, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
-	if err != nil {
-		return out, fmt.Errorf("%q: not a uuid: %w", s, err)
-	}
-	if len(raw) != 16 {
-		return out, fmt.Errorf("%q: a uuid is 16 bytes, got %d", s, len(raw))
-	}
-	copy(out[:], raw)
-	return out, nil
 }
 
 // cmdDiscBurned implements "noahsark disc burned [--undo] UUID [UUID...]".
@@ -119,15 +102,18 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 	}
 
 	for _, arg := range fs.Args() {
-		discUUID, err := parseDiscUUIDArg(arg)
+		discUUID, err := resolveDiscArg(ledger.Rows, arg)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 			return 2
 		}
 		rows := discRowsForUUID(ledger.Rows, discUUID)
-		if len(rows) == 0 {
-			_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: unknown disc uuid %s\n", uuidText(discUUID))
-			return 1
+
+		if *undo {
+			if n := countInStateAcrossRuns(stageLog, stage.Clean, discUUID, rows); n > 0 {
+				_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: disc %s is verified (CLEAN) and cannot be returned to packed\n", uuidText(discUUID))
+				return 1
+			}
 		}
 
 		for _, row := range rows {
@@ -194,6 +180,15 @@ func undoBurnForRun(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
 		if err := l.MarkBurnUndone(id); err == nil {
 			n++
 		}
+	}
+	return n
+}
+
+// countInStateAcrossRuns sums countInState over every one of rows' runs.
+func countInStateAcrossRuns(l *stage.Log, state stage.State, discUUID [16]byte, rows []format.DiscsRow) int {
+	n := 0
+	for _, row := range rows {
+		n += countInState(l, state, discUUID, row.RunSeq)
 	}
 	return n
 }

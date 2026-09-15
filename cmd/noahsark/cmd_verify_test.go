@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -194,6 +195,112 @@ func TestDiscBurnedUndo(t *testing.T) {
 	if !strings.Contains(out, "not marked burned") {
 		t.Fatalf("verify (after undo) output %q, want the not-marked-burned line again", out)
 	}
+}
+
+// TestDiscBurnedUndoRefusedOnceClean checks that "disc burned --undo"
+// refuses, and changes nothing, once verify has already moved a disc's
+// objects on to CLEAN: a verified disc cannot be returned to packed.
+func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	stagedTree := packedTreeDir(t, packOut)
+	discUUID := packedDiscUUID(t, packOut)
+
+	mounted := filepath.Join(work, "mounted")
+	copyTree(t, stagedTree, mounted)
+
+	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+		t.Fatalf("disc burned: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mounted); code != 0 {
+		t.Fatalf("verify: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "disc", "burned", "--undo", "--repo="+repo, discUUID)
+	if code != 1 {
+		t.Fatalf("disc burned --undo (verified disc): exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "verified (CLEAN)") || !strings.Contains(out, "cannot be returned to packed") {
+		t.Fatalf("disc burned --undo output %q missing the verified-disc refusal", out)
+	}
+
+	// Nothing changed: a following verify still reports every object
+	// CLEAN, not reset to PACKED.
+	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	if code != 0 {
+		t.Fatalf("verify (after refused undo): exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "not marked burned") {
+		t.Fatalf("verify (after refused undo) output %q, want the disc still burned and clean", out)
+	}
+}
+
+// TestDiscBurnedBySeqAndLabel checks that "disc burned" accepts the
+// disc_seq and the on-disc label in place of the full uuid.
+func TestDiscBurnedBySeqAndLabel(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=spare-1"); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "disc", "burned", "--repo="+repo, "0")
+	if code != 0 {
+		t.Fatalf("disc burned 0 (by seq): exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "marked burned") || strings.Contains(out, "marked burned, 0 objects") {
+		t.Fatalf("disc burned 0 output %q did not mark objects burned", out)
+	}
+
+	code, out = runCmd(t, "disc", "burned", "--undo", "--repo="+repo, defaultDiscLabel(t, repo, 0))
+	if code != 0 {
+		t.Fatalf("disc burned --undo (by label): exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "returned to packed") || strings.Contains(out, "returned to packed, 0 objects") {
+		t.Fatalf("disc burned --undo (by label) output %q did not return objects to packed", out)
+	}
+}
+
+// defaultDiscLabel returns disc seq's on-disc label from "disc list".
+func defaultDiscLabel(t *testing.T, repo string, seq uint64) string {
+	t.Helper()
+	code, out := runCmd(t, "disc", "list", "--json", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("disc list --json: exit %d: %s", code, out)
+	}
+	var doc struct {
+		Discs []discSummary `json:"discs"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("parse disc list --json output %q: %v", out, err)
+	}
+	for _, r := range doc.Discs {
+		if r.Seq == seq {
+			return r.Label
+		}
+	}
+	t.Fatalf("disc list --json output %q has no disc_seq %d", out, seq)
+	return ""
 }
 
 // findAChunkFile walks base/objects and returns the path of the first
