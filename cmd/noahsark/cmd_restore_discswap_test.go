@@ -402,6 +402,26 @@ func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
 	}
 }
 
+// TestRestoreSnapshotIDPrefixNamesItself checks that a SNAPSHOT
+// argument that is 8 or more hex characters, and matches no ref, is
+// reported as a likely truncated snapshot id instead of being treated
+// as an ordinary unknown ref name.
+func TestRestoreSnapshotIDPrefixNamesItself(t *testing.T) {
+	repo, _, _, discRoots := discSwapFixture(t)
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	code, out := runCmd(t, "restore", "--repo="+repo, discRoots[0], "1220a053", outDir)
+	if code != 2 {
+		t.Fatalf("restore with a snapshot id prefix: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "looks like a snapshot id prefix") {
+		t.Fatalf("restore with a snapshot id prefix output %q missing the prefix hint", out)
+	}
+	if strings.Contains(out, "is not on the provided disc(s)") {
+		t.Fatalf("restore with a snapshot id prefix output %q, want the prefix wording, not the ref-not-found one", out)
+	}
+}
+
 // TestPlanDiscListMatchesTheDiscsRestoreReads checks, for a range of
 // --include scopes, that "plan"'s printed disc list is exactly the
 // discs that hold a needed chunk: the same discs a disc-swap restore

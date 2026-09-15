@@ -236,6 +236,21 @@ func TestLsAcceptsARefName(t *testing.T) {
 	}
 }
 
+// TestLsSnapshotIDPrefixNamesItself checks that an argument that is 8
+// or more hex characters, and resolves as neither a full snapshot id
+// nor a ref name, is reported as a likely truncated snapshot id,
+// instead of the generic ref-not-found wording.
+func TestLsSnapshotIDPrefixNamesItself(t *testing.T) {
+	treeDir, _, _ := lsFixture(t)
+	code, out := runCmd(t, "ls", treeDir, "1220a053")
+	if code != 2 {
+		t.Fatalf("ls with a snapshot id prefix: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "looks like a snapshot id prefix") {
+		t.Fatalf("ls with a snapshot id prefix output %q missing the prefix hint", out)
+	}
+}
+
 // TestLsExitsThreeOnAMissingDisc packs a multi-disc sequence, then runs
 // ls with one disc root left out, and asserts exit 3 and the same
 // missing-disc message restore uses.

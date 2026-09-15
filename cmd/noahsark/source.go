@@ -66,6 +66,9 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 type refNotFoundError struct{ arg string }
 
 func (e *refNotFoundError) Error() string {
+	if restore.LooksLikeSnapshotIDPrefix(e.arg) {
+		return fmt.Sprintf("%q looks like a snapshot id prefix; give the full snapshot id from noahsark log", e.arg)
+	}
 	return fmt.Sprintf("%q is neither a snapshot id nor a known ref name", e.arg)
 }
 

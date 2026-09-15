@@ -143,7 +143,9 @@ func (s *Source) SnapshotIDs() ([]object.ID, error) {
 // id, or a name found in REFS. A ref that does not resolve, or a
 // malformed id, is reported as an error naming arg. A ref not among the
 // provided discs' merged REFS is reported as not on those discs, since a
-// later disc in the chain, not given here, may carry it.
+// later disc in the chain, not given here, may carry it, unless arg
+// itself looks like a truncated snapshot id, which is never a valid ref
+// name and is reported as that instead.
 func (s *Source) ParseSnapshotArg(arg string) (object.ID, error) {
 	if id, err := object.ParseID(arg); err == nil {
 		return id, nil
@@ -157,5 +159,30 @@ func (s *Source) ParseSnapshotArg(arg string) (object.ID, error) {
 			return object.ID(r.SnapshotID), nil
 		}
 	}
+	if LooksLikeSnapshotIDPrefix(arg) {
+		return object.ID{}, fmt.Errorf("%q looks like a snapshot id prefix; give the full snapshot id from noahsark log", arg)
+	}
 	return object.ID{}, fmt.Errorf("ref %q is not on the provided disc(s); a later disc in the chain may carry it", arg)
+}
+
+// LooksLikeSnapshotIDPrefix reports whether arg is plausibly a
+// truncated snapshot id: 8 or more hex characters. Nothing resolves
+// arg by this alone; a caller that has already failed to resolve arg
+// as a full snapshot id or as a ref name uses it only to choose which
+// of two error messages to report, never to look up a snapshot by
+// prefix.
+func LooksLikeSnapshotIDPrefix(arg string) bool {
+	if len(arg) < 8 {
+		return false
+	}
+	for _, r := range arg {
+		if !isHexDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
 }
