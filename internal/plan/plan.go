@@ -66,19 +66,20 @@ func (r *Result) MissingObjectCount() int {
 // under id snapID), restricted to includes (the whole snapshot when
 // includes is empty). It reads only the cache, never a disc.
 func Build(c *cache.Cache, snap *format.Snapshot, snapID object.ID, includes []string) (*Result, error) {
-	needed, err := collectObjects(c, snap, includes)
+	w, err := collectObjects(c, snap, includes)
 	if err != nil {
 		return nil, err
 	}
-	needed[snapID] = format.ObjectKindSnapshot
-	return group(c, needed), nil
+	w.add(snapID, format.ObjectKindSnapshot)
+	return group(c, w.needed, w.order), nil
 }
 
 // collectObjects walks the cached trees under includes (the whole
 // snapshot when includes is empty), starting from snap's root tree, and
-// returns every object id a restore of that scope needs, tagged by
-// kind. It never reads a chunk's payload.
-func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (map[object.ID]format.ObjectKind, error) {
+// returns the walker holding every object id a restore of that scope
+// needs, tagged by kind and in discovery order. It never reads a
+// chunk's payload.
+func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (*walker, error) {
 	w := &walker{c: c, needed: make(map[object.ID]format.ObjectKind)}
 	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
 	if err != nil {
@@ -91,7 +92,7 @@ func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (m
 				return nil, err
 			}
 		}
-		return w.needed, nil
+		return w, nil
 	}
 
 	for _, inc := range includes {
@@ -103,7 +104,7 @@ func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (m
 			return nil, err
 		}
 	}
-	return w.needed, nil
+	return w, nil
 }
 
 // OverBudgetFile walks the same scope Build would, and reports the
@@ -183,10 +184,28 @@ func (w *overBudgetWalker) walk(e format.TreeEntry, path string) (string, uint64
 }
 
 // walker collects the object ids one Build call needs, reading trees
-// and blobs from the cache alone.
+// and blobs from the cache alone. order records the ids in the order
+// they were first found, a depth-first, file-by-file tree walk: a
+// blob's own chunk ids always sit right after it. group() reads objects
+// off a disc in this order, so that a staging budget's pass split keeps
+// one file's chunks together as far as the plan can arrange, letting a
+// restore free that file, and the spool bytes it held, as soon as
+// possible instead of scattering its chunks across many passes.
 type walker struct {
 	c      *cache.Cache
 	needed map[object.ID]format.ObjectKind
+	order  []object.ID
+}
+
+// add records id, tagged kind, the first time it is seen, preserving
+// w.order's discovery order. It reports whether id was new.
+func (w *walker) add(id object.ID, kind format.ObjectKind) bool {
+	if _, ok := w.needed[id]; ok {
+		return false
+	}
+	w.needed[id] = kind
+	w.order = append(w.order, id)
+	return true
 }
 
 // addEntry adds e's own object (a tree for a directory, a blob and its
@@ -208,10 +227,9 @@ func (w *walker) addEntry(e format.TreeEntry) error {
 // reaches is cached, so a read failure here is a hard error, not an
 // incompleteness to degrade past.
 func (w *walker) addTree(treeID object.ID) error {
-	if _, ok := w.needed[treeID]; ok {
+	if !w.add(treeID, format.ObjectKindTree) {
 		return nil
 	}
-	w.needed[treeID] = format.ObjectKindTree
 	t, err := w.c.ReadTree(treeID)
 	if err != nil {
 		return err
@@ -230,19 +248,15 @@ func (w *walker) addTree(treeID object.ID) error {
 // snapshots pack or rebuild-cache have processed since blob caching was
 // added, and its absence is not, by itself, an incomplete cache.
 func (w *walker) addBlob(blobID object.ID) {
-	if _, ok := w.needed[blobID]; ok {
+	if !w.add(blobID, format.ObjectKindBlob) {
 		return
 	}
-	w.needed[blobID] = format.ObjectKindBlob
 	b, err := w.c.ReadBlob(blobID)
 	if err != nil {
 		return
 	}
 	for _, e := range b.Entries {
-		id := object.ID(e.ContentID)
-		if _, ok := w.needed[id]; !ok {
-			w.needed[id] = format.ObjectKindChunk
-		}
+		w.add(object.ID(e.ContentID), format.ObjectKindChunk)
 	}
 }
 
@@ -337,18 +351,20 @@ func rootPathOf(e format.TreeEntry) string {
 // c.DiscForRun, groups the result by disc, and orders the discs by
 // "14.1 The planner"'s tie-breaks: most bytes first, then the newer
 // disc, then the lower disc_seq.
-func group(c *cache.Cache, needed map[object.ID]format.ObjectKind) *Result {
+//
+// Within one disc, objects keep order's relative order: the walk's
+// depth-first, file-by-file discovery order, so a blob's own chunks
+// stay adjacent in each DiscEntry.Objects. A staging budget's pass
+// split reads a disc's objects in that order, so this keeps one file's
+// chunks together as far as the plan can, instead of scattering them
+// in an order a real restore's per-file freeing cannot take advantage
+// of.
+func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []object.ID) *Result {
 	byDisc := make(map[[16]byte]*DiscEntry)
 	missingByRun := make(map[uint64]int)
 
-	ids := make([]object.ID, 0, len(needed))
-	for id := range needed {
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
-
 	r := &Result{}
-	for _, id := range ids {
+	for _, id := range order {
 		loc, found := c.LocateObject(id)
 		if !found {
 			missingByRun[0]++

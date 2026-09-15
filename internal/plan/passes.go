@@ -11,10 +11,13 @@ import (
 // count: a disc-swap restore resolves every tree and blob from the
 // cache, and spools chunk payloads alone.
 //
-// This is a conservative estimate: it assumes no spool object is ever
-// freed until its whole pass finishes, while a real restore frees a
-// file's chunks as soon as that file is complete. A real restore may
-// therefore need no more passes than this predicts, never more.
+// This is a worst-case bound, not a tight one: a disc's chunk objects
+// are read in plan order, which is not grouped by the file each chunk
+// belongs to, so a real restore, which frees a file's chunks only once
+// that whole file is complete, may hold several files' chunks at once
+// before any of them frees. DiscPasses assumes nothing ever frees mid-
+// disc, so a real restore never needs more passes than this predicts,
+// though it usually needs fewer.
 type PassSplit struct {
 	// DiscPasses holds one entry per disc, aligned with the Result's
 	// Discs slice, each at least 1.
@@ -54,12 +57,14 @@ func ComputePasses(discs []DiscEntry, budget uint64) (PassSplit, error) {
 	return ps, nil
 }
 
-// passesForDisc greedily accumulates d's chunk objects, in their
-// existing order, into passes of at most budget bytes, returning the
-// pass count and the largest single pass's bytes.
+// passesForDisc sums d's chunk bytes and returns the worst-case pass
+// count: ceil(total/budget), assuming nothing frees until the disc's
+// whole read finishes. A real restore, freeing per file as it goes,
+// never needs more passes than this, so the count printed before any
+// disc is read always matches or exceeds the pass counter a restore
+// prints while it runs.
 func passesForDisc(d DiscEntry, budget uint64) (passes int, peak uint64, err error) {
-	var cur uint64
-	passes = 1
+	var total uint64
 	for _, o := range d.Objects {
 		if o.Kind != format.ObjectKindChunk {
 			continue
@@ -67,14 +72,12 @@ func passesForDisc(d DiscEntry, budget uint64) (passes int, peak uint64, err err
 		if budget > 0 && o.Bytes > budget {
 			return 0, 0, fmt.Errorf("object %s alone needs %d bytes, above the staging budget of %d bytes", o.ID.TextForm(), o.Bytes, budget)
 		}
-		if budget > 0 && cur > 0 && cur+o.Bytes > budget {
-			passes++
-			cur = 0
-		}
-		cur += o.Bytes
-		if cur > peak {
-			peak = cur
-		}
+		total += o.Bytes
 	}
+	if budget == 0 || total == 0 {
+		return 1, total, nil
+	}
+	passes = int((total + budget - 1) / budget)
+	peak = min(budget, total)
 	return passes, peak, nil
 }
