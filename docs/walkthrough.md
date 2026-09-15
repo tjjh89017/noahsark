@@ -199,7 +199,12 @@ The `staged:` line every `commit` prints is the number to check: it is
 the repository-wide STAGED total, objects and bytes, waiting for the
 next pack. Compare it against the target disc's usable size (the
 `--capacity` preset you plan to pack with; README.md's "Disc capacity"
-section has the sector and byte size of each preset).
+section has the sector and byte size of each preset). A commit made
+but never packed before the state log is lost shows as staged 0 after
+the loss: `rebuild-cache` restores only what a disc's own catalog
+carries, and an unpacked commit was never on any disc. Committing the
+same source again re-stages it and the `staged:` total is correct from
+then on.
 Between commits, or to check without committing anything, the same
 total is the last line of:
 
@@ -408,10 +413,27 @@ With a single drive, mounting every disc at once is not possible: run
 swapping discs between runs, into the same `--repo`. Each run marks
 that disc's own objects packed in the state log, so feed every disc for
 the state log to end up complete. Feed the discs in any order; every
-call merges into the ledger; the last call prints ok. A run before the
-last one still reports `rebuild is partial` and exits 1 when the disc
-it was given does not by itself account for every disc known so far,
-naming the discs not yet accounted for.
+call merges into the ledger.
+
+`ok` means every disc the discs fed so far know about has itself been
+fed, not merely that its uuid showed up copied into some other disc's
+own DISCS table. An older disc never knows about a disc burned after
+it, so feeding only the oldest disc of a chain can print `ok` while
+newer discs still exist and still need feeding; `ok` is not by itself
+proof that every disc of the whole chain has been rebuilt. A run that
+still has discs left to feed reports `rebuild is partial: disc <uuid>
+(<label>) not fed yet`, one line per such disc, and exits 1. When in
+doubt, compare `disc list`'s count and labels against the disc log or
+the physical sleeves, rather than trust `ok` alone to mean the whole
+chain is accounted for.
+
+Replaying a disc's catalog through `rebuild-cache` never resets an
+object past PACKED back to PACKED: an object the state log already
+carries as BURNED, CLEAN, GC-ELIGIBLE or DELETED stays exactly there.
+So after rebuilding a repository directory lost outright, `gc` still
+works from the rebuilt state log alone, without repeating `disc
+burned` and `verify` for discs already burned and verified before the
+loss.
 
 ## 7. Disk space
 
@@ -633,6 +655,10 @@ printing one line at the start naming what the spool already holds:
 resuming: 12 object(s) already spooled
 ```
 
+That `resuming:` line prints only when a spool from an earlier,
+interrupted run actually exists; a fresh restore of a snapshot never
+attempted before starts silently, with no such line.
+
 and only prompts for whichever disc the plan still needs. At the end,
 it also prints how many files that spool let it skip re-reading:
 
@@ -643,9 +669,16 @@ resumed: 4 file(s) already restored
 Pass `--plan=FILE` with a plan `plan --out=FILE` already wrote, in
 place of letting `restore` build its own: useful when a script plans
 once, on a machine with the cache handy, and hands the plan file to
-whoever runs the actual restore. `restore --plan` refuses a plan file
-written for a different repository, or naming a snapshot this
-repository's cache does not know, rather than guessing.
+whoever runs the actual restore. `--plan` takes no SNAPSHOT of its
+own; the plan file already names it:
+
+```sh
+./noahsark restore --plan=/tmp/2026-09-21.plan.json --mount=/mnt/noahsark-drive /tmp/restore-drill
+```
+
+`restore --plan` refuses a plan file written for a different
+repository, or naming a snapshot this repository's cache does not
+know, rather than guessing.
 
 `--staging-budget=SIZE` caps how much of `staging/restore/` a
 disc-swap restore ever uses at once, overriding `restore.staging_budget`
@@ -801,12 +834,23 @@ named refusal; it is never a silent misread.
   is still safely committed and flagged; let the source settle and
   commit again, or find it later with `ls --unstable-only` on the
   packed disc.
-- **A restore says `missing disc(s)`.** It names each needed disc by
-  uuid and how many objects it holds. Mount that disc (match it by the
-  uuid prefix and seq on its sleeve, from your text log, or by running
-  `disc list` against the repository if it is still reachable) and
-  restore again with `--disc` or `--discs-dir` including it. Section 9
-  covers what to do when the missing disc cannot be found at all.
+- **A restore says `missing disc(s)`.** It names each needed disc, one
+  per indented line, by uuid and how many objects it holds. Mount that
+  disc (match it by the uuid prefix and seq on its sleeve, from your
+  text log, or by running `disc list` against the repository if it is
+  still reachable) and restore again with `--disc` or `--discs-dir`
+  including it. Section 9 covers what to do when the missing disc
+  cannot be found at all.
+- **A restore says `the snapshot's root tree is not on the provided
+  disc(s)`.** None of the discs given so far hold the snapshot's own
+  root tree object, so no disc can even be named by uuid yet; mount
+  more of the chain (or all of it) and try again.
+- **A restore says `object(s) not found on any provided disc and named
+  by no provided disc's INDEX`.** This is what an older disc alone
+  looks like when a newer disc that actually stores the needed objects
+  is missing: an older disc's own INDEX and Prereqs tables cannot name
+  a disc burned after it, so restore cannot even point at a uuid.
+  Mount more of the chain, newest discs included, and try again.
 - **`growisofs` prints `unexpected errno:No such file or directory`.**
   The device node (`/dev/sr0`) does not exist: check the drive is
   connected and that you named the right device.
