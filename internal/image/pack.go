@@ -153,7 +153,14 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(allSnapshotIDs) == 0 {
+	if len(allSnapshotIDs) == 0 && len(opts.Snapshots) == 0 {
+		// Nothing staged, and no ref resolved to a snapshot either: this
+		// repository has never had a commit. gc can also empty
+		// staging/snapshots once every object of an old, fully packed
+		// snapshot goes CLEAN and is deleted; opts.Snapshots, resolved
+		// from refs.txt before Pack runs, still names that snapshot
+		// then, so this case is left to the "nothing to pack" message
+		// below instead of being reported as never committed.
 		return nil, fmt.Errorf("no snapshot has been committed")
 	}
 

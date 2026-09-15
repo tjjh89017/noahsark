@@ -42,6 +42,46 @@ func TestPackRefusesNothingToPack(t *testing.T) {
 	}
 }
 
+// TestPackAfterGCSaysNothingToPackNotNeverCommitted packs, burns and
+// verifies a disc, then runs gc with retention forced to zero so every
+// staging object, snapshot files included, is deleted. A pack run
+// after that still has a LATEST ref naming the old snapshot, so it
+// must say "nothing to pack", the same as an ordinary already-packed
+// repository, not "no snapshot has been committed".
+func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	appendConfigLine(t, repo, "staging.retain_after_clean = 0d")
+
+	packAndVerifyDisc(t, work, repo, src)
+
+	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+		t.Fatalf("gc: exit %d, want 0: %s", code, out)
+	}
+	if entries, err := os.ReadDir(filepath.Join(repo, "staging", "snapshots")); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("staging/snapshots still holds %d entries after gc; test fixture did not empty it", len(entries))
+	}
+
+	secondTree := filepath.Join(work, "tree2")
+	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+secondTree)
+	if code != 1 {
+		t.Fatalf("pack after gc: exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "nothing to pack") {
+		t.Fatalf("pack after gc: output %q missing \"nothing to pack\"", out)
+	}
+	if strings.Contains(out, "no snapshot has been committed") {
+		t.Fatalf("pack after gc: output %q wrongly claims no snapshot was ever committed", out)
+	}
+}
+
 // TestPackRefusesNonEmptyOutput packs once into treeDir, then packs new
 // staged content into the same --out. The second pack must refuse
 // instead of adding another run alongside the first, or rewriting
