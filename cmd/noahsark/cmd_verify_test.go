@@ -412,8 +412,8 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 }
 
 // TestVerifyIgnoresATreeWithNoLedgerRow verifies a NOAHSARK tree whose
-// disc uuid the repository's ledger has never seen: verify must not
-// mark anything.
+// disc uuid the repository's ledger has never seen: verify must refuse
+// instead of marking anything, or reporting ok.
 func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	work := t.TempDir()
 	repoA := filepath.Join(work, "repoA")
@@ -436,13 +436,17 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, treeFromB, mounted)
 
-	// repoA's ledger has never seen this disc uuid.
+	// repoA's ledger has never seen this disc uuid: verify refuses
+	// rather than silently reporting ok against the wrong repository.
 	code, out := runCmd(t, "verify", "--repo="+repoA, "--image="+mounted)
-	if code != 0 {
-		t.Fatalf("verify: exit %d: %s", code, out)
+	if code != 1 {
+		t.Fatalf("verify: exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "not a burned disc") {
-		t.Fatalf("verify output %q missing the not-a-burned-disc line", out)
+	if !strings.Contains(out, "is not in repository") {
+		t.Fatalf("verify output %q missing the not-in-repository refusal", out)
+	}
+	if strings.Contains(out, "verify: ok") {
+		t.Fatalf("verify output %q, want no ok line for a disc not in this repository", out)
 	}
 	if _, err := os.Stat(filepath.Join(repoA, "staging", "state.db")); err == nil {
 		t.Fatal("verify against an unknown disc wrote a state log")

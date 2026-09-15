@@ -79,7 +79,13 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 
 	var trailingHint string
 	if repoDir, err := discoverRepo(*repoFlag); err == nil {
-		trailingHint = applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, stdout, stderr)
+		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, stdout, stderr)
+		if notInRepo {
+			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark rebuild-cache --from-disc --disc=%s to add it\n",
+				uuidText(ident.DiscUUID), ident.Label, repoDir, target)
+			return 1
+		}
+		trailingHint = hint
 	}
 
 	if verifyErr != nil {
@@ -110,6 +116,7 @@ func labelText(b []byte) string {
 type discIdentity struct {
 	DiscUUID [16]byte
 	RunSeq   uint64
+	Label    string
 }
 
 // identifyDiscAndRun reads DISC.bin and the newest run's RUN.bin under
@@ -131,62 +138,73 @@ func identifyDiscAndRun(target string) (discIdentity, bool) {
 		return discIdentity{}, false
 	}
 
+	label := labelText(disc.Label[:min(int(disc.LabelLen), len(disc.Label))])
+
 	runsDir := filepath.Join(base, names.Resolve(base, "runs"))
 	runDir, err := image.NewestRunDir(runsDir)
 	if err != nil {
-		return discIdentity{DiscUUID: disc.DiscUUID}, false
+		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
 	}
 	runBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "RUN.bin")))
 	if err != nil {
-		return discIdentity{DiscUUID: disc.DiscUUID}, false
+		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
 	}
 	var run format.Run
 	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
-		return discIdentity{DiscUUID: disc.DiscUUID}, false
+		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
 	}
-	return discIdentity{DiscUUID: disc.DiscUUID, RunSeq: run.RunSeq}, true
+	return discIdentity{DiscUUID: disc.DiscUUID, RunSeq: run.RunSeq, Label: label}, true
 }
 
 // applyVerifyOutcome updates repoDir's staging state and disc ledger for
 // a verify of target, when target's disc uuid is in the repository's
 // disc ledger; it prints what it did along the way, or that it did
-// nothing because target's disc uuid is unknown. verifyErr is the
-// error, if any, that the full verify reported; it is nil for a clean
-// pass. When no object was BURNED, so nothing moved to CLEAN, it
-// returns the not-marked-burned hint instead of printing it, so the
-// caller can print that hint alone, after the "verify: ok" line rather
-// than ahead of it.
-func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool, verifyErr error, stdout, stderr io.Writer) string {
+// nothing because target could not be identified as a disc at all.
+// verifyErr is the error, if any, that the full verify reported; it is
+// nil for a clean pass. When no object was BURNED, so nothing moved to
+// CLEAN, it returns the not-marked-burned hint instead of printing it,
+// so the caller can print that hint alone, after the "verify: ok" line
+// rather than ahead of it.
+//
+// When target's disc is readable but its uuid names no row in repoDir's
+// disc ledger, it reports notInRepo instead of doing anything: this
+// disc belongs to some other repository, or repoDir's ledger has not
+// heard of it, and neither case is the "never verified yet" case the
+// not-a-burned-disc message covers.
+func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool, verifyErr error, stdout, stderr io.Writer) (hint string, notInRepo bool) {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
-		return ""
+		return "", false
 	}
 
-	if !identOK || !ledgerHasDiscUUID(cfg.StagingDir, repoUUID, ident.DiscUUID) {
+	if !identOK {
 		_, _ = fmt.Fprintln(stdout, "verify: this tree is not a burned disc; the staging state was not changed")
-		return ""
+		return "", false
+	}
+	if !ledgerHasDiscUUID(cfg.StagingDir, repoUUID, ident.DiscUUID) {
+		return "", true
 	}
 
 	stageLog, err := stage.Open(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
-		return ""
+		return "", false
 	}
 
 	if verifyErr != nil {
 		n := markVerifyFailed(stageLog, ident.DiscUUID, ident.RunSeq)
 		_, _ = fmt.Fprintf(stdout, "verify: disc %s failed; returned %d object(s) from BURNED to PACKED\n", uuidText(ident.DiscUUID), n)
-		return ""
+		return "", false
 	}
 
 	n, err := markVerifyClean(stageLog, ident.DiscUUID, ident.RunSeq)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
-		return ""
+		return "", false
 	}
 	if n > 0 {
 		if err := recordLedgerVerify(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq); err != nil {
@@ -200,20 +218,20 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 
 	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID, ident.RunSeq)
 	if stillPacked == 0 {
-		return ""
+		return "", false
 	}
 	row, found := ledgerRow(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq)
 	discSeq := uint64(0)
 	if found {
 		discSeq = row.DiscSeq
 	}
-	hint := fmt.Sprintf("verify: disc %d is not marked burned; run: noahsark disc burned --repo=%s %s",
+	hintLine := fmt.Sprintf("verify: disc %d is not marked burned; run: noahsark disc burned --repo=%s %s",
 		discSeq, repoDir, uuidText(ident.DiscUUID))
 	if n > 0 {
-		_, _ = fmt.Fprintln(stdout, hint)
-		return ""
+		_, _ = fmt.Fprintln(stdout, hintLine)
+		return "", false
 	}
-	return hint
+	return hintLine, false
 }
 
 // ledgerHasDiscUUID reports whether stagingDir's disc ledger names a
