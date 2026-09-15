@@ -599,6 +599,9 @@ come before the snapshot argument, not after:
 ./noahsark ls --recursive --unstable-only --discs-dir=/mnt/noahsark-discs 2026-09-21
 ```
 
+Each line starts with one marker column, blank unless the entry is
+UNSTABLE, in which case it holds `!`; it is not a stray leading space.
+
 ### Plan a restore before you fetch the discs
 
 `plan` answers "which discs do I need" before you mount anything: it

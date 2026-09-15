@@ -22,7 +22,8 @@ import (
 // chunk.
 func cmdLs(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("noahsark ls [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]",
-		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts --disc (repeatable), --discs-dir or a DISC-ROOT positional to read a disc instead.", stderr)
+		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts --disc (repeatable), --discs-dir or a DISC-ROOT positional to read a disc instead. "+
+			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.", stderr)
 	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to read from; repeatable")
