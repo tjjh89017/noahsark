@@ -123,7 +123,10 @@ func OverBudgetFile(c *cache.Cache, snap *format.Snapshot, includes []string, bu
 
 	entries := rootTree.Entries
 	if len(includes) > 0 {
-		entries = entries[:0]
+		// A fresh slice: appending must never alias rootTree.Entries's
+		// backing array, or resolving a later include would overwrite
+		// an earlier entry still pending resolution.
+		entries = make([]format.TreeEntry, 0, len(includes))
 		for _, inc := range includes {
 			target, _, err := resolvePath(c, rootTree.Entries, inc)
 			if err != nil {

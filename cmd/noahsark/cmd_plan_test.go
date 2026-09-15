@@ -89,6 +89,26 @@ func TestPlanTwoDiscChainIncludeNarrows(t *testing.T) {
 	}
 }
 
+// TestPlanTwoIncludesBothResolve checks that plan with two --include
+// flags resolves both, instead of the second failing with "matches no
+// entry" because resolving the first corrupted the shared root entries.
+func TestPlanTwoIncludesBothResolve(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	treeDir, snapID, src := lsFixture(t)
+	repo := repoDirFromTreeDir(t, treeDir)
+
+	aPath := rootPath(filepath.Join(src, "a.txt"))
+	bPath := rootPath(filepath.Join(src, "sub", "b.txt"))
+
+	code, out := runCmd(t, "plan", "--repo="+repo, "--include="+aPath, "--include="+bPath, snapID)
+	if code != 0 {
+		t.Fatalf("plan --include=%s --include=%s: exit %d: %s", aPath, bPath, code, out)
+	}
+	if strings.Contains(out, "matches no entry") {
+		t.Fatalf("plan output = %q, want both includes resolved", out)
+	}
+}
+
 // planTotalObjects extracts the "totals: discs=N objects=M bytes=K"
 // line's objects value from plan's text output.
 func planTotalObjects(t *testing.T, out string) int {
