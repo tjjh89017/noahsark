@@ -172,6 +172,22 @@ func TestDiscListEmptyRepository(t *testing.T) {
 // TestDiscLabelAndMarkDegradedRefused checks that "disc label" and
 // "disc mark-degraded" are refused with a clear message, not silently
 // ignored.
+// TestDiscFlagBeforeSubcommandNamesTheFix checks that a flag given
+// before disc's subcommand ("disc --repo=X list") is reported with the
+// corrected command line, not as an unknown subcommand.
+func TestDiscFlagBeforeSubcommandNamesTheFix(t *testing.T) {
+	code, out := runCmd(t, "disc", "--repo=X", "list")
+	if code != 2 {
+		t.Fatalf("disc --repo=X list: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "flags come after the subcommand: noahsark disc list --repo=X") {
+		t.Fatalf("disc --repo=X list: output %q, want the flags-come-after-the-subcommand fix", out)
+	}
+	if strings.Contains(out, "unknown subcommand") {
+		t.Fatalf("disc --repo=X list: output %q, want no unknown-subcommand wording", out)
+	}
+}
+
 func TestDiscLabelAndMarkDegradedRefused(t *testing.T) {
 	for _, args := range [][]string{
 		{"disc", "label", "00000000-0000-0000-0000-000000000000", "TEXT"},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -35,6 +36,11 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	}
 	sub := args[0]
 	rest := args[1:]
+
+	if strings.HasPrefix(sub, "-") {
+		_, _ = fmt.Fprintf(stderr, "noahsark: disc: flags come after the subcommand: noahsark disc list %s\n", sub)
+		return 2
+	}
 
 	switch sub {
 	case "list":
