@@ -124,8 +124,8 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	restoredDir := filepath.Join(work, "restored")
 	args := []string{"restore", "--disc=" + discRoots[0], "--disc=" + discRoots[2], snapID, restoredDir}
 	code, out = runCmd(t, args...)
-	if code != 1 {
-		t.Fatalf("restore: exit %d, want 1: %s", code, out)
+	if code != 3 {
+		t.Fatalf("restore: exit %d, want 3: %s", code, out)
 	}
 	if !strings.Contains(out, "missing disc") {
 		t.Fatalf("restore output %q does not name a missing disc", out)

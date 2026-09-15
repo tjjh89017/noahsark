@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -154,6 +155,9 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	resumed, skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		if _, ok := errors.AsType[*restore.MissingDiscError](err); ok {
+			return 3
+		}
 		return 1
 	}
 
