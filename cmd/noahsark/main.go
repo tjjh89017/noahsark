@@ -135,14 +135,15 @@ Phase 1 commands:
   image build --out=FILE [--capacity=N] TREE-DIR
   verify  --image=PATH [--heal] [--out=DIR]
   restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
-  restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] SNAPSHOT OUT-DIR
+  restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] SNAPSHOT OUT-DIR
+  restore --plan=FILE --mount=DIR [--overwrite] [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
   ls      [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
   log     [DISC-ROOT] [REF|SNAPSHOT] [--limit=N] [--json]
   plan    [--include=PATH]... [--out=FILE] SNAPSHOT
   rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]
   disc list [--json]
   disc burned [--undo] UUID [UUID...]
-  gc      [--dry-run] [--keep-snapshots=N]
+  gc      [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]
 
 ls and log resolve SNAPSHOT through the local cache when no disc is
 given; give a DISC-ROOT, or --disc=ROOT (repeatable) or --discs-dir=DIR

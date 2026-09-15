@@ -40,8 +40,8 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] [--plan=FILE] [--staging-budget=SIZE] SNAPSHOT OUT-DIR",
-		"Restore a snapshot to a directory. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT for the all-discs-at-once mode.", stderr)
+	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR|DISC-ROOT] SNAPSHOT OUT-DIR\n       noahsark restore --plan=FILE --mount=DIR [--overwrite] OUT-DIR",
+		"Restore a snapshot to a directory. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT for the all-discs-at-once mode. --plan resumes a plan file written by \"plan --out\" instead of naming SNAPSHOT.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to restore from; repeatable")
@@ -52,7 +52,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	mountFlag := fs.String("mount", "", "the directory where the drive is mounted; required for the disc-swap mode")
 	noEject := fs.Bool("no-eject", false, "do not eject after each disc")
 	interactive := fs.Bool("interactive", false, "prompt on every disc, not only on a mismatch")
-	planFlag := fs.String("plan", "", "resume a plan file written by \"plan --out\", instead of building one")
+	planFlag := fs.String("plan", "", "restore from a plan file written by plan --out")
 	stagingBudgetFlag := fs.String("staging-budget", "", "peak staging bytes allowed; overrides restore.staging_budget")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
