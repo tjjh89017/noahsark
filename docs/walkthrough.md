@@ -719,7 +719,9 @@ counted separately, as a `skipped %d existing path(s); pass --overwrite
 to replace them` line: that is the ordinary conflict, a stale copy
 already at that path from something else. `--overwrite` unlinks and
 rewrites every file unconditionally, whether it was resumable or a
-genuine conflict, so neither line prints when it is given.
+genuine conflict, so neither line prints when it is given. `--disc`
+and `--discs-dir` restore, not only `--mount`, follow this same rule
+and print the same `resumed:` and `skipped ...` lines.
 
 Pass `--plan=FILE` with a plan `plan --out=FILE` already wrote, in
 place of letting `restore` build its own: useful when a script plans

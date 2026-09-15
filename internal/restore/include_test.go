@@ -60,7 +60,7 @@ func TestRestoreIncludeSingleFile(t *testing.T) {
 
 	outDir := t.TempDir()
 	inc := includePath(srcDir, "sub/leaf.txt")
-	if _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
+	if _, _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,7 +77,7 @@ func TestRestoreIncludeSubtree(t *testing.T) {
 
 	outDir := t.TempDir()
 	inc := includePath(srcDir, "sub")
-	if _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
+	if _, _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,7 +105,7 @@ func TestRestoreIncludeTwoIncludesUnion(t *testing.T) {
 		includePath(srcDir, "sub/leaf.txt"),
 		includePath(srcDir, "other/leaf2.txt"),
 	}
-	if _, err := Restore(treeDir, snapID, outDir, WithInclude(incs)); err != nil {
+	if _, _, err := Restore(treeDir, snapID, outDir, WithInclude(incs)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,7 +122,7 @@ func TestRestoreIncludeEmptyDirectory(t *testing.T) {
 
 	outDir := t.TempDir()
 	inc := includePath(srcDir, "empty")
-	if _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
+	if _, _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestRestoreIncludeUnmatchedFailsBeforeWriting(t *testing.T) {
 
 	outDir := t.TempDir()
 	badInclude := includePath(srcDir, "does/not/exist")
-	_, err := Restore(treeDir, snapID, outDir, WithInclude([]string{badInclude}))
+	_, _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{badInclude}))
 	if err == nil {
 		t.Fatal("expected an unmatched-include error")
 	}
@@ -168,7 +168,7 @@ func TestRestoreIncludeLeadingSlashStripped(t *testing.T) {
 
 	outDir := t.TempDir()
 	inc := "/" + includePath(srcDir, "sub/leaf.txt")
-	if _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
+	if _, _, err := Restore(treeDir, snapID, outDir, WithInclude([]string{inc})); err != nil {
 		t.Fatal(err)
 	}
 	mustExist(t, filepath.Join(outDir, srcDir, "sub", "leaf.txt"))

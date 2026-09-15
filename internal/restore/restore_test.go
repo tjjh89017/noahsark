@@ -85,7 +85,7 @@ func TestRestoreFromImageAfterStagingDeleted(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, _, err := Restore(treeDir, snapID, outDir); err != nil {
 		t.Fatal(err)
 	}
 	compareRestoredTree(t, srcDir, outDir)
@@ -106,7 +106,7 @@ func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	flipByte(t, chunkPath, 70) // inside the payload, past the 64-byte header
 
 	outDir := t.TempDir()
-	_, err = Restore(treeDir, snapID, outDir)
+	_, _, err = Restore(treeDir, snapID, outDir)
 	if err == nil {
 		t.Fatal("expected Restore to fail on a corrupted chunk")
 	}
@@ -164,7 +164,7 @@ func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	skipped, err := Restore(treeDir, snapID, outDir)
+	_, skipped, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 		t.Fatalf("existing file was modified without WithOverwrite: %q", got)
 	}
 
-	skipped, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
+	_, skipped, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
 	if err != nil {
 		t.Fatal(err)
 	}

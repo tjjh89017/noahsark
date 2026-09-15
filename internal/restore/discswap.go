@@ -165,8 +165,8 @@ func (m *Manifest) addFile(c *cache.Cache, dest string, blobID object.ID, e form
 	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
 
 	if !m.wp.overwrite {
-		if fi, err := os.Lstat(dest); err == nil {
-			if fi.Mode().IsRegular() && fileAlreadyRestored(dest, fi, e, entries) {
+		if resumed, found := existingFileStatus(dest, e, entries); found {
+			if resumed {
 				m.resumed++
 			} else {
 				m.wp.skipped++
@@ -227,7 +227,7 @@ func (m *Manifest) WriteReady(spoolDir string, prog *progress.Reporter) (written
 }
 
 func (m *Manifest) writeFile(spoolDir string, pf *pendingFile, prog *progress.Reporter) (freedBytes uint64, err error) {
-	f, skipped, err := openForWrite(pf.path, m.wp)
+	f, skipped, err := openForWrite(pf.path, pf.treeEntry, pf.entries, m.wp)
 	if err != nil {
 		return 0, err
 	}

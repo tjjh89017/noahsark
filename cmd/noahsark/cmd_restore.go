@@ -151,13 +151,16 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
 		opts = append(opts, restore.WithKnownDiscs(known))
 	}
-	skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
+	resumed, skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
 
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
+	if resumed > 0 {
+		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", resumed)
+	}
 	if skipped > 0 {
 		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", skipped)
 		return 1

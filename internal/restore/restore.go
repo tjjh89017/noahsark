@@ -24,16 +24,36 @@ import (
 // discRoot/NOAHSARK. Restore verifies every object's content id before
 // using its bytes; a chunk, blob, tree or snapshot that does not verify
 // is a hard error.
-func Restore(discRoot string, snapshotID object.ID, outDir string, opts ...Option) (skipped int, err error) {
+func Restore(discRoot string, snapshotID object.ID, outDir string, opts ...Option) (resumed, skipped int, err error) {
 	return RestoreWithProgress(discRoot, snapshotID, outDir, nil, opts...)
 }
 
 // writePolicy carries the overwrite rule of section 15.6 through the
-// restore walk, plus the running count of paths left alone because they
-// already existed and --overwrite was not given.
+// restore walk, plus the running counts of paths left alone because they
+// already existed and --overwrite was not given: resumed for a path
+// already fully restored, skipped for one that disagrees with the
+// snapshot and needs --overwrite to replace.
 type writePolicy struct {
 	overwrite bool
+	resumed   int
 	skipped   int
+}
+
+// existingFileStatus is the one decision every restore mode uses for a
+// destination path that already exists: a regular file whose size
+// matches the tree entry, and whose mtime or content also matches, is
+// already fully restored (resumed); anything else found at dest is left
+// for --overwrite to resolve (not resumed). found is false when dest
+// does not exist.
+func existingFileStatus(dest string, e format.TreeEntry, entries []format.BlobEntry) (resumed, found bool) {
+	fi, err := os.Lstat(dest)
+	if err != nil {
+		return false, false
+	}
+	if !fi.Mode().IsRegular() {
+		return false, true
+	}
+	return fileAlreadyRestored(dest, fi, e, entries), true
 }
 
 // RestoreWithProgress is Restore, reporting bytes written through prog.
@@ -46,49 +66,49 @@ type writePolicy struct {
 // tree, reading only tree objects, before any directory is created or
 // file written. A path that matches nothing fails the whole call with an
 // *UnmatchedIncludeError naming every such path.
-func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) (skipped int, err error) {
+func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) (resumed, skipped int, err error) {
 	o := newRestoreOptions(opts)
 	cache := image.NewNameCache()
 	base, err := findNoahsark(discRoot, cache)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	absOut, err := filepath.Abs(outDir)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	snapRaw, _, err := readVerified(base, snapshotID, true, cache)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var snap format.Snapshot
 	if _, err := snap.Decode(snapRaw); err != nil {
-		return 0, fmt.Errorf("snapshot %s: %w", snapshotID.TextForm(), err)
+		return 0, 0, fmt.Errorf("snapshot %s: %w", snapshotID.TextForm(), err)
 	}
 
 	rootRaw, _, err := readVerified(base, object.ID(snap.RootTree), false, cache)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	var rootTree format.Tree
 	if _, err := rootTree.Decode(rootRaw); err != nil {
-		return 0, fmt.Errorf("tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
+		return 0, 0, fmt.Errorf("tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
 	fs, err := newFilterState(o.includes)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if fs != nil {
 		if err := resolveIncludes(base, rootTree.Entries, fs, cache); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if unmatched := unmatchedIncludes(fs, o.includes); len(unmatched) > 0 {
-			return 0, &UnmatchedIncludeError{Paths: unmatched}
+			return 0, 0, &UnmatchedIncludeError{Paths: unmatched}
 		}
 	}
 
@@ -109,10 +129,10 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 	wp := &writePolicy{overwrite: o.overwrite}
 	for _, e := range rootTree.Entries {
 		if err := restoreRootEntry(base, absOut, e, prog, cache, fs, wp); err != nil {
-			return wp.skipped, err
+			return wp.resumed, wp.skipped, err
 		}
 	}
-	return wp.skipped, nil
+	return wp.resumed, wp.skipped, nil
 }
 
 // sumRegularSizes recursively sums every regular file entry's recorded
@@ -265,13 +285,13 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeRegular:
-		skipped, err := restoreFile(base, child, object.ID(e.ContentID), prog, cache, wp)
+		skipped, err := restoreFile(base, child, object.ID(e.ContentID), e, prog, cache, wp)
 		if err != nil {
 			return err
 		}
 		if skipped {
-			// The path already existed and --overwrite was not given;
-			// leave it exactly as found.
+			// The path already existed; --overwrite was not given, or
+			// would not have applied. Leave it exactly as found.
 			return nil
 		}
 		applyMetadata(child, e)
@@ -298,8 +318,9 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 // restoreFile reassembles blobID's chunks into dest, in blob entry order,
 // verifying every chunk's content id before writing its bytes. It
 // reports skipped true, and leaves dest untouched, when dest already
-// existed and wp.overwrite is false.
-func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter, cache *image.NameCache, wp *writePolicy) (skipped bool, err error) {
+// exists and wp.overwrite is false: existingFileStatus decides whether
+// that counts as resumed (wp.resumed) or a conflict (wp.skipped).
+func restoreFile(base, dest string, blobID object.ID, e format.TreeEntry, prog *progress.Reporter, cache *image.NameCache, wp *writePolicy) (skipped bool, err error) {
 	raw, _, err := readVerified(base, blobID, false, cache)
 	if err != nil {
 		return false, err
@@ -312,7 +333,7 @@ func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter, c
 	entries := append([]format.BlobEntry(nil), blob.Entries...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
 
-	f, skipped, err := openForWrite(dest, wp)
+	f, skipped, err := openForWrite(dest, e, entries, wp)
 	if err != nil {
 		return false, err
 	}
@@ -340,19 +361,30 @@ func restoreFile(base, dest string, blobID object.ID, prog *progress.Reporter, c
 
 // openForWrite creates dest for a restore write, following the path
 // safety rule of OPERATIONS.md's metadata restore policy: without
-// --overwrite, an existing path is never opened for truncation, so
-// O_EXCL either creates the file or reports it already there; with
+// --overwrite, an existing path counts as resumed or skipped by
+// existingFileStatus, the one rule every restore mode shares; with
 // --overwrite, the existing path is unlinked first and then created.
 // A file created this way is always new, so O_TRUNC is never needed.
-func openForWrite(dest string, wp *writePolicy) (f *os.File, skipped bool, err error) {
+func openForWrite(dest string, e format.TreeEntry, entries []format.BlobEntry, wp *writePolicy) (f *os.File, skipped bool, err error) {
 	if wp != nil && wp.overwrite {
 		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
 			return nil, false, err
 		}
+	} else if resumed, found := existingFileStatus(dest, e, entries); found {
+		if wp != nil {
+			if resumed {
+				wp.resumed++
+			} else {
+				wp.skipped++
+			}
+		}
+		return nil, true, nil
 	}
 	f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if os.IsExist(err) {
+			// Raced with something else creating dest since the check
+			// above; treat it as an ordinary conflict.
 			if wp != nil {
 				wp.skipped++
 			}

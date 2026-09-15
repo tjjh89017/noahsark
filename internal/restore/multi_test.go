@@ -142,7 +142,7 @@ func TestRestoreMultiAcrossThreeDiscs(t *testing.T) {
 	roots := packSequence(t, stagingDir, snapID, []uint64{7_000_000, 7_000_000, 10_000_000})
 
 	outDir := t.TempDir()
-	if _, err := RestoreMulti(roots, snapID, outDir); err != nil {
+	if _, _, err := RestoreMulti(roots, snapID, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcDir, filepath.Join(outDir, srcDir))
@@ -153,7 +153,7 @@ func TestRestoreMultiCapacityOrderDoesNotMatterForResult(t *testing.T) {
 	roots := packSequence(t, stagingDir, snapID, []uint64{10_000_000, 7_000_000, 7_000_000})
 
 	outDir := t.TempDir()
-	if _, err := RestoreMulti(roots, snapID, outDir); err != nil {
+	if _, _, err := RestoreMulti(roots, snapID, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcDir, filepath.Join(outDir, srcDir))
@@ -167,7 +167,7 @@ func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 	partial := []string{roots[0], roots[2]}
 
 	outDir := t.TempDir()
-	_, err := RestoreMulti(partial, snapID, outDir)
+	_, _, err := RestoreMulti(partial, snapID, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -274,7 +274,7 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	// INDEX and Prereqs never reference snap1's objects, so the only
 	// way to name disc 1 is disc 2's DISCS table.
 	outDir := t.TempDir()
-	_, err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
+	_, _, err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -388,7 +388,7 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 		{1}: "disc-one",
 		{3}: "disc-three",
 	}
-	_, err = RestoreMultiWithProgress([]string{disc2Dir}, snap1, outDir, nil, WithKnownDiscs(known))
+	_, _, err = RestoreMultiWithProgress([]string{disc2Dir}, snap1, outDir, nil, WithKnownDiscs(known))
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -407,5 +407,62 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 	}
 	if !sawOne || !sawThree {
 		t.Fatalf("expected both disc 1 and disc 3 among candidates, got %v", missing.Candidates)
+	}
+}
+
+// TestRestoreMultiResumesMatchingSizeSkipsMismatch asserts that
+// RestoreMulti (the engine behind restore --disc and --discs-dir)
+// applies the same resumed/skipped rule as the disc-swap --mount mode:
+// a pre-existing file whose size matches the snapshot's tree entry
+// counts as resumed and is left alone, while one whose size disagrees
+// counts as skipped and is also left alone until --overwrite is given.
+func TestRestoreMultiResumesMatchingSizeSkipsMismatch(t *testing.T) {
+	srcDir := buildFixtureSrc(t)
+	_, treeDir, snapID := buildFixtureTree(t, srcDir)
+
+	outDir := t.TempDir()
+	target := filepath.Join(outDir, srcDir, "small.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(srcDir, "small.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, skipped, err := RestoreMulti([]string{treeDir}, snapID, outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed != 1 {
+		t.Fatalf("resumed = %d, want 1", resumed)
+	}
+	if skipped != 0 {
+		t.Fatalf("skipped = %d, want 0", skipped)
+	}
+
+	// A file present with the wrong size is a conflict, not a resume.
+	// Use a fresh, otherwise-empty OUT-DIR so only that one file exists
+	// ahead of time.
+	outDir2 := t.TempDir()
+	target2 := filepath.Join(outDir2, srcDir, "small.txt")
+	if err := os.MkdirAll(filepath.Dir(target2), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target2, append(want, 'x'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resumed, skipped, err = RestoreMulti([]string{treeDir}, snapID, outDir2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", skipped)
+	}
+	if resumed != 0 {
+		t.Fatalf("resumed = %d, want 0", resumed)
 	}
 }
