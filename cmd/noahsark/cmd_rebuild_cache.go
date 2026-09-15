@@ -47,7 +47,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		return 2
 	}
 	if !*fromDisc {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: --from-disc is required: this build keeps no cache, so rebuilding always reads discs")
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: --from-disc is required; rebuild-cache reads every disc to rebuild the local cache")
 		return 2
 	}
 	if *snapshot != "" {
