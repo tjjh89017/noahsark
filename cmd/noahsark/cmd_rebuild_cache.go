@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -126,6 +125,14 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 			}
 			packedObjects++
 		}
+		// This disc's own catalog was just replayed above: record it as
+		// fed, not merely named by some other disc's copy of its DISCS
+		// row. This is the set the final "ok means every disc known is
+		// fed" check reads.
+		if err := stageLog.RecordFedDisc(rr.Disc.DiscUUID); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+			return 1
+		}
 	}
 
 	// Load every ledger and ref this repository already carries before
@@ -148,7 +155,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		return 1
 	}
 
-	discRows, missing := mergeDiscsRows(results, existingDiscs.Rows)
+	discRows := mergeDiscsRows(results, existingDiscs.Rows)
 	discRows = fillUsedSectorsFromRuns(discRows, results)
 	if err := image.SaveDiscsLedger(cfg.StagingDir, repoUUID, discRows); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
@@ -178,18 +185,33 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	_, _ = fmt.Fprintf(stdout, "objects recorded packed: %d\n", packedObjects)
 	_, _ = fmt.Fprintf(stdout, "discs known: %d, refs restored: %d\n", len(discRows), len(refs))
 
-	if len(missing) > 0 {
-		names := make([]string, 0, len(missing))
-		for u := range missing {
-			names = append(names, uuidText(u))
+	notFed := discsNotFed(discRows, stageLog)
+	if len(notFed) > 0 {
+		for _, row := range notFed {
+			label := string(row.Label[:row.LabelLen])
+			_, _ = fmt.Fprintf(stdout, "rebuild is partial: disc %s (%s) not fed yet\n", uuidText(row.DiscUUID), label)
 		}
-		sort.Strings(names)
-		_, _ = fmt.Fprintf(stdout, "rebuild is partial: %d disc(s) named in DISCS were not provided: %s\n", len(names), strings.Join(names, ", "))
 		return 1
 	}
 
 	_, _ = fmt.Fprintln(stdout, "rebuild-cache: ok")
 	return 0
+}
+
+// discsNotFed returns, sorted by uuid text, every row of the merged
+// ledger whose own disc has never itself been fed to rebuild-cache: its
+// row may only have arrived here as a copy carried in a sibling disc's
+// own DISCS table. "ok" must wait for every one of these to be read at
+// least once, however many separate calls that takes.
+func discsNotFed(rows []format.DiscsRow, l *stage.Log) []format.DiscsRow {
+	var out []format.DiscsRow
+	for _, row := range rows {
+		if !l.FedDiscs(row.DiscUUID) {
+			out = append(out, row)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return uuidText(out[i].DiscUUID) < uuidText(out[j].DiscUUID) })
+	return out
 }
 
 // rebuildCacheFromRoots copies every one of readRoots' run catalog,
@@ -279,42 +301,30 @@ func ensureRebuildRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 // ascending so a later Pack call appends after them in the same order
 // it would have burned them in.
 //
-// It also reports which of the newly read discs' own DISCS rows name a
-// disc that was provided neither this call nor any earlier one: a
-// rebuild that finds any is partial. A disc already known from a
-// previous call's saved ledger is not missing, even when this call did
-// not provide it again, so feeding one disc per call still ends with
-// every disc known once every disc has been fed once, in any order.
-func mergeDiscsRows(results []*image.ReadResult, existing []format.DiscsRow) (rows []format.DiscsRow, missing map[[16]byte]bool) {
+// Whether a rebuild is partial is decided separately, from the state
+// log's fed-disc record: a row this function merges in from a sibling
+// disc's own DISCS table names a disc, but never says that disc's own
+// catalog was ever replayed.
+func mergeDiscsRows(results []*image.ReadResult, existing []format.DiscsRow) []format.DiscsRow {
 	byUUID := make(map[[16]byte]format.DiscsRow, len(existing))
-	knownBefore := make(map[[16]byte]bool, len(existing))
 	for _, row := range existing {
 		byUUID[row.DiscUUID] = row
-		knownBefore[row.DiscUUID] = true
 	}
 
-	provided := make(map[[16]byte]bool, len(results))
-	seenThisCall := make(map[[16]byte]bool)
 	for _, rr := range results {
-		provided[rr.Disc.DiscUUID] = true
 		for _, row := range rr.Discs.Rows {
-			seenThisCall[row.DiscUUID] = true
 			if cur, ok := byUUID[row.DiscUUID]; !ok || rowNewer(row, cur) {
 				byUUID[row.DiscUUID] = row
 			}
 		}
 	}
 
-	rows = make([]format.DiscsRow, 0, len(byUUID))
-	missing = make(map[[16]byte]bool)
-	for u, row := range byUUID {
+	rows := make([]format.DiscsRow, 0, len(byUUID))
+	for _, row := range byUUID {
 		rows = append(rows, row)
-		if seenThisCall[u] && !provided[u] && !knownBefore[u] {
-			missing[u] = true
-		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].RunSeq < rows[j].RunSeq })
-	return rows, missing
+	return rows
 }
 
 // rowNewer reports whether a should replace b when both name the same

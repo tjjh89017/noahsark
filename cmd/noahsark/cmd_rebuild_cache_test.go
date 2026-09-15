@@ -167,6 +167,63 @@ func TestRebuildCachePartialNamesMissingDisc(t *testing.T) {
 	}
 }
 
+// TestRebuildCachePartialUntilEveryDiscFed packs a three-disc chain,
+// deletes the repository, feeds only the newest disc, then feeds the
+// remaining two: "ok" must wait until every disc named in DISCS has
+// itself been fed at least once, not merely copied in from a sibling
+// disc's own DISCS table.
+func TestRebuildCachePartialUntilEveryDiscFed(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeMultiDiscFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+
+	var discRoots []string
+	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
+	for i, cap := range capacities {
+		treeDir := filepath.Join(work, "fed-disc"+string(rune('0'+i)))
+		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
+			t.Fatalf("pack %d: exit %d: %s", i, code, out)
+		}
+		discRoots = append(discRoots, treeDir)
+	}
+
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	// Feed only the newest disc: its own DISCS table names the earlier
+	// two, but neither was itself read. The rebuild must be partial.
+	newest := discRoots[len(discRoots)-1]
+	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+newest)
+	if code != 1 {
+		t.Fatalf("rebuild-cache (newest only): exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "not fed yet") {
+		t.Fatalf("output %q does not say a disc was not fed yet", out)
+	}
+	if strings.Contains(out, "rebuild-cache: ok") {
+		t.Fatalf("output %q says ok before every disc was fed", out)
+	}
+
+	// Feed the remaining two discs: now every disc named in DISCS has
+	// itself been fed, and the rebuild must say ok.
+	code, out = runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo,
+		"--disc="+discRoots[0], "--disc="+discRoots[1])
+	if code != 0 {
+		t.Fatalf("rebuild-cache (remaining two): exit %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "rebuild-cache: ok") {
+		t.Fatalf("output %q does not say ok once every disc is fed", out)
+	}
+}
+
 // TestRebuildCacheNoUsableDisc asserts exit 3 when every named disc
 // root fails to read.
 func TestRebuildCacheNoUsableDisc(t *testing.T) {

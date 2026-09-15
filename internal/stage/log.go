@@ -113,6 +113,17 @@ const burnTimeFileName = "burn_times.db"
 // burnTimeRecordLen is the fixed size of one burn_times.db record.
 const burnTimeRecordLen = 16 + 8 + 4
 
+// fedDiscFileName is the fed-disc companion log's file name inside a
+// staging directory. rebuild-cache replays one disc's own catalog at a
+// time, and a disc's DISCS table can name a sibling disc it never read
+// itself. This file records only the discs rebuild-cache actually fed:
+// disc uuid (16), crc32c (4), one record per disc fed, across every
+// rebuild-cache call this repository has ever run.
+const fedDiscFileName = "fed_discs.db"
+
+// fedDiscRecordLen is the fixed size of one fed_discs.db record.
+const fedDiscRecordLen = 16 + 4
+
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Record is one state.db record: an object's state as of Sequence, and,
@@ -162,6 +173,8 @@ type Log struct {
 	cleanAt   map[object.ID]time.Time
 	burnPath  string
 	burnAt    map[[16]byte]time.Time
+	fedPath   string
+	fedDiscs  map[[16]byte]bool
 }
 
 // Open reads and replays stagingDir's state.db, if one exists, and
@@ -178,6 +191,8 @@ func Open(stagingDir string) (*Log, error) {
 		cleanAt:   make(map[object.ID]time.Time),
 		burnPath:  filepath.Join(stagingDir, burnTimeFileName),
 		burnAt:    make(map[[16]byte]time.Time),
+		fedPath:   filepath.Join(stagingDir, fedDiscFileName),
+		fedDiscs:  make(map[[16]byte]bool),
 	}
 	data, err := os.ReadFile(l.path)
 	if err != nil {
@@ -200,6 +215,9 @@ func Open(stagingDir string) (*Log, error) {
 		return nil, err
 	}
 	if err := l.loadBurnTimes(); err != nil {
+		return nil, err
+	}
+	if err := l.loadFedDiscs(); err != nil {
 		return nil, err
 	}
 	return l, nil
@@ -442,6 +460,65 @@ func (l *Log) loadBurnTimes() error {
 		copy(discUUID[:], rec[0:16])
 		nanos := int64(binary.LittleEndian.Uint64(rec[16:24]))
 		l.burnAt[discUUID] = time.Unix(0, nanos)
+	}
+	return nil
+}
+
+// RecordFedDisc appends discUUID to the fed-disc companion log, unless
+// it is already recorded. rebuild-cache calls this once for every disc
+// whose own catalog it replayed this call, so FedDiscs answers "was this
+// disc itself ever fed", not "does some ledger row merely name it".
+func (l *Log) RecordFedDisc(discUUID [16]byte) error {
+	if l.fedDiscs[discUUID] {
+		return nil
+	}
+	buf := make([]byte, fedDiscRecordLen)
+	copy(buf[0:16], discUUID[:])
+	crc := crc32.Checksum(buf[0:16], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[16:20], crc)
+
+	if err := os.MkdirAll(filepath.Dir(l.fedPath), 0o755); err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	f, err := os.OpenFile(l.fedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(buf); err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+
+	l.fedDiscs[discUUID] = true
+	return nil
+}
+
+// FedDiscs reports whether discUUID's own catalog has ever been
+// replayed by a rebuild-cache call against this repository.
+func (l *Log) FedDiscs(discUUID [16]byte) bool {
+	return l.fedDiscs[discUUID]
+}
+
+// loadFedDiscs reads and replays the fed-disc companion log, if one
+// exists. A record with a bad CRC ends the replay, matching state.db's
+// own truncated-tail rule.
+func (l *Log) loadFedDiscs() error {
+	data, err := os.ReadFile(l.fedPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stage: %w", err)
+	}
+	for off := 0; off+fedDiscRecordLen <= len(data); off += fedDiscRecordLen {
+		rec := data[off : off+fedDiscRecordLen]
+		crc := binary.LittleEndian.Uint32(rec[16:20])
+		if crc != crc32.Checksum(rec[0:16], crc32cTable) {
+			break
+		}
+		var discUUID [16]byte
+		copy(discUUID[:], rec[0:16])
+		l.fedDiscs[discUUID] = true
 	}
 	return nil
 }
