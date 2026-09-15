@@ -157,7 +157,11 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, fmt.Errorf("no snapshot has been committed")
 	}
 
-	order, snapshotBytes, err := buildPackOrder(opts.StagingDir, allSnapshotIDs)
+	onDisc := func(id object.ID) bool {
+		rec, ok := opts.StageLog.Get(id)
+		return ok && rec.State.OnDisc()
+	}
+	order, snapshotBytes, err := buildPackOrder(opts.StagingDir, allSnapshotIDs, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -661,7 +665,15 @@ func listSnapshots(stagingDir string) ([]object.ID, error) {
 // has every selected metadata object's staged-but-not-yet-packed
 // children ahead of it. It returns that order and every snapshot's own
 // bytes, keyed by id.
-func buildPackOrder(stagingDir string, snapshotIDs []object.ID) ([]packUnit, map[object.ID][]byte, error) {
+//
+// A tree or blob onDisc already reports OnDisc is never read: rebuild-
+// cache records an object OnDisc without restoring its staging file, and
+// a fresh commit that dedups against an on-disc object never restages
+// it either, so the walk must not need that file to exist. Such an
+// object's own children are on the same disc that already holds it, so
+// the walk stops there instead of descending; its id still reaches its
+// parent's Children list for prereq detection.
+func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(object.ID) bool) ([]packUnit, map[object.ID][]byte, error) {
 	objectsRoot := filepath.Join(stagingDir, "objects")
 	snapshotsRoot := filepath.Join(stagingDir, "snapshots")
 
@@ -672,6 +684,10 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID) ([]packUnit, map
 	var visitTree func(id object.ID) error
 	visitTree = func(id object.ID) error {
 		if seen[id] {
+			return nil
+		}
+		if onDisc(id) {
+			seen[id] = true
 			return nil
 		}
 		data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
@@ -692,7 +708,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID) ([]packUnit, map
 				}
 			case format.EntryTypeRegular:
 				children = append(children, object.ID(entry.ContentID))
-				if err := visitBlob(objectsRoot, object.ID(entry.ContentID), seen, &order); err != nil {
+				if err := visitBlob(objectsRoot, object.ID(entry.ContentID), seen, &order, onDisc); err != nil {
 					return err
 				}
 			}
@@ -724,9 +740,14 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID) ([]packUnit, map
 }
 
 // visitBlob adds id's blob object and every chunk it lists, children
-// (the chunks) before the blob itself.
-func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order *[]packUnit) error {
+// (the chunks) before the blob itself. A blob onDisc already reports
+// OnDisc is never read, the same way visitTree treats one.
+func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order *[]packUnit, onDisc func(object.ID) bool) error {
 	if seen[id] {
+		return nil
+	}
+	if onDisc(id) {
+		seen[id] = true
 		return nil
 	}
 	data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
