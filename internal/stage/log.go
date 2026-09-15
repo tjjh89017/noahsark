@@ -230,11 +230,23 @@ func (l *Log) MarkPacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
 
 // EnsurePacked appends a Packed record for id, naming runSeq and
 // discUUID, unless id's current record already carries that exact run
-// and disc. This makes repeated rebuilding from the same discs
-// idempotent: it never grows the log when nothing has changed.
+// and disc, or the object has already moved past Packed. A disc's own
+// catalog only ever says an object was packed onto it; replaying that
+// catalog through rebuild-cache must never undo progress a verify or a
+// gc already recorded, so a record already Burned, Clean, GCEligible or
+// Deleted is left as it is. This also makes repeated rebuilding from the
+// same discs idempotent: it never grows the log when nothing has
+// changed.
 func (l *Log) EnsurePacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
-	if rec, ok := l.current[id]; ok && rec.State == Packed && rec.RunSeq == runSeq && rec.DiscUUID == discUUID {
-		return nil
+	if rec, ok := l.current[id]; ok {
+		switch rec.State {
+		case Packed:
+			if rec.RunSeq == runSeq && rec.DiscUUID == discUUID {
+				return nil
+			}
+		case Burned, Clean, GCEligible, Deleted:
+			return nil
+		}
 	}
 	return l.MarkPacked(id, runSeq, discUUID)
 }

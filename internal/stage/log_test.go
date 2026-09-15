@@ -115,6 +115,97 @@ func TestEnsurePackedIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestEnsurePackedKeepsProgressPastPacked checks that replaying a
+// disc's own catalog through EnsurePacked never undoes progress a
+// verify or a gc already recorded: an object already Burned, Clean,
+// GCEligible or Deleted stays exactly there.
+func TestEnsurePackedKeepsProgressPastPacked(t *testing.T) {
+	var discUUID [16]byte
+	discUUID[0] = 0x11
+
+	for _, state := range []State{Burned, Clean, GCEligible, Deleted} {
+		t.Run(stateName(state), func(t *testing.T) {
+			dir := t.TempDir()
+			l, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := object.ComputeID([]byte("chunk"))
+
+			if err := l.MarkPacked(id, 1, discUUID); err != nil {
+				t.Fatal(err)
+			}
+			switch state {
+			case Burned:
+				if err := l.MarkBurned(id, 1, discUUID); err != nil {
+					t.Fatal(err)
+				}
+			case Clean:
+				if err := l.MarkBurned(id, 1, discUUID); err != nil {
+					t.Fatal(err)
+				}
+				if err := l.MarkClean(id); err != nil {
+					t.Fatal(err)
+				}
+			case GCEligible:
+				if err := l.MarkBurned(id, 1, discUUID); err != nil {
+					t.Fatal(err)
+				}
+				if err := l.MarkClean(id); err != nil {
+					t.Fatal(err)
+				}
+				if err := l.MarkGCEligible(id); err != nil {
+					t.Fatal(err)
+				}
+			case Deleted:
+				if err := l.MarkBurned(id, 1, discUUID); err != nil {
+					t.Fatal(err)
+				}
+				if err := l.MarkClean(id); err != nil {
+					t.Fatal(err)
+				}
+				if err := l.MarkGCEligible(id); err != nil {
+					t.Fatal(err)
+				}
+				if err := l.MarkDeleted(id); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			seqBefore, _ := l.Get(id)
+			if err := l.EnsurePacked(id, 1, discUUID); err != nil {
+				t.Fatal(err)
+			}
+			rec, ok := l.Get(id)
+			if !ok || rec.State != state {
+				t.Fatalf("EnsurePacked changed state to %+v, want unchanged %v", rec, state)
+			}
+			if rec.Sequence != seqBefore.Sequence {
+				t.Fatalf("EnsurePacked appended a record: sequence %d, want unchanged %d", rec.Sequence, seqBefore.Sequence)
+			}
+		})
+	}
+}
+
+func stateName(s State) string {
+	switch s {
+	case Staged:
+		return "Staged"
+	case Packed:
+		return "Packed"
+	case Burned:
+		return "Burned"
+	case Clean:
+		return "Clean"
+	case GCEligible:
+		return "GCEligible"
+	case Deleted:
+		return "Deleted"
+	default:
+		return "unknown"
+	}
+}
+
 func TestCountState(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)

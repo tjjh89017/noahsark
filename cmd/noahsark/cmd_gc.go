@@ -268,14 +268,19 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool, stdout io.Wr
 				continue
 			}
 		}
-		if err := os.Remove(o.path); err != nil && !os.IsNotExist(err) {
+		removeErr := os.Remove(o.path)
+		if removeErr != nil && !os.IsNotExist(removeErr) {
 			continue
 		}
 		if err := l.MarkDeleted(o.id); err != nil {
 			continue
 		}
-		deleted++
-		bytesFreed += o.size
+		// A file already gone (IsNotExist) frees nothing this run: count
+		// and report only the bytes and objects an actual removal freed.
+		if removeErr == nil {
+			deleted++
+			bytesFreed += o.size
+		}
 	}
 	return deleted, bytesFreed
 }
