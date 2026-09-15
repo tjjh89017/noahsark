@@ -127,6 +127,50 @@ func TestGCRetentionGate(t *testing.T) {
 	}
 }
 
+// TestGCDryRunDefaultIsASummary checks that gc --dry-run, without
+// --verbose, prints no per-object "would delete" line, only the
+// staging totals and one grouped line per run; --verbose restores the
+// old per-object listing.
+func TestGCDryRunDefaultIsASummary(t *testing.T) {
+	oldClock := gcClock
+	defer func() { gcClock = oldClock }()
+
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
+
+	before := time.Now()
+	packAndVerifyDisc(t, work, repo, src)
+	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+
+	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	if code != 0 {
+		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "would delete 0 object") {
+		t.Fatalf("gc --dry-run output %q, want more than 0 objects", out)
+	}
+	if !strings.Contains(out, "would delete: run ") {
+		t.Fatalf("gc --dry-run output %q missing the grouped run summary line", out)
+	}
+	if strings.Contains(out, "bytes, run ") {
+		t.Fatalf("gc --dry-run output %q printed a per-object line, want the summary only", out)
+	}
+
+	code, out = runCmd(t, "gc", "--repo="+repo, "--dry-run", "--verbose")
+	if code != 0 {
+		t.Fatalf("gc --dry-run --verbose: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "bytes, run ") {
+		t.Fatalf("gc --dry-run --verbose output %q missing a per-object line", out)
+	}
+}
+
 // countFiles counts the regular files under dir, recursively.
 func countFiles(dir string) (int, error) {
 	n := 0
