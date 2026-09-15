@@ -399,15 +399,26 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 	reportSpoolBytes(spoolBytes)
 
 	scanner := bufio.NewScanner(restoreStdin)
+	var prevDiscUUID [16]byte
+	havePrevDisc := false
 	for i, d := range result.Discs {
 		wanted := wantedChunkEntries(d, m)
 		if len(wanted) == 0 {
 			continue
 		}
-		if err := detectDisc(mountDir, c, d, interactive, scanner, stdout, stderr); err != nil {
+		// With --no-eject, the disc detectDisc reads first is still the
+		// one this loop just finished: that is not a wrong disc, only
+		// the operator not having swapped it out yet, so it does not
+		// get the "expected ... found ..." mismatch line.
+		skipUUID, haveSkipUUID := [16]byte{}, false
+		if noEject && havePrevDisc {
+			skipUUID, haveSkipUUID = prevDiscUUID, true
+		}
+		if err := detectDisc(mountDir, c, d, interactive, scanner, stdout, stderr, skipUUID, haveSkipUUID); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 			return 2
 		}
+		prevDiscUUID, havePrevDisc = d.DiscUUID, true
 
 		totalPasses := passSplit.DiscPasses[i]
 		passNum := 0
@@ -575,7 +586,14 @@ var discSwapRetryPause = 300 * time.Millisecond
 // OPERATIONS.md's "14.6 Disc detection": no prompt when the expected
 // disc is already there, unless interactive is set; a prompt, and a
 // mismatch report, otherwise.
-func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, interactive bool, scanner *bufio.Scanner, stdout, stderr io.Writer) error {
+// skipUUID, when haveSkipUUID is true, is a disc uuid the very first
+// read must not report as a mismatch even though it is not d's own
+// disc: with --no-eject, the disc still in the drive right after a
+// read is the one the restore loop just finished, not a wrong disc the
+// operator inserted, so it does not get the "expected ... found ..."
+// line before the first prompt for d. A later, still-wrong read, once
+// the operator has already been prompted once, is reported normally.
+func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, interactive bool, scanner *bufio.Scanner, stdout, stderr io.Writer, skipUUID [16]byte, haveSkipUUID bool) error {
 	unreadable := 0
 	// promptedOnce becomes true after the first prompt this call has
 	// shown, so --interactive prompts exactly once per disc rather than
@@ -597,8 +615,10 @@ func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, interactive b
 				return nil
 			}
 		default:
-			_, _ = fmt.Fprintf(stderr, "expected disc %s (%s), found %s (%s)\n",
-				plan.UUIDText(d.DiscUUID), d.Label, plan.UUIDText(uuid), labelForUUID(c, uuid))
+			if promptedOnce || !haveSkipUUID || uuid != skipUUID {
+				_, _ = fmt.Fprintf(stderr, "expected disc %s (%s), found %s (%s)\n",
+					plan.UUIDText(d.DiscUUID), d.Label, plan.UUIDText(uuid), labelForUUID(c, uuid))
+			}
 		}
 		_, _ = fmt.Fprintf(stderr, "insert disc %d %q (uuid %s) into %s and press Enter\n",
 			d.DiscSeq, d.Label, plan.UUIDText(d.DiscUUID), mountDir)

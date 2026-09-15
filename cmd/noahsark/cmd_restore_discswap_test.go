@@ -326,7 +326,57 @@ func TestRestoreDiscSwapNoEject(t *testing.T) {
 	if strings.Contains(out, "umount") || strings.Contains(out, "eject") {
 		t.Fatalf("restore --no-eject output %q mentions eject", out)
 	}
+	if strings.Contains(out, "expected disc") {
+		t.Fatalf("restore --no-eject output %q reported a mismatch for the disc the loop just finished, want none before the first prompt", out)
+	}
+	if !strings.Contains(out, "insert disc") {
+		t.Fatalf("restore --no-eject output %q missing the prompt to swap discs", out)
+	}
 	compareTrees(t, filepath.Join(outDir, src), src)
+}
+
+// TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch checks that
+// --no-eject only suppresses the mismatch line for the disc the loop
+// just finished: once the operator has been prompted once, and a
+// second, different disc is inserted, that is reported the normal way.
+func TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo, snapID, _, discRoots := discSwapFixture(t)
+	seqs := planOrderDiscSeqs(t, "--repo="+repo, snapID)
+	if len(seqs) != 2 {
+		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
+	}
+
+	// A disc from an unrelated repository: neither disc the plan wants.
+	bogusWork := t.TempDir()
+	bogusRepo := filepath.Join(bogusWork, "repo")
+	if code, out := runCmd(t, "init", "--repo="+bogusRepo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init bogus repo: exit %d: %s", code, out)
+	}
+	bogusSrc := writeFixtureSource(t)
+	if code, out := runCmd(t, "commit", "--repo="+bogusRepo, bogusSrc); code != 0 {
+		t.Fatalf("commit bogus repo: exit %d: %s", code, out)
+	}
+	bogusDisc := filepath.Join(bogusWork, "disc")
+	if code, out := runCmd(t, "pack", "--repo="+bogusRepo, "--out="+bogusDisc); code != 0 {
+		t.Fatalf("pack bogus repo: exit %d: %s", code, out)
+	}
+
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	mountDisc(t, mountDir, discRoots[seqs[0]])
+	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+		func() { mountDisc(t, mountDir, bogusDisc) },          // wrong disc, not the previous one
+		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) }, // now the right one
+	}})
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--no-eject", snapID, outDir)
+	if code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, out)
+	}
+	if strings.Count(out, "expected disc") != 1 {
+		t.Fatalf("restore --no-eject output %q, want exactly one mismatch report (for the bogus disc, not the disc the loop just finished): %d", out, strings.Count(out, "expected disc"))
+	}
 }
 
 // TestRestoreMountUnknownRefNamesProvidedDiscs checks that restore
