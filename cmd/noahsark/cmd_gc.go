@@ -25,16 +25,11 @@ var gcClock = time.Now
 // answer from. Tests replace it with a pipe.
 var gcStdin io.Reader = os.Stdin
 
-// gcStdinIsTerminal reports whether gc's real stdin is a terminal, using
-// only the standard library: stdin is a terminal when its mode carries
-// the character-device bit. Tests replace this to exercise the
-// confirmation prompt without a real terminal attached.
+// gcStdinIsTerminal reports whether gc's real stdin is a terminal. Tests
+// replace this to exercise the confirmation prompt without a real
+// terminal attached.
 var gcStdinIsTerminal = func() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return isTerminal(os.Stdin)
 }
 
 // cmdGC implements "noahsark gc". OPERATIONS.md's own CLI reference

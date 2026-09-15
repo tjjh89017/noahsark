@@ -118,16 +118,11 @@ func extractProgressFlags(args []string, stderr io.Writer) ([]string, *progress.
 }
 
 // stderrIsTerminal reports whether the process's real standard error is
-// a character device, which is how a terminal is told apart from a file
-// or a pipe. It always checks the process's own os.Stderr, never a
+// a terminal. It always checks the process's own os.Stderr, never a
 // writer a caller substituted, since a progress line's whole purpose is
 // to be readable by a human watching a real terminal.
 func stderrIsTerminal() bool {
-	info, err := os.Stderr.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return isTerminal(os.Stderr)
 }
 
 func printUsage(w io.Writer) {

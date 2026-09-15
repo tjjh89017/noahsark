@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,6 +122,51 @@ func TestGCForceAfterRefusesNonTerminalWithoutYes(t *testing.T) {
 		t.Fatalf("gc --force-after=1h (non-terminal, no --yes): exit %d, want 2: %s", code, out)
 	}
 	if !strings.Contains(out, "not a terminal") {
+		t.Fatalf("gc output %q missing the non-terminal refusal", out)
+	}
+}
+
+// TestGCForceAfterDevNullIsNotATerminal checks the real terminal check,
+// not a faked one: a process whose stdin is /dev/null must be refused
+// the same way a script's closed or redirected stdin is. /dev/null is a
+// character device, so a mode-bit check alone misreads it as a
+// terminal; only an ioctl TCGETS check tells them apart.
+func TestGCForceAfterDevNullIsNotATerminal(t *testing.T) {
+	oldClock := gcClock
+	defer func() { gcClock = oldClock }()
+	oldStdin := os.Stdin
+	defer func() { os.Stdin = oldStdin }()
+
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = null.Close() }()
+	os.Stdin = null
+
+	oldGCStdin, oldTerm := gcStdin, gcStdinIsTerminal
+	gcStdin = null
+	gcStdinIsTerminal = func() bool { return isTerminal(os.Stdin) }
+	defer func() { gcStdin, gcStdinIsTerminal = oldGCStdin, oldTerm }()
+
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
+
+	before := time.Now()
+	packAndVerifyDisc(t, work, repo, src)
+	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+
+	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h")
+	if code != 2 {
+		t.Fatalf("gc --force-after=1h (stdin /dev/null): exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "stdin is not a terminal, pass --yes") {
 		t.Fatalf("gc output %q missing the non-terminal refusal", out)
 	}
 }
