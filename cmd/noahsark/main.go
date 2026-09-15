@@ -132,7 +132,7 @@ Phase 1 commands:
   init    Set up a repository directory.
   commit  SOURCE [--ref=NAME]
   pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]
-  image build --out=FILE [--capacity=N] TREE-DIR
+  image build --out=FILE [--capacity=N] [--force] TREE-DIR
   verify  [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]
   restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
   restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] SNAPSHOT OUT-DIR

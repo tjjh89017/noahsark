@@ -274,6 +274,10 @@ sudo ./noahsark image build --out=run2.img --capacity=bd25 /srv/noahsark/plans/r
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run2.img
 ```
 
+`image build` refuses to overwrite an existing `--out` path; pass
+`--force` to rebuild over one on purpose, for example after a failed
+attempt.
+
 Path B burns the packed folder directly, no image step; `growisofs`
 calls `genisoimage` itself when given a directory:
 

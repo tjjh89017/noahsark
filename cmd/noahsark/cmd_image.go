@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -17,11 +18,11 @@ import (
 // docs/decisions.md, "16. CLI reference".
 func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR")
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
+		_, _ = fmt.Fprintln(stdout, "usage: noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR")
 		return 0
 	}
 	if args[0] != "build" {
@@ -32,10 +33,11 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 2
 	}
 
-	fs := newFlagSet("noahsark image build --out=FILE [--capacity=N] TREE-DIR",
+	fs := newFlagSet("noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR",
 		"Build a disc image from a packed tree directory.", stderr)
 	out := fs.String("out", "", "output image path")
 	capacityStr := fs.String("capacity", "", "image length (sectors, or e.g. 25GB)")
+	force := fs.Bool("force", false, "overwrite --out if it already exists")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -43,10 +45,20 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 2
 	}
 	if fs.NArg() != 1 || *out == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR")
 		return 2
 	}
 	treeDir := fs.Arg(0)
+
+	if !*force {
+		if _, err := os.Stat(*out); err == nil {
+			_, _ = fmt.Fprintf(stderr, "noahsark: image build: --out=%s already exists; pass --force to overwrite it\n", *out)
+			return 2
+		} else if !os.IsNotExist(err) {
+			_, _ = fmt.Fprintln(stderr, "noahsark: image build:", err)
+			return 1
+		}
+	}
 
 	if *capacityStr == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: image build: --capacity is required")
