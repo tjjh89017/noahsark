@@ -107,7 +107,25 @@ func TestResolveDiscArgNoMatchListsCandidates(t *testing.T) {
 	if !strings.Contains(err.Error(), "matches no disc") {
 		t.Fatalf("error = %q, want the no-match wording", err)
 	}
+	if !strings.Contains(err.Error(), "labels must match exactly") {
+		t.Fatalf("error = %q, want the labels-must-match-exactly hint", err)
+	}
 	if strings.Count(err.Error(), "\n") != 2 {
 		t.Fatalf("error = %q, want the full disc list as candidates", err)
+	}
+}
+
+// TestResolveDiscArgNoMatchOnAPartialLabel checks the exact scenario
+// the labels-must-match-exactly hint targets: a label argument that is
+// a true substring of the real label, such as pack's own --label text
+// minus its date prefix.
+func TestResolveDiscArgNoMatchOnAPartialLabel(t *testing.T) {
+	rows := []format.DiscsRow{discArgRow(0, "2026-09-21 run2", 0xaa)}
+	_, err := resolveDiscArg(rows, "run2")
+	if err == nil {
+		t.Fatal("resolveDiscArg(run2): expected a no-match error")
+	}
+	if !strings.Contains(err.Error(), "labels must match exactly") {
+		t.Fatalf("error = %q, want the labels-must-match-exactly hint", err)
 	}
 }

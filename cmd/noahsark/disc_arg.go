@@ -149,7 +149,7 @@ func resolveDiscArg(rows []format.DiscsRow, arg string) ([16]byte, error) {
 // matched no disc, listing every disc in the repository, one per line,
 // as "seq  label  uuid-prefix".
 func refuseDiscArgNoMatch(arg string, discs []discArgCandidate) error {
-	return fmt.Errorf("%q matches no disc in this repository's disc list%s", arg, candidateLines(discs))
+	return fmt.Errorf("%q matches no disc in this repository's disc list; labels must match exactly%s", arg, candidateLines(discs))
 }
 
 // refuseDiscArgAmbiguous builds the error resolveDiscArg returns when
