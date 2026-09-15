@@ -26,11 +26,11 @@ import (
 // and this build has no `burn` command to record it automatically.
 func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json] | disc burned [--undo] UUID [UUID...]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json] | disc burned [--undo] DISC [DISC...]")
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json] | disc burned [--undo] UUID [UUID...]")
+		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json] | disc burned [--undo] DISC [DISC...]")
 		return 0
 	}
 	sub := args[0]
@@ -53,14 +53,14 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// cmdDiscBurned implements "noahsark disc burned [--undo] UUID [UUID...]".
+// cmdDiscBurned implements "noahsark disc burned [--undo] DISC [DISC...]".
 // It moves every PACKED object of each named disc's runs to BURNED,
 // standing in for the missing `burn` command: the operator runs it
 // right after burning both twins by hand. --undo reverses that, for a
 // burn that turned out bad, moving BURNED objects back to PACKED with
 // the burn-failed reason.
 func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark disc burned [--undo] UUID [UUID...]",
+	fs := newFlagSet("noahsark disc burned [--undo] DISC [DISC...]",
 		"Mark a disc burned, moving its PACKED objects to BURNED.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	undo := fs.Bool("undo", false, "undo: move BURNED objects back to PACKED, for a burn that turned out bad")
@@ -71,7 +71,7 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned [--undo] UUID [UUID...]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned [--undo] DISC [DISC...]")
 		return 2
 	}
 

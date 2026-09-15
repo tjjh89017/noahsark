@@ -129,8 +129,14 @@ On each disc's sleeve, in permanent marker, write:
 
 A `restore` or `rebuild-cache` error naming a missing disc also names
 its full uuid; the 8-character prefix on the sleeve is enough to match
-it back to `disc list`'s output. `disc burned`, though, takes the full
-uuid, not the 8-character prefix; copy it whole from `disc list`.
+it back to `disc list`'s output. `disc burned` accepts that same
+prefix (8 or more hex characters, as long as it names only one disc),
+the `seq` number, the full uuid, or the label text, so any of the
+values already on the sleeve work; an ambiguous or unknown value is
+refused with the candidate discs listed. Write a label that makes the
+seq easy to read at a glance (`2026-09-14 run1`, matching the `--label`
+given to `pack`), so the sleeve alone is enough to type back either the
+seq or the label.
 
 Take twin B off-site immediately: a second physical location, not a
 second shelf in the same room, is what makes the pair a real backup.
@@ -285,7 +291,7 @@ Tell the staging state machine the burn happened, then verify each disc
 by mounting it and reading it back through the filesystem:
 
 ```sh
-./noahsark disc burned --repo=/srv/noahsark/repo <disc uuid>
+./noahsark disc burned --repo=/srv/noahsark/repo 1
 
 sudo mkdir -p /mnt/noahsark
 sudo mount /dev/sr0 /mnt/noahsark
@@ -293,9 +299,11 @@ sudo mount /dev/sr0 /mnt/noahsark
 sudo umount /mnt/noahsark
 ```
 
-`disc burned` is the step that moves this run's objects from PACKED to
-BURNED; `pack`'s own next-steps output already prints the exact command
-line, uuid included. It has to be a separate, explicit step: `verify`
+`1` above is this disc's `seq`, from `pack`'s own "next steps" output
+(`disc burned --repo=... <uuid>`) or `disc list`; the label
+(`"2026-09-21 run2"`) works too. `disc burned` is the step that moves
+this run's objects from PACKED to BURNED. It has to be a separate,
+explicit step: `verify`
 never assumes a tree it can read is a burned disc just because its uuid
 is in the ledger, since `pack` writes the ledger before anyone burns
 anything, and section 10 below has you loop-mount and verify the image
@@ -333,9 +341,10 @@ drill can reach it.
 
 Once both twins are burned, the sequence for each is always the same:
 
-1. Run `noahsark disc burned --repo=/srv/noahsark/repo <disc uuid>`,
-   the exact command line `pack` printed. This moves the run's objects
-   from PACKED to BURNED.
+1. Run `noahsark disc burned --repo=/srv/noahsark/repo <seq>`, using
+   the disc's `seq` or label off the sleeve (the full uuid `pack`
+   printed still works too). This moves the run's objects from PACKED
+   to BURNED.
 2. Mount it and run `noahsark verify --repo=/srv/noahsark/repo
    --image=<mount point>`, as above. Do this before the disc leaves the
    room. On success this moves the same objects on to CLEAN; see
@@ -408,6 +417,18 @@ deleted state log alone, with the config file and `refs.txt` untouched,
 since `rebuild-cache` rewrites the state log, the disc ledger, and the
 local refs from the discs regardless of what survived.
 
+When `/srv/noahsark/repo` is gone outright, do not run `init` first:
+`rebuild-cache --repo=DIR` creates the directory itself and restores
+`repo.uuid` from the discs' own `repo_uuid`. An `init` run ahead of it
+leaves a freshly generated `repo.uuid` that does not match the discs,
+and `rebuild-cache` refuses with a uuid mismatch rather than silently
+adopting the discs' identity. The config `rebuild-cache` writes carries
+only `repo.uuid` and `staging.dir`; it does not carry
+`disc.force_capacity` or any other key an earlier `init --capacity=`
+set, so the next `pack` needs `--capacity=` on the command line again,
+or the key set back into the config, until it is packed with a forced
+capacity once more.
+
 With a single drive, mounting every disc at once is not possible: run
 `rebuild-cache --from-disc --disc=<mount point>` once per disc instead,
 swapping discs between runs, into the same `--repo`. Each run marks
@@ -430,10 +451,14 @@ chain is accounted for.
 Replaying a disc's catalog through `rebuild-cache` never resets an
 object past PACKED back to PACKED: an object the state log already
 carries as BURNED, CLEAN, GC-ELIGIBLE or DELETED stays exactly there.
-So after rebuilding a repository directory lost outright, `gc` still
-works from the rebuilt state log alone, without repeating `disc
-burned` and `verify` for discs already burned and verified before the
-loss.
+That rule protects a *surviving* state log, corrupted or only partly
+fed; it has nothing left to protect once the repository directory is
+gone outright, since the state log itself is gone with it.
+`rebuild-cache` against a fresh directory has no record that any disc
+was ever burned or verified, so every object it replays comes back at
+PACKED, no further. Run `disc burned <seq>` and `verify` again for
+every disc, the same as the first time, before `gc` has anything CLEAN
+to work with.
 
 ## 7. Disk space
 
@@ -442,7 +467,7 @@ a disc. An object leaves the staging store only after this full cycle:
 
 1. **Burn** both twins, as section 4 above already describes.
 2. **Mark it burned**: `noahsark disc burned --repo=/srv/noahsark/repo
-   <disc uuid>`. This moves the run's objects from PACKED to BURNED. It
+   <seq>`. This moves the run's objects from PACKED to BURNED. It
    has to be a separate step from verify: a loop-mounted image checked
    before burning (section 10) has the same disc uuid already in the
    ledger, so verify cannot treat a ledger match alone as proof that a
@@ -475,9 +500,13 @@ a disc. An object leaves the staging store only after this full cycle:
    `noahsark gc --repo=/srv/noahsark/repo --dry-run` first to see what
    it would free without deleting anything: `--dry-run` always exits 0,
    printing `gc: nothing is eligible yet` and the earliest date some
-   object reaches the retention period when nothing is eligible yet. A
-   real `gc` run exits 1 when nothing was eligible to delete, 2 on
-   failure, and 0 once it deletes something.
+   object reaches the retention period when nothing is eligible yet. By
+   default `--dry-run` prints only totals, staging and cache, plus one
+   summary line per run it would delete from; add `--verbose` for the
+   older one-line-per-object listing, useful when you need to see
+   exactly which objects, not just how many. A real `gc` run exits 1
+   when nothing was eligible to delete, 2 on failure, and 0 once it
+   deletes something.
 
    `--force-after=DURATION` shortens the retention to `DURATION` for
    this one `gc` run only, ignoring `staging.retain_after_clean`,
@@ -666,6 +695,20 @@ it also prints how many files that spool let it skip re-reading:
 resumed: 4 file(s) already restored
 ```
 
+`restore` treats a file already present in `OUT-DIR`, without
+`--overwrite`, as done when its size matches the snapshot's tree entry
+and either its modification time also matches or, failing that, its
+content hashes to the same chunks the tree records; such a file is
+counted in the `resumed:` total above and never touched again, so a
+rerun after an interruption does not re-fetch or rewrite what already
+landed correctly. A present file that disagrees on size, or on both
+mtime and content, is left alone too, still without `--overwrite`, but
+counted separately, as a `skipped %d existing path(s); pass --overwrite
+to replace them` line: that is the ordinary conflict, a stale copy
+already at that path from something else. `--overwrite` unlinks and
+rewrites every file unconditionally, whether it was resumable or a
+genuine conflict, so neither line prints when it is given.
+
 Pass `--plan=FILE` with a plan `plan --out=FILE` already wrote, in
 place of letting `restore` build its own: useful when a script plans
 once, on a machine with the cache handy, and hands the plan file to
@@ -825,6 +868,11 @@ named refusal; it is never a silent misread.
 - **`verify` reports a checksum mismatch or fails.** Same as a failed
   mount: throw the disc away, burn a fresh replacement, and verify
   that one before trusting it.
+- **`verify --repo=REPO` says a disc `is not in repository REPO`.**
+  The disc's uuid is not in that repository's disc list: check `--repo`
+  points at the repository that actually packed this disc, or run
+  `noahsark rebuild-cache --from-disc --disc=<mount point>` against
+  that repository to add it.
 - **`pack` reports `remaining staged` and exits 1.** The source did
   not fit the given capacity. Pack again with a fresh `--out`
   directory for another disc in the same cycle; loop pack, burn,
@@ -849,8 +897,20 @@ named refusal; it is never a silent misread.
   by no provided disc's INDEX`.** This is what an older disc alone
   looks like when a newer disc that actually stores the needed objects
   is missing: an older disc's own INDEX and Prereqs tables cannot name
-  a disc burned after it, so restore cannot even point at a uuid.
-  Mount more of the chain, newest discs included, and try again.
+  a disc burned after it, so restore cannot even point at a uuid. When
+  a provided disc's own DISCS table still names candidate discs, even
+  without knowing which one holds the missing objects, the message adds
+  `disc(s) not provided, that may hold them:`, one per indented line,
+  the same shape the `missing disc(s):` case uses. Mount more of the
+  chain, newest discs included, and try again.
+- **A restore or `ls` by ref name says the ref `is not on the provided
+  disc(s)`.** You gave discs (`--disc`, `--discs-dir`, or `--mount`),
+  but none of them carries that ref in its REFS table yet; a later disc
+  in the chain, not among those given, may carry it. Mount more of the
+  chain, newest discs included, and try again. (Without any disc given,
+  ls, log and plan resolve a ref from the local cache instead, and
+  report an unknown name as `is neither a snapshot id nor a known ref
+  name`.)
 - **`growisofs` prints `unexpected errno:No such file or directory`.**
   The device node (`/dev/sr0`) does not exist: check the drive is
   connected and that you named the right device.

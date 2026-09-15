@@ -24,6 +24,14 @@ calls `go run ./test/e2e/disc/cmd/ci-corrupt` and `ci-heal` directly,
 two test-only tools that live under `test/e2e/disc/cmd`, and it must
 run from a checkout of this repository.
 
+The experiment assumes a fresh repository, packed once, so the whole
+snapshot fits on this one disc: the `restore` calls below give only
+`/mnt/noahsark`, the single disc root. On an incremental repository,
+where the snapshot spans more than one disc, that same restore command
+asks for the earlier discs too; give it every disc root instead
+(`--disc=` repeated, or `--discs-dir=`), the same as
+`docs/walkthrough.md` section 8 describes.
+
 ```sh
 go build -o noahsark ./cmd/noahsark
 ./noahsark init --repo=repo --capacity=25GB

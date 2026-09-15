@@ -26,7 +26,7 @@ import (
 // directory. See docs/decisions.md, "16. CLI reference" and
 // "2.5 Cache rebuild levels".
 func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]",
+	fs := newFlagSet("noahsark rebuild-cache --from-disc [--disc=ROOT]... [--discs-dir=DIR] [--level=1] [--snapshot=ID]",
 		"Rebuild the local repository state from one or more discs.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory to create or use")
 	level := fs.Int("level", 1, "cache rebuild level: 1, 2 or 3")

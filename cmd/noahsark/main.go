@@ -140,9 +140,9 @@ Phase 1 commands:
   ls      [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
   log     [DISC-ROOT] [REF|SNAPSHOT] [--limit=N] [--json]
   plan    [--include=PATH]... [--out=FILE] SNAPSHOT
-  rebuild-cache --from-disc DISC-ROOT... [--level=1] [--snapshot=ID]
+  rebuild-cache --from-disc [--disc=ROOT]... [--discs-dir=DIR] [--level=1] [--snapshot=ID]
   disc list [--json]
-  disc burned [--undo] UUID [UUID...]
+  disc burned [--undo] DISC [DISC...]
   gc      [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]
 
 ls and log resolve SNAPSHOT through the local cache when no disc is
