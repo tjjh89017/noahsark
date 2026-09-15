@@ -115,15 +115,27 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: cache:", err)
 	}
 
-	var packedObjects int
+	// EnsurePacked never resets an object past PACKED: an object already
+	// CLEAN, BURNED or later stays there. Count the two outcomes
+	// separately, so the summary never claims an object is PACKED when
+	// it is, in fact, further along.
+	var packedObjects, alreadyPastPacked int
 	for _, rr := range results {
 		for _, row := range rr.Index.Objects {
 			id := object.ID(row.ContentID)
+			wasPastPacked := false
+			if rec, ok := stageLog.Get(id); ok && rec.State != stage.Packed {
+				wasPastPacked = true
+			}
 			if err := stageLog.EnsurePacked(id, rr.Run.RunSeq, rr.Disc.DiscUUID); err != nil {
 				_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 				return 1
 			}
-			packedObjects++
+			if wasPastPacked {
+				alreadyPastPacked++
+			} else {
+				packedObjects++
+			}
 		}
 		// This disc's own catalog was just replayed above: record it as
 		// fed, not merely named by some other disc's copy of its DISCS
@@ -182,7 +194,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	}
 
 	_, _ = fmt.Fprintf(stdout, "rebuild-cache: level 1, %d disc(s) read, repo %s\n", len(results), repoDir)
-	_, _ = fmt.Fprintf(stdout, "objects recorded packed: %d\n", packedObjects)
+	_, _ = fmt.Fprintf(stdout, "objects recorded: %d packed, %d already past packed (clean or burned)\n", packedObjects, alreadyPastPacked)
 	_, _ = fmt.Fprintf(stdout, "discs known: %d, refs restored: %d\n", len(discRows), len(refs))
 
 	notFed := discsNotFed(discRows, stageLog)

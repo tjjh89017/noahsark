@@ -117,6 +117,48 @@ func TestRebuildCacheIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRebuildCacheWordingDoesNotClaimClean checks that rebuild-cache's
+// summary line never claims CLEAN objects are PACKED: after disc burned
+// and a passing verify move a run's objects to CLEAN, a rebuild-cache
+// of the same disc, with the state log still in place, must report
+// those objects as already past packed, not as newly recorded packed.
+func TestRebuildCacheWordingDoesNotClaimClean(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	treeDir := packedTreeDir(t, packOut)
+	discUUID := packedDiscUUID(t, packOut)
+
+	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+		t.Fatalf("disc burned: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+treeDir); code != 0 {
+		t.Fatalf("verify: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir)
+	if code != 0 {
+		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "recorded packed:") {
+		t.Fatalf("rebuild-cache output %q uses the old wording, which would claim CLEAN objects are PACKED", out)
+	}
+	if !strings.Contains(out, "already past packed") {
+		t.Fatalf("rebuild-cache output %q missing a count of objects already past packed", out)
+	}
+}
+
 // TestRebuildCachePartialNamesMissingDisc packs a sequence across three
 // small discs, deletes the repository, and rebuilds from only the last
 // disc: the rebuild must exit 1 and name the earlier discs' uuids.
