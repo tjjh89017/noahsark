@@ -106,6 +106,15 @@ type logRecord struct {
 	Roots            []string `json:"roots"`
 	ReachableObjects uint64   `json:"reachable_objects"`
 	TotalSize        uint64   `json:"total_size"`
+
+	// timeNanos is the snapshot's own time, at the full precision the
+	// snapshot record carries, unexported so it never reaches the JSON
+	// or text output: Time above is already the printed form,
+	// truncated to whole seconds. logAll's sort uses this so two
+	// snapshots committed in the same second, which tie on the printed
+	// Time, still order newest first when the record's own nanoseconds
+	// tell them apart.
+	timeNanos int64
 }
 
 // logAll lists every snapshot the provided discs know, newest first,
@@ -131,7 +140,25 @@ func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Write
 		}
 		records = append(records, buildLogRecord(src, id, snap, refs))
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].Time > records[j].Time })
+	// The printed Time has only one-second resolution, so two snapshots
+	// committed in the same second tie on it; sort by the record's own
+	// full-precision time instead, so that tie is already broken by
+	// real recency rather than only by display rounding. A further tie
+	// there (the same nanosecond, or Phase 1's constant generation 1)
+	// falls back to generation descending, then snapshot id ascending,
+	// the same order FORMAT.md uses for a run's snapshots, so the
+	// result is stable across runs of log instead of depending on
+	// sort.Slice's own unstable ordering of equal elements.
+	sort.Slice(records, func(i, j int) bool {
+		a, b := records[i], records[j]
+		if a.timeNanos != b.timeNanos {
+			return a.timeNanos > b.timeNanos
+		}
+		if a.Generation != b.Generation {
+			return a.Generation > b.Generation
+		}
+		return a.ID < b.ID
+	})
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
 	}
@@ -205,6 +232,7 @@ func buildLogRecord(src snapshotSource, id object.ID, snap *format.Snapshot, ref
 		Time:             time.Unix(snap.TimeSec, int64(snap.TimeNsec)).UTC().Format(time.RFC3339),
 		ReachableObjects: snap.ReachableObjectCount,
 		TotalSize:        snap.TotalSize,
+		timeNanos:        snap.TimeSec*int64(time.Second) + int64(snap.TimeNsec),
 	}
 	if snap.Parent != ([32]byte{}) {
 		r.Parent = object.ID(snap.Parent).TextForm()
