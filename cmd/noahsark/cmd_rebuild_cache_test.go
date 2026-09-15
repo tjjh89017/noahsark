@@ -516,3 +516,58 @@ func TestRebuildCacheKeepsUnpackedRef(t *testing.T) {
 		t.Fatalf("log output does not mention ref X: %s", out)
 	}
 }
+
+// TestConfigStagingDirSurvivesRepositoryRename reproduces renaming a
+// repository directory out of the way before rebuilding a fresh one at
+// its old path: "mv repo repo.lost", then "rebuild-cache" into a new
+// "repo". A command still pointed at "repo.lost" (--repo=repo.lost)
+// must stage into repo.lost/staging, never into the new repo's own
+// staging directory, even though repo.lost's config was written
+// before the rename.
+func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	lost := filepath.Join(work, "repo.lost")
+	if err := os.Rename(repo, lost); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	}
+
+	// Now commit against the old, renamed directory: it must stage
+	// under repo.lost/staging, the directory that moved with it, not
+	// under the freshly rebuilt repo's own staging directory.
+	src2 := writeFixtureSource(t)
+	if code, out := runCmd(t, "commit", "--repo="+lost, src2); code != 0 {
+		t.Fatalf("commit --repo=%s: exit %d: %s", lost, code, out)
+	}
+	if entries, err := os.ReadDir(filepath.Join(lost, "staging", "objects")); err != nil {
+		t.Fatalf("read %s/staging/objects: %v", lost, err)
+	} else if len(entries) == 0 {
+		t.Fatalf("%s/staging/objects is empty; the commit staged somewhere else", lost)
+	}
+
+	rebuiltCount, err := countFiles(filepath.Join(repo, "staging", "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuiltCount != 0 {
+		t.Fatalf("the rebuilt repository's own staging/objects has %d file(s); the commit against --repo=%s leaked into it", rebuiltCount, lost)
+	}
+}

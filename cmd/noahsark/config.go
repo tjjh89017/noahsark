@@ -248,6 +248,16 @@ func readConfig(path string) (repoConfig, error) {
 	if err := sc.Err(); err != nil {
 		return repoConfig{}, err
 	}
+	// staging.dir defaults to, and init and rebuild-cache both write,
+	// a bare "staging" relative to the repository directory, so the
+	// staging store follows the repository if its directory is ever
+	// renamed or moved. Resolve it here, against path's own directory,
+	// so every caller of readConfig sees an absolute StagingDir without
+	// needing to know the repository directory separately. An absolute
+	// value some other tool wrote is left exactly as given.
+	if c.StagingDir != "" && !filepath.IsAbs(c.StagingDir) {
+		c.StagingDir = filepath.Join(filepath.Dir(path), c.StagingDir)
+	}
 	return c, nil
 }
 

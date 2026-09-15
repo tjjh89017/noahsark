@@ -73,8 +73,12 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cfg := repoConfig{
-		RepoUUID:             hex.EncodeToString(uuidBytes),
-		StagingDir:           stagingDir,
+		RepoUUID: hex.EncodeToString(uuidBytes),
+		// Written relative to the repository directory, so the staging
+		// store still follows the repository if its directory is later
+		// renamed or moved; readConfig resolves it back to an absolute
+		// path against the config file's own directory.
+		StagingDir:           "staging",
 		ForceCapacitySectors: capacitySectors,
 	}
 	if err := writeConfig(filepath.Join(absRepoPath, configFileName), cfg); err != nil {

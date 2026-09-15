@@ -299,7 +299,12 @@ func ensureRebuildRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 		return repoConfig{}, err
 	}
 	cfg := repoConfig{RepoUUID: hex.EncodeToString(repoUUID[:]), StagingDir: stagingDir}
-	if err := writeConfig(configPath(repoDir), cfg); err != nil {
+	// Written relative to the repository directory, the same as
+	// cmdInit, so it survives a later rename of repoDir; cfg itself
+	// keeps the absolute path this call's own caller needs right away.
+	fileCfg := cfg
+	fileCfg.StagingDir = "staging"
+	if err := writeConfig(configPath(repoDir), fileCfg); err != nil {
 		return repoConfig{}, err
 	}
 	return cfg, nil
