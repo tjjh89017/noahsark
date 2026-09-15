@@ -63,7 +63,7 @@ func (e *MissingDiscError) Error() string {
 	if len(e.Candidates) > 0 {
 		s.WriteString("; disc(s) not provided, that may hold them:")
 		for _, c := range e.Candidates {
-			_, _ = fmt.Fprintf(&s, " disc %s", uuidText(c.UUID))
+			_, _ = fmt.Fprintf(&s, "\n  disc %s", uuidText(c.UUID))
 			if c.Label != "" {
 				_, _ = fmt.Fprintf(&s, " (%s)", c.Label)
 			}

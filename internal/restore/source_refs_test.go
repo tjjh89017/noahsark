@@ -3,6 +3,7 @@ package restore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -145,6 +146,47 @@ func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	}
 	if len(refs.Records) != 2 {
 		t.Fatalf("merged Refs has %d records, want 2", len(refs.Records))
+	}
+}
+
+// TestSourceParseSnapshotArgUnknownRefNamesProvidedDiscs checks that
+// *Source.ParseSnapshotArg, given a ref name not in any provided disc's
+// merged REFS, reports it as not on the provided disc(s) rather than as
+// an unknown name outright: a later disc in the chain, not given here,
+// may still carry it.
+func TestSourceParseSnapshotArgUnknownRefNamesProvidedDiscs(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoUUID := [16]byte{9, 9, 9}
+
+	snap := commitRefsFixture(t, stagingDir, "only")
+	markRefsFixtureStaged(t, stagingDir, snap, l)
+	out := t.TempDir()
+	if _, err := image.Pack(image.PackOptions{
+		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "only", ID: snap, Time: multiFixedClock()}},
+		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
+		OutputDir: out, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
+		Now: multiFixedClock, StageLog: l,
+	}); err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+
+	src, err := OpenSource([]string{out})
+	if err != nil {
+		t.Fatalf("OpenSource: %v", err)
+	}
+	_, err = src.ParseSnapshotArg("later-disc-ref")
+	if err == nil {
+		t.Fatal("expected an error for a ref not on the provided disc")
+	}
+	if !strings.Contains(err.Error(), "not on the provided disc(s)") {
+		t.Fatalf("error = %q, want the provided-disc(s) wording", err)
+	}
+	if strings.Contains(err.Error(), "neither a snapshot id nor a known ref name") {
+		t.Fatalf("error = %q, want the disc-oriented wording, not the cache one", err)
 	}
 }
 

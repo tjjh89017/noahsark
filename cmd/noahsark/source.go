@@ -40,7 +40,11 @@ func (s *cacheSource) Refs() (*format.RefsTable, error) { return s.c.Refs() }
 func (s *cacheSource) SnapshotIDs() ([]object.ID, error) { return s.c.ListSnapshots() }
 
 // ParseSnapshotArg resolves arg as a snapshot id, or, failing that, as a
-// name in the cached REFS table, the same rule restore.Source uses.
+// name in the cached REFS table, the same rule restore.Source uses. A
+// ref found in neither is reported as a *refNotFoundError, so a caller
+// that knows discs were named on the command line (restore --mount) can
+// reword the message; ls, log and plan, which never name a disc here,
+// print it as returned.
 func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	if id, err := object.ParseID(arg); err == nil {
 		return id, nil
@@ -54,7 +58,15 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 			return object.ID(r.SnapshotID), nil
 		}
 	}
-	return object.ID{}, fmt.Errorf("%q is neither a snapshot id nor a known ref name", arg)
+	return object.ID{}, &refNotFoundError{arg: arg}
+}
+
+// refNotFoundError reports that arg matched no snapshot id and no name
+// in a *cacheSource's cached REFS table.
+type refNotFoundError struct{ arg string }
+
+func (e *refNotFoundError) Error() string {
+	return fmt.Sprintf("%q is neither a snapshot id nor a known ref name", e.arg)
 }
 
 // openCacheSource opens the local cache for the repository repoFlag

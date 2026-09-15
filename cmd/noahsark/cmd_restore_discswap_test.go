@@ -328,3 +328,25 @@ func TestRestoreDiscSwapNoEject(t *testing.T) {
 	}
 	compareTrees(t, filepath.Join(outDir, src), src)
 }
+
+// TestRestoreMountUnknownRefNamesProvidedDiscs checks that restore
+// --mount with a ref name the cache does not know reports the ref as
+// not on the provided disc(s), not as a name unknown outright: --mount
+// implies discs are being fed in, so a later one may still carry it.
+func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo, _, _, _ := discSwapFixture(t)
+
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	outDir := filepath.Join(t.TempDir(), "out")
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "no-such-ref", outDir)
+	if code != 2 {
+		t.Fatalf("restore --mount unknown ref: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "not on the provided disc(s)") {
+		t.Fatalf("restore --mount unknown ref output = %q, want the provided-disc(s) wording", out)
+	}
+	if strings.Contains(out, "neither a snapshot id nor a known ref name") {
+		t.Fatalf("restore --mount unknown ref output = %q, want the disc-oriented wording, not the cache one", out)
+	}
+}

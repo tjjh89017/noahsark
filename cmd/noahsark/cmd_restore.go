@@ -276,6 +276,12 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 
 	snapID, err := src.ParseSnapshotArg(snapshotArg)
 	if err != nil {
+		// --mount names a disc to swap discs through, so a ref this
+		// build's cache does not know is reported as possibly on a
+		// disc not yet inserted, not as an unknown name outright.
+		if _, ok := err.(*refNotFoundError); ok {
+			err = fmt.Errorf("ref %q is not on the provided disc(s); a later disc in the chain may carry it", snapshotArg)
+		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}

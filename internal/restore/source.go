@@ -141,7 +141,9 @@ func (s *Source) SnapshotIDs() ([]object.ID, error) {
 
 // ParseSnapshotArg resolves arg as a snapshot id: either a multihash text
 // id, or a name found in REFS. A ref that does not resolve, or a
-// malformed id, is reported as an error naming arg.
+// malformed id, is reported as an error naming arg. A ref not among the
+// provided discs' merged REFS is reported as not on those discs, since a
+// later disc in the chain, not given here, may carry it.
 func (s *Source) ParseSnapshotArg(arg string) (object.ID, error) {
 	if id, err := object.ParseID(arg); err == nil {
 		return id, nil
@@ -155,5 +157,5 @@ func (s *Source) ParseSnapshotArg(arg string) (object.ID, error) {
 			return object.ID(r.SnapshotID), nil
 		}
 	}
-	return object.ID{}, fmt.Errorf("%q is neither a snapshot id nor a known ref name", arg)
+	return object.ID{}, fmt.Errorf("ref %q is not on the provided disc(s); a later disc in the chain may carry it", arg)
 }

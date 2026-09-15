@@ -73,8 +73,8 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 // --discs-dir, with the disc that does not hold that ref's own snapshot
 // sorting first. Before pack carried every known ref forward, and
 // before Refs merged every provided disc's REFS, this failed with "is
-// neither a snapshot id nor a known ref name" whenever the disc holding
-// the wanted ref did not sort first.
+// not on the provided disc(s)" whenever the disc holding the wanted ref
+// did not sort first.
 func TestRestoreDiscsDirWrongOrderFindsEveryRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")

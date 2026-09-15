@@ -308,6 +308,25 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	}
 }
 
+// TestMissingDiscErrorCandidatesOnePerLine checks that a
+// *MissingDiscError with more than one candidate disc lists them one
+// per line, indented, the same shape the "missing disc(s):" case uses.
+func TestMissingDiscErrorCandidatesOnePerLine(t *testing.T) {
+	e := &MissingDiscError{
+		UnnamedCount: 3,
+		Candidates: []DiscCandidate{
+			{UUID: [16]byte{1}, Label: "disc-one"},
+			{UUID: [16]byte{2}, Label: "disc-two"},
+		},
+	}
+	want := fmt.Sprintf(
+		"3 object(s) not found on any provided disc and named by no provided disc's INDEX; disc(s) not provided, that may hold them:\n  disc %s (disc-one)\n  disc %s (disc-two)",
+		uuidText([16]byte{1}), uuidText([16]byte{2}))
+	if got := e.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
 // TestRestoreMultiKnownDiscsCandidateBothDirections restores from the
 // middle disc of a three-disc chain, with WithKnownDiscs naming both the
 // earlier and the later disc. Disc 2's own DISCS table only ever names
