@@ -19,7 +19,10 @@ DVD-R), `dvd+rw-tools` 7.1-14 or newer (`growisofs`,
 refuses an older one. Root is needed to loop-mount the image
 `image build` populates, and to mount a burned disc to verify or
 restore it. `commit`, `pack`, and burning with `growisofs` never need
-root.
+root. `eject` (package `eject` on Debian) is optional, for the
+single-drive restore drill in section 8: without it, `restore` prints
+`eject: not found on PATH, skipping` and you open the tray by hand
+instead.
 
 `growisofs` itself needs permission to open the drive device
 (`/dev/sr0` in these examples): add your user to the `cdrom` group
@@ -115,7 +118,10 @@ BURNED, CLEAN, GC-ELIGIBLE, or already DELETED from staging, since the
 disc itself never loses the bytes); `packed` and `clean` break that
 same total down by current state, so you can see at a glance whether a
 disc's run has been marked burned and verified yet (`packed` still
-nonzero) or has gone all the way to CLEAN.
+nonzero) or has gone all the way to CLEAN. An object `gc` has since
+deleted from staging counts in neither column, so an old, fully
+verified disc whose objects `gc` already freed reads `packed=0
+clean=0`: that is expected, not a sign the disc itself lost anything.
 
 On each disc's sleeve, in permanent marker, write:
 
@@ -279,8 +285,8 @@ growisofs -speed=4 -use-the-force-luke=spare:min,tty \
 Use `-R -iso-level 4` (Rock Ridge), never `-J` (Joliet) alone: Joliet
 truncates names at 64 characters, cutting off NoahsArk's 68-character
 object file names. Neither command line above passes `-dvd-compat`:
-the disc is left open, on purpose, for a later append; only an
-explicit close seals it.
+the disc is left open, on purpose, for a later append; only
+`pack --close` seals it explicitly.
 
 Load the second blank disc and run the exact same command line again,
 from the same source (`run2.img` or the `run2` folder). The two discs
@@ -601,7 +607,7 @@ behind, never a disc, so run it first, from wherever the repository
 lives:
 
 ```sh
-./noahsark plan 2026-09-21
+./noahsark plan --repo=/srv/noahsark/repo 2026-09-21
 ```
 
 This prints one line per disc the restore would read, ordered by bytes
@@ -620,7 +626,7 @@ Narrow it to the same paths you plan to restore
 with `--include`, the same flag `restore` takes:
 
 ```sh
-./noahsark plan --include=srv/data/ledger.csv \
+./noahsark plan --repo=/srv/noahsark/repo --include=srv/data/ledger.csv \
     --include=srv/data/photos/2026 2026-09-21
 ```
 
@@ -678,18 +684,24 @@ If the session is interrupted partway through (a crashed terminal, a
 closed laptop lid), objects already read sit in
 `staging/restore/<snapshot-id>/` inside the repository directory.
 Running the same `restore` command again picks up where it left off,
-printing one line at the start naming what the spool already holds:
+and only prompts for whichever disc the plan still needs.
+
+At the start, it prints one line naming what the spool still holds:
 
 ```
 resuming: 12 object(s) already spooled
 ```
 
-That `resuming:` line prints only when a spool from an earlier,
-interrupted run actually exists; a fresh restore of a snapshot never
-attempted before starts silently, with no such line.
-
-and only prompts for whichever disc the plan still needs. At the end,
-it also prints how many files that spool let it skip re-reading:
+That `resuming:` line prints only when the spool directory still holds
+a chunk payload left over from an interrupted run: a file left
+mid-assembly, still waiting on further chunks, when the previous run
+stopped. A file that had already finished assembling before the
+interruption is written and freed from the spool immediately, so it
+leaves nothing behind for `resuming:` to report; a fresh restore of a
+snapshot never attempted before also has nothing to report, so
+`resuming:` prints in neither case. At the end, `restore` prints how
+many files were already correctly in place and so needed no
+re-reading, whether they finished before or after the interruption:
 
 ```
 resumed: 4 file(s) already restored
