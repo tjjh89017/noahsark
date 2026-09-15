@@ -289,7 +289,7 @@ func discoverRepo(explicitRepo string) (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("no noahsark repository found")
+			return "", fmt.Errorf("no noahsark repository found; pass --repo=DIR, set NOAHSARK_REPO, or run from inside the repository")
 		}
 		dir = parent
 	}
