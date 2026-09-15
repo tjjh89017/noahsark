@@ -51,7 +51,7 @@ func (e *MissingDiscError) Error() string {
 		}
 		sort.Slice(uuids, func(i, j int) bool { return uuidText(uuids[i]) < uuidText(uuids[j]) })
 		for _, u := range uuids {
-			_, _ = fmt.Fprintf(&s, " disc %s holds %d needed object(s)", uuidText(u), len(e.ByDisc[u]))
+			_, _ = fmt.Fprintf(&s, "\n  disc %s holds %d needed object(s)", uuidText(u), len(e.ByDisc[u]))
 		}
 		return s.String()
 	}

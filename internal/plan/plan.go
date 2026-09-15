@@ -106,6 +106,79 @@ func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (m
 	return w.needed, nil
 }
 
+// OverBudgetFile walks the same scope Build would, and reports the
+// first regular file whose blob's whole byte size alone exceeds budget:
+// no split of that one file's own chunks into passes can bring it under
+// the staging budget. A budget of 0 is unlimited, so it always reports
+// none. A blob or tree this walk cannot read is left for Build's own
+// Missing accounting to report; it is not a budget failure here.
+func OverBudgetFile(c *cache.Cache, snap *format.Snapshot, includes []string, budget uint64) (path string, bytes uint64, ok bool, err error) {
+	if budget == 0 {
+		return "", 0, false, nil
+	}
+	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
+	if err != nil {
+		return "", 0, false, err
+	}
+
+	entries := rootTree.Entries
+	if len(includes) > 0 {
+		entries = entries[:0]
+		for _, inc := range includes {
+			target, _, err := resolvePath(c, rootTree.Entries, inc)
+			if err != nil {
+				return "", 0, false, fmt.Errorf("--include=%s: %w", inc, err)
+			}
+			entries = append(entries, *target)
+		}
+	}
+
+	ow := &overBudgetWalker{c: c, budget: budget}
+	for _, e := range entries {
+		if path, bytes, ok := ow.walk(e, rootPathOf(e)); ok {
+			return path, bytes, true, nil
+		}
+	}
+	return "", 0, false, nil
+}
+
+// overBudgetWalker descends a snapshot's cached trees looking for the
+// first regular file whose blob exceeds budget.
+type overBudgetWalker struct {
+	c      *cache.Cache
+	budget uint64
+}
+
+// walk descends e, named path, reporting the first regular file under
+// it (e included) whose blob's total size exceeds w.budget.
+func (w *overBudgetWalker) walk(e format.TreeEntry, path string) (string, uint64, bool) {
+	switch e.EntryType {
+	case format.EntryTypeDirectory:
+		t, err := w.c.ReadTree(object.ID(e.ContentID))
+		if err != nil {
+			return "", 0, false
+		}
+		for _, ce := range t.Entries {
+			childPath := string(ce.Name)
+			if path != "" {
+				childPath = path + "/" + childPath
+			}
+			if p, b, ok := w.walk(ce, childPath); ok {
+				return p, b, true
+			}
+		}
+	case format.EntryTypeRegular:
+		b, err := w.c.ReadBlob(object.ID(e.ContentID))
+		if err != nil {
+			return "", 0, false
+		}
+		if b.TotalSize > w.budget {
+			return path, b.TotalSize, true
+		}
+	}
+	return "", 0, false
+}
+
 // walker collects the object ids one Build call needs, reading trees
 // and blobs from the cache alone.
 type walker struct {

@@ -99,6 +99,15 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	if path, need, ok, err := plan.OverBudgetFile(c, snap, includeFlags, stagingBudget); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
+		return 1
+	} else if ok {
+		_, _ = fmt.Fprintf(stderr, "noahsark: plan: %s alone needs %d bytes of staging, above the staging budget of %d bytes; no split of one file's own chunks can honour it\n",
+			path, need, stagingBudget)
+		return 2
+	}
+
 	passSplit, err := plan.ComputePasses(result.Discs, stagingBudget)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)

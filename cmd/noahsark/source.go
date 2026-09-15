@@ -114,16 +114,23 @@ func looksLikePathNotDisc(s string) bool {
 // log and plan all report it: naming the snapshot and, when it can be
 // resolved, the disc to insert and the command that would fix it.
 func formatIncompleteError(cmd string, e *cache.IncompleteError) string {
+	return fmt.Sprintf("noahsark: %s: %s", cmd, incompleteErrorBody(e))
+}
+
+// incompleteErrorBody renders a *cache.IncompleteError with no
+// "noahsark: <cmd>:" prefix, for a caller that wraps it inside its own
+// already-prefixed message instead of printing it standalone.
+func incompleteErrorBody(e *cache.IncompleteError) string {
 	switch {
 	case e.HasDiscUUID:
-		return fmt.Sprintf("noahsark: %s: snapshot %s is not complete in the cache; insert disc %s (%s) and run rebuild-cache --from-disc",
-			cmd, e.Snapshot.TextForm(), uuidText(e.DiscUUID), e.Label)
+		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s (%s) and run rebuild-cache --from-disc",
+			e.Snapshot.TextForm(), uuidText(e.DiscUUID), e.Label)
 	case e.RunSeq != 0:
-		return fmt.Sprintf("noahsark: %s: snapshot %s is not complete in the cache; insert the disc that holds run %d and run rebuild-cache --from-disc",
-			cmd, e.Snapshot.TextForm(), e.RunSeq)
+		return fmt.Sprintf("snapshot %s is not complete in the cache; insert the disc that holds run %d and run rebuild-cache --from-disc",
+			e.Snapshot.TextForm(), e.RunSeq)
 	default:
-		return fmt.Sprintf("noahsark: %s: snapshot %s is not complete in the cache; run rebuild-cache --from-disc with the disc that holds it",
-			cmd, e.Snapshot.TextForm())
+		return fmt.Sprintf("snapshot %s is not complete in the cache; run rebuild-cache --from-disc with the disc that holds it",
+			e.Snapshot.TextForm())
 	}
 }
 

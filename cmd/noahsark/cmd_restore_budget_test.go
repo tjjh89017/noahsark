@@ -102,3 +102,19 @@ func TestRestoreStagingBudgetRefusesOversizeFile(t *testing.T) {
 		t.Fatalf("restore output %q prompted for a disc, want a refusal before any read", out)
 	}
 }
+
+// TestPlanStagingBudgetRefusesOversizeFile checks that plan, reading
+// only the local cache, refuses the same over-budget file restore does:
+// same exit code, and the file path named in the message.
+func TestPlanStagingBudgetRefusesOversizeFile(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo, snapID, _, _ := discSwapFixture(t)
+
+	code, out := runCmd(t, "plan", "--repo="+repo, "--staging-budget=1", snapID)
+	if code != 2 {
+		t.Fatalf("plan --staging-budget=1: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "alone needs") {
+		t.Fatalf("plan output %q missing the oversize-file message", out)
+	}
+}

@@ -323,7 +323,7 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		if ie, ok := err.(*cache.IncompleteError); ok {
 			msg := formatIncompleteError("restore", ie)
 			if planFile != "" {
-				msg = fmt.Sprintf("noahsark: restore: --plan=%s names a snapshot not known to this repository's cache: %s", planFile, msg)
+				msg = fmt.Sprintf("noahsark: restore: --plan=%s names a snapshot not known to this repository's cache: %s", planFile, incompleteErrorBody(ie))
 			}
 			_, _ = fmt.Fprintln(stderr, msg)
 			return 3
@@ -649,7 +649,7 @@ func ejectDrive(mountDir string, stderr io.Writer) {
 	}
 	if _, err := exec.LookPath("eject"); err != nil {
 		if !ejectWarnedNoBinary {
-			_, _ = fmt.Fprintln(stderr, "noahsark: restore: eject: not found on PATH; skipping eject, remove the disc by hand")
+			_, _ = fmt.Fprintln(stderr, "eject: not found on PATH, skipping")
 			ejectWarnedNoBinary = true
 		}
 		return
