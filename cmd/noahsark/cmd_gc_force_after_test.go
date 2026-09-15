@@ -171,6 +171,36 @@ func TestGCForceAfterDevNullIsNotATerminal(t *testing.T) {
 	}
 }
 
+// TestGCForceAfterRefusesNonTerminalEvenWithNothingEligible checks that
+// a non-terminal stdin without --yes is refused before the eligibility
+// scan runs, even when no object would turn out to be eligible: the
+// confirmation requirement must not depend on what the scan finds.
+func TestGCForceAfterRefusesNonTerminalEvenWithNothingEligible(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	// Left at gc's default retention: nothing is CLEAN long enough to
+	// be GC-ELIGIBLE under --force-after=1h either, so the eligibility
+	// scan finds nothing.
+	packAndVerifyDisc(t, work, repo, src)
+
+	setGCStdin(t, strings.NewReader(""), false)
+	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h")
+	if code != 2 {
+		t.Fatalf("gc --force-after=1h (non-terminal, no --yes, nothing eligible): exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "not a terminal") {
+		t.Fatalf("gc output %q missing the non-terminal refusal", out)
+	}
+	if strings.Contains(out, "deleted 0 object") {
+		t.Fatalf("gc output %q ran the delete step instead of refusing up front", out)
+	}
+}
+
 // TestGCForceAfterYesSkipsConfirmation checks --yes deletes without
 // reading any confirmation, even on a non-terminal stdin.
 func TestGCForceAfterYesSkipsConfirmation(t *testing.T) {

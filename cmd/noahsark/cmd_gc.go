@@ -70,6 +70,14 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		}
 		retainAfterCleanOverride = d
 	}
+	// Refuse a non-interactive --force-after before anything else runs,
+	// including the eligibility scan: whether any object turns out to
+	// be eligible must never change whether this confirmation is
+	// required.
+	if retainAfterCleanOverride >= 0 && !*dryRun && !*yes && !gcStdinIsTerminal() {
+		_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after needs an interactive confirmation; stdin is not a terminal, pass --yes")
+		return 2
+	}
 
 	repoDir, err := discoverRepo(*repoFlag)
 	if err != nil {
