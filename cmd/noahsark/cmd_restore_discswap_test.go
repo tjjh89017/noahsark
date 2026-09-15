@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -398,5 +399,27 @@ func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
 	}
 	if strings.Contains(out, "neither a snapshot id nor a known ref name") {
 		t.Fatalf("restore --mount unknown ref output = %q, want the disc-oriented wording, not the cache one", out)
+	}
+}
+
+// TestPlanDiscListMatchesTheDiscsRestoreReads checks, for a range of
+// --include scopes, that "plan"'s printed disc list is exactly the
+// discs that hold a needed chunk: the same discs a disc-swap restore
+// of that scope actually reads. A disc plan names only because it
+// holds a needed tree or blob object, never read from a disc since
+// BuildManifest resolves those from the cache, would otherwise make
+// plan list a disc restore never asks for.
+func TestPlanDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo, snapID, src, _ := discSwapFixture(t)
+
+	for i := range 6 {
+		sub := fmt.Sprintf("sub%d", i)
+		include := strings.TrimPrefix(filepath.Join(src, sub), "/")
+		planned := planOrderDiscSeqs(t, "--repo="+repo, "--include="+include, snapID)
+		want := chunkDiscSeqs(t, repo, snapID, include)
+		if !slices.Equal(planned, want) {
+			t.Fatalf("--include=%s: plan named disc_seq %v, want exactly the chunk-holding discs %v", include, planned, want)
+		}
 	}
 }

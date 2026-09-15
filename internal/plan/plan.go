@@ -352,6 +352,14 @@ func rootPathOf(e format.TreeEntry) string {
 // "14.1 The planner"'s tie-breaks: most bytes first, then the newer
 // disc, then the lower disc_seq.
 //
+// Only chunk objects count toward a disc's Objects and Bytes: a
+// disc-swap restore resolves every tree, blob and the snapshot itself
+// from the local cache alone, the same cache group reads from, and
+// never opens a disc for them. A disc that holds none of the needed
+// chunks is dropped from the result entirely, even when it happens to
+// hold a needed tree or blob, so the discs printed here are exactly
+// the discs a restore of this plan reads, in the order it reads them.
+//
 // Within one disc, objects keep order's relative order: the walk's
 // depth-first, file-by-file discovery order, so a blob's own chunks
 // stay adjacent in each DiscEntry.Objects. A staging budget's pass
@@ -373,6 +381,11 @@ func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []objec
 		row, found := c.DiscForRun(loc.RunSeq)
 		if !found {
 			missingByRun[loc.RunSeq]++
+			continue
+		}
+		if needed[id] != format.ObjectKindChunk {
+			// Located, so not missing, but never read from row's disc
+			// by a restore: nothing to add to the plan.
 			continue
 		}
 		e, ok := byDisc[row.DiscUUID]
