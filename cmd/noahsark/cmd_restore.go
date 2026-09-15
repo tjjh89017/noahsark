@@ -75,6 +75,14 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --plan requires --mount")
 			return 2
 		}
+		if fs.NArg() == 2 {
+			// --plan already fixes the snapshot; an extra leading
+			// argument here is a SNAPSHOT left over from the plain
+			// SNAPSHOT OUT-DIR form, not a second OUT-DIR.
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --plan takes no SNAPSHOT")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore --plan=FILE --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR")
+			return 2
+		}
 		if fs.NArg() != 1 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore --plan=FILE --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR")
 			return 2
@@ -94,6 +102,15 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 			return 2
 		}
 		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *noEject, *interactive, fs.Arg(0), fs.Arg(1), "", *stagingBudgetFlag, stdout, stderr, prog)
+	}
+	// --mount is disc-swap mode, which never takes a DISC-ROOT: three
+	// positional arguments with --mount given is a leftover DISC-ROOT
+	// from the all-discs-at-once form, not that mode's own SNAPSHOT
+	// OUT-DIR pair.
+	if !multi && *mountFlag != "" && fs.NArg() == 3 {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount takes no DISC-ROOT")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] SNAPSHOT OUT-DIR")
+		return 2
 	}
 
 	var discRoots, positional []string

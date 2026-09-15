@@ -105,3 +105,46 @@ func TestRestoreTwoArgsWithNoMountPrintsUsage(t *testing.T) {
 		t.Fatalf("restore DISC-ROOT SNAPSHOT (no OUT-DIR) output %q, want the usage line", out)
 	}
 }
+
+// TestRestoreMountWithDiscRootIsAnError checks that "restore
+// --mount=DIR DISC-ROOT SNAPSHOT OUT-DIR" is refused by name, instead
+// of misreading DISC-ROOT as the disc-swap mode's own disc root and
+// reporting SNAPSHOT unknown.
+func TestRestoreMountWithDiscRootIsAnError(t *testing.T) {
+	treeDir, snapID, _ := lsFixture(t)
+	restoredDir := filepath.Join(t.TempDir(), "restored")
+
+	code, out := runCmd(t, "restore", "--mount=/mnt/drive", treeDir, snapID, restoredDir)
+	if code != 2 {
+		t.Fatalf("restore --mount DISC-ROOT SNAPSHOT OUT-DIR: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "--mount takes no DISC-ROOT") {
+		t.Fatalf("restore --mount DISC-ROOT SNAPSHOT OUT-DIR output %q, want the --mount-takes-no-DISC-ROOT message", out)
+	}
+	if !strings.Contains(out, "usage: noahsark restore") {
+		t.Fatalf("restore --mount DISC-ROOT SNAPSHOT OUT-DIR output %q, want the usage line too", out)
+	}
+}
+
+// TestRestorePlanWithSnapshotIsAnError checks that "restore --plan=FILE
+// --mount=DIR SNAPSHOT OUT-DIR" is refused by name, instead of printing
+// only the usage line: --plan already fixes the snapshot.
+func TestRestorePlanWithSnapshotIsAnError(t *testing.T) {
+	_, snapID, _ := lsFixture(t)
+	restoredDir := filepath.Join(t.TempDir(), "restored")
+	planFile := filepath.Join(t.TempDir(), "plan.json")
+	if err := os.WriteFile(planFile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCmd(t, "restore", "--plan="+planFile, "--mount=/mnt/drive", snapID, restoredDir)
+	if code != 2 {
+		t.Fatalf("restore --plan --mount SNAPSHOT OUT-DIR: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "--plan takes no SNAPSHOT") {
+		t.Fatalf("restore --plan --mount SNAPSHOT OUT-DIR output %q, want the --plan-takes-no-SNAPSHOT message", out)
+	}
+	if !strings.Contains(out, "usage: noahsark restore") {
+		t.Fatalf("restore --plan --mount SNAPSHOT OUT-DIR output %q, want the usage line too", out)
+	}
+}
