@@ -49,6 +49,13 @@ type Summary struct {
 	// vanished between being listed and being opened. The commit
 	// continues without it.
 	Skipped []string
+	// Reachable lists every chunk, blob and tree id this commit's root
+	// tree reaches, whether or not the writer actually staged its file.
+	// A caller that needs the commit's full object graph must read it
+	// here rather than walking the graph back off disk: an object
+	// OnDisc reported as already on a disc never gets a staging file to
+	// walk into.
+	Reachable []ID
 }
 
 // UnstablePath names one path the in-flight change detection flagged, and
@@ -95,13 +102,21 @@ type Writer struct {
 	Message string
 
 	// Known reports whether id already belongs to the repository: the
-	// staging state log carries it as Staged or Packed. A nil Known
-	// leaves an object's Summary count to writeObjectFile's own
-	// on-disk check alone. A non-nil Known counts an object as
-	// existing whenever it reports true, even when rebuild-cache left
-	// no local staging file for a Packed object, so a re-commit after
-	// rebuild-cache reports the object as existing, not new.
+	// staging state log carries a record for it. A nil Known leaves an
+	// object's Summary count to writeObjectFile's own on-disk check
+	// alone. A non-nil Known counts an object as existing whenever it
+	// reports true, even when rebuild-cache left no local staging file
+	// for a Packed object, so a re-commit after rebuild-cache reports
+	// the object as existing, not new.
 	Known func(id ID) bool
+
+	// OnDisc reports whether id already has its data on some disc:
+	// stage.State.OnDisc is true for its staging state log record.
+	// writeChunk, writeBlob and writeTree consult it before writing a
+	// staging file, and skip the write when it reports true. A commit
+	// that re-references an object gc already freed must never refill
+	// staging with it; the object stays on the disc that holds it.
+	OnDisc func(id ID) bool
 
 	reachable map[ID]uint64
 	rootAbs   string
@@ -170,6 +185,10 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	snapID, err := w.writeSnapshot(rootTreeID, &sum)
 	if err != nil {
 		return ID{}, Summary{}, err
+	}
+	sum.Reachable = make([]ID, 0, len(w.reachable))
+	for id := range w.reachable {
+		sum.Reachable = append(sum.Reachable, id)
 	}
 	return snapID, sum, nil
 }
@@ -387,6 +406,11 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 	id := ComputeID(payload)
 	w.recordReachable(id, uint64(len(payload)))
 
+	if w.OnDisc != nil && w.OnDisc(id) {
+		w.countObject(sum, id, false)
+		return id, nil
+	}
+
 	stored, code, storedLen := Compress(payload)
 	c := format.Chunk{
 		Header: commonHeader(format.MagicChunk, chunkHeaderLen),
@@ -435,6 +459,11 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	id := ComputeID(payload)
 	w.recordReachable(id, uint64(len(payload)))
 
+	if w.OnDisc != nil && w.OnDisc(id) {
+		w.countObject(sum, id, false)
+		return id, nil
+	}
+
 	b.ObjectHeader.PayloadLen = uint64(len(payload))
 	b.ObjectHeader.StoredLen = uint64(len(payload))
 	if _, err := b.Encode(buf); err != nil {
@@ -465,6 +494,11 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	payload := buf[format.CommonHeaderLen+format.ObjectHeaderLen:]
 	id := ComputeID(payload)
 	w.recordReachable(id, uint64(len(payload)))
+
+	if w.OnDisc != nil && w.OnDisc(id) {
+		w.countObject(sum, id, false)
+		return id, nil
+	}
 
 	t.ObjectHeader.PayloadLen = uint64(len(payload))
 	t.ObjectHeader.StoredLen = uint64(len(payload))

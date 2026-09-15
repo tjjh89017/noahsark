@@ -70,6 +70,10 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		rec, ok := commitStageLog.Get(id)
 		return ok && (rec.State == stage.Staged || rec.State.OnDisc())
 	}
+	w.OnDisc = func(id object.ID) bool {
+		rec, ok := commitStageLog.Get(id)
+		return ok && rec.State.OnDisc()
+	}
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
@@ -81,7 +85,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 1
 	}
 
-	if err := markStaged(cfg.StagingDir, snapID); err != nil {
+	if err := markStaged(cfg.StagingDir, snapID, sum.Reachable); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
@@ -120,20 +124,21 @@ func stagedTotals(stagingDir string) (objects int, bytes uint64, err error) {
 	return image.StagedTotals(stagingDir, l)
 }
 
-// markStaged appends a Staged state.db record for every object snapID
-// reaches that has no record yet: the whole staging state machine's
-// entry point.
-func markStaged(stagingDir string, snapID object.ID) error {
+// markStaged appends a Staged state.db record for the snapshot and every
+// object reachable names that has no record yet: the whole staging
+// state machine's entry point. reachable comes from the Writer's own
+// Summary, not a walk of the staging directory: an object the Writer
+// found already on a disc gets no staging file to walk into.
+func markStaged(stagingDir string, snapID object.ID, reachable []object.ID) error {
 	l, err := stage.Open(stagingDir)
 	if err != nil {
 		return err
 	}
-	objs, err := image.CollectReachable(stagingDir, []object.ID{snapID})
-	if err != nil {
+	if err := l.EnsureStaged(snapID); err != nil {
 		return err
 	}
-	for _, o := range objs {
-		if err := l.EnsureStaged(o.ID); err != nil {
+	for _, id := range reachable {
+		if err := l.EnsureStaged(id); err != nil {
 			return err
 		}
 	}
