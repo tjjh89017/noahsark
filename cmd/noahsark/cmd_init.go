@@ -10,18 +10,23 @@ import (
 )
 
 // cmdInit implements "noahsark init". It reduces OPERATIONS.md's init
-// flags to --repo: every other init flag exists to choose among
-// alternatives (hash algorithm, chunker profile, filesystem profile,
-// locality preset) that this build fixes to one value, or to recover
-// sequence numbers from existing discs, which no multi-disc state
-// exists yet to scan. Capacity is not among them: a disc's capacity is
-// a per-disc value chosen at pack time, not a repository setting, so
-// init takes no --capacity and the config carries no capacity default.
-// See docs/decisions.md, "16. CLI reference".
+// flags to --repo and --source: every other init flag exists to choose
+// among alternatives (hash algorithm, chunker profile, filesystem
+// profile, locality preset) that this build fixes to one value, or to
+// recover sequence numbers from existing discs, which no multi-disc
+// state exists yet to scan. Capacity is not among them: a disc's
+// capacity is a per-disc value chosen at pack time, not a repository
+// setting, so init takes no --capacity and the config carries no
+// capacity default. --source stores sources.root, so a later commit
+// with no SOURCE on its own command line can read it; the key is
+// repeatable in OPERATIONS.md, but this build stores only one, since
+// Writer.Commit takes one source directory. See docs/decisions.md,
+// "16. CLI reference".
 func cmdInit(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark init [--repo=PATH]",
+	fs := newFlagSet("noahsark init [--repo=PATH] [--source=PATH]",
 		"Create a new, empty repository directory.", stderr)
 	repoPath := fs.String("repo", ".", "repository directory to create")
+	sourcePath := fs.String("source", "", "source root to store in the config; commit uses it when SOURCE is omitted")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -33,6 +38,15 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 2
+	}
+
+	var absSourcePath string
+	if *sourcePath != "" {
+		absSourcePath, err = filepath.Abs(*sourcePath)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
+			return 2
+		}
 	}
 
 	if isRepoDir(absRepoPath) {
@@ -68,6 +82,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		// renamed or moved; readConfig resolves it back to an absolute
 		// path against the config file's own directory.
 		StagingDir: "staging",
+		SourceRoot: absSourcePath,
 	}
 	if err := writeConfig(filepath.Join(absRepoPath, configFileName), cfg); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
@@ -76,5 +91,8 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 
 	_, _ = fmt.Fprintf(stdout, "initialized repository %s\n", absRepoPath)
 	_, _ = fmt.Fprintf(stdout, "staging: %s\n", stagingDir)
+	if absSourcePath != "" {
+		_, _ = fmt.Fprintf(stdout, "source: %s\n", absSourcePath)
+	}
 	return 0
 }

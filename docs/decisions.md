@@ -294,32 +294,46 @@ build does not implement yet is refused saying so, rather than either
 one failing with the raw, unhelpful error the `flag` package or the
 config loader would otherwise give.
 
-`init` accepts only `--repo`. `--hash`, `--chunker`, `--fs-profile` and
-`--preset` choose among alternatives the fixed decisions already
-collapse to one value; `--repo-uuid`, `--next-run-seq`,
-`--next-disc-seq` and `--scan-discs` recover sequence numbers from
-existing discs, which no multi-disc state exists yet to scan. `init`
-writes a flat `key = value` config file, the simplest format the
-standard library parses without a third-party dependency, holding only
-`repo.uuid` and `staging.dir` (section 17.1 and 17.5): every other
-Phase 1 key needs behaviour (hash choice, chunker profile, excludes,
-locality, metadata policy) this build does not implement, so the
-config loader refuses any other key by name rather than accept and
-ignore it. Capacity is not among the repository's own settings: a
-disc's capacity is locked in at that disc's first write, not a value
-that holds for the whole repository, so the config carries no default
-and every `pack` gives `--capacity` on its own command line
-(section 17.12).
+`init` accepts `--repo` and `--source`. `--hash`, `--chunker`,
+`--fs-profile` and `--preset` choose among alternatives the fixed
+decisions already collapse to one value; `--repo-uuid`,
+`--next-run-seq`, `--next-disc-seq` and `--scan-discs` recover
+sequence numbers from existing discs, which no multi-disc state exists
+yet to scan. `init` writes a flat `key = value` config file, the
+simplest format the standard library parses without a third-party
+dependency, holding `repo.uuid`, `staging.dir` (section 17.1 and
+17.5), and, when `--source` is given, `sources.root` (section 17.9):
+every other Phase 1 key needs behaviour (hash choice, chunker profile,
+excludes, locality, metadata policy) this build does not implement, so
+the config loader refuses any other key by name rather than accept and
+ignore it. `sources.root` is repeatable in OPERATIONS.md, since a
+snapshot's root tree may hold one entry per source root; this build
+stores only one, because `internal/object`'s `Writer.Commit` takes one
+source directory (see the "6.14 Snapshot" entry above), so `init`
+takes one `--source` flag, not a repeated one, and writes the path
+`filepath.Abs` resolved at init time. Capacity is not among the
+repository's own settings: a disc's capacity is locked in at that
+disc's first write, not a value that holds for the whole repository,
+so the config carries no default and every `pack` gives `--capacity`
+on its own command line (section 17.12).
 
-`commit` accepts a source path, `--ref`, and `-m` (a message stored on
-the snapshot). `--from` and `--copy-first` are Phase 2 and refused by
-name; `--out` and `--catalog` are Backlog and refused by name.
-`--checksum`/`--full-scan`, `--force`, `--source`, `--source-root`,
-`--exclude`, `--one-file-system`, `--source-type` and
+`commit` accepts an optional source path, `--ref`, and `-m` (a message
+stored on the snapshot). With no source path on the command line,
+`commit` reads the `sources.root` `init --source` stored; a path given
+on the command line overrides it; neither present is a usage error
+naming both ways to supply one. More than one source path on the
+command line is still refused, matching the single root this build
+stores and commits. `--from` and `--copy-first` are Phase 2 and
+refused by name; `--out` and `--catalog` are Backlog and refused by
+name. `--checksum`/`--full-scan`, `--force`, `--source`,
+`--source-root`, `--exclude`, `--one-file-system`, `--source-type` and
 `--retry-unstable` are Phase 1 but need the quick check, metadata
 TLVs, or exclude rules `internal/object`'s `Writer` does not implement
 (see the "6.14 Snapshot" entry above); they are not defined, so passing
-one is a plain usage error naming the flag. Commit records the new
+one is a plain usage error naming the flag. `commit`'s own `--source`
+flag (a filesystem snapshot mount) is unrelated to `init --source`,
+which only seeds the config; the two are never confused because they
+belong to different commands. Commit records the new
 snapshot under the given ref (default `LATEST`, so a commit with no
 `--ref` moves `LATEST`; a commit with `--ref=NAME` moves only `NAME`,
 never `LATEST`) in a flat local ref file, `<repo>/refs.txt`, standing in

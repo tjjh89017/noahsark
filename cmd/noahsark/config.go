@@ -22,6 +22,12 @@ type repoConfig struct {
 	RepoUUID string
 	// StagingDir is staging.dir: the staging store location.
 	StagingDir string
+	// SourceRoot is sources.root: the source directory commit reads
+	// from when its own command line names none. OPERATIONS.md makes
+	// this key repeatable, but this build stores at most one, matching
+	// Writer.Commit's single source directory. Empty means init was
+	// never given --source.
+	SourceRoot string
 	// RestatAfterRead is commit.restat_after_read. Defaults true.
 	RestatAfterRead bool
 	// RetryUnstable is commit.retry_unstable. Defaults to
@@ -85,6 +91,7 @@ var laterPhaseConfigKeys = map[string]string{
 var knownConfigKeys = map[string]bool{
 	"repo.uuid":                  true,
 	"staging.dir":                true,
+	"sources.root":               true,
 	"commit.restat_after_read":   true,
 	"commit.retry_unstable":      true,
 	"fec.scheme":                 true,
@@ -136,6 +143,9 @@ func writeConfig(path string, c repoConfig) error {
 	var b strings.Builder
 	_, _ = fmt.Fprintf(&b, "repo.uuid = %s\n", c.RepoUUID)
 	_, _ = fmt.Fprintf(&b, "staging.dir = %s\n", c.StagingDir)
+	if c.SourceRoot != "" {
+		_, _ = fmt.Fprintf(&b, "sources.root = %s\n", c.SourceRoot)
+	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
@@ -183,6 +193,11 @@ func readConfig(path string) (repoConfig, error) {
 			c.RepoUUID = value
 		case "staging.dir":
 			c.StagingDir = value
+		case "sources.root":
+			if c.SourceRoot != "" {
+				return repoConfig{}, fmt.Errorf("config: sources.root: only one source root is supported in this build")
+			}
+			c.SourceRoot = value
 		case "commit.restat_after_read":
 			b, err := strconv.ParseBool(value)
 			if err != nil {
