@@ -12,6 +12,10 @@ real discs: first backup, the regular commit-and-pack cycle, burning
 and verifying a twin pair, restore drills, and recovery from a lost
 repository directory or a failed disc.
 
+In every command example below and under `docs/`, text in angle
+brackets, such as `<REPO>` or `<SOURCE>`, is a value you supply.
+Everything else is typed exactly as shown.
+
 ## Running the restore and heal experiment
 
 Build the CLI, then commit a source tree, pack it, and build a UDF
@@ -26,7 +30,7 @@ run from a checkout of this repository.
 
 The experiment assumes a fresh repository, packed once, so the whole
 snapshot fits on this one disc: the `restore` calls below give only
-`/mnt/noahsark`, the single disc root. On an incremental repository,
+`<MOUNT>`, the single disc root. On an incremental repository,
 where the snapshot spans more than one disc, that same restore command
 asks for the earlier discs too; give it every disc root instead
 (`--disc=` repeated, or `--discs-dir=`), the same as
@@ -34,10 +38,10 @@ asks for the earlier discs too; give it every disc root instead
 
 ```sh
 go build -o noahsark ./cmd/noahsark
-./noahsark init --repo=repo
-./noahsark commit --repo=repo /path/to/source
-./noahsark pack --repo=repo --capacity=25GB --fec --out=tree
-sudo ./noahsark image build --out=run.img --capacity=25GB tree
+./noahsark init --repo=<REPO>
+./noahsark commit --repo=<REPO> <SOURCE>
+./noahsark pack --repo=<REPO> --capacity=<CAPACITY> --fec --out=<DISC_DIR>
+sudo ./noahsark image build --out=<IMAGE> --capacity=<CAPACITY> <DISC_DIR>
 ```
 
 Mounting a UDF image and corrupting its blocks both need root, which
@@ -46,19 +50,19 @@ tools under `test/e2e/disc/cmd`, the same way `test/e2e/disc/run.sh`
 does:
 
 ```sh
-sudo mount -o loop -t udf run.img /mnt/noahsark
-sudo chown -R "$(id -u):$(id -g)" /mnt/noahsark
+sudo mount -o loop -t udf <IMAGE> <MOUNT>
+sudo chown -R "$(id -u):$(id -g)" <MOUNT>
 
-./noahsark restore /mnt/noahsark SNAPSHOT-ID restore-before
-go run ./test/e2e/disc/cmd/ci-corrupt /mnt/noahsark 3:0 6:0
-go run ./test/e2e/disc/cmd/ci-heal /mnt/noahsark
-./noahsark verify --image=/mnt/noahsark
-./noahsark restore /mnt/noahsark SNAPSHOT-ID restore-after
+./noahsark restore <MOUNT> <SNAPSHOT_ID> <RESTORE_DIR>
+go run ./test/e2e/disc/cmd/ci-corrupt <MOUNT> 3:0 6:0
+go run ./test/e2e/disc/cmd/ci-heal <MOUNT>
+./noahsark verify --image=<MOUNT>
+./noahsark restore <MOUNT> <SNAPSHOT_ID> <RESTORE_DIR>
 
-diff -rq restore-before/path/to/source /path/to/source
-diff -rq restore-after/path/to/source /path/to/source
+diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
+diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
 
-sudo umount /mnt/noahsark
+sudo umount <MOUNT>
 ```
 
 Both restores should match the original source: healing repairs the
@@ -69,7 +73,7 @@ copy the packed tree in. The default burn line stays open for later
 appends and never passes `-dvd-compat`:
 
 ```sh
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.img
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z <DEVICE>=<IMAGE>
 ```
 
 ## Burning without UDF
@@ -79,18 +83,18 @@ gives a folder that is the complete disc root. If you do not want the
 UDF image, burn that folder with any tool you trust, for example:
 
 ```sh
-genisoimage -R -iso-level 4 -V NOAHSARK -o run.iso tree
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run.iso
+genisoimage -R -iso-level 4 -V NOAHSARK -o <IMAGE> <DISC_DIR>
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z <DEVICE>=<IMAGE>
 ```
 
 or burn straight from the folder, since growisofs calls genisoimage or
 mkisofs itself when given a directory instead of an image:
 
 ```sh
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK tree
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z <DEVICE> -R -iso-level 4 -V NOAHSARK <DISC_DIR>
 ```
 
-or a GUI burner: point it at the `tree` folder and burn a data disc
+or a GUI burner: point it at the `<DISC_DIR>` folder and burn a data disc
 from it, choosing ISO 9660 or UDF as the tool offers.
 
 Use `-R -iso-level 4` (Rock Ridge), never `-J` (Joliet) alone: Joliet
@@ -115,10 +119,10 @@ disc are never copied again, and the new run's `INDEX` names them as
 prerequisites of the earlier disc instead.
 
 ```sh
-./noahsark commit --repo=repo /path/to/big/source
-./noahsark pack --repo=repo --capacity=dvd+r --out=tree0
-./noahsark pack --repo=repo --capacity=bd25  --out=tree1
-./noahsark pack --repo=repo --capacity=10GB  --out=tree2
+./noahsark commit --repo=<REPO> <SOURCE>
+./noahsark pack --repo=<REPO> --capacity=dvd+r --out=<DISC_DIR_1>
+./noahsark pack --repo=<REPO> --capacity=bd25  --out=<DISC_DIR_2>
+./noahsark pack --repo=<REPO> --capacity=<CAPACITY> --out=<DISC_DIR_3>
 ```
 
 `pack` exits 0 once nothing is left staged, and 1 while objects remain;
@@ -132,34 +136,34 @@ snapshot id or a path can be found before running a restore.
 `log` lists the snapshots the given discs know, newest first:
 
 ```sh
-./noahsark log tree0
+./noahsark log <DISC_DIR>
 ```
 
 `ls` lists a snapshot's tree, given its id or a ref name from `log`:
 
 ```sh
-./noahsark ls tree0 SNAPSHOT-ID
+./noahsark ls <DISC_DIR> <SNAPSHOT_ID>
 ```
 
 `ls --recursive` walks the whole tree and prints each entry's full
 path, in the same form `restore --include` takes:
 
 ```sh
-./noahsark ls --recursive tree0 SNAPSHOT-ID
+./noahsark ls --recursive <DISC_DIR> <SNAPSHOT_ID>
 ```
 
 A path copied from that output restores just that path:
 
 ```sh
-./noahsark restore --include=srv/data/etc tree0 SNAPSHOT-ID restored
+./noahsark restore --include=<PATH> <DISC_DIR> <SNAPSHOT_ID> <RESTORE_DIR>
 ```
 
 `restore` accepts that same snapshot id or ref name in place of
-`SNAPSHOT-ID`, resolved the same way `ls` and `log` resolve it. It
+`<SNAPSHOT_ID>`, resolved the same way `ls` and `log` resolve it. It
 reads from one disc root by default:
 
 ```sh
-./noahsark restore tree0 SNAPSHOT-ID restored
+./noahsark restore <DISC_DIR> <SNAPSHOT_ID> <RESTORE_DIR>
 ```
 
 A snapshot that spans several discs restores by repeating `--disc`, or
@@ -167,26 +171,26 @@ by naming a directory whose immediate subdirectories are mounted disc
 roots with `--discs-dir`:
 
 ```sh
-./noahsark restore --disc=tree0 --disc=tree1 --disc=tree2 SNAPSHOT-ID restored
-./noahsark restore --discs-dir=/mnt/noahsark-discs SNAPSHOT-ID restored
+./noahsark restore --disc=<DISC_DIR_1> --disc=<DISC_DIR_2> --disc=<DISC_DIR_3> <SNAPSHOT_ID> <RESTORE_DIR>
+./noahsark restore --discs-dir=<DISCS_DIR> <SNAPSHOT_ID> <RESTORE_DIR>
 ```
 
 A disc root missing from the list fails the restore with an error
 naming that disc's uuid and the objects on it the restore needed.
 
-`--include=PATH`, repeatable, restores only the named snapshot-relative
+`--include=<PATH>`, repeatable, restores only the named snapshot-relative
 paths (the source root's path plus the entry path within it) instead of
 the whole snapshot; a path naming a directory restores everything under
 it. A multi-disc restore then asks only for the objects those paths
 need, so a disc holding none of them can stay out of the drive:
 
 ```sh
-./noahsark restore --include=srv/data/etc tree0 SNAPSHOT-ID restored
+./noahsark restore --include=<PATH> <DISC_DIR> <SNAPSHOT_ID> <RESTORE_DIR>
 ```
 
 ## Losing the repository directory
 
-`restore` given a disc root, `ls DISC-ROOT` and `log DISC-ROOT` never
+`restore` given a disc root, `ls <DISC_DIR>` and `log <DISC_DIR>` never
 read `--repo`: they read the disc roots given to them, so losing the
 repository directory never loses the archive. `verify` is the same.
 `restore --mount` (the single-drive, disc-swap mode) and `ls`, `log` or
@@ -200,7 +204,7 @@ object a second time. `rebuild-cache --from-disc` rebuilds that state
 from the discs themselves, so the next `pack` dedups correctly again:
 
 ```sh
-./noahsark rebuild-cache --from-disc --repo=repo --disc=tree0 --disc=tree1
+./noahsark rebuild-cache --from-disc --repo=<REPO> --disc=<DISC_DIR_1> --disc=<DISC_DIR_2>
 ```
 
 Give it every disc the repository has burned; a disc left out makes the
@@ -227,7 +231,7 @@ To read the real capacity of a specific disc from a drive, use
 `dvd+rw-mediainfo` and its `Free Blocks` line:
 
 ```sh
-dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
+dvd+rw-mediainfo <DEVICE> | grep 'Free Blocks'
 ```
 
 Pass that block count straight to `--capacity` as a sector count.
@@ -273,7 +277,7 @@ every disc.
 Turn it on per pack with `--fec`:
 
 ```sh
-./noahsark pack --repo=repo --capacity=25GB --fec --out=tree
+./noahsark pack --repo=<REPO> --capacity=<CAPACITY> --fec --out=<DISC_DIR>
 ```
 
 or set it for every pack in the repository config:

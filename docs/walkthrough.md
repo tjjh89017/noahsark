@@ -7,9 +7,11 @@ or the repository directory is lost. Every command line here is one
 the current `noahsark` binary accepts. Run `noahsark <command> -h` at
 any point to see a command's own flags.
 
-The examples use one source directory, `/srv/data`, one repository at
-`/srv/noahsark/repo`, one drive at `/dev/sr0`, and dates starting
-2026-09-14. Substitute your own paths.
+See README.md for the angle-bracket placeholder convention this guide
+uses. The examples act as if `<SOURCE>` is `/srv/data`, `<REPO>` is
+`/srv/noahsark/repo`, `<DEVICE>` is `/dev/sr0`, and `<REF>` is a
+date such as `2026-09-14`. Substitute your own paths, device, and ref
+names.
 
 You need Go 1.27 or newer to build the binary (`go.mod` names this
 version), a Blu-ray or DVD writer and write-once media (BD-R, DVD+R, or
@@ -25,7 +27,7 @@ single-drive restore drill in section 8: without it, `restore` prints
 instead.
 
 `growisofs` itself needs permission to open the drive device
-(`/dev/sr0` in these examples): add your user to the `cdrom` group
+(`<DEVICE>` in these examples): add your user to the `cdrom` group
 (then log out and back in), or add a udev rule that grants it. Without
 a device node at all, `growisofs` refuses with a line naming the
 device, for example:
@@ -62,10 +64,10 @@ Build the binary and create the repository:
 
 ```sh
 go build -o noahsark ./cmd/noahsark
-./noahsark init --repo=/srv/noahsark/repo
+./noahsark init --repo=<REPO>
 ```
 
-`init` writes `/srv/noahsark/repo/config`, holding `repo.uuid`
+`init` writes `<REPO>/config`, holding `repo.uuid`
 (generated once, identifies this repository across every disc it ever
 burns) and `staging.dir`. Capacity is not a repository setting: every
 `pack` below passes its own `--capacity`, since a disc's capacity is
@@ -77,23 +79,23 @@ required. When `--repo` is omitted, the binary looks for a repository
 in this order: the `NOAHSARK_REPO` environment variable, if set; else
 the nearest ancestor of the current directory that holds a `config`
 file, searching upward from the working directory. Set
-`NOAHSARK_REPO=/srv/noahsark/repo` in your shell, or run commands from
-inside `/srv/noahsark/repo`, to drop `--repo` from every command line
+`NOAHSARK_REPO=<REPO>` in your shell, or run commands from
+inside `<REPO>`, to drop `--repo` from every command line
 below.
 
 Commit the source tree, with a ref named by date so `log` later shows
 which commit corresponds to which day:
 
 ```sh
-./noahsark commit --repo=/srv/noahsark/repo --ref=2026-09-14 /srv/data
+./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
 ```
 
 Read the media's real capacity and pack the whole commit to it:
 
 ```sh
-dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
-./noahsark pack --repo=/srv/noahsark/repo --capacity=bd25 \
-    --ref=2026-09-14 --label="2026-09-14 run1" --out=/srv/noahsark/plans/run1
+dvd+rw-mediainfo <DEVICE> | grep 'Free Blocks'
+./noahsark pack --repo=<REPO> --capacity=bd25 \
+    --ref=<REF> --label=<LABEL> --out=<DISC_DIR>
 ```
 
 If `pack` reports `remaining staged` objects and exits 1, the source
@@ -101,14 +103,14 @@ did not fit one disc; pack again with a new `--out` for a second disc
 and repeat until it reports `remaining staged: 0 objects, 0 bytes` and
 exits 0. Section 3 below has the same loop for a regular cycle.
 
-Burn two identical discs from `/srv/noahsark/plans/run1` (section 3
+Burn two identical discs from `<DISC_DIR>` (section 3
 below gives the exact command lines and the twin-A/twin-B naming), and
 verify each one by mounting it and running `noahsark verify`. Before
 labelling, read the disc's own uuid, seq and label back from the
 repository:
 
 ```sh
-./noahsark disc list --repo=/srv/noahsark/repo
+./noahsark disc list --repo=<REPO>
 ```
 
 Each disc's line ends `objects=N packed=N clean=N`: `objects` is every
@@ -128,7 +130,7 @@ On each disc's sleeve, in permanent marker, write:
   `disc list` line (not a labelled field; `seq=`, `label=` and the rest
   follow it)
 - `seq` from that same line (the disc number, `0` for the first disc)
-- the label you gave `pack` (`2026-09-14 run1`)
+- the label you gave `pack` (`<LABEL>`, for example `"2026-09-14 run1"`)
 - the date
 - which twin it is, `A` or `B`
 
@@ -139,7 +141,7 @@ prefix (8 or more hex characters, as long as it names only one disc),
 the `seq` number, the full uuid, or the label text, so any of the
 values already on the sleeve work; an ambiguous or unknown value is
 refused with the candidate discs listed. Write a label that makes the
-seq easy to read at a glance (`2026-09-14 run1`, matching the `--label`
+seq easy to read at a glance (`<LABEL>`, for example `"2026-09-14 run1"`, matching the `--label`
 given to `pack`), so the sleeve alone is enough to type back either the
 seq or the label.
 
@@ -153,7 +155,7 @@ Pick an interval, for example weekly, and commit the same source
 directories every time, with a fresh date as the ref:
 
 ```sh
-./noahsark commit --repo=/srv/noahsark/repo --ref=2026-09-21 /srv/data
+./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
 ```
 
 Read the summary `commit` prints:
@@ -193,7 +195,7 @@ disc, and it carries onto that disc every ref that still points at one
 of the snapshots it packs. So a `--ref` you gave to `commit` does not
 need to be repeated on the matching `pack` call for its snapshot to be
 packed; pass `--ref` to `pack` only when you want to name an extra ref
-for the run (`--ref` moves no ref by itself; only `commit --ref=NAME`
+for the run (`--ref` moves no ref by itself; only `commit --ref=<REF>`
 does). If a ref is missing from a disc's history, run `log` against
 the packed tree or a mounted disc to find the snapshot id it should
 point at, and pack or restore by that id instead.
@@ -220,7 +222,7 @@ Between commits, or to check without committing anything, the same
 total is the last line of:
 
 ```sh
-./noahsark disc list --repo=/srv/noahsark/repo
+./noahsark disc list --repo=<REPO>
 ```
 
 ## 3. Each pack
@@ -228,7 +230,7 @@ total is the last line of:
 Read the blank disc's real free space:
 
 ```sh
-dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
+dvd+rw-mediainfo <DEVICE> | grep 'Free Blocks'
 ```
 
 The `bd25`, `bd50`, `bd100`, `bd128`, `dvd+r` and `dvd-r` presets
@@ -240,25 +242,25 @@ count as `--physical-capacity` instead, leaving `--capacity` as the
 budget `pack` plans against:
 
 ```sh
-./noahsark pack --repo=/srv/noahsark/repo --capacity=bd25 --ref=2026-09-21 \
-    --physical-capacity=12180000 --label="2026-09-21 run2" --out=/srv/noahsark/plans/run2
+./noahsark pack --repo=<REPO> --capacity=bd25 --ref=<REF> \
+    --physical-capacity=<CAPACITY> --label=<LABEL> --out=<DISC_DIR>
 ```
 
 Otherwise, pack the staged objects, naming the disc in the label:
 
 ```sh
-./noahsark pack --repo=/srv/noahsark/repo --capacity=bd25 --ref=2026-09-21 \
-    --label="2026-09-21 run2" --out=/srv/noahsark/plans/run2
+./noahsark pack --repo=<REPO> --capacity=bd25 --ref=<REF> \
+    --label=<LABEL> --out=<DISC_DIR>
 ```
 
-Section 2 above already explains why `--ref=2026-09-21` on this `pack`
-call is not what makes the 2026-09-21 commit get packed: `pack` with
+Section 2 above already explains why `--ref=<REF>` on this `pack`
+call is not what makes the <REF> commit get packed: `pack` with
 no `--ref` and no `--snapshot` already packs every unpacked snapshot
 and carries every ref pointing at one of them. This guide still writes
-`--ref=2026-09-21` above, for clarity in the command line, not because
+`--ref=<REF>` above, for clarity in the command line, not because
 `pack` needs it to find that commit's snapshot. If the summary shows
 `remaining staged` objects and exit code 1, this one disc was not
-enough: pack again with a new `--out` (`run2b`, and so on), burn and
+enough: pack again with a new `--out` (a fresh `<DISC_DIR>` path, and so on), burn and
 verify that disc too, and repeat until a pack exits 0. Every disc in
 that group belongs to the same backup cycle.
 
@@ -269,8 +271,8 @@ discs from the packed tree. Path A builds a UDF image first (needs
 root, checks the `mkudffs` version):
 
 ```sh
-sudo ./noahsark image build --out=run2.img --capacity=bd25 /srv/noahsark/plans/run2
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=run2.img
+sudo ./noahsark image build --out=<IMAGE> --capacity=bd25 <DISC_DIR>
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z <DEVICE>=<IMAGE>
 ```
 
 `image build` refuses to overwrite an existing `--out` path; pass
@@ -282,7 +284,7 @@ calls `genisoimage` itself when given a directory:
 
 ```sh
 growisofs -speed=4 -use-the-force-luke=spare:min,tty \
-          -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK /srv/noahsark/plans/run2
+          -Z <DEVICE> -R -iso-level 4 -V NOAHSARK <DISC_DIR>
 ```
 
 Use `-R -iso-level 4` (Rock Ridge), never `-J` (Joliet) alone: Joliet
@@ -292,7 +294,7 @@ the disc is left open, on purpose, for a later append; only
 `pack --close` seals it explicitly.
 
 Load the second blank disc and run the exact same command line again,
-from the same source (`run2.img` or the `run2` folder). The two discs
+from the same source (`<IMAGE>` or the `<DISC_DIR>` folder). The two discs
 must carry identical bytes; that pair is the backup's redundancy, not
 Reed-Solomon parity, which stays off unless a pack used `--fec`.
 
@@ -300,17 +302,17 @@ Tell the staging state machine the burn happened, then verify each disc
 by mounting it and reading it back through the filesystem:
 
 ```sh
-./noahsark disc burned --repo=/srv/noahsark/repo 1
+./noahsark disc burned --repo=<REPO> 1
 
-sudo mkdir -p /mnt/noahsark
-sudo mount /dev/sr0 /mnt/noahsark
-./noahsark verify --repo=/srv/noahsark/repo --image=/mnt/noahsark
-sudo umount /mnt/noahsark
+sudo mkdir -p <MOUNT>
+sudo mount <DEVICE> <MOUNT>
+./noahsark verify --repo=<REPO> --image=<MOUNT>
+sudo umount <MOUNT>
 ```
 
 `1` above is this disc's `seq`, from `pack`'s own "next steps" output
-(`disc burned --repo=... <uuid>`) or `disc list`; the label
-(`"2026-09-21 run2"`) works too. `disc burned` is the step that moves
+(`disc burned --repo=<REPO> <DISC_UUID>`) or `disc list`; the label
+(`<LABEL>`) works too. `disc burned` is the step that moves
 this run's objects from PACKED to BURNED. It has to be a separate,
 explicit step: `verify`
 never assumes a tree it can read is a burned disc just because its uuid
@@ -332,7 +334,7 @@ verify is not trusted.
 Read the new disc's uuid and seq back before labelling it:
 
 ```sh
-./noahsark disc list --repo=/srv/noahsark/repo
+./noahsark disc list --repo=<REPO>
 ```
 
 Label both discs (the uuid prefix and seq from `disc list`, the label
@@ -350,12 +352,12 @@ drill can reach it.
 
 Once both twins are burned, the sequence for each is always the same:
 
-1. Run `noahsark disc burned --repo=/srv/noahsark/repo <seq>`, using
+1. Run `noahsark disc burned --repo=<REPO> <RUN_SEQ>`, using
    the disc's `seq` or label off the sleeve (the full uuid `pack`
    printed still works too). This moves the run's objects from PACKED
    to BURNED.
-2. Mount it and run `noahsark verify --repo=/srv/noahsark/repo
-   --image=<mount point>`, as above. Do this before the disc leaves the
+2. Mount it and run `noahsark verify --repo=<REPO>
+   --image=<MOUNT>`, as above. Do this before the disc leaves the
    room. On success this moves the same objects on to CLEAN; see
    section 7 for what that starts.
 3. Once it reads `verify: ok`, with no PACKED objects left over, label
@@ -365,7 +367,7 @@ Once both twins are burned, the sequence for each is always the same:
    building is not a second location.
 5. Record the pack in the plain text log kept next to the repository.
 
-The packed tree directory (`--out`, `/srv/noahsark/plans/run2` above)
+The packed tree directory (`--out`, `<DISC_DIR>` above)
 is not needed to read the backup back once both twins verify: a disc
 is self-describing, and restore, verify, ls, and log all read the disc
 roots, never the staging tree. Keep it only if you expect to re-run
@@ -393,12 +395,12 @@ describes, not writing more onto an existing one.
 
 ## 6. Keep the repository directory safe
 
-`/srv/noahsark/repo` holds the config file (`repo.uuid`,
+`<REPO>` holds the config file (`repo.uuid`,
 `staging.dir`) and the staging store (`staging/objects`,
 `staging/snapshots`, and the state log that tracks which objects are
 already packed onto which disc). None of it is needed to read a backup
 back given a disc root: `restore` given a disc root, `verify`, `ls
-DISC-ROOT`, and `log DISC-ROOT` all read disc roots directly and never
+<DISC_DIR>`, and `log <DISC_DIR>` all read disc roots directly and never
 open `--repo`. Losing this directory never loses data already burned.
 (`restore --mount`, the single-drive mode, and `ls`, `log` or `plan`
 with no disc given, do open the repository, since they resolve the
@@ -412,12 +414,12 @@ only the new bytes. Rebuild the state from the discs before packing
 again:
 
 ```sh
-./noahsark rebuild-cache --from-disc --repo=/srv/noahsark/repo \
-    --disc=/mnt/run1 --disc=/mnt/run2
+./noahsark rebuild-cache --from-disc --repo=<REPO> \
+    --disc=<DISC_DIR_1> --disc=<DISC_DIR_2>
 ```
 
 Mount every disc the repository has ever burned first, and give
-`rebuild-cache` every one of them (`--discs-dir=/mnt/noahsark-discs`
+`rebuild-cache` every one of them (`--discs-dir=<DISCS_DIR>`
 works too, the same way `restore` accepts it). A disc left out makes
 the rebuild partial: exit code 1, naming the missing disc's uuid.
 Once `rebuild-cache` reports `ok`, `pack` dedups correctly again. The
@@ -426,8 +428,8 @@ deleted state log alone, with the config file and `refs.txt` untouched,
 since `rebuild-cache` rewrites the state log, the disc ledger, and the
 local refs from the discs regardless of what survived.
 
-When `/srv/noahsark/repo` is gone outright, do not run `init` first:
-`rebuild-cache --repo=DIR` creates the directory itself and restores
+When `<REPO>` is gone outright, do not run `init` first:
+`rebuild-cache --repo=<REPO>` creates the directory itself and restores
 `repo.uuid` from the discs' own `repo_uuid`. An `init` run ahead of it
 leaves a freshly generated `repo.uuid` that does not match the discs,
 and `rebuild-cache` refuses with a uuid mismatch rather than silently
@@ -436,7 +438,7 @@ only `repo.uuid` and `staging.dir`; every `pack` still needs its own
 `--capacity` on the command line, the same as after a fresh `init`.
 
 With a single drive, mounting every disc at once is not possible: run
-`rebuild-cache --from-disc --disc=<mount point>` once per disc instead,
+`rebuild-cache --from-disc --disc=<MOUNT>` once per disc instead,
 swapping discs between runs, into the same `--repo`. Each run marks
 that disc's own objects packed in the state log, so feed every disc for
 the state log to end up complete. Feed the discs in any order; every
@@ -448,8 +450,8 @@ own DISCS table. An older disc never knows about a disc burned after
 it, so feeding only the oldest disc of a chain can print `ok` while
 newer discs still exist and still need feeding; `ok` is not by itself
 proof that every disc of the whole chain has been rebuilt. A run that
-still has discs left to feed reports `rebuild is partial: disc <uuid>
-(<label>) not fed yet`, one line per such disc, and exits 1. When in
+still has discs left to feed reports `rebuild is partial: disc <DISC_UUID>
+(<LABEL>) not fed yet`, one line per such disc, and exits 1. When in
 doubt, compare `disc list`'s count and labels against the disc log or
 the physical sleeves, rather than trust `ok` alone to mean the whole
 chain is accounted for.
@@ -462,7 +464,7 @@ fed; it has nothing left to protect once the repository directory is
 gone outright, since the state log itself is gone with it.
 `rebuild-cache` against a fresh directory has no record that any disc
 was ever burned or verified, so every object it replays comes back at
-PACKED, no further. Run `disc burned <seq>` and `verify` again for
+PACKED, no further. Run `disc burned <RUN_SEQ>` and `verify` again for
 every disc, the same as the first time, before `gc` has anything CLEAN
 to work with.
 
@@ -472,14 +474,14 @@ Nothing in `staging/objects` is deleted just because it was packed onto
 a disc. An object leaves the staging store only after this full cycle:
 
 1. **Burn** both twins, as section 4 above already describes.
-2. **Mark it burned**: `noahsark disc burned --repo=/srv/noahsark/repo
-   <seq>`. This moves the run's objects from PACKED to BURNED. It
+2. **Mark it burned**: `noahsark disc burned --repo=<REPO>
+   <RUN_SEQ>`. This moves the run's objects from PACKED to BURNED. It
    has to be a separate step from verify: a loop-mounted image checked
    before burning (section 10) has the same disc uuid already in the
    ledger, so verify cannot treat a ledger match alone as proof that a
    disc exists.
-3. **Mount** the twin and run `noahsark verify --repo=/srv/noahsark/repo
-   --image=<mount point>`. `--repo` is what lets verify update the
+3. **Mount** the twin and run `noahsark verify --repo=<REPO>
+   --image=<MOUNT>`. `--repo` is what lets verify update the
    staging state, not just report `verify: ok`; without it, verify
    still checks the disc, but changes nothing in staging. On success,
    every BURNED object of that run moves on to CLEAN; verify warns
@@ -496,14 +498,14 @@ a disc. An object leaves the staging store only after this full cycle:
 5. **Run `gc`**:
 
    ```sh
-   noahsark gc --repo=/srv/noahsark/repo
+   noahsark gc --repo=<REPO>
    ```
 
    `gc` deletes every object that has stayed CLEAN past the retention
    period, after confirming each one is really present in its run's
    catalog; an object whose run's catalog is not in the local cache is
    left alone and counted separately, never deleted on a guess. Run
-   `noahsark gc --repo=/srv/noahsark/repo --dry-run` first to see what
+   `noahsark gc --repo=<REPO> --dry-run` first to see what
    it would free without deleting anything: `--dry-run` always exits 0,
    printing `gc: nothing is eligible yet` and the earliest date some
    object reaches the retention period when nothing is eligible yet. By
@@ -514,7 +516,7 @@ a disc. An object leaves the staging store only after this full cycle:
    when nothing was eligible to delete, 2 on failure, and 0 once it
    deletes something.
 
-   `--force-after=DURATION` shortens the retention to `DURATION` for
+   `--force-after=<DURATION>` shortens the retention to `<DURATION>` for
    this one `gc` run only, ignoring `staging.retain_after_clean`,
    useful when space is short and you are willing to accept a shorter
    window before the next real disaster: `gc --force-after=1h`. It asks
@@ -526,7 +528,7 @@ a disc. An object leaves the staging store only after this full cycle:
 Check the staging store's size at any point with:
 
 ```sh
-du -sh /srv/noahsark/repo/staging
+du -sh <REPO>/staging
 ```
 
 If space runs out before a disc's retention period has passed, do not
@@ -558,12 +560,12 @@ every disc of the chain before this drill, one directory per disc
 under a common parent (or copy each disc's `NOAHSARK` directory into
 its own subdirectory of one folder on local disk, if you would rather
 not keep several drives or discs mounted at once), then pass that
-parent with `--discs-dir`, or repeat `--disc=PATH` once per disc:
+parent with `--discs-dir`, or repeat `--disc=<DISC_DIR>` once per disc:
 
 ```sh
-sudo mkdir -p /mnt/noahsark-discs/run1 /mnt/noahsark-discs/run2
-sudo mount /dev/sr0 /mnt/noahsark-discs/run1
-# swap discs, mount the next one at /mnt/noahsark-discs/run2, and so on
+sudo mkdir -p <DISCS_DIR>/<DISC_DIR_1> <DISCS_DIR>/<DISC_DIR_2>
+sudo mount <DEVICE> <DISCS_DIR>/<DISC_DIR_1>
+# swap discs, mount the next one at <DISCS_DIR>/<DISC_DIR_2>, and so on
 ```
 
 If you mount (or pass) fewer discs than a command needs, it fails with
@@ -574,11 +576,11 @@ to match the uuid back to a disc.
 List every snapshot across the whole chain:
 
 ```sh
-./noahsark log --discs-dir=/mnt/noahsark-discs
+./noahsark log --discs-dir=<DISCS_DIR>
 ```
 
 `log` prints, for each snapshot, its id, time, and the refs pointing at
-it (`refs: 2026-09-21`). `ls`, `log` and `restore` all accept that
+it (`refs: <REF>`). `ls`, `log` and `restore` all accept that
 date-named ref directly, in place of the snapshot's own id, so the
 ref from section 1 or 2's `commit --ref=...` is enough on its own; no
 need to read an id off `log`'s output first. A line reading
@@ -595,8 +597,8 @@ UNSTABLE from a commit that ran while a file was mid-write. Flags
 come before the snapshot argument, not after:
 
 ```sh
-./noahsark ls --recursive --discs-dir=/mnt/noahsark-discs 2026-09-21
-./noahsark ls --recursive --unstable-only --discs-dir=/mnt/noahsark-discs 2026-09-21
+./noahsark ls --recursive --discs-dir=<DISCS_DIR> <REF>
+./noahsark ls --recursive --unstable-only --discs-dir=<DISCS_DIR> <REF>
 ```
 
 Each line starts with one marker column, blank unless the entry is
@@ -610,7 +612,7 @@ behind, never a disc, so run it first, from wherever the repository
 lives:
 
 ```sh
-./noahsark plan --repo=/srv/noahsark/repo 2026-09-21
+./noahsark plan --repo=<REPO> <REF>
 ```
 
 This prints one line per disc the restore would read, ordered by bytes
@@ -629,8 +631,8 @@ Narrow it to the same paths you plan to restore
 with `--include`, the same flag `restore` takes:
 
 ```sh
-./noahsark plan --repo=/srv/noahsark/repo --include=srv/data/ledger.csv \
-    --include=srv/data/photos/2026 2026-09-21
+./noahsark plan --repo=<REPO> --include=<PATH> \
+    --include=<PATH> <REF>
 ```
 
 Go fetch and mount exactly the discs the plan named, under
@@ -638,25 +640,25 @@ Go fetch and mount exactly the discs the plan named, under
 is incomplete for this snapshot, `plan` says so and names
 `rebuild-cache --from-disc` as the fix, the same message `ls` and
 `log` give; run it from whichever disc the message names, then plan
-again. `--out=FILE` writes the same plan as JSON, useful for a script
+again. `--out=<PLAN_FILE>` writes the same plan as JSON, useful for a script
 that mounts discs on its own.
 
 ### One drive: let restore ask for each disc
 
 With only one optical drive, mounting every disc of a chain at once is
-not possible. Give `restore` a single `--mount=DIR` instead of
+not possible. Give `restore` a single `--mount=<MOUNT>` instead of
 `--discs-dir` or `--disc`, and leave off the disc root entirely: it
 builds the same plan `plan` would, from the local cache, prints it, and
 then works through the plan one disc at a time, the way an old game
 installer asks for the next volume.
 
 ```sh
-sudo mkdir -p /mnt/noahsark-drive
-sudo mount /dev/sr0 /mnt/noahsark-drive
-./noahsark restore --mount=/mnt/noahsark-drive 2026-09-21 /tmp/restore-drill
+sudo mkdir -p <MOUNT>
+sudo mount <DEVICE> <MOUNT>
+./noahsark restore --mount=<MOUNT> <REF> <RESTORE_DIR>
 ```
 
-For each disc, `restore` checks `/mnt/noahsark-drive/NOAHSARK/DISC.bin`
+For each disc, `restore` checks `<MOUNT>/NOAHSARK/DISC.bin`
 against the plan. When the right disc is already mounted, it prints one
 line and moves on:
 
@@ -710,7 +712,7 @@ re-reading, whether they finished before or after the interruption:
 resumed: 4 file(s) already restored
 ```
 
-`restore` treats a file already present in `OUT-DIR`, without
+`restore` treats a file already present in `<RESTORE_DIR>`, without
 `--overwrite`, as done when its size matches the snapshot's tree entry
 and either its modification time also matches or, failing that, its
 content hashes to the same chunks the tree records; such a file is
@@ -726,21 +728,21 @@ genuine conflict, so neither line prints when it is given. `--disc`
 and `--discs-dir` restore, not only `--mount`, follow this same rule
 and print the same `resumed:` and `skipped ...` lines.
 
-Pass `--plan=FILE` with a plan `plan --out=FILE` already wrote, in
+Pass `--plan=<PLAN_FILE>` with a plan `plan --out=<PLAN_FILE>` already wrote, in
 place of letting `restore` build its own: useful when a script plans
 once, on a machine with the cache handy, and hands the plan file to
-whoever runs the actual restore. `--plan` takes no SNAPSHOT of its
+whoever runs the actual restore. `--plan` takes no <SNAPSHOT_ID> of its
 own; the plan file already names it:
 
 ```sh
-./noahsark restore --plan=/tmp/2026-09-21.plan.json --mount=/mnt/noahsark-drive /tmp/restore-drill
+./noahsark restore --plan=<PLAN_FILE> --mount=<MOUNT> <RESTORE_DIR>
 ```
 
 `restore --plan` refuses a plan file written for a different
 repository, or naming a snapshot this repository's cache does not
 know, rather than guessing.
 
-`--staging-budget=SIZE` caps how much of `staging/restore/` a
+`--staging-budget=<SIZE>` caps how much of `staging/restore/` a
 disc-swap restore ever uses at once, overriding `restore.staging_budget`
 for this run; it takes the same units as `--capacity` (`4GiB`, `500MB`,
 or a plain byte count). When one disc's share would go over the
@@ -753,16 +755,16 @@ file, before any disc is read.
 Restore a few paths, not the whole snapshot, to a scratch directory:
 
 ```sh
-./noahsark restore --include=srv/data/ledger.csv \
-    --include=srv/data/photos/2026 \
-    --discs-dir=/mnt/noahsark-discs 2026-09-21 /tmp/restore-drill
+./noahsark restore --include=<PATH> \
+    --include=<PATH> \
+    --discs-dir=<DISCS_DIR> <REF> <RESTORE_DIR>
 ```
 
 Compare against the live source:
 
 ```sh
-diff -rq /tmp/restore-drill/srv/data/ledger.csv /srv/data/ledger.csv
-sha256sum /tmp/restore-drill/srv/data/ledger.csv /srv/data/ledger.csv
+diff -rq <RESTORE_DIR><SOURCE>/ledger.csv <SOURCE>/ledger.csv
+sha256sum <RESTORE_DIR><SOURCE>/ledger.csv <SOURCE>/ledger.csv
 ```
 
 No differences means this disc chain, this snapshot, and the
@@ -773,12 +775,12 @@ kind of restore for the whole snapshot instead of a few paths, to
 prove the whole chain still works end to end:
 
 ```sh
-./noahsark restore --discs-dir=/mnt/noahsark-discs 2026-09-21 /tmp/restore-full
-diff -rq /tmp/restore-full/srv/data /srv/data
+./noahsark restore --discs-dir=<DISCS_DIR> <REF> <RESTORE_DIR>
+diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
 ```
 
 A single-disc repository (section 1's first backup, before any second
-pack) is the one case where `restore DISC-ROOT SNAPSHOT OUT-DIR`, with
+pack) is the one case where `restore <DISC_DIR> <SNAPSHOT_ID> <RESTORE_DIR>`, with
 one disc root and no `--discs-dir`, is already enough on its own.
 
 ## 9. When a disc is lost
@@ -816,20 +818,20 @@ all, which is useful before buying a drive, or to rehearse a restore in
 CI:
 
 ```sh
-./noahsark init --repo=repo
-./noahsark commit --repo=repo --ref=2026-09-14 /srv/data
-./noahsark pack --repo=repo --capacity=bd25 --ref=2026-09-14 --out=tree
-./noahsark verify --image=tree
-./noahsark restore tree 2026-09-14 restored
-diff -rq restored/srv/data /srv/data
+./noahsark init --repo=<REPO>
+./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
+./noahsark pack --repo=<REPO> --capacity=bd25 --ref=<REF> --out=<DISC_DIR>
+./noahsark verify --image=<DISC_DIR>
+./noahsark restore <DISC_DIR> <REF> <RESTORE_DIR>
+diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
 ```
 
-`verify --image` and `restore DISC-ROOT` both accept the packed tree
+`verify --image` and `restore <DISC_DIR>` both accept the packed tree
 directory `pack --out` produces directly: neither needs a UDF
 filesystem or a mount. To also exercise the UDF image path, add `sudo
-noahsark image build --out=tree.img --capacity=bd25 tree` (root, for
-the loop mount, but still no drive), then loop-mount `tree.img` and
-`verify --image=` the mount point, as section 3 already shows for a
+noahsark image build --out=<IMAGE> --capacity=bd25 <DISC_DIR>` (root, for
+the loop mount, but still no drive), then loop-mount `<IMAGE>` and
+run `verify --image=<MOUNT>`, as section 3 already shows for a
 real burn. Only the `growisofs` line itself needs a real drive.
 `image build` writes a real file of the full `--capacity`, though, so
 for a rehearsal pass `--capacity=1GB` to both `pack` and `image build`
@@ -850,14 +852,14 @@ clean, self-contained set again, is plain: start a new repository and
 run a new full backup, the same way section 1 did.
 
 ```sh
-./noahsark init --repo=/srv/noahsark/repo-2027
-./noahsark commit --repo=/srv/noahsark/repo-2027 --ref=2027-01-04 /srv/data
+./noahsark init --repo=<REPO>
+./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
 ```
 
 Keep the old repository's discs; do not discard the old backup just
 because a new one started. Label the new pair's discs so it is clear
 they belong to a different repository (a different `repo.uuid`), for
-example `"2027-01-04 repo2 run1"`.
+example `<LABEL>`.
 
 ## 12. Upgrading
 
@@ -885,10 +887,10 @@ named refusal; it is never a silent misread.
 - **`verify` reports a checksum mismatch or fails.** Same as a failed
   mount: throw the disc away, burn a fresh replacement, and verify
   that one before trusting it.
-- **`verify --repo=REPO` says a disc `is not in repository REPO`.**
+- **`verify --repo=<REPO>` says a disc `is not in repository <REPO>`.**
   The disc's uuid is not in that repository's disc list: check `--repo`
   points at the repository that actually packed this disc, or run
-  `noahsark rebuild-cache --from-disc --disc=<mount point>` against
+  `noahsark rebuild-cache --from-disc --disc=<MOUNT>` against
   that repository to add it.
 - **`pack` reports `remaining staged` and exits 1.** The source did
   not fit the given capacity. Pack again with a fresh `--out`
@@ -929,7 +931,7 @@ named refusal; it is never a silent misread.
   report an unknown name as `is neither a snapshot id nor a known ref
   name`.)
 - **`growisofs` prints `unexpected errno:No such file or directory`.**
-  The device node (`/dev/sr0`) does not exist: check the drive is
+  The device node (`<DEVICE>`) does not exist: check the drive is
   connected and that you named the right device.
 - **`growisofs` prints `unable to open64(...): Permission denied` and
   exits 141.** The device node exists, but your user cannot open it:
