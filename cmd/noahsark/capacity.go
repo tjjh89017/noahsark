@@ -26,49 +26,78 @@ var capacityPresets = map[string]uint64{
 
 // parseCapacity reads a --capacity value. A name from capacityPresets
 // (case insensitive) is the real sector count of that media. A bare
-// integer is a sector count. An integer followed by GiB, MiB or KiB is a
-// binary byte size; followed by GB, MB or KB is a decimal byte size, the
-// marketing convention optical media capacities are named in. Either byte
-// form is converted to whole sectors at FORMAT.md's 2048-byte sector
-// size, rounding up so the requested size always fits.
+// integer is a sector count. A number followed by a decimal unit suffix
+// (k, M, G, T, kB, MB, GB or TB) or a binary one (Ki, Mi, Gi, Ti, KiB,
+// MiB, GiB or TiB) is a byte size; see byteSizeUnits for which suffix
+// means which. Optical media is marketed in decimal units, so 25G is
+// 25,000,000,000 bytes, the same as 25GB; a preset like bd25 still
+// names the exact real sector count of that disc, not a rounded
+// marketing size. A byte size is converted to whole sectors at
+// FORMAT.md's 2048-byte sector size, rounding up so the requested size
+// always fits.
 //
 // Reading: docs/decisions.md, "16. CLI reference".
 func parseCapacity(s string) (uint64, error) {
 	if sectors, ok := capacityPresets[strings.ToLower(s)]; ok {
 		return sectors, nil
 	}
-	for _, u := range byteSizeUnits {
-		if numPart, ok := strings.CutSuffix(s, u.suffix); ok {
-			numPart = strings.TrimSpace(numPart)
-			n, err := strconv.ParseFloat(numPart, 64)
-			if err != nil {
-				return 0, fmt.Errorf("capacity: invalid size %q", s)
-			}
-			bytes := uint64(n * float64(u.scale))
-			return (bytes + image.SectorSize - 1) / image.SectorSize, nil
+	if numPart, scale, ok := cutSizeUnit(s); ok {
+		n, err := strconv.ParseFloat(numPart, 64)
+		if err != nil {
+			return 0, fmt.Errorf("capacity: invalid size %q", s)
 		}
+		bytes := uint64(n * float64(scale))
+		return (bytes + image.SectorSize - 1) / image.SectorSize, nil
 	}
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("capacity: invalid value %q, expected a preset name, a sector count, or a size like 25GB", s)
+		return 0, fmt.Errorf("capacity: invalid value %q, expected a preset name, a sector count, or a size like 25G", s)
 	}
 	return n, nil
 }
 
 // byteSizeUnits lists the unit suffixes --capacity and --staging-budget
-// both accept on a size value: a binary byte size (GiB, MiB, KiB) or a
-// decimal one (GB, MB, KB), the marketing convention optical media
-// capacities are named in.
+// both accept on a size value, matched case-insensitively. A suffix with
+// no "i" (k, M, G, T, kB, MB, GB, TB) is decimal: a power of 10, the
+// convention optical media capacities and disc drives are marketed in.
+// A suffix with an "i" (Ki, Mi, Gi, Ti, KiB, MiB, GiB, TiB) is binary: a
+// power of 2, the convention memory and file sizes are commonly given
+// in. "G" and "Gi" therefore name different byte counts, and likewise
+// for every other letter; a caller must not treat them as the same
+// unit.
 var byteSizeUnits = []struct {
-	suffix string
+	suffix string // lower-case
 	scale  uint64
 }{
-	{"GiB", 1 << 30},
-	{"MiB", 1 << 20},
-	{"KiB", 1 << 10},
-	{"GB", 1_000_000_000},
-	{"MB", 1_000_000},
-	{"KB", 1_000},
+	{"tb", 1_000_000_000_000},
+	{"gb", 1_000_000_000},
+	{"mb", 1_000_000},
+	{"kb", 1_000},
+	{"t", 1_000_000_000_000},
+	{"g", 1_000_000_000},
+	{"m", 1_000_000},
+	{"k", 1_000},
+	{"tib", 1 << 40},
+	{"gib", 1 << 30},
+	{"mib", 1 << 20},
+	{"kib", 1 << 10},
+	{"ti", 1 << 40},
+	{"gi", 1 << 30},
+	{"mi", 1 << 20},
+	{"ki", 1 << 10},
+}
+
+// cutSizeUnit matches s against byteSizeUnits, case-insensitively, and
+// returns the leading numeric text and the matched unit's scale. It
+// reports false when s carries none of byteSizeUnits' suffixes.
+func cutSizeUnit(s string) (numPart string, scale uint64, ok bool) {
+	lower := strings.ToLower(s)
+	for _, u := range byteSizeUnits {
+		if strings.HasSuffix(lower, u.suffix) {
+			return strings.TrimSpace(s[:len(s)-len(u.suffix)]), u.scale, true
+		}
+	}
+	return "", 0, false
 }
 
 // parseByteSize parses a plain byte count, or a number followed by one of
@@ -76,15 +105,12 @@ var byteSizeUnits = []struct {
 // integer here is bytes, not sectors: --staging-budget and
 // restore.staging_budget are plain byte quantities, not media capacities.
 func parseByteSize(s string) (uint64, error) {
-	for _, u := range byteSizeUnits {
-		if numPart, ok := strings.CutSuffix(s, u.suffix); ok {
-			numPart = strings.TrimSpace(numPart)
-			n, err := strconv.ParseFloat(numPart, 64)
-			if err != nil {
-				return 0, fmt.Errorf("invalid size %q", s)
-			}
-			return uint64(n * float64(u.scale)), nil
+	if numPart, scale, ok := cutSizeUnit(s); ok {
+		n, err := strconv.ParseFloat(numPart, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid size %q", s)
 		}
+		return uint64(n * float64(scale)), nil
 	}
 	n, err := strconv.ParseUint(s, 10, 64)
 	if err != nil {
@@ -105,32 +131,16 @@ func capacityPresetNames() []string {
 }
 
 // capacityUnitSuffixes lists the byte-size unit suffixes parseCapacity
-// accepts, for help text and error messages.
-var capacityUnitSuffixes = []string{"GiB", "MiB", "KiB", "GB", "MB", "KB"}
+// accepts, for help text and error messages: decimal (power of 10) then
+// binary (power of 2), matching byteSizeUnits.
+var capacityUnitSuffixes = []string{"k", "M", "G", "T", "kB", "MB", "GB", "TB", "Ki", "Mi", "Gi", "Ti", "KiB", "MiB", "GiB", "TiB"}
 
 // capacityHelpText describes the accepted --capacity and --physical-capacity
 // spellings: the preset names and the unit suffixes. It is shared by the
 // flags' own usage text and by an error that rejects a parsed value.
 func capacityHelpText() string {
-	return fmt.Sprintf("a preset (%s), a plain sector count, or a size with a unit (%s)",
-		strings.Join(capacityPresetNames(), ", "), strings.Join(capacityUnitSuffixes, ", "))
-}
-
-// packFixedFileCount is the number of files every run writes before any
-// snapshot or staged object is counted: INDEX, RUN, DISC, README,
-// FORMAT, decoder, REFS and DISCS, plus the RUN2.bin header copy that
-// every run carries whether or not it has FEC.
-const packFixedFileCount = 8 + 1
-
-// checkCapacityMinimum refuses a capacity too small to hold even an
-// empty run's own fixed files and header copies. pack hits this same
-// floor as ErrCapacityTooSmall once it counts real objects; init checks
-// it up front, with no objects yet to count, so a too-small --capacity
-// is refused before it is written into the config instead of failing
-// every later pack.
-func checkCapacityMinimum(capacitySectors uint64) error {
-	if err := image.CheckCapacity(0, 0, 0, 2*image.RunFileLen, packFixedFileCount, capacitySectors); err != nil {
-		return fmt.Errorf("--capacity=%d sectors (%d bytes) is too small: %s", capacitySectors, capacitySectors*image.SectorSize, capacityHelpText())
-	}
-	return nil
+	return fmt.Sprintf("a preset (%s), a plain sector count, or a size with a decimal (%s) or binary (%s) unit; G is not Gi",
+		strings.Join(capacityPresetNames(), ", "),
+		strings.Join(capacityUnitSuffixes[:8], ", "),
+		strings.Join(capacityUnitSuffixes[8:], ", "))
 }

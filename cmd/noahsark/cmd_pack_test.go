@@ -18,19 +18,19 @@ func TestPackRefusesNothingToPack(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	firstTree := filepath.Join(work, "tree1")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+firstTree); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+firstTree); code != 0 {
 		t.Fatalf("first pack: exit %d: %s", code, out)
 	}
 
 	secondTree := filepath.Join(work, "tree2")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+secondTree)
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondTree)
 	if code != 1 {
 		t.Fatalf("second pack: exit %d, want 1: %s", code, out)
 	}
@@ -53,7 +53,7 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 0d")
@@ -70,7 +70,7 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	}
 
 	secondTree := filepath.Join(work, "tree2")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+secondTree)
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondTree)
 	if code != 1 {
 		t.Fatalf("pack after gc: exit %d, want 1: %s", code, out)
 	}
@@ -91,14 +91,14 @@ func TestPackRefusesNonEmptyOutput(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("first pack: exit %d: %s", code, out)
 	}
 
@@ -116,7 +116,7 @@ func TestPackRefusesNonEmptyOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir)
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir)
 	if code != 2 {
 		t.Fatalf("second pack into the same --out: exit %d, want 2: %s", code, out)
 	}
@@ -149,13 +149,13 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, out1 := runCmd(t, "pack", "--repo="+repo)
+	code, out1 := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("first pack: exit %d: %s", code, out1)
 	}
@@ -167,7 +167,7 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
 		t.Fatalf("second commit: exit %d: %s", code, out)
 	}
-	code, out2 := runCmd(t, "pack", "--repo="+repo)
+	code, out2 := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("second pack: exit %d: %s", code, out2)
 	}
@@ -204,7 +204,7 @@ func TestPackCapacityTooSmallMessage(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -236,7 +236,7 @@ func TestPackMediaDerivedFromCapacityPreset(t *testing.T) {
 
 	bdRepo := filepath.Join(work, "repo-bd")
 	bdSrc := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+bdRepo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+bdRepo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+bdRepo, bdSrc); code != 0 {
@@ -256,7 +256,7 @@ func TestPackMediaDerivedFromCapacityPreset(t *testing.T) {
 
 	dvdRepo := filepath.Join(work, "repo-dvd")
 	dvdSrc := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+dvdRepo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+dvdRepo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+dvdRepo, dvdSrc); code != 0 {
@@ -284,7 +284,7 @@ func TestPackNextStepsBlock(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -292,7 +292,7 @@ func TestPackNextStepsBlock(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir)
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir)
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
@@ -326,7 +326,7 @@ func TestPackCloseFlagSealsBurnLine(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -334,7 +334,7 @@ func TestPackCloseFlagSealsBurnLine(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir, "--close")
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir, "--close")
 	if code != 0 {
 		t.Fatalf("pack --close: exit %d: %s", code, out)
 	}

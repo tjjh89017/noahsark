@@ -69,7 +69,7 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "commit", "--repo="+repo, src)

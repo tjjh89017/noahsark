@@ -30,7 +30,7 @@ scenario_incremental() {
 	local hashes_base="$work/base.hashes" plan="$work/plan.txt" hashes_next="$work/next.hashes"
 	build_binary
 
-	"$BIN" init --repo="$repo" "$(media_init_capacity "$FIXED_MEDIA")"
+	"$BIN" init --repo="$repo"
 
 	local t0 t1
 	t0=$(date +%s)

@@ -23,7 +23,7 @@ func TestRebuildCacheFromDiscRestoresState(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "commit", "--repo="+repo, "--ref=BASE", src)
@@ -33,7 +33,7 @@ func TestRebuildCacheFromDiscRestoresState(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=BASE", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=BASE", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -76,14 +76,14 @@ func TestRebuildCacheIsIdempotent(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	if err := os.RemoveAll(repo); err != nil {
@@ -127,7 +127,7 @@ func TestRebuildCacheWordingDoesNotClaimClean(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -167,7 +167,7 @@ func TestRebuildCachePartialNamesMissingDisc(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -219,7 +219,7 @@ func TestRebuildCachePartialUntilEveryDiscFed(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -319,7 +319,7 @@ func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
 		return w
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -327,7 +327,7 @@ func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -406,7 +406,7 @@ func TestRebuildCacheOneDiscAtATimeMergesLedger(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -478,7 +478,7 @@ func TestRebuildCacheKeepsUnpackedRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -487,7 +487,7 @@ func TestRebuildCacheKeepsUnpackedRef(t *testing.T) {
 		t.Fatalf("commit BASE: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=BASE", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=BASE", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack BASE: exit %d: %s", code, out)
 	}
 
@@ -505,7 +505,7 @@ func TestRebuildCacheKeepsUnpackedRef(t *testing.T) {
 	}
 
 	secondTree := filepath.Join(work, "tree2")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=X", "--out="+secondTree); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=X", "--out="+secondTree); code != 0 {
 		t.Fatalf("pack X: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "log", secondTree)
@@ -529,7 +529,7 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "commit", "--repo="+repo, src)
@@ -537,7 +537,7 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 

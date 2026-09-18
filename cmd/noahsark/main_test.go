@@ -56,7 +56,7 @@ func TestFullSequence(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -67,7 +67,7 @@ func TestFullSequence(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -173,7 +173,7 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -209,7 +209,8 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 }
 
 // TestPackWithoutCapacityRefused asserts that pack refuses to run when
-// neither --capacity nor the config default is set.
+// --capacity is not given: the config carries no capacity default, so
+// every pack must give its own.
 func TestPackWithoutCapacityRefused(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")

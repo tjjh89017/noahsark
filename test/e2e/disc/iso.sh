@@ -202,7 +202,7 @@ scenario_iso() {
 	log "iso: fixture generation took $((t1 - t0))s"
 	df -h
 
-	"$BIN" init --repo="$repo" "$(media_init_capacity "$FIXED_MEDIA")"
+	"$BIN" init --repo="$repo"
 	commit_out="$("$BIN" commit --repo="$repo" "$src")"
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"

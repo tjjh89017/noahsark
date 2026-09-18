@@ -34,7 +34,7 @@ asks for the earlier discs too; give it every disc root instead
 
 ```sh
 go build -o noahsark ./cmd/noahsark
-./noahsark init --repo=repo --capacity=25GB
+./noahsark init --repo=repo
 ./noahsark commit --repo=repo /path/to/source
 ./noahsark pack --repo=repo --capacity=25GB --fec --out=tree
 sudo ./noahsark image build --out=run.img --capacity=25GB tree
@@ -231,6 +231,25 @@ dvd+rw-mediainfo /dev/sr0 | grep 'Free Blocks'
 ```
 
 Pass that block count straight to `--capacity` as a sector count.
+
+`--capacity` also takes a plain byte size, with a decimal or a binary
+unit suffix, matched case-insensitively. A decimal suffix (`k`, `M`,
+`G`, `T`, or `kB`, `MB`, `GB`, `TB`) is a power of 10, the convention
+optical media is marketed in. A binary suffix (`Ki`, `Mi`, `Gi`, `Ti`,
+or `KiB`, `MiB`, `GiB`, `TiB`) is a power of 2. `G` is not `Gi`:
+
+| Input | Bytes |
+|---|---:|
+| `25G` or `25GB` | 25,000,000,000 |
+| `25Gi` or `25GiB` | 26,843,545,600 |
+| `4T` or `4TB` | 4,000,000,000,000 |
+| `4Ti` or `4TiB` | 4,398,046,511,104 |
+| `512M` or `512MB` | 512,000,000 |
+| `512Mi` or `512MiB` | 536,870,912 |
+
+A bare number with no suffix is a sector count, not bytes. A preset
+name like `bd25` still names that disc's exact real sector count from
+the table above, not a value derived by rounding a marketing size.
 
 ## Progress output
 

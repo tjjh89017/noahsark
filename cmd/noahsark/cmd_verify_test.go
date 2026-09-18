@@ -64,7 +64,7 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -105,7 +105,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -160,7 +160,7 @@ func TestDiscBurnedUndo(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -205,7 +205,7 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -254,7 +254,7 @@ func TestDiscBurnedBySeqAndLabel(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -358,7 +358,7 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -421,7 +421,7 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	src := writeFixtureSource(t)
 
 	for _, repo := range []string{repoA, repoB} {
-		if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 			t.Fatalf("init %s: exit %d: %s", repo, code, out)
 		}
 	}
@@ -461,7 +461,7 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {

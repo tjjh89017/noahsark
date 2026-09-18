@@ -31,7 +31,7 @@ func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
@@ -66,7 +66,7 @@ func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
@@ -107,7 +107,7 @@ func TestGCForceAfterRefusesNonTerminalWithoutYes(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
@@ -153,7 +153,7 @@ func TestGCForceAfterDevNullIsNotATerminal(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
@@ -180,7 +180,7 @@ func TestGCForceAfterRefusesNonTerminalEvenWithNothingEligible(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	// Left at gc's default retention: nothing is CLEAN long enough to
@@ -211,7 +211,7 @@ func TestGCForceAfterYesSkipsConfirmation(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
@@ -241,7 +241,7 @@ func TestGCForceAfterDryRunSkipsConfirmation(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")

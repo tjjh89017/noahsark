@@ -62,16 +62,15 @@ Build the binary and create the repository:
 
 ```sh
 go build -o noahsark ./cmd/noahsark
-./noahsark init --repo=/srv/noahsark/repo --capacity=bd25
+./noahsark init --repo=/srv/noahsark/repo
 ```
 
-`--capacity` here only sets a fallback default; every `pack` below
-passes its own `--capacity` explicitly. `init` writes
-`/srv/noahsark/repo/config`, holding `repo.uuid` (generated once,
-identifies this repository across every disc it ever burns),
-`staging.dir`, and `disc.force_capacity` (the sector count for
-`--capacity=bd25` above). `pack` reads `disc.force_capacity` as its
-own fallback whenever `--capacity` is left off its command line.
+`init` writes `/srv/noahsark/repo/config`, holding `repo.uuid`
+(generated once, identifies this repository across every disc it ever
+burns) and `staging.dir`. Capacity is not a repository setting: every
+`pack` below passes its own `--capacity`, since a disc's capacity is
+locked in at that disc's first write, not chosen once for the whole
+repository.
 
 Every command below passes `--repo` explicitly, but it is not always
 required. When `--repo` is omitted, the binary looks for a repository
@@ -433,11 +432,8 @@ When `/srv/noahsark/repo` is gone outright, do not run `init` first:
 leaves a freshly generated `repo.uuid` that does not match the discs,
 and `rebuild-cache` refuses with a uuid mismatch rather than silently
 adopting the discs' identity. The config `rebuild-cache` writes carries
-only `repo.uuid` and `staging.dir`; it does not carry
-`disc.force_capacity` or any other key an earlier `init --capacity=`
-set, so the next `pack` needs `--capacity=` on the command line again,
-or the key set back into the config, until it is packed with a forced
-capacity once more.
+only `repo.uuid` and `staging.dir`; every `pack` still needs its own
+`--capacity` on the command line, the same as after a fresh `init`.
 
 With a single drive, mounting every disc at once is not possible: run
 `rebuild-cache --from-disc --disc=<mount point>` once per disc instead,
@@ -820,7 +816,7 @@ all, which is useful before buying a drive, or to rehearse a restore in
 CI:
 
 ```sh
-./noahsark init --repo=repo --capacity=bd25
+./noahsark init --repo=repo
 ./noahsark commit --repo=repo --ref=2026-09-14 /srv/data
 ./noahsark pack --repo=repo --capacity=bd25 --ref=2026-09-14 --out=tree
 ./noahsark verify --image=tree
@@ -854,7 +850,7 @@ clean, self-contained set again, is plain: start a new repository and
 run a new full backup, the same way section 1 did.
 
 ```sh
-./noahsark init --repo=/srv/noahsark/repo-2027 --capacity=bd25
+./noahsark init --repo=/srv/noahsark/repo-2027
 ./noahsark commit --repo=/srv/noahsark/repo-2027 --ref=2027-01-04 /srv/data
 ```
 

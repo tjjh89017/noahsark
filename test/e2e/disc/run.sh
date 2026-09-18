@@ -207,7 +207,7 @@ scenario_cli() {
 	build_binary
 	gen_small_tree "$src"
 
-	"$BIN" init --repo="$repo" "$(media_init_capacity "$FIXED_MEDIA")"
+	"$BIN" init --repo="$repo"
 	commit_out="$("$BIN" commit --repo="$repo" "$src")"
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
@@ -275,7 +275,7 @@ scenario_media() {
 		;;
 	esac
 
-	"$BIN" init --repo="$repo" "$(media_init_capacity "$media")"
+	"$BIN" init --repo="$repo"
 
 	local commit_out snap
 	commit_out="$("$BIN" commit --repo="$repo" --ref=SMALL "$small_src")"

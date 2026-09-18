@@ -83,7 +83,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
 	var snapshotFlags stringList
 	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
-	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); falls back to the config default")
+	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); required")
 	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity (sectors, a preset, or a byte size); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
 	label := fs.String("label", "", "human label for the disc")
 	media := fs.String("media", "", "media type: a FORMAT.md registry name (e.g. BD-R-SL-25), or a --capacity preset name (bd25, bd50, bd100, bd128, dvd+r, dvd-r); default derived from --capacity, else BD-R-SL-25")
@@ -113,18 +113,13 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
-	var capacitySectors uint64
-	switch {
-	case *capacityStr != "":
-		capacitySectors, err = parseCapacity(*capacityStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-			return 2
-		}
-	case cfg.ForceCapacitySectors != 0:
-		capacitySectors = cfg.ForceCapacitySectors
-	default:
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity or set disc.force_capacity in the config")
+	if *capacityStr == "" {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity")
+		return 2
+	}
+	capacitySectors, err := parseCapacity(*capacityStr)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
 
@@ -247,12 +242,8 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	result, err := image.Pack(opts)
 	if err != nil {
 		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
-			given := *capacityStr
-			if given == "" {
-				given = fmt.Sprintf("%d (from config)", capacitySectors)
-			}
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes, %d sectors) is too small; this run needs at least %d sectors (%d bytes)\n",
-				given, capacitySectors*image.SectorSize, capacitySectors,
+				*capacityStr, capacitySectors*image.SectorSize, capacitySectors,
 				tooSmall.NeededSectors, tooSmall.NeededSectors*image.SectorSize)
 			return 2
 		}

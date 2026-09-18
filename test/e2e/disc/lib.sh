@@ -59,17 +59,6 @@ media_capacity_flags() {
 	esac
 }
 
-# media_init_capacity MEDIA prints the single --capacity flag "noahsark
-# init" takes; init has no --physical-capacity flag, unlike pack.
-media_init_capacity() {
-	case "$1" in
-	dvd+r) echo "--capacity=dvd+r" ;;
-	bd25) echo "--capacity=bd25" ;;
-	bd25-forced-10g) echo "--capacity=10GiB" ;;
-	*) fail "unknown media preset: $1" ;;
-	esac
-}
-
 # media_sectors MEDIA prints "TARGET_SECTORS PHYSICAL_SECTORS" for
 # ci-fixture, matching media_capacity_flags's preset.
 media_sectors() {
