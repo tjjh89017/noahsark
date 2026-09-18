@@ -19,7 +19,7 @@ func multiDiscPlanFixture(t *testing.T) (repo, snapID, includePath string, discR
 	repo = filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "commit", "--repo="+repo, src)
@@ -227,7 +227,7 @@ func TestPlanMissingRun(t *testing.T) {
 func TestPlanEmptyCacheNamesTheFix(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 

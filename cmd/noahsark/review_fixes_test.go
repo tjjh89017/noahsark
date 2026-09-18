@@ -26,7 +26,7 @@ func readFile(path string) (string, error) {
 func TestGlobalFlagBeforeCommand(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "-q", "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "-q", "init", "--repo="+repo); code != 0 {
 		t.Fatalf("-q init: exit %d: %s", code, out)
 	}
 }
@@ -135,7 +135,7 @@ func TestRestoreOverwrite(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "commit", "--repo="+repo, src)
@@ -145,7 +145,7 @@ func TestRestoreOverwrite(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 

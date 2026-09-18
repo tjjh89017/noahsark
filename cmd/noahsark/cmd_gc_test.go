@@ -59,7 +59,7 @@ func TestGCRetentionGate(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
@@ -139,7 +139,7 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
@@ -195,7 +195,7 @@ func TestGCTrimsCacheToNewestSnapshots(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -286,7 +286,7 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	cacheDir := filepath.Join(work, "cache")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")

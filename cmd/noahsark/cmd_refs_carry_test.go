@@ -30,7 +30,7 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -44,7 +44,7 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=C", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=C", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -79,7 +79,7 @@ func TestRestoreDiscsDirWrongOrderFindsEveryRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -94,7 +94,7 @@ func TestRestoreDiscsDirWrongOrderFindsEveryRef(t *testing.T) {
 		t.Fatalf("commit run1: exit %d: %s", code, out)
 	}
 	discA := filepath.Join(discsDir, "disc-a")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=run1", "--out="+discA); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=run1", "--out="+discA); code != 0 {
 		t.Fatalf("pack run1: exit %d: %s", code, out)
 	}
 
@@ -104,7 +104,7 @@ func TestRestoreDiscsDirWrongOrderFindsEveryRef(t *testing.T) {
 		t.Fatalf("commit run2: exit %d: %s", code, out)
 	}
 	discB := filepath.Join(discsDir, "disc-b")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--ref=run2", "--out="+discB); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=run2", "--out="+discB); code != 0 {
 		t.Fatalf("pack run2: exit %d: %s", code, out)
 	}
 

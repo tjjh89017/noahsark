@@ -22,9 +22,6 @@ type repoConfig struct {
 	RepoUUID string
 	// StagingDir is staging.dir: the staging store location.
 	StagingDir string
-	// ForceCapacitySectors is disc.force_capacity, stored as a sector
-	// count. Zero means unset.
-	ForceCapacitySectors uint64
 	// RestatAfterRead is commit.restat_after_read. Defaults true.
 	RestatAfterRead bool
 	// RetryUnstable is commit.retry_unstable. Defaults to
@@ -88,7 +85,6 @@ var laterPhaseConfigKeys = map[string]string{
 var knownConfigKeys = map[string]bool{
 	"repo.uuid":                  true,
 	"staging.dir":                true,
-	"disc.force_capacity":        true,
 	"commit.restat_after_read":   true,
 	"commit.retry_unstable":      true,
 	"fec.scheme":                 true,
@@ -140,9 +136,6 @@ func writeConfig(path string, c repoConfig) error {
 	var b strings.Builder
 	_, _ = fmt.Fprintf(&b, "repo.uuid = %s\n", c.RepoUUID)
 	_, _ = fmt.Fprintf(&b, "staging.dir = %s\n", c.StagingDir)
-	if c.ForceCapacitySectors != 0 {
-		_, _ = fmt.Fprintf(&b, "disc.force_capacity = %d\n", c.ForceCapacitySectors)
-	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
@@ -175,6 +168,9 @@ func readConfig(path string) (repoConfig, error) {
 		key := strings.TrimSpace(rawKey)
 		value := strings.TrimSpace(rawValue)
 
+		if key == "disc.force_capacity" {
+			return repoConfig{}, fmt.Errorf("config: disc.force_capacity is no longer a config key; pass pack --capacity instead")
+		}
 		if phase, ok := laterPhaseConfigKeys[key]; ok {
 			return repoConfig{}, fmt.Errorf("config: %s is a %s key; not available in Phase 1", key, phase)
 		}
@@ -187,12 +183,6 @@ func readConfig(path string) (repoConfig, error) {
 			c.RepoUUID = value
 		case "staging.dir":
 			c.StagingDir = value
-		case "disc.force_capacity":
-			n, err := strconv.ParseUint(value, 10, 64)
-			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: disc.force_capacity: %w", err)
-			}
-			c.ForceCapacitySectors = n
 		case "commit.restat_after_read":
 			b, err := strconv.ParseBool(value)
 			if err != nil {

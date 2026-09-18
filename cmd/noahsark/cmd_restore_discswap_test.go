@@ -25,7 +25,7 @@ func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string
 	repo = filepath.Join(work, "repo")
 	src = writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "commit", "--repo="+repo, src)
@@ -351,7 +351,7 @@ func TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch(t *testing.T) {
 	// A disc from an unrelated repository: neither disc the plan wants.
 	bogusWork := t.TempDir()
 	bogusRepo := filepath.Join(bogusWork, "repo")
-	if code, out := runCmd(t, "init", "--repo="+bogusRepo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "init", "--repo="+bogusRepo); code != 0 {
 		t.Fatalf("init bogus repo: exit %d: %s", code, out)
 	}
 	bogusSrc := writeFixtureSource(t)
@@ -359,7 +359,7 @@ func TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch(t *testing.T) {
 		t.Fatalf("commit bogus repo: exit %d: %s", code, out)
 	}
 	bogusDisc := filepath.Join(bogusWork, "disc")
-	if code, out := runCmd(t, "pack", "--repo="+bogusRepo, "--out="+bogusDisc); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+bogusRepo, "--capacity=64MiB", "--out="+bogusDisc); code != 0 {
 		t.Fatalf("pack bogus repo: exit %d: %s", code, out)
 	}
 

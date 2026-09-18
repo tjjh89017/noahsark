@@ -294,18 +294,22 @@ build does not implement yet is refused saying so, rather than either
 one failing with the raw, unhelpful error the `flag` package or the
 config loader would otherwise give.
 
-`init` accepts only `--repo` and `--capacity`. `--hash`, `--chunker`,
-`--fs-profile` and `--preset` choose among alternatives the fixed
-decisions already collapse to one value; `--repo-uuid`,
-`--next-run-seq`, `--next-disc-seq` and `--scan-discs` recover sequence
-numbers from existing discs, which no multi-disc state exists yet to
-scan. `init` writes a flat `key = value` config file, the simplest
-format the standard library parses without a third-party dependency,
-holding only `repo.uuid`, `staging.dir` and `disc.force_capacity`
-(section 17.1, 17.5 and 17.12): every other Phase 1 key needs behaviour
-(hash choice, chunker profile, excludes, locality, metadata policy)
-this build does not implement, so the config loader refuses any other
-key by name rather than accept and ignore it.
+`init` accepts only `--repo`. `--hash`, `--chunker`, `--fs-profile` and
+`--preset` choose among alternatives the fixed decisions already
+collapse to one value; `--repo-uuid`, `--next-run-seq`,
+`--next-disc-seq` and `--scan-discs` recover sequence numbers from
+existing discs, which no multi-disc state exists yet to scan. `init`
+writes a flat `key = value` config file, the simplest format the
+standard library parses without a third-party dependency, holding only
+`repo.uuid` and `staging.dir` (section 17.1 and 17.5): every other
+Phase 1 key needs behaviour (hash choice, chunker profile, excludes,
+locality, metadata policy) this build does not implement, so the
+config loader refuses any other key by name rather than accept and
+ignore it. Capacity is not among the repository's own settings: a
+disc's capacity is locked in at that disc's first write, not a value
+that holds for the whole repository, so the config carries no default
+and every `pack` gives `--capacity` on its own command line
+(section 17.12).
 
 `commit` accepts a source path, `--ref`, and `-m` (a message stored on
 the snapshot). `--from` and `--copy-first` are Phase 2 and refused by
@@ -353,9 +357,10 @@ capacity a drive reports:
 | `bd100` | BD-R XL, 100 GB | 48,878,592 | 100,103,356,416 |
 | `bd128` | BD-R XL, 128 GB | 62,500,864 | 128,001,769,472 |
 
-`--capacity` falls back to the config's `disc.force_capacity` and
-refuses to run with neither set, per the fixed decision that every pack
-takes a capacity. `--physical-capacity` takes the same forms (sectors,
+`--capacity` is required and refuses to run without it, per the fixed
+decision that every pack takes a capacity; the config carries no
+capacity default, since a disc's capacity is a per-disc value, not a
+repository constant. `--physical-capacity` takes the same forms (sectors,
 a preset, or a byte size) and sets the disc's physical capacity,
 `capacity_sectors` in the superblock, separately from `--capacity`,
 which sets the forced limit, `capacity_forced_sectors`; it defaults to
