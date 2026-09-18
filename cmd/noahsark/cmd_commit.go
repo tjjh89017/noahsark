@@ -15,10 +15,10 @@ import (
 var newWriter = object.NewWriter
 
 // cmdCommit implements "noahsark commit". It reduces OPERATIONS.md's
-// commit flags to the source path and --ref: the quick check, excludes,
-// source-type override, mirror mode and commit bundles all need a config
-// or state layer this build does not have. See docs/decisions.md,
-// "16. CLI reference".
+// commit flags to an optional source path and --ref: the quick check,
+// excludes, source-type override, mirror mode and commit bundles all
+// need a config or state layer this build does not have. See
+// docs/decisions.md, "16. CLI reference".
 func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if refuseLaterPhaseFlags("commit", args, stderr) {
 		return 2
@@ -27,7 +27,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
-	fs := newFlagSet("noahsark commit SOURCE [--repo=PATH] [--ref=NAME] [-m MESSAGE]",
+	fs := newFlagSet("noahsark commit [SOURCE] [--repo=PATH] [--ref=NAME] [-m MESSAGE]",
 		"Commit a source directory tree as a new snapshot.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "LATEST", "ref to move")
@@ -38,11 +38,10 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	if checkPositionalsForFlags("commit", fs, stderr) {
 		return 2
 	}
-	if fs.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit SOURCE [--repo=PATH] [--ref=NAME] [-m MESSAGE]")
+	if fs.NArg() > 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [SOURCE] [--repo=PATH] [--ref=NAME] [-m MESSAGE]")
 		return 2
 	}
-	source := fs.Arg(0)
 
 	repoDir, err := discoverRepo(*repoFlag)
 	if err != nil {
@@ -52,6 +51,17 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 2
+	}
+
+	// With no SOURCE on the command line, fall back to the source root
+	// init --source stored; a SOURCE given here overrides it.
+	source := cfg.SourceRoot
+	if fs.NArg() == 1 {
+		source = fs.Arg(0)
+	}
+	if source == "" {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit: no SOURCE given and no source root in the config; pass a path or run init --source")
 		return 2
 	}
 

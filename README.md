@@ -38,8 +38,8 @@ asks for the earlier discs too; give it every disc root instead
 
 ```sh
 go build -o noahsark ./cmd/noahsark
-./noahsark init --repo=<REPO>
-./noahsark commit --repo=<REPO> <SOURCE>
+./noahsark init --repo=<REPO> --source=<SOURCE>
+./noahsark commit --repo=<REPO>
 ./noahsark pack --repo=<REPO> --capacity=<CAPACITY> --fec --out=<DISC_DIR>
 sudo ./noahsark image build --out=<IMAGE> --capacity=<CAPACITY> <DISC_DIR>
 ```
@@ -124,6 +124,10 @@ prerequisites of the earlier disc instead.
 ./noahsark pack --repo=<REPO> --capacity=bd25  --out=<DISC_DIR_2>
 ./noahsark pack --repo=<REPO> --capacity=<CAPACITY> --out=<DISC_DIR_3>
 ```
+
+`<SOURCE>` on the `commit` command line overrides the source root
+`init --source` stored in the config; drop it to use the configured
+root instead.
 
 `pack` exits 0 once nothing is left staged, and 1 while objects remain;
 either way it prints the remaining object count and byte total.

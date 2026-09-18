@@ -64,12 +64,14 @@ Build the binary and create the repository:
 
 ```sh
 go build -o noahsark ./cmd/noahsark
-./noahsark init --repo=<REPO>
+./noahsark init --repo=<REPO> --source=<SOURCE>
 ```
 
 `init` writes `<REPO>/config`, holding `repo.uuid`
 (generated once, identifies this repository across every disc it ever
-burns) and `staging.dir`. Capacity is not a repository setting: every
+burns), `staging.dir`, and, since `--source` was given, `sources.root`:
+the source directory every later `commit` reads from when its own
+command line names none. Capacity is not a repository setting: every
 `pack` below passes its own `--capacity`, since a disc's capacity is
 locked in at that disc's first write, not chosen once for the whole
 repository.
@@ -84,10 +86,11 @@ inside `<REPO>`, to drop `--repo` from every command line
 below.
 
 Commit the source tree, with a ref named by date so `log` later shows
-which commit corresponds to which day:
+which commit corresponds to which day. No `SOURCE` is needed on the
+command line: `commit` reads the `sources.root` `init --source` stored.
 
 ```sh
-./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
+./noahsark commit --repo=<REPO> --ref=<REF>
 ```
 
 Read the media's real capacity and pack the whole commit to it:
@@ -155,7 +158,7 @@ Pick an interval, for example weekly, and commit the same source
 directories every time, with a fresh date as the ref:
 
 ```sh
-./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
+./noahsark commit --repo=<REPO> --ref=<REF>
 ```
 
 Read the summary `commit` prints:
@@ -818,8 +821,8 @@ all, which is useful before buying a drive, or to rehearse a restore in
 CI:
 
 ```sh
-./noahsark init --repo=<REPO>
-./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
+./noahsark init --repo=<REPO> --source=<SOURCE>
+./noahsark commit --repo=<REPO> --ref=<REF>
 ./noahsark pack --repo=<REPO> --capacity=bd25 --ref=<REF> --out=<DISC_DIR>
 ./noahsark verify --image=<DISC_DIR>
 ./noahsark restore <DISC_DIR> <REF> <RESTORE_DIR>
@@ -852,8 +855,8 @@ clean, self-contained set again, is plain: start a new repository and
 run a new full backup, the same way section 1 did.
 
 ```sh
-./noahsark init --repo=<REPO>
-./noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>
+./noahsark init --repo=<REPO> --source=<SOURCE>
+./noahsark commit --repo=<REPO> --ref=<REF>
 ```
 
 Keep the old repository's discs; do not discard the old backup just
