@@ -120,10 +120,10 @@ chain_small_order() {
 
 # chain_pack_one WORK REPO N PACKFLAGS IMAGECAP builds and packs disc N,
 # images it at IMAGECAP, mounts, populates and verifies it, then
-# unmounts, keeping the image but deleting the packed tree. It fails
-# unless pack exits 1 with a remaining-staged report: every disc in this
-# scenario is sized so real objects remain after it. It sets
-# CHAIN_REMAINING_BYTES.
+# unmounts, keeping the image but deleting the packed tree. It also frees
+# the staged copy of each object on this disc. It fails unless pack exits 1 with a remaining-staged report:
+# every disc in this scenario is sized so real objects remain after it.
+# It sets CHAIN_REMAINING_BYTES.
 chain_pack_one() {
 	local work="$1" repo="$2" n="$3" packflags="$4" imagecap="$5"
 	local ddir="$work/disc$n"
@@ -162,6 +162,19 @@ chain_pack_one() {
 	if [ "$code" -ne 0 ]; then
 		fail "chain: verify disc $n: exit $code"
 	fi
+
+	# Free the staged copy of each object on this disc. The tree uses the
+	# same fan-out path as staging. A later pack never reads the staged
+	# bytes of a packed object. The full staging copy plus three disc
+	# images does not fit on a CI runner disk.
+	if [ -d "$tree/NOAHSARK/objects" ]; then
+		local f rel
+		while IFS= read -r -d '' f; do
+			rel="${f#"$tree/NOAHSARK/objects/"}"
+			rm -f "$repo/staging/objects/$rel"
+		done < <(find "$tree/NOAHSARK/objects" -type f -print0)
+	fi
+
 	rm -rf "$tree"
 	df -h
 }
