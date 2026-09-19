@@ -585,6 +585,12 @@ BURNED to PACKED on a failed verify, and PACKED to STAGED on a failed burn.
    it reports success. The object reaches CLEAN only when the run that holds it
    again passes `verify`. An object still present in another run in a state at
    or beyond CLEAN is re-fetched from that run, not healed.
+11. The tool never concludes by itself that a burn occurred. In the current
+   build, which has no `burn` command, `disc burned` is the only transition
+   from PACKED to BURNED. The operator runs it after the burn. `verify` never
+   moves a PACKED object: a disc root that passes `verify` can be an image
+   that no one burned. `disc burned --undo` moves BURNED objects back to
+   PACKED after a bad burn. It refuses a disc that has a CLEAN object.
 
 ### 4.3 State log replay
 
@@ -1624,6 +1630,11 @@ copy and unmount steps instead of write steps.
 binary file is authoritative. Informative: the default place is
 `staging/plans/<run_seq>/`.
 
+The current build has no `burn` command and writes no burn plan. `pack` prints
+the `image build`, `growisofs`, `disc burned` and `verify` command lines for
+the run. The operator runs them. The printed burn command leaves the disc
+open. Only `pack --close` prints the sealed burn command.
+
 ### 11.2 Burn plan container header
 
 Container header:
@@ -2050,6 +2061,10 @@ record the state in the disc directory, and must recommend a fresh disc.
 
 A user may cap the usable capacity of one disc below what the drive reports.
 The CLI option is `pack --capacity`. The config key is `disc.force_capacity`.
+
+In the current build, every `pack` takes `--capacity`, and the config holds no
+capacity. `pack` reads no drive, thus `pack --physical-capacity` gives the
+reported capacity. It defaults to the `--capacity` value.
 
 FORMAT.md section 7.14 gives the superblock fields. The rules on the host side
 are:
@@ -2608,33 +2623,74 @@ Phase 1 provides `init`, `commit`, `pack`, `burn`, `verify`, `scrub`,
 `consolidate` and `reindex`. `catalog export` and `import` are Backlog. Each
 command's own heading below repeats its phase.
 
+The current build has `init`, `commit`, `pack`, `verify`, `plan`, `restore`,
+`rebuild-cache`, `gc`, `ls`, `log`, `disc list`, `disc burned` and
+`image build`. It does not have `burn`, `scrub` and `health` yet. It refuses
+each of them by name with exit code 2. It refuses a later-phase command by
+name, names the phase, and exits with code 2.
+
+Each syntax block below for a command that the current build has shows the
+syntax of that build. An option table can hold more options than the syntax
+block. A note below the table names the Phase 1 options that the current build
+does not have yet. The build refuses such an option and exits with code 2.
+
+Put every option before the positional arguments of a command. A build refuses
+an option that comes after a positional argument, and names it. `-h` and
+`--help` print the syntax and the options of a command and exit with code 0.
+
+The tool never runs `sudo`. The tool never mounts a device. The operator
+mounts a disc and gives the mount point as a disc root.
+
 Every command accepts these global options.
 
 | Option | Meaning |
 |---|---|
-| `--repo=PATH` | Repository root. Defaults to the discovered repository of section 2.2. |
+| `--repo=PATH` | Repository root. Defaults to the discovered repository of section 2.2. Give it after the command name. |
 | `--cache-dir=PATH` | Override the cache location. |
 | `--config=PATH` | Override the config file. |
 | `--json` | Machine-readable output. |
 | `-v`, `--verbose` | More output. |
-| `-q`, `--quiet` | Errors only. |
+| `-q`, `--quiet` | Errors only. No progress line. |
+| `--progress` | Write the progress line of a long command to standard error, also when standard error is not a terminal. |
+| `--no-progress` | Write no progress line. `--progress` and `--no-progress` together are an error. |
 | `--dry-run` | Compute and print, change nothing. Not every command supports it. |
+
+Without `--progress` and `--no-progress`, the progress line is on only when
+standard error is a terminal. `--progress`, `--no-progress` and `--quiet` can
+come before or after the command name.
+
+The current build does not have `--cache-dir`, `--config`, and `-v` as a global
+option. It has `--json` on `ls`, `log` and `disc list` only. It has `--dry-run`
+and `--verbose` on `gc` only. The config key `cache.dir` moves the cache.
+
+A `DISC` argument names one disc of the repository. It is the `disc_seq`, the
+full uuid, a uuid prefix, or the exact label. A command refuses a value that
+matches no disc, and a value that matches more than one disc. The refusal
+lists the candidates.
+
+A `DISC-ROOT` argument, a `--disc=ROOT` option and a `--mount=DIR` option name
+a directory: the mount point of a disc, or a copy of a disc root.
+`--discs-dir=DIR` names a directory whose immediate subdirectories are disc
+roots.
 
 Section 19 is the exit code registry.
 
 ### 16.2 `init` (Phase 1)
 
 ```
-noahsark init [--repo=PATH] [--hash=blake3|sha256] [--chunker=P3|P4|P5]
-              [--fs-profile=0|1|2] [--preset=dedup|balanced|locality|standalone]
-              [--repo-uuid=UUID] [--next-run-seq=N] [--next-disc-seq=N]
-              [--scan-discs]
+noahsark init [--repo=PATH] [--source=PATH]
 ```
 
-Creates the repository of section 2.1.
+Creates the repository of section 2.1. `--repo` defaults to the current
+directory. `init` writes `repo.uuid` and `staging.dir` to the config file. It
+writes `staging.dir` relative to the repository directory. It prints the
+repository path, the staging path and, with `--source`, the source path.
+
+`init` has no capacity option. Each `pack` takes `--capacity`.
 
 | Option | Meaning |
 |---|---|
+| `--source` | The source root. `init` makes the path absolute and stores it as `sources.root`. `commit` reads it when no `SOURCE` is given. The current build stores one source root. |
 | `--hash` | Initial value of `hash.current`. |
 | `--chunker` | Initial value of `chunker.profile`. |
 | `--fs-profile` | Initial value of `fs.profile`. |
@@ -2656,21 +2712,30 @@ to both numbers unless every disc of the set was present in the scan.
 `repo.next_disc_seq`. `pack` takes the next number from there and increments
 it. A fresh repository starts at `run_seq` 1 and `disc_seq` 0.
 
-Exit: 0 on success; 2 when the directory already holds a repository, or when
-`--repo-uuid` was given with neither form.
+The current build does not have `--hash`, `--chunker`, `--fs-profile`,
+`--preset`, `--repo-uuid`, `--next-run-seq`, `--next-disc-seq` and
+`--scan-discs` yet. `rebuild-cache --from-disc` recreates a lost repository
+from its discs.
+
+Exit: 0 on success; 1 when a file could not be written; 2 on a usage error,
+when the directory already holds a repository, or when `--repo-uuid` was given
+with neither form.
 
 ### 16.3 `commit` (Phase 1)
 
 ```
-noahsark commit [SOURCE]... [-m MESSAGE] [--ref=NAME] [--checksum] [--force]
-                [--exclude=PATTERN]... [--one-file-system=BOOL]
-                [--source=PATH] [--source-root=PATH] [--from=PATH]
-                [--copy-first] [--retry-unstable=N]
-                [--out=DIR --catalog=DIR] [--source-type=TYPE]
+noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]
 ```
 
 Runs the commit flow of section 7.1. With no `SOURCE`, it uses the configured
-source roots.
+source root, `sources.root`. A `SOURCE` on the command line overrides the
+config for that commit. With neither, `commit` refuses, and names the two ways
+to give a source. The current build takes one `SOURCE` at most.
+
+`commit` prints the snapshot id, the ref that moved, the counts of new and
+existing objects, the counts of unstable and skipped paths, and the total that
+is STAGED. It prints one `unstable` line for each unstable path and one
+`skipped` line for each path that vanished during the scan.
 
 | Option | Meaning |
 |---|---|
@@ -2690,9 +2755,17 @@ source roots.
 | `--exclude` | Skip matching paths. The patterns are recorded in the snapshot. |
 | `--one-file-system` | Do not cross a mount point. |
 
+The current build does not have `--checksum`, `--full-scan`, `--force`,
+`--source`, `--source-root`, `--source-type`, `--retry-unstable`, `--exclude`,
+`--one-file-system` and `--dry-run` yet. It refuses `--from`, `--copy-first`,
+`--out` and `--catalog` by name and names the phase. The config key
+`commit.retry_unstable` sets the retry count.
+
 Exit: 0 on success, also when the tree is unchanged and no snapshot was
-written; 1 when some files could not be read or were unstable; 2 on failure or
-when the repository lock is held.
+written; 1 when some files could not be read or were unstable, and the snapshot
+is committed all the same; 2 on failure or when the repository lock is held.
+In the current build, a failure at run time exits with code 1, and code 2 is a
+usage error or a refused option.
 
 The report lists every unstable path and says which branch was taken.
 
@@ -2762,36 +2835,66 @@ Exit: 0 on a clean stop, 2 on failure.
 ### 16.8 `pack` (Phase 1)
 
 ```
-noahsark pack [--disc=UUID] [--media=NAME|ID]
-              [--capacity=BYTES|GiB] [--reserve=BYTES|PERCENT]
-              [--extra-reserve=BYTES|PERCENT] [--label=TEXT]
-              [--preset=NAME] [--now] [--close] [--dry-run]
+noahsark pack [--repo=PATH] [--ref=NAME | --snapshot=ID...] --capacity=N
+              [--physical-capacity=N] [--label=TEXT] [--media=NAME]
+              [--out=DIR] [--fec | --no-fec] [--close]
 ```
 
 Selects objects for the next run, applies the locality rules of section 8,
 builds the run image and the parity, and writes the burn plan.
+
+The current build writes the complete disc root of the run into the `--out`
+directory. It writes no burn plan. It prints the line
+`packed run N on disc SEQ into DIR`, then a `next steps:` block, then the line
+`remaining staged: N objects, B bytes`. The `next steps:` block holds the exact
+`image build`, `growisofs`, `disc burned` and `verify` command lines for the
+run. The `growisofs` line leaves the disc open, unless `--close` was given.
+
+`pack` always packs from the full STAGED pool and carries every pending ref.
+`--ref` and `--snapshot` only add named refs to the ref table of the run. They
+are mutually exclusive.
 
 `pack` produces a run only when staging holds at least `disc.min_fill` of the
 data budget, or the oldest STAGED object is older than `disc.max_wait`, or
 `--now` is given. Otherwise it prints how much more data, or how much more
 time, is needed, and exits 1.
 
-`pack` fills exactly one run per invocation.
+`pack` fills exactly one run per invocation. The current build starts a new
+disc for each run.
 
 | Option | Meaning |
 |---|---|
-| `--disc` | Continue an existing disc. Without it, `pack` starts a new disc. |
-| `--media` | Media type for a new disc: any name, or the numeric id, from the media type registry of FORMAT.md section 2.6. A space in a name may be written as `-`. Default `disc.media`. |
-| `--capacity` | Forced capacity for a new disc (section 12.6). A plain integer is bytes; an integer followed by `KiB`, `MiB` or `GiB` is scaled. |
+| `--ref` | An extra ref name to carry onto the disc. `pack` carries every pending ref without it. |
+| `--snapshot` | A snapshot id whose refs the run carries. Repeatable. |
+| `--disc` | Continue an existing disc. Without it, `pack` starts a new disc. Phase 2. |
+| `--media` | Media type for a new disc: any name from the media type registry of FORMAT.md section 2.6, or a `--capacity` preset name. A space in a name may be written as `-`. Default: the media type of the `--capacity` preset, else `BD-R-SL-25`. |
+| `--capacity` | Target capacity of the disc (section 12.6). Mandatory on every `pack`. The config holds no default. The value is a preset name (`dvd+r`, `dvd-r`, `bd25`, `bd50`, `bd100`, `bd128`), a plain integer, which is a count of 2048-byte sectors, or a byte size with a decimal unit (`k`, `M`, `G`, `T`, `kB`, `MB`, `GB`, `TB`) or a binary unit (`Ki`, `Mi`, `Gi`, `Ti`, `KiB`, `MiB`, `GiB`, `TiB`). `G` is not `Gi`. |
+| `--physical-capacity` | The physical capacity of the disc, in the same forms. Default: the `--capacity` value. Give it only when `--capacity` forces a smaller limit than the disc has, or when the drive reports fewer sectors than the preset. |
 | `--reserve` | `disc.force_reserve` for this disc. |
 | `--extra-reserve` | `disc.extra_reserve` for this disc. |
 | `--label` | Human label, printed on the disc. |
+| `--out` | The directory that receives the disc root. It must be empty or absent. Default `<repo>/staging/plans/<disc uuid>/tree`. |
+| `--fec` | Write the Reed-Solomon checksum column and parity for this run. Overrides `fec.scheme`. |
+| `--no-fec` | Write no FEC for this run. Overrides `fec.scheme`. `--fec` and `--no-fec` together are an error. |
 | `--preset` | Locality preset for this run. |
 | `--now` | Ignore `disc.min_fill` and `disc.max_wait`. |
-| `--close` | Seal the disc: `spare:none` and `-dvd-compat`, no POW, full capacity, no later append. Profile 0 only. |
+| `--close` | Seal the disc: `spare:none` and `-dvd-compat`, no POW, full capacity, no later append. Profile 0 only. In the current build, `--close` changes only the burn command that `pack` prints. |
 
-Exit: 0 on success; 1 when the run is smaller than requested; 2 on failure;
-4 when a forced capacity conflicts with the recorded value.
+FEC is optional and off by default. Two identical discs are the primary
+redundancy.
+
+The current build does not have `--reserve`, `--extra-reserve`, `--preset`,
+`--now` and `--dry-run` yet, and it does not accept a numeric media type id.
+It does not apply the `disc.min_fill` and `disc.max_wait` triggers: it packs
+when at least one object is STAGED. It refuses `--disc` by name as a Phase 2
+option.
+
+Exit: 0 on success, with nothing left STAGED; 1 when the run is smaller than
+requested: objects stay STAGED for the next disc, or nothing was STAGED; 2 on
+failure; 4 when a forced capacity conflicts with the recorded value. In the
+current build, a failure at run time exits with code 1. Code 2 is a usage
+error, a refused option, an `--out` directory that holds files, or a capacity
+that is too small for the run.
 
 ### 16.9 `append` (Phase 2)
 
@@ -2818,6 +2921,11 @@ noahsark burn --run=SEQ (--print | --exec) [--verify | --no-verify]
 ```
 
 Renders or runs the burn plan of section 11.
+
+The current build does not have `burn`. The operator burns with the command
+lines that `pack` prints, then runs `disc burned` (see the `disc` heading).
+The default burn leaves the disc open. Only `pack --close` selects the sealed
+burn.
 
 | Option | Meaning |
 |---|---|
@@ -2861,26 +2969,52 @@ Exit: 0 on success, 2 on failure, 4 when the disc is already closed or sealed.
 ### 16.12 `verify` (Phase 1)
 
 ```
-noahsark verify [--disc=UUID] [--run=SEQ] [--image=PATH [--mapfile=PATH]]
-                [--level=catalog|connectivity|integrity]
-                [--heal] [--drive=PATH] [--report=FILE]
+noahsark verify [--repo=DIR] [--heal [--out=DIR]] DISC-ROOT
+noahsark verify [--repo=DIR] [--heal [--out=DIR]] --image=PATH
 ```
 
 Reads a disc or an image back and checks it. On success it moves the run's
 objects to CLEAN.
 
+`DISC-ROOT` and `--image` name the same thing: the mount point of a disc or of
+a loop-mounted image, or a packed disc root. Give only one of them. `verify`
+never mounts anything.
+
+`verify` moves BURNED objects to CLEAN and no other objects. It never moves a
+PACKED object to BURNED: a disc root that passes, such as a loop-mounted image
+before the burn, does not prove that a burn occurred. When a PACKED object of
+the run remains, `verify` prints the `disc burned` command to run, after the
+`verify: ok` line. A failed verify moves the BURNED objects of the run back to
+PACKED, as "Transition rules" says.
+
+With a repository, `verify` refuses a disc whose uuid the disc list of that
+repository does not hold. The message names `--repo` and
+`rebuild-cache --from-disc` as the two fixes. With no repository, `verify`
+checks the disc root and changes no state.
+
+On success it prints `verify: marked N object(s) CLEAN` when N is at least 1,
+then `verify: ok`.
+
 | Option | Meaning |
 |---|---|
+| `--repo` | The repository whose staging state to update. "Repository discovery" gives the search order. |
+| `--out` | With `--heal`, write the healed disc root into this directory, not in place. |
 | `--disc` | Verify this disc. |
 | `--run` | Verify this run only. |
-| `--image` | Verify an image file instead of a drive. |
+| `--image` | Verify an image file instead of a drive. In the current build, the path of a mounted disc or image, or of a packed disc root. |
 | `--mapfile` | The ddrescue mapfile that produced `--image`. Every sector the map does not mark rescued is an erasure. Only valid with `--image`. |
 | `--level` | `catalog`, `connectivity` or `integrity`. Section 13.1. |
 | `--heal` | Repair what is repairable, in the order of section 13.4. Write recovered objects into `staging/heal/`. |
 | `--drive` | Use this drive. Use a second drive model for the 24-hour check. |
 | `--report` | Write the health record as JSON. |
 
+The current build does not have `--disc`, `--run`, `--mapfile`, `--level`,
+`--drive` and `--report` yet. It always reads every object back. `--heal`
+refuses a run that has no FEC.
+
 Exit: 0 clean, 1 repaired or degraded, 2 unrecoverable loss, 3 disc missing.
+In the current build: 0 clean; 1 when the check or the heal failed, or when
+the repository does not know the disc; 2 on a usage error or a refused option.
 
 ### 16.13 `scrub` (Phase 1)
 
@@ -2920,47 +3054,80 @@ disc is failed.
 ### 16.15 `plan` (Phase 1)
 
 ```
-noahsark plan SNAPSHOT [--target=PATH] [--out=FILE] [--drives=N]
-              [--staging-budget=BYTES] [--score=bytes|objects]
+noahsark plan [--repo=PATH] [--include=PATH]... [--out=FILE]
+              [--staging-budget=SIZE] SNAPSHOT
 ```
 
 Computes the restore plan of section 14.4 and prints it. It reads nothing from
-a disc beyond the catalog.
+a disc beyond the catalog. In the current build it reads the local cache only,
+and it takes no disc. `SNAPSHOT` is a snapshot id or a ref name.
+
+The printed plan lists each disc that the restore needs: uuid, `disc_seq`,
+label, objects and bytes to read.
 
 | Option | Meaning |
 |---|---|
+| `--include` | Plan only this snapshot-relative path. When it names a directory, plan everything below it. Repeatable. |
 | `--target` | The restore target path to record in the plan. |
-| `--out` | Write the JSON plan to this file. |
+| `--out` | Write the JSON plan to this file. `restore --plan` reads it. |
 | `--drives` | Number of drives to plan for. |
-| `--staging-budget` | Peak staging allowed. |
+| `--staging-budget` | Peak staging allowed. Overrides `restore.staging_budget`. The value takes the unit suffixes of `pack --capacity`. |
 | `--score` | Greedy score: `bytes` or `objects`. |
+
+The current build does not have `--target`, `--drives` and `--score` yet.
 
 Exit: 0 when the plan accounts for every object; 1 when the plan holds at least
 one probable object; 3 when a required disc is missing from the inventory or a
-filter negative proves an object absent from every run.
+filter negative proves an object absent from every run. In the current build:
+1 on a failure at run time; 2 on a usage error, or when one file alone needs
+more staging than the budget; 3 when the cache is incomplete for the snapshot,
+or when an object has no run that the cache knows.
 
 ### 16.16 `restore` (Phase 1)
 
 ```
-noahsark restore SNAPSHOT TARGET [--plan=FILE] [--include=PATH]...
-                 [--drives=N] [--staging-budget=BYTES] [--interactive]
-                 [--mount=DIR] [--no-eject] [--overwrite]
-                 [--no-owner] [--numeric-owner] [--no-xattr]
-                 [--xattr-exclude=PATTERN] [--no-acl] [--no-flags]
-                 [--no-times] [--no-hardlinks] [--metadata-strict]
-                 [--report=FILE] [--report-replay=FILE] [--strict-unstable]
+noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
+noahsark restore [--include=PATH]... [--overwrite]
+                 (--disc=ROOT... | --discs-dir=DIR) SNAPSHOT OUT-DIR
+noahsark restore [--repo=PATH] [--include=PATH]... [--overwrite] --mount=DIR
+                 [--no-eject] [--interactive] [--staging-budget=SIZE]
+                 SNAPSHOT OUT-DIR
+noahsark restore [--repo=PATH] --plan=FILE --mount=DIR [--overwrite]
+                 [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
 ```
 
-Runs the restore pipeline of section 14.7.
+Runs the restore pipeline of section 14.7. `SNAPSHOT` is a snapshot id or a ref
+name. `OUT-DIR` receives the restored tree.
+
+There are two modes.
+
+- **All discs at once.** The first two forms read every given disc root
+  together. They need no repository. They resolve a ref name from the ref
+  tables of the given discs. One `DISC-ROOT` is sufficient when one disc holds
+  the full snapshot.
+- **Disc swap, one drive.** The `--mount` forms need the repository. They
+  resolve `SNAPSHOT` through the local cache, print the plan, and read one disc
+  at a time from `DIR`. Between discs, `restore` ejects the disc, names the
+  subsequent disc by `disc_seq`, label and uuid, and waits for Enter. The
+  operator mounts each disc at `DIR`. A wrong disc gives the expected and the
+  found disc, then the same prompt. A repeated command continues, and asks only
+  for the discs that it still needs. `--mount` does not go together with a
+  `DISC-ROOT`, `--disc` or `--discs-dir`.
+
+`restore` leaves an existing path alone unless `--overwrite` is given. It
+prints `restored snapshot ID into OUT-DIR`, then, when they apply,
+`resumed: N file(s) already restored` and `skipped N existing path(s)`.
 
 | Option | Meaning |
 |---|---|
-| `--plan` | Resume a persisted plan. |
-| `--include` | Restore only these paths. Repeatable. |
+| `--disc` | A disc root to read. Repeatable. |
+| `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
+| `--plan` | Resume a persisted plan that `plan --out` wrote. It fixes the snapshot, thus this form takes no `SNAPSHOT`. It requires `--mount`. |
+| `--include` | Restore only these paths. Repeatable. A path is relative to the snapshot. A directory includes everything below it. |
 | `--drives` | Number of drives to use. |
-| `--staging-budget` | Peak staging allowed. |
+| `--staging-budget` | Peak staging allowed. Overrides `restore.staging_budget`. |
 | `--interactive` | Prompt on every disc, not only on a mismatch. |
-| `--mount` | The directory a single drive is mounted at, for the one-drive disc-swap mode: no `TARGET`-preceding disc root, `--disc`, or `--discs-dir`, one disc read at a time, with a prompt between discs. Required in that mode; there is no config default. |
+| `--mount` | The directory a single drive is mounted at, for the one-drive disc-swap mode: no `DISC-ROOT`, `--disc`, or `--discs-dir`, one disc read at a time, with a prompt between discs. Required in that mode; there is no config default. |
 | `--no-eject` | Do not eject after each disc. |
 | `--overwrite` | Unlink an existing path first and then create it. |
 | `--no-owner`, `--no-flags`, `--no-times` | Skip that metadata field. |
@@ -2974,25 +3141,52 @@ Runs the restore pipeline of section 14.7.
 | `--report-replay` | Write a replay plan a privileged user can run afterwards. |
 | `--strict-unstable` | Refuse to write an `UNSTABLE` entry and report it as missing. |
 
+The current build does not have `--drives`, `--no-owner`, `--no-flags`,
+`--no-times`, `--numeric-owner`, `--no-hardlinks`, `--metadata-strict`,
+`--report`, `--report-replay` and `--strict-unstable` yet. It refuses
+`--no-xattr`, `--no-acl` and `--translate-acl` by name as Phase 2 options.
+
 Exit: 0 all applied, 1 data restored with metadata loss, 2 data restore failed,
-3 a required disc is missing.
+3 a required disc is missing. In the current build: 1 also when `restore` left
+an existing path alone, and on a failure at run time; 2 on a usage error or a
+refused option; 3 when a required disc is not among the given discs, with each
+missing disc named by uuid.
 
 ### 16.17 `rebuild-cache` (Phase 1)
 
 ```
-noahsark rebuild-cache [--level=1|2|3] [--snapshot=ID] [--from-disc]
+noahsark rebuild-cache [--repo=PATH] --from-disc [--disc=ROOT]...
+                       [--discs-dir=DIR] [--level=1|2|3] [--snapshot=ID]
 ```
 
-Rebuilds the local cache from discs, as in section 2.5.
+Rebuilds the local cache from discs, as in section 2.5. It also rebuilds the
+repository state that the discs can prove: the config, the disc list, the refs
+and the state log. It creates the repository directory when it is absent, thus
+it recovers a lost repository. It merges into the state that exists. With one
+drive, the operator runs it one time for each disc, in any order.
+
+The rebuilt state does not know that a disc was burned or verified. The
+operator runs `disc burned` and `verify` again for each disc.
+
+It prints `rebuild-cache: ok` when every disc that the fed discs name was fed.
+Otherwise it prints one `rebuild is partial: disc UUID (LABEL) not fed yet`
+line for each such disc.
 
 | Option | Meaning |
 |---|---|
-| `--level` | 1, 2 or 3. |
+| `--disc` | A disc root to read. Repeatable. |
+| `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
+| `--level` | 1, 2 or 3. Default 1. |
 | `--snapshot` | The snapshot that level 2 covers. |
 | `--from-disc` | Read from a disc even when the cache looks current. |
 
+In the current build, `--from-disc` is mandatory, `--level` accepts 1 only, and
+`--snapshot` has no effect.
+
 Exit: 0 on success, 1 when the rebuild is partial, 3 when a needed disc is
-missing.
+missing. In the current build: 1 also on a failure at run time, and when the
+given discs do not share one `repo_uuid`; 2 on a usage error; 3 when no usable
+disc was given.
 
 ### 16.18 `consolidate` (Phase 3)
 
@@ -3028,62 +3222,118 @@ Exit: 0 on success, 1 when some discs were not available, 2 on failure.
 ### 16.20 `gc` (Phase 1)
 
 ```
-noahsark gc [--dry-run] [--force-after=DURATION]
+noahsark gc [--repo=PATH] [--dry-run [--verbose]] [--keep-snapshots=N]
+            [--force-after=DURATION] [--yes]
 ```
 
 Deletes staging objects that are GC-ELIGIBLE, under the rules of section 4.5.
+It leaves an object alone, and reports it, when the run that holds the object
+is not in the local cache.
+
+`gc` never trims the local cache by default. It trims the cache only when
+`--keep-snapshots` is given, or when `cache.snapshot_depth` is above 0.
 
 | Option | Meaning |
 |---|---|
-| `--force-after` | Shorten the retention for this run only. It requires an interactive confirmation. |
+| `--dry-run` | Print the totals that `gc` would delete, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
+| `--verbose` | With `--dry-run`, print one `would delete` line for each object in place of the summary. |
+| `--keep-snapshots` | Keep the cached trees and blobs that only the newest N snapshots reach, and drop the rest. Default `cache.snapshot_depth`. 0 means no limit. `rebuild-cache --from-disc` brings dropped data back. |
+| `--force-after` | Shorten the retention for this run only. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
+| `--yes` | Skip the confirmation of `--force-after`, for a script. Without `--yes`, `gc --force-after` refuses when standard input is not a terminal. |
 
-Exit: 0 on success, 1 when nothing was eligible, 2 on failure.
+Exit: 0 on success, and always for `--dry-run`; 1 when nothing was eligible;
+2 on failure, on a usage error, and when the confirmation was refused or not
+possible.
 
 ### 16.21 `ls` (Phase 1)
 
 ```
-noahsark ls SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
+noahsark ls [--repo=PATH] [--long] [--recursive] [--json] [--unstable-only]
+            [--disc=ROOT]... [--discs-dir=DIR] [DISC-ROOT] SNAPSHOT [PATH]
 ```
 
-Lists a snapshot's tree. It reads tree objects only, never chunks.
+Lists a snapshot's tree. It reads tree objects only, never chunks. `SNAPSHOT`
+is a snapshot id or a ref name.
+
+With no disc given, `ls` resolves `SNAPSHOT` through the local cache. With a
+`DISC-ROOT`, `--disc` or `--discs-dir`, it reads the discs and needs no
+repository. A first argument that is an existing directory is a `DISC-ROOT`.
 
 | Option | Meaning |
 |---|---|
+| `--disc` | A disc root to read. Repeatable. |
+| `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
+| `--json` | Print the entries as a JSON array. |
 | `--long` | Print mode, owner, size and mtime. |
 | `--recursive` | Descend into subdirectories. |
 | `--unstable-only` | List just the `UNSTABLE` entries. |
 
 An `UNSTABLE` entry is marked with `!` in the first column, and with
-`"unstable": true` under `--json`.
+`"unstable": true` under `--json`. Every other line has a space in the first
+column.
 
-Exit: 0 on success, 3 when a needed tree object is unavailable.
+Exit: 0 on success, 3 when a needed tree object is unavailable: the cache is
+incomplete for the snapshot, or a required disc was not given. In the current
+build: 1 on a failure at run time, 2 on a usage error.
 
 ### 16.22 `log` (Phase 1)
 
 ```
-noahsark log [REF|SNAPSHOT] [--limit=N] [--json]
+noahsark log [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
+             [--discs-dir=DIR] [DISC-ROOT] [REF|SNAPSHOT]
 ```
 
 Walks the snapshot chain by parent pointer and prints the history. It reads
 the pending chain of section 5.2, then the snapshot table.
 
+In the current build, `log` with no `REF` or `SNAPSHOT` lists every snapshot,
+newest first: id, time, refs, root paths, object count and size. With a `REF`
+or a `SNAPSHOT`, it prints the details of that one snapshot. The disc rules of
+`ls` apply: no disc reads the local cache, and a `DISC-ROOT`, `--disc` or
+`--discs-dir` reads the discs.
+
 | Option | Meaning |
 |---|---|
-| `--limit` | Print at most N entries. |
+| `--disc` | A disc root to read. Repeatable. |
+| `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
+| `--json` | Print JSON. |
+| `--limit` | Print at most N entries. 0 means no limit. |
 
-Exit: 0 on success.
+Exit: 0 on success. In the current build: 1 on a failure at run time, 2 on a
+usage error, 3 when the cache is incomplete or a required disc was not given.
 
 ### 16.23 `disc` (Phase 1)
 
 ```
-noahsark disc list [--json]
+noahsark disc list [--repo=PATH] [--json]
+noahsark disc burned [--repo=PATH] [--undo] DISC [DISC...]
 noahsark disc label UUID TEXT
 noahsark disc mark-degraded UUID [--health=VALUE] [--reason=TEXT]
 ```
 
+Give the options after the subcommand.
+
 `list` prints every disc: uuid, seq, label, shelf note, media type, filesystem
 profile, reported capacity, forced capacity, used, run count, open or closed,
 health, RS margin, spare remaining, and last verify date.
+
+In the current build, `list` prints one line for each disc: uuid, `seq`,
+`label`, `capacity`, `used`, `runs`, `objects`, `packed` and `clean`. `packed`
+counts the objects of the disc that are PACKED, and `clean` counts the objects
+that are CLEAN. After the discs it prints the `staged: N objects, B bytes`
+line that `commit` prints. `--json` prints the same fields as a JSON array.
+
+`burned` tells the repository that the operator burned each named `DISC`. It
+moves every PACKED object of the runs of that disc to BURNED, and records the
+burn time. It is the only transition from PACKED to BURNED in the current
+build. The tool never concludes by itself that a burn occurred. It prints
+`disc SEQ LABEL: marked burned, N objects`, or
+`disc SEQ LABEL: already burned, 0 objects to mark`. A second copy of the same
+disc needs no second `disc burned`.
+
+`burned --undo` moves the BURNED objects of the disc back to PACKED, for a burn
+that was bad. It refuses a disc that has a CLEAN object: a verified disc does
+not go back to PACKED.
 
 `label` appends a `record_type` 0 note to `<repo>/notes.bin`. The on-disc label
 is written at burn time and never changes.
@@ -3099,12 +3349,17 @@ reason.
 `disc mark-degraded --health` is the only way to set a `health` value by hand,
 so every disc lifecycle state that needs one is reachable from the CLI.
 
-Exit: 0 on success, 3 when the uuid is unknown.
+The current build does not have `disc label` and `disc mark-degraded` yet,
+because it keeps no `notes.bin`. It refuses each by name with exit code 2.
+
+Exit: 0 on success, 3 when the uuid is unknown. In the current build: 1 on a
+failure at run time, and when `burned --undo` names a verified disc; 2 on a
+usage error, and when a `DISC` matches no disc or more than one disc.
 
 ### 16.24 `image` (Phase 1)
 
 ```
-noahsark image build --run=SEQ --out=FILE
+noahsark image build --out=FILE --capacity=N [--force] TREE-DIR
 noahsark image diff --old=FILE --new=FILE [--out=FILE] [--block=32768]
 noahsark image mount FILE MOUNTPOINT [--rw]
 ```
@@ -3112,16 +3367,30 @@ noahsark image mount FILE MOUNTPOINT [--rw]
 Test and development commands. They let the whole burn path run in CI with no
 drive.
 
+`image build` builds a UDF image of the full `--capacity` length from
+`TREE-DIR`, the disc root that `pack --out` wrote. It checks the `mkudffs`
+version first. It needs root, because it loop-mounts the image to fill it. It
+never runs `sudo`: when it is not root, it removes the partial image and
+prints the exact `sudo noahsark image build ...` line to run. It prints
+`built image FILE (N sectors)`.
+
 | Option | Meaning |
 |---|---|
 | `--run` | The run whose image to build. |
+| `--capacity` | The image length, in the forms of `pack --capacity`. Mandatory. |
+| `--force` | Replace `--out` when it exists. Without it, `image build` refuses an existing file. |
 | `--out` | Where to write the image, or the diff. |
 | `--old` | The previous image. |
 | `--new` | The new image. |
 | `--block` | Diff block size in bytes. |
 | `--rw` | Loop-mount read-write. |
 
-Exit: 0 on success, 2 on failure.
+The current build does not have `image build --run`, `image diff` and
+`image mount` yet. It refuses each by name with exit code 2.
+
+Exit: 0 on success, 2 on failure. In the current build: 1 on a failure at run
+time, and when `image build` is not root; 2 on a usage error, a refused
+option, or an existing `--out` without `--force`.
 
 ---
 
@@ -3222,7 +3491,7 @@ Every key appears exactly once, in exactly one table below.
 
 | Key | Type | Default | Phase | Changes disc bytes | Meaning |
 |---|---|---|---:|---|---|
-| `fec.scheme` | enum | `rs255-gf8` | 1 | yes | FEC scheme registry. Only value 1 exists in version 1. |
+| `fec.scheme` | enum | `none` | 1 | yes | FEC scheme registry: `none` (0) or `rs255-gf8` (1). FEC is optional and off by default. `pack --fec` and `pack --no-fec` override the key for one run. |
 | `fec.k` | integer | refused | 1 | yes | Reserved for a later format version. A version 1 build refuses the key. |
 | `fec.m` | integer | refused | 1 | yes | Reserved for a later format version. A version 1 build refuses the key. |
 | `fec.band_stripes` | integer | 2048 | 1 | no | Stripes per encoding band. |
@@ -3306,7 +3575,7 @@ Every key appears exactly once, in exactly one table below.
 
 | Key | Type | Default | Phase | Changes disc bytes | Meaning |
 |---|---|---|---:|---|---|
-| `staging.dir` | path | `<repo>/staging` | 1 | no | Staging store location. |
+| `staging.dir` | path | `<repo>/staging` | 1 | no | Staging store location. A relative path is relative to the repository directory. `init` writes `staging`. |
 | `staging.retain_after_clean` | duration | 7 days | 1 | no | Retention before an object becomes GC-eligible. |
 | `staging.budget_bytes` | bytes | unset | 1 | no | Warn when staging exceeds this size. |
 | `staging.allow_unsafe_fs` | boolean | false | 1 | no | Allow staging on a filesystem that fails the startup check. Recorded in the state log. |
@@ -3315,7 +3584,7 @@ Every key appears exactly once, in exactly one table below.
 | `commitbundle.catalog_max_age` | duration | 30 days | Backlog | no | Warn when `commit --out` uses an older exported catalog. |
 | `cache.dir` | path | see section 2.4 | 1 | no | Local cache location. |
 | `cache.format_version` | integer | 1 | 1 | no | Delete and rebuild on a mismatch. |
-| `cache.snapshot_depth` | integer | 0 | 1 | no | How many of the newest snapshots the cache keeps trees for; 0 means unlimited. gc applies it; this build only stores the key. |
+| `cache.snapshot_depth` | integer | 0 | 1 | no | How many of the newest snapshots the cache keeps trees for; 0 means unlimited, and `gc` then trims nothing from the cache. `gc` applies it. `gc --keep-snapshots` overrides it for one run. |
 
 ### 17.13 Restore
 
@@ -3393,13 +3662,18 @@ Common exit codes:
 | 3 | A required disc or file is missing. |
 | 4 | A precondition failed, for example an unpatched burner. |
 
+The current build differs for the commands that it has, except `gc`. Code 1 is
+also a failure at run time. Code 2 is a usage error, a refused option, or a
+refused command. The exit line of each command in the CLI reference gives the
+codes of the current build.
+
 Command-specific meanings that narrow the common set:
 
 | Command | Code | Meaning |
 |---|---:|---|
 | `init` | 2 | The directory already holds a repository, or `--repo-uuid` was given with neither sequence form. |
 | `commit` | 1 | Some files could not be read, or were unstable. |
-| `pack` | 1 | The run is smaller than requested, or a trigger was not met. |
+| `pack` | 1 | The run is smaller than requested, or a trigger was not met. Objects that stay STAGED after the run, and nothing STAGED at all, are this case. |
 | `pack` | 4 | A forced capacity conflicts with the recorded value. |
 | `append` | 4 | The disc is closed. |
 | `burn` | 3 | The expected disc is not in the drive. |
@@ -3408,10 +3682,10 @@ Command-specific meanings that narrow the common set:
 | `verify`, `scrub` | 1, 2 | Repaired or degraded; unrecoverable loss. |
 | `health` | 1, 2 | Any disc is degraded; any disc is failed. |
 | `plan` | 1, 3 | The plan holds at least one probable object; a required disc is missing, or a filter negative proves an object absent from every run. |
-| `restore` | 1, 2 | Data restored with metadata loss; data restore failed. |
+| `restore` | 1, 2, 3 | Data restored with metadata loss, or an existing path left alone without `--overwrite`; data restore failed; a required disc is missing. |
 | `rebuild-cache`, `reindex`, `sync` | 1 | The rebuild is partial; some discs were not available; some paths could not be listed. |
 | `import` | 1, 2 | Some objects were already present; a verification failure or a repository uuid mismatch. |
-| `gc` | 1 | Nothing was eligible. |
+| `gc` | 1 | Nothing was eligible. `gc --dry-run` always exits with code 0. |
 | `ls` | 3 | A needed tree object is unavailable. |
 | `disc` | 3 | The uuid is unknown. |
 
@@ -3563,12 +3837,16 @@ dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Number of Sessions|Next Writa
 # Check a built UDF image before the burn.
 udfinfo run.udf | grep -q '^integrity=closed' || { echo "dirty image"; exit 1; }
 udfinfo run.udf | grep -c 'type=ANCHOR'        # expect 3
-# Verify after the burn.
+# Verify after the burn. The operator mounts the disc; the tool never does.
 eject /dev/sr0 && eject -t /dev/sr0 && sleep 5
-noahsark verify --disc <uuid> --level=integrity --drive /dev/sr1
+noahsark disc burned <DISC>
+sudo mount /dev/sr0 /mnt/ark
+noahsark verify /mnt/ark
+sudo umount /mnt/ark
 # Recover a damaged disc. The map file is the erasure list for the FEC layer.
 ddrescue -b 2048 -n -r1 /dev/sr0 rescued.img rescue.map
 ddrescue -b 2048 -d -r3 /dev/sr0 rescued.img rescue.map
+# The current build does not have --mapfile and --report yet.
 noahsark verify --image rescued.img --mapfile rescue.map --heal --report health.json
 # Read back the LBA map under profile 2.
 isoinfo -i disc.iso -T "$SESSION_START" -l
