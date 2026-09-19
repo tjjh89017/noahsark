@@ -91,6 +91,15 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 2
 	}
+
+	// gc --dry-run still reads the state log to report what it would
+	// delete, so it takes the same lock as a real gc.
+	lk, code, ok := lockExclusive("gc", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
@@ -101,6 +110,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 2
 	}
+	warnIfTruncated("gc", stageLog, stderr)
 	cacheDir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)

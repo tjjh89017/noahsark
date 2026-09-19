@@ -103,11 +103,26 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		return 1
 	}
 
+	// OPERATIONS.md's concurrency and locking rules list rebuild-cache
+	// among the shared-lock, read-only commands on the repository lock,
+	// alongside its own exclusive lock on the cache directory. This
+	// build has no cache lock, and rebuild-cache does write the state
+	// log (EnsurePacked, RecordFedDisc) and the disc and ref ledgers, so
+	// it takes the repository's exclusive lock instead: the repository
+	// lock is the only lock this build has to keep those writes safe
+	// against a concurrent reader or another writer.
+	lk, code, ok := lockExclusive("rebuild-cache", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	stageLog, err := stage.Open(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 		return 1
 	}
+	warnIfTruncated("rebuild-cache", stageLog, stderr)
 
 	if err := rebuildCacheFromRoots(cfg, repoUUID, readRoots); err != nil {
 		// The cache is only an accelerator: a failure to populate it

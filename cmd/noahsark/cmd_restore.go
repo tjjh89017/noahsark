@@ -282,6 +282,13 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
+
+	lk, code, ok := lockExclusive("restore", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	stagingBudget := cfg.RestoreStagingBudget
 	if stagingBudgetOverride != "" {
 		stagingBudget, err = parseByteSize(stagingBudgetOverride)

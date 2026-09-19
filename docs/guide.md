@@ -464,3 +464,4 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `log`: `roots: (none)` | The root tree is on a disc that you did not give, or `gc` trimmed it from the cache. Give all discs, or run `rebuild-cache --from-disc`. |
 | `plan`: `cache: no run is cached yet` | Run `rebuild-cache --from-disc` with a disc, then plan again. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
+| `repository lock <REPO>/lock is held by pid <PID>` | Wait for the other noahsark command to end. |

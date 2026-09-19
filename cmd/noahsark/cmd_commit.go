@@ -54,6 +54,12 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
+	lk, code, ok := lockExclusive("commit", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	// With no SOURCE on the command line, fall back to the source root
 	// init --source stored; a SOURCE given here overrides it.
 	source := cfg.SourceRoot
@@ -70,6 +76,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
+	warnIfTruncated("commit", commitStageLog, stderr)
 
 	w := newWriter(cfg.StagingDir)
 	w.RestatAfterRead = cfg.RestatAfterRead

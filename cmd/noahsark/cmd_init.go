@@ -63,6 +63,16 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// init writes the state-writing lock's own file, so no config to
+	// read repo.lock_timeout from exists yet; a fresh repository directory
+	// has no competing holder anyway, so failing at once (timeout 0)
+	// matches the default.
+	lk, code, ok := lockExclusive("init", absRepoPath, 0, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	stagingDir := filepath.Join(absRepoPath, "staging")
 	if err := os.MkdirAll(filepath.Join(stagingDir, "objects"), 0o755); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)

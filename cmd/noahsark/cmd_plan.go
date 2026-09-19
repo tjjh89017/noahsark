@@ -62,6 +62,13 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
 		return 1
 	}
+
+	lk, code, ok := lockShared("plan", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	stagingBudget := cfg.RestoreStagingBudget
 	if *stagingBudgetFlag != "" {
 		stagingBudget, err = parseByteSize(*stagingBudgetFlag)
