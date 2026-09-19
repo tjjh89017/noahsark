@@ -101,6 +101,20 @@ func (e *ErrCapacityTooSmall) Error() string {
 		e.TargetSectors, e.TargetSectors*SectorSize)
 }
 
+// ErrCapacityExceedsPhysical reports a target capacity above the disc's
+// physical capacity. The disc is write-once, so a target above the
+// physical size can never fit. Pack returns this before it does any
+// other work, so no output directory is written and no state changes.
+type ErrCapacityExceedsPhysical struct {
+	TargetSectors   uint64
+	PhysicalSectors uint64
+}
+
+func (e *ErrCapacityExceedsPhysical) Error() string {
+	return fmt.Sprintf("target capacity of %d sectors (%d bytes) exceeds physical capacity of %d sectors (%d bytes)",
+		e.TargetSectors, e.TargetSectors*SectorSize, e.PhysicalSectors, e.PhysicalSectors*SectorSize)
+}
+
 // refNamesText joins snapshots' ref names for an error message, as
 // "ref X" for one snapshot or "refs X, Y" for several.
 func refNamesText(snapshots []SnapshotRef) string {
@@ -139,6 +153,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 	if opts.TargetCapacitySectors == 0 {
 		return nil, fmt.Errorf("target capacity is required and must not be zero")
+	}
+	if opts.PhysicalCapacitySectors != 0 && opts.TargetCapacitySectors > opts.PhysicalCapacitySectors {
+		return nil, &ErrCapacityExceedsPhysical{TargetSectors: opts.TargetCapacitySectors, PhysicalSectors: opts.PhysicalCapacitySectors}
 	}
 	if opts.StageLog == nil {
 		return nil, fmt.Errorf("a staging state log is required")

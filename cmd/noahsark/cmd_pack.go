@@ -258,6 +258,12 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 				tooSmall.NeededSectors, tooSmall.NeededSectors*image.SectorSize)
 			return 2
 		}
+		if exceeds, ok := errors.AsType[*image.ErrCapacityExceedsPhysical](err); ok {
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes, %d sectors) exceeds --physical-capacity (%d bytes, %d sectors)\n",
+				*capacityStr, exceeds.TargetSectors*image.SectorSize, exceeds.TargetSectors,
+				exceeds.PhysicalSectors*image.SectorSize, exceeds.PhysicalSectors)
+			return 2
+		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
