@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -303,6 +304,31 @@ func TestTopLevelUsageListsEveryFlag(t *testing.T) {
 			if !strings.Contains(block, "-"+name) {
 				t.Errorf("%s: top-level usage is missing --%s\nblock:\n%s", strings.Join(c.args, " "), name, block)
 			}
+		}
+	}
+}
+
+// TestNotYetImplementedFlagsRefused asserts, for every command and flag
+// notYetImplementedFlags names, that the flag is refused with the clear
+// "not in this build yet" message and exit code 2, not the raw flag
+// package error, no matter what else is on the command line.
+func TestNotYetImplementedFlagsRefused(t *testing.T) {
+	for cmd, flags := range notYetImplementedFlags {
+		for flagName := range flags {
+			t.Run(cmd+" "+flagName, func(t *testing.T) {
+				args := append(strings.Fields(cmd), flagName)
+				code, out := runCmd(t, args...)
+				if code != 2 {
+					t.Fatalf("%s: exit code = %d, want 2; output: %s", strings.Join(args, " "), code, out)
+				}
+				want := fmt.Sprintf("noahsark: %s: flag %s is not in this build yet", cmd, flagName)
+				if !strings.Contains(out, want) {
+					t.Fatalf("output = %q, want it to contain %q", out, want)
+				}
+				if strings.Contains(out, "flag provided but not defined") {
+					t.Fatalf("output = %q, want no raw flag package error", out)
+				}
+			})
 		}
 	}
 }

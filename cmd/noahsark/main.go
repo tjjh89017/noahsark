@@ -130,15 +130,15 @@ func printUsage(w io.Writer) {
 
 Phase 1 commands:
   init    [--repo=PATH] [--source=PATH]
-  commit  [SOURCE] [--ref=NAME] [-m MESSAGE]
+  commit  [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]
   pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--physical-capacity=N] [--label=TEXT] [--media=NAME] [--out=DIR] [--fec | --no-fec] [--close]
-  image build --out=FILE [--capacity=N] [--force] TREE-DIR
-  verify  [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]
+  image build --out=FILE --capacity=N [--force] TREE-DIR
+  verify  [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]
   restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
   restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] SNAPSHOT OUT-DIR
   restore --plan=FILE --mount=DIR [--overwrite] [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
-  ls      [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
-  log     [DISC-ROOT] [REF|SNAPSHOT] [--limit=N] [--json]
+  ls      [--long] [--recursive] [--json] [--unstable-only] [DISC-ROOT] SNAPSHOT [PATH]
+  log     [--limit=N] [--json] [DISC-ROOT] [REF|SNAPSHOT]
   plan    [--include=PATH]... [--out=FILE] [--staging-budget=SIZE] SNAPSHOT
   rebuild-cache --from-disc [--disc=ROOT]... [--discs-dir=DIR] [--level=1] [--snapshot=ID]
   disc list [--json]
@@ -271,9 +271,7 @@ var notYetImplementedFlags = map[string]map[string]bool{
 		"--report":  true,
 	},
 	"restore": {
-		"--plan":            true,
 		"--drives":          true,
-		"--staging-budget":  true,
 		"--no-owner":        true,
 		"--numeric-owner":   true,
 		"--no-flags":        true,
@@ -286,6 +284,18 @@ var notYetImplementedFlags = map[string]map[string]bool{
 	},
 	"image build": {
 		"--run": true,
+	},
+	"pack": {
+		"--reserve":       true,
+		"--extra-reserve": true,
+		"--preset":        true,
+		"--now":           true,
+		"--dry-run":       true,
+	},
+	"plan": {
+		"--target": true,
+		"--drives": true,
+		"--score":  true,
 	},
 }
 

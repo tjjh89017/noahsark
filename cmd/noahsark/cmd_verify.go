@@ -40,7 +40,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
-	fs := newFlagSet("noahsark verify [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]",
+	fs := newFlagSet("noahsark verify [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]",
 		"Read a disc tree back and check it, optionally healing it first. DISC-ROOT and --image name the same thing; give only one.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory, to update its staging state on a burned disc")
 	imagePath := fs.String("image", "", "mounted disc path or unpacked NOAHSARK tree")
@@ -53,7 +53,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 	if fs.NArg() > 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]")
 		return 2
 	}
 	if fs.NArg() == 1 && *imagePath != "" {
@@ -64,7 +64,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		*imagePath = fs.Arg(0)
 	}
 	if *imagePath == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]")
 		return 2
 	}
 

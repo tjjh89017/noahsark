@@ -45,8 +45,8 @@ type repoConfig struct {
 	// version differs is deleted and rebuilt, never migrated.
 	CacheFormatVersion int
 	// CacheSnapshotDepth is cache.snapshot_depth: how many of the newest
-	// snapshots the cache keeps trees for. 0 means unlimited. This
-	// build only parses and stores the key; gc applies it later.
+	// snapshots the cache keeps trees for. 0 means unlimited. gc applies
+	// this key when it trims the cache.
 	CacheSnapshotDepth int
 	// RestoreStagingBudget is restore.staging_budget, in bytes: the
 	// peak staging/restore/ size a restore must stay under. A
@@ -110,7 +110,7 @@ const defaultRetryUnstable = 1
 const defaultCacheFormatVersion = 1
 
 // defaultCacheSnapshotDepth is cache.snapshot_depth's Phase 1 default:
-// 0, unlimited. gc reads this key later; this build only stores it.
+// 0, unlimited. gc reads this key when it trims the cache.
 const defaultCacheSnapshotDepth = 0
 
 // defaultRestoreStagingBudget is restore.staging_budget's Phase 1

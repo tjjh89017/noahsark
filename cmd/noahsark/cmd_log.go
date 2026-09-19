@@ -21,7 +21,7 @@ import (
 // straight from a disc instead, the same way ls, restore and verify
 // do.
 func cmdLog(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark log [DISC-ROOT] [REF|SNAPSHOT] [--limit=N] [--json]",
+	fs := newFlagSet("noahsark log [--limit=N] [--json] [DISC-ROOT] [REF|SNAPSHOT]",
 		"Print a snapshot's history. Resolves through the local cache with no disc given; accepts --disc (repeatable), --discs-dir or a DISC-ROOT positional to read a disc instead.", stderr)
 	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
 	var discFlags stringList
@@ -50,7 +50,7 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case cacheMode:
 		if fs.NArg() > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [REF|SNAPSHOT] [--limit=N] [--json]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [--limit=N] [--json] [REF|SNAPSHOT]")
 			return 2
 		}
 		positional = fs.Args()
@@ -62,13 +62,13 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 		src, cacheObj = cs, c
 	case multi:
 		if fs.NArg() > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log --disc=ROOT [--disc=ROOT]... [REF|SNAPSHOT] [--limit=N] [--json]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark log --disc=ROOT [--disc=ROOT]... [--limit=N] [--json] [REF|SNAPSHOT]")
 			return 2
 		}
 		positional = fs.Args()
 	default:
 		if fs.NArg() < 1 || fs.NArg() > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log DISC-ROOT [REF|SNAPSHOT] [--limit=N] [--json]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [--limit=N] [--json] DISC-ROOT [REF|SNAPSHOT]")
 			return 2
 		}
 		positional = fs.Args()[1:]
