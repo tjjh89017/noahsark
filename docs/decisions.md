@@ -451,6 +451,23 @@ mode's `--mount` and `--plan` resume. Every other restore flag
 `--report-replay`, `--strict-unstable`) is Phase 1 but not defined,
 since `Restore` takes no such option today.
 
+`restore` reports a metadata failure (a mode, times or owner field that
+Chmod, Chtimes or Chown could not apply) as one warning line per field,
+capped at 20 lines with the rest folded into a count line, plus a
+`metadata not applied: N field(s)` summary and exit code 1, matching
+OPERATIONS.md's `metadata_not_applied` event and its restore exit code
+table. It has no JSON loss report yet: OPERATIONS.md's `{path, field,
+reason, errno}` records, `--report`, `--report-replay` and
+`--metadata-strict` stay unimplemented, listed above with the other
+not-yet-defined restore flags. Owner is attempted only when the restore
+runs as root; an unprivileged restore skips it outright rather than
+attempting and reporting `EPERM`, matching the design's rule that
+`--no-owner` is implied when the restore is not privileged. A symlink
+entry gets owner only, through a no-follow `Lchown`; it gets no Chmod or
+Chtimes, since both would follow the link onto its target, and this
+build has no no-follow time call without adding `golang.org/x/sys` as a
+direct dependency.
+
 `ls`, `log` and `plan` resolve SNAPSHOT through `internal/cache` when
 no disc root, `--disc` or `--discs-dir` is given: `looksLikeDiscRoot`
 tells a `DISC-ROOT` positional apart from a snapshot id or ref name by

@@ -138,7 +138,7 @@ func (m *Manifest) walkDir(c *cache.Cache, treeID object.ID, dest string, fs *fi
 			if err != nil {
 				return err
 			}
-			if err := restoreSymlink(child, target, m.wp); err != nil {
+			if err := restoreSymlink(child, target, e, m.wp); err != nil {
 				return err
 			}
 		default:
@@ -240,7 +240,7 @@ func (m *Manifest) writeFile(spoolDir string, pf *pendingFile, prog *progress.Re
 		if err != nil {
 			return 0, err
 		}
-		applyMetadata(pf.path, pf.treeEntry)
+		applyMetadata(pf.path, pf.treeEntry, m.wp)
 	}
 	pf.written = true
 	for _, be := range pf.entries {
@@ -282,7 +282,7 @@ func (m *Manifest) FileExceedingBudget(budget uint64) (path string, bytes uint64
 // directory first, matching OPERATIONS.md's restore pipeline.
 func (m *Manifest) Finish() {
 	for _, d := range slices.Backward(m.dirsForMeta) {
-		applyMetadata(d.path, d.e)
+		applyMetadata(d.path, d.e, m.wp)
 	}
 }
 
@@ -304,6 +304,11 @@ func (m *Manifest) Unsupported() []UnsupportedEntry { return m.wp.unsupported }
 // because removing what stood there failed. Each one also counts in
 // Skipped.
 func (m *Manifest) OverwriteBlocked() []OverwriteBlockedEntry { return m.wp.overwriteBlocked }
+
+// MetadataFailures lists every metadata_not_applied event: a mode,
+// times or owner field this manifest's restore could not apply to an
+// already-written path.
+func (m *Manifest) MetadataFailures() []MetadataFailure { return m.wp.metadataFailures }
 
 // fileAlreadyRestored reports whether dest, an existing regular file,
 // already holds e's data: either its size and mtime match e exactly, the

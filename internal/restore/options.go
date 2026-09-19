@@ -13,6 +13,7 @@ type restoreOptions struct {
 	knownDiscs         map[[16]byte]string
 	onUnsupported      func(path string, entryType uint8)
 	onOverwriteBlocked func(entry OverwriteBlockedEntry)
+	onMetadataFailure  func(f MetadataFailure)
 }
 
 // WithUnsupportedEntry registers fn, called once for every entry whose
@@ -32,6 +33,16 @@ func WithUnsupportedEntry(fn func(path string, entryType uint8)) Option {
 func WithOverwriteBlocked(fn func(entry OverwriteBlockedEntry)) Option {
 	return func(o *restoreOptions) {
 		o.onOverwriteBlocked = fn
+	}
+}
+
+// WithMetadataFailure registers fn, called once for every
+// metadata_not_applied event: a mode, times or owner field that a
+// path's Chmod, Chtimes or Chown could not apply. The restore records
+// the event and continues; the file itself was already written.
+func WithMetadataFailure(fn func(f MetadataFailure)) Option {
+	return func(o *restoreOptions) {
+		o.onMetadataFailure = fn
 	}
 }
 

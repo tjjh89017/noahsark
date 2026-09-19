@@ -130,7 +130,7 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 	if err != nil {
 		return 0, 0, err
 	}
-	src.wp = &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked}
+	src.wp = &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked, onMetadataFailure: o.onMetadataFailure}
 	for u, l := range o.knownDiscs {
 		if _, ok := src.discLabels[u]; !ok {
 			src.discLabels[u] = l
@@ -396,7 +396,7 @@ func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog
 	if err := src.restoreDirContents(object.ID(e.ContentID), dest, prog, childFS); err != nil {
 		return err
 	}
-	applyMetadata(dest, e)
+	applyMetadata(dest, e, src.wp)
 	return nil
 }
 
@@ -439,7 +439,7 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 		if err := src.restoreDirContents(object.ID(e.ContentID), sub, prog, fs); err != nil {
 			return err
 		}
-		applyMetadata(sub, e)
+		applyMetadata(sub, e, src.wp)
 		return nil
 	case format.EntryTypeRegular:
 		skipped, err := src.restoreFile(child, object.ID(e.ContentID), e, prog)
@@ -451,14 +451,14 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 			// leave it exactly as found.
 			return nil
 		}
-		applyMetadata(child, e)
+		applyMetadata(child, e, src.wp)
 		return nil
 	case format.EntryTypeSymlink:
 		target, err := symlinkTarget(e)
 		if err != nil {
 			return err
 		}
-		return restoreSymlink(child, target, src.wp)
+		return restoreSymlink(child, target, e, src.wp)
 	default:
 		src.wp.recordUnsupported(child, e.EntryType)
 		return nil

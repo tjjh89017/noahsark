@@ -69,7 +69,11 @@ func ensureDir(parent string, components []string, wp *writePolicy) (path string
 // unlink failure, leaves path exactly as found, counts it as skipped
 // and reports it through wp's overwrite-blocked report. The existing
 // tree is never deleted recursively.
-func restoreSymlink(path, target string, wp *writePolicy) error {
+//
+// A symlink entry never gets Chmod or Chtimes: both would follow the
+// link and change the target, not the link itself. Only owner is
+// applied, through applySymlinkOwner's no-follow Lchown.
+func restoreSymlink(path, target string, e format.TreeEntry, wp *writePolicy) error {
 	fi, err := os.Lstat(path)
 	switch {
 	case os.IsNotExist(err):
@@ -81,6 +85,7 @@ func restoreSymlink(path, target string, wp *writePolicy) error {
 				if wp != nil {
 					wp.resumed++
 				}
+				applySymlinkOwner(path, e, wp)
 				return nil
 			}
 		}
@@ -95,7 +100,11 @@ func restoreSymlink(path, target string, wp *writePolicy) error {
 			return nil
 		}
 	}
-	return os.Symlink(target, path)
+	if err := os.Symlink(target, path); err != nil {
+		return err
+	}
+	applySymlinkOwner(path, e, wp)
+	return nil
 }
 
 // overwriteBlockReason turns unlinkExisting's own error into a short,

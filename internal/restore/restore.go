@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -47,6 +46,11 @@ type writePolicy struct {
 	// that still holds entries. Each one also counts in skipped.
 	overwriteBlocked   []OverwriteBlockedEntry
 	onOverwriteBlocked func(entry OverwriteBlockedEntry)
+	// metadataFailures holds every metadata_not_applied event: a mode,
+	// times or owner field that a path's Chmod, Chtimes or Chown could
+	// not apply.
+	metadataFailures  []MetadataFailure
+	onMetadataFailure func(f MetadataFailure)
 }
 
 // UnsupportedEntry is one entry a restore did not write, because this
@@ -180,7 +184,7 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 	prog.Start("restore: bytes written", int64(total))
 	defer prog.Done()
 
-	wp := &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked}
+	wp := &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked, onMetadataFailure: o.onMetadataFailure}
 	for _, e := range rootTree.Entries {
 		if err := restoreRootEntry(base, absOut, e, prog, cache, fs, wp); err != nil {
 			return wp.resumed, wp.skipped, err
@@ -289,7 +293,7 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Re
 	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache, childFS, wp); err != nil {
 		return err
 	}
-	applyMetadata(dest, e)
+	applyMetadata(dest, e, wp)
 	return nil
 }
 
@@ -334,7 +338,7 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 		if err := restoreDirContents(base, object.ID(e.ContentID), sub, prog, cache, fs, wp); err != nil {
 			return err
 		}
-		applyMetadata(sub, e)
+		applyMetadata(sub, e, wp)
 		return nil
 	case format.EntryTypeRegular:
 		skipped, err := restoreFile(base, child, object.ID(e.ContentID), e, prog, cache, wp)
@@ -346,14 +350,14 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 			// would not have applied. Leave it exactly as found.
 			return nil
 		}
-		applyMetadata(child, e)
+		applyMetadata(child, e, wp)
 		return nil
 	case format.EntryTypeSymlink:
 		target, err := symlinkTarget(e)
 		if err != nil {
 			return err
 		}
-		return restoreSymlink(child, target, wp)
+		return restoreSymlink(child, target, e, wp)
 	default:
 		wp.recordUnsupported(child, e.EntryType)
 		return nil
@@ -439,15 +443,6 @@ func openForWrite(dest string, e format.TreeEntry, entries []format.BlobEntry, w
 		return nil, false, err
 	}
 	return f, false, nil
-}
-
-// applyMetadata sets mode and mtime from e. Ownership is applied best
-// effort and never fails the restore.
-func applyMetadata(dest string, e format.TreeEntry) {
-	_ = os.Chmod(dest, os.FileMode(e.Mode&0o7777))
-	mtime := time.Unix(e.MtimeSec, int64(e.MtimeNsec))
-	_ = os.Chtimes(dest, mtime, mtime)
-	_ = os.Chown(dest, int(e.UID), int(e.GID))
 }
 
 // joinSafe joins name under dir and refuses a result that escapes dir.
