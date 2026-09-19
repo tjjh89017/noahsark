@@ -300,6 +300,75 @@ func TestPackNothingToPackRefusesEmptyRun(t *testing.T) {
 	}
 }
 
+// TestPackRefusesATruncatedStagedChunk truncates one committed file's
+// chunk object to 0 bytes on staging, standing in for a prior crash
+// that left a staged object file present under the right name but
+// without its real bytes. Pack must refuse to place it: it must fail
+// with an error naming the chunk's id, and it must write no run.
+func TestPackRefusesATruncatedStagedChunk(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID := commitNamedFixture(t, stagingDir, "only")
+	markStagedFromCommit(t, stagingDir, snapID, l)
+
+	chunkID := object.ComputeID([]byte("content of only"))
+	chunkPath := filepath.Join(stagingDir, "objects", chunkID.FanoutByte(), chunkID.TextForm())
+	if _, err := os.Stat(chunkPath); err != nil {
+		t.Fatalf("fixture assumption failed, no chunk at %s: %v", chunkPath, err)
+	}
+	if err := os.WriteFile(chunkPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	opts := packOpts(stagingDir, snapID, outDir, sectorsFor(50_000_000), 1, l)
+	_, err = Pack(opts)
+	if err == nil {
+		t.Fatal("Pack: expected an error over the truncated chunk, got none")
+	}
+	if !strings.Contains(err.Error(), chunkID.TextForm()) {
+		t.Fatalf("Pack error = %q, want it to name the chunk id %s", err, chunkID.TextForm())
+	}
+
+	if entries, statErr := os.ReadDir(outDir); statErr == nil && len(entries) != 0 {
+		t.Fatalf("outDir is not empty, a run was written despite the corrupt chunk")
+	}
+}
+
+// TestPackHealsObjectsWithNoStateLogRecord commits a snapshot into
+// staging but never records anything in the state log, matching a
+// repository where an earlier commit crashed, or failed, before
+// recording its objects Staged. Pack must still place it: an object
+// present in staging with no state log record is treated as Staged,
+// the same rule the failure table gives a state log a crash truncated.
+// This is also what heals the orphans a fixed commit's own crash could
+// still leave.
+func TestPackHealsObjectsWithNoStateLogRecord(t *testing.T) {
+	stagingDir := t.TempDir()
+	snapID := commitNamedFixture(t, stagingDir, "orphan")
+	// No markStagedFromCommit call: the state log starts with no
+	// record at all for this snapshot or its objects.
+
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	opts := packOpts(stagingDir, snapID, outDir, sectorsFor(50_000_000), 1, l)
+	if _, err := Pack(opts); err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+
+	rec, ok := l.Get(snapID)
+	if !ok || !rec.State.OnDisc() {
+		t.Fatalf("snapshot %s state = %+v, ok=%v, want it packed onto a disc despite starting with no record", snapID.TextForm(), rec, ok)
+	}
+}
+
 // TestPackCapacityTooSmall packs into a target capacity too small to
 // hold even the run's own fixed files. Pack must report
 // ErrCapacityTooSmall, distinct from an internal-error wrap, and write

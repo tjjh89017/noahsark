@@ -705,6 +705,9 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 		if _, err := tree.Decode(data); err != nil {
 			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
+		if err := verifyObjectID(id, format.ObjectKindTree, data); err != nil {
+			return err
+		}
 		var children []object.ID
 		for _, entry := range tree.Entries {
 			switch entry.EntryType {
@@ -735,6 +738,9 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 		if _, err := snap.Decode(data); err != nil {
 			return nil, nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
+		if err := verifyObjectID(snapID, format.ObjectKindSnapshot, data); err != nil {
+			return nil, nil, err
+		}
 		if err := visitTree(object.ID(snap.RootTree)); err != nil {
 			return nil, nil, err
 		}
@@ -749,6 +755,12 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 // visitBlob adds id's blob object and every chunk it lists, children
 // (the chunks) before the blob itself. A blob onDisc already reports
 // OnDisc is never read, the same way visitTree treats one.
+//
+// Each new chunk's staged file is read once here and its content id
+// verified against its own file name, then discarded: bounded by one
+// chunk's size, never by the whole selected data set, and the only
+// point before a run is built where a truncated or corrupt staged
+// chunk is caught.
 func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order *[]packUnit, onDisc func(object.ID) bool) error {
 	if seen[id] {
 		return nil
@@ -765,12 +777,24 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 	if _, err := blob.Decode(data); err != nil {
 		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}
+	if err := verifyObjectID(id, format.ObjectKindBlob, data); err != nil {
+		return err
+	}
 	children := make([]object.ID, 0, len(blob.Entries))
 	for _, e := range blob.Entries {
 		chunkID := object.ID(e.ContentID)
 		children = append(children, chunkID)
 		if !seen[chunkID] {
 			seen[chunkID] = true
+			if !onDisc(chunkID) {
+				chunkData, err := readObjectFile(stagedObjectPath(objectsRoot, chunkID))
+				if err != nil {
+					return fmt.Errorf("chunk %s: %w", chunkID.TextForm(), err)
+				}
+				if err := verifyObjectID(chunkID, format.ObjectKindChunk, chunkData); err != nil {
+					return err
+				}
+			}
 			*order = append(*order, packUnit{ID: chunkID, Kind: format.ObjectKindChunk})
 		}
 	}
