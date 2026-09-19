@@ -217,8 +217,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	runSeq := uint64(len(ledger.Rows)) + 1
-	discSeq := uint64(len(ledger.Rows))
+	runSeq, discSeq := NextSeqNumbers(ledger.Rows)
 
 	discBuf, discHash, err := buildDisc(opts.asBuildOptions(), packTime, discSeq)
 	if err != nil {
@@ -818,6 +817,33 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 	seen[id] = true
 	*order = append(*order, packUnit{ID: id, Kind: format.ObjectKindBlob, Children: children, Bytes: data})
 	return nil
+}
+
+// NextSeqNumbers derives the run_seq and disc_seq a new run must get
+// from the highest numbers the ledger already holds, not from its row
+// count. A ledger rebuilt from surviving discs after the repository was
+// lost can hold fewer rows than the newest sequence number seen, since
+// rebuild-cache may not have been fed every disc a lost repository once
+// knew; counting rows would then hand out a number already in use. An
+// empty ledger gives run_seq 1 and disc_seq 0, matching a fresh repository.
+// rebuild-cache calls this too, to report the numbers the next pack
+// will use.
+func NextSeqNumbers(rows []format.DiscsRow) (runSeq, discSeq uint64) {
+	if len(rows) == 0 {
+		return 1, 0
+	}
+	var maxRunSeq, maxDiscSeq uint64
+	haveMaxRunSeq := false
+	for _, row := range rows {
+		if !haveMaxRunSeq || row.RunSeq > maxRunSeq {
+			maxRunSeq = row.RunSeq
+			haveMaxRunSeq = true
+		}
+		if row.DiscSeq > maxDiscSeq {
+			maxDiscSeq = row.DiscSeq
+		}
+	}
+	return maxRunSeq + 1, maxDiscSeq + 1
 }
 
 // LoadDiscsLedger reads the local disc ledger, or returns an empty one

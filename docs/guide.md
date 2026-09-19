@@ -423,6 +423,12 @@ names a disc that you must still feed. An old disc does not know the
 newer discs. Thus compare `noahsark disc list --repo=<REPO>` with your
 disc record before you trust `ok`.
 
+Feed every disc, the newest one included, before you `pack` again. On
+`ok`, `rebuild-cache` warns on stderr which disc it treats as the
+newest fed and which `run_seq` and `disc_seq` the next `pack` assigns.
+If the true newest disc was never fed, `pack` reuses its numbers; if
+that disc is lost for good, the disc uuid still tells the two runs apart.
+
 Then, for each disc, do steps 6 and 7 again. The rebuilt state does not
 know that a disc was burned or verified. Add `sources.root = <SOURCE>`
 to `<REPO>/config`, or give `<SOURCE>` on each `commit`. A commit that
