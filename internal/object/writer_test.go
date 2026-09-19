@@ -3,6 +3,7 @@ package object
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -582,4 +583,212 @@ func TestCommitNoMessageWritesNoMeta(t *testing.T) {
 	if snap.MetaCount != 0 || len(snap.Meta) != 0 {
 		t.Fatalf("meta count = %d, want 0", snap.MetaCount)
 	}
+}
+
+// TestCommitRewritesATruncatedExistingObject pre-places a 0-byte file
+// under the exact name a chunk's content id would use, standing in for
+// a staged object a prior crash left truncated. Commit must not accept
+// it as an existing valid object: it must detect the mismatch, rewrite
+// the file with the real encoded bytes, and report the id in
+// Summary.Rewritten.
+func TestCommitRewritesATruncatedExistingObject(t *testing.T) {
+	src := t.TempDir()
+	content := "content of a"
+	mustWrite(t, filepath.Join(src, "a.txt"), content)
+
+	staging := t.TempDir()
+	id := ComputeID([]byte(content))
+	objPath := filepath.Join(staging, "objects", id.FanoutByte(), id.TextForm())
+	if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(objPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewWriter(staging)
+	w.Now = fixedClock
+	_, sum, err := w.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sum.Rewritten) != 1 || sum.Rewritten[0] != id {
+		t.Fatalf("Summary.Rewritten = %v, want exactly one entry for %s", sum.Rewritten, id.TextForm())
+	}
+
+	fi, err := os.Stat(objPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() == 0 {
+		t.Fatalf("object file at %s is still 0 bytes after commit", objPath)
+	}
+	verifyAllObjectsValid(t, staging)
+}
+
+// skipIfRoot skips a test that depends on mode 0000 blocking a read: the
+// root user ignores file permission bits, so the fixture would not
+// reproduce an unreadable path.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 0000 does not block a read")
+	}
+}
+
+// TestCommitSkipsOneUnreadableFileAndKeepsTheRest commits a source with
+// one readable file and one file with no read permission. The commit
+// must still produce a snapshot, must still include the readable file,
+// must not include the unreadable one, and must report it skipped. One
+// unreadable file must never stop the whole commit.
+func TestCommitSkipsOneUnreadableFileAndKeepsTheRest(t *testing.T) {
+	skipIfRoot(t)
+
+	src := t.TempDir()
+	mustWrite(t, filepath.Join(src, "a.txt"), "content of a")
+	bPath := filepath.Join(src, "b.txt")
+	mustWrite(t, bPath, "content of b")
+	if err := os.Chmod(bPath, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(bPath, 0o644) }()
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+
+	snapID, sum, err := w.Commit(src)
+	if err != nil {
+		t.Fatalf("Commit returned a hard error, want the unreadable file skipped: %v", err)
+	}
+
+	if len(sum.Skipped) != 1 || sum.Skipped[0].Path != "b.txt" {
+		t.Fatalf("Summary.Skipped = %+v, want exactly one entry for b.txt", sum.Skipped)
+	}
+	if sum.Skipped[0].Reason == "" {
+		t.Fatalf("Summary.Skipped[0].Reason is empty, want the open error text")
+	}
+
+	snap := loadSnapshot(t, staging, snapID)
+	rootTree := loadTree(t, staging, ID(snap.RootTree))
+	dirTree := loadTree(t, staging, ID(rootTree.Entries[0].ContentID))
+	for _, e := range dirTree.Entries {
+		if string(e.Name) == "b.txt" {
+			t.Fatalf("dirTree holds b.txt, want it dropped from the tree")
+		}
+	}
+	findEntry(t, dirTree, "a.txt")
+}
+
+// TestCommitSkipsOneUnreadableSubdirectory commits a source with one
+// readable subdirectory and one subdirectory with no read permission.
+// The unreadable subdirectory is skipped and reported; the rest of the
+// tree still commits.
+func TestCommitSkipsOneUnreadableSubdirectory(t *testing.T) {
+	skipIfRoot(t)
+
+	src := t.TempDir()
+	mustMkdir(t, filepath.Join(src, "good"))
+	mustWrite(t, filepath.Join(src, "good", "a.txt"), "content of a")
+	badDir := filepath.Join(src, "bad")
+	mustMkdir(t, badDir)
+	mustWrite(t, filepath.Join(badDir, "hidden.txt"), "content of hidden")
+	if err := os.Chmod(badDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(badDir, 0o755) }()
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+
+	snapID, sum, err := w.Commit(src)
+	if err != nil {
+		t.Fatalf("Commit returned a hard error, want the unreadable directory skipped: %v", err)
+	}
+
+	if len(sum.Skipped) != 1 || sum.Skipped[0].Path != "bad" {
+		t.Fatalf("Summary.Skipped = %+v, want exactly one entry for bad", sum.Skipped)
+	}
+
+	snap := loadSnapshot(t, staging, snapID)
+	rootTree := loadTree(t, staging, ID(snap.RootTree))
+	dirTree := loadTree(t, staging, ID(rootTree.Entries[0].ContentID))
+	for _, e := range dirTree.Entries {
+		if string(e.Name) == "bad" {
+			t.Fatalf("dirTree holds bad, want it dropped from the tree")
+		}
+	}
+	goodEntry := findEntry(t, dirTree, "good")
+	goodTree := loadTree(t, staging, ID(goodEntry.ContentID))
+	findEntry(t, goodTree, "a.txt")
+}
+
+// errInjectedMidRead is the error a fake reader returns partway through
+// a file, standing in for an EIO the real filesystem could return.
+var errInjectedMidRead = errors.New("object: injected mid-read failure")
+
+// failAfterNReader returns n bytes of content, then errInjectedMidRead
+// on every further read.
+type failAfterNReader struct {
+	remaining []byte
+}
+
+func (r *failAfterNReader) Read(p []byte) (int, error) {
+	if len(r.remaining) == 0 {
+		return 0, errInjectedMidRead
+	}
+	n := copy(p, r.remaining)
+	r.remaining = r.remaining[n:]
+	return n, nil
+}
+
+func (r *failAfterNReader) Close() error { return nil }
+
+// TestCommitDropsEntryOnMidFileReadError injects a read error partway
+// through one file's content, through the Writer's Open seam. The entry
+// for that file must be dropped from the tree, not staged with
+// truncated content, and the path must be reported skipped. A sibling
+// file must still commit normally.
+func TestCommitDropsEntryOnMidFileReadError(t *testing.T) {
+	src := t.TempDir()
+	mustWrite(t, filepath.Join(src, "a.txt"), "content of a")
+	badPath := filepath.Join(src, "b.txt")
+	mustWriteBytes(t, badPath, bytes.Repeat([]byte{0x42}, 1<<20))
+
+	badAbs, err := filepath.Abs(badPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staging := t.TempDir()
+	w := NewWriter(staging)
+	w.Now = fixedClock
+	realOpen := w.Open
+	w.Open = func(path string) (io.ReadCloser, error) {
+		if path == badAbs {
+			return &failAfterNReader{remaining: bytes.Repeat([]byte{0x42}, 4096)}, nil
+		}
+		return realOpen(path)
+	}
+
+	snapID, sum, err := w.Commit(src)
+	if err != nil {
+		t.Fatalf("Commit returned a hard error, want the mid-read failure skipped: %v", err)
+	}
+
+	if len(sum.Skipped) != 1 || sum.Skipped[0].Path != "b.txt" {
+		t.Fatalf("Summary.Skipped = %+v, want exactly one entry for b.txt", sum.Skipped)
+	}
+
+	snap := loadSnapshot(t, staging, snapID)
+	rootTree := loadTree(t, staging, ID(snap.RootTree))
+	dirTree := loadTree(t, staging, ID(rootTree.Entries[0].ContentID))
+	for _, e := range dirTree.Entries {
+		if string(e.Name) == "b.txt" {
+			t.Fatalf("dirTree holds b.txt, want it dropped after the mid-read failure")
+		}
+	}
+	findEntry(t, dirTree, "a.txt")
 }

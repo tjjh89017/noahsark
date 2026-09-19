@@ -527,15 +527,21 @@ table's "some files could not be read, or were unstable" rule.
 
 A path that vanishes between being listed and being opened or stat'd
 (deleted, renamed, or replaced by a broken symlink out from under the
-walker) is a different case from an in-flight content change: nothing
-was read, so there is no content to flag `UNSTABLE`. `Writer` reports
-such a path in `Summary.Skipped` and continues the commit without it,
-matching the source policy table's "unreadable file: skipped and
-reported, exit code 1" rule; `commit` prints a `skipped PATH` line for
-each and folds the count into the same nonzero-exit check. A read that
-fails for any other reason (permission denied, an I/O error) still
-aborts the commit and returns an error, since that is not a vanished
-path and not a reason to keep partial or torn content.
+walker), or that an open, read or readdir error blocks (for example
+`EACCES` or `EIO`), is a different case from an in-flight content
+change: nothing was read, so there is no content to flag `UNSTABLE`.
+`Writer` reports such a path in `Summary.Skipped`, with the error text
+as the reason, and continues the commit without it, matching the source
+policy table's "unreadable file: skipped and reported, exit code 1"
+rule; `commit` prints a `skipped PATH: REASON` line for each and folds
+the count into the same nonzero-exit check. A read that fails partway
+through a file drops that file's entry entirely rather than staging a
+blob over truncated content; any chunk already written for it stays in
+staging as an orphan, and gc reclaims it like any other object nothing
+references. Only an error on the source root itself, or an error from
+the staging store (a write, a rename, or the state log), still aborts
+the commit and returns a hard error, since a failed destination write
+is never something to paper over.
 
 ## 4. Staging state machine
 
