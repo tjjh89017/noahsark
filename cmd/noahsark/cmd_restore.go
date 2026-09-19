@@ -155,6 +155,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 
 	var unsupported []string
 	var blocked int
+	var metadataFailures []restore.MetadataFailure
 	opts := []restore.Option{
 		restore.WithInclude(includeFlags),
 		restore.WithOverwrite(*overwrite),
@@ -165,6 +166,9 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		restore.WithOverwriteBlocked(func(entry restore.OverwriteBlockedEntry) {
 			blocked++
 			_, _ = fmt.Fprintln(stderr, overwriteBlockedLine(entry))
+		}),
+		restore.WithMetadataFailure(func(f restore.MetadataFailure) {
+			metadataFailures = append(metadataFailures, f)
 		}),
 	}
 	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
@@ -178,6 +182,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		}
 		return 1
 	}
+	metaLoss := printMetadataFailures(stderr, metadataFailures)
 
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
 	if resumed > 0 {
@@ -195,7 +200,10 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	if len(unsupported) > 0 {
 		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(unsupported)))
 	}
-	if loss {
+	if len(metadataFailures) > 0 {
+		_, _ = fmt.Fprint(stdout, metadataFailureSummaryLine(len(metadataFailures)))
+	}
+	if loss || metaLoss {
 		return 1
 	}
 	return 0
@@ -225,6 +233,39 @@ func overwriteBlockedSummaryLine(n int) string {
 // unsupportedSummaryLine counts those entries for the final report.
 func unsupportedSummaryLine(n int) string {
 	return fmt.Sprintf("not restored: %d unsupported entry(ies); a device node, FIFO or socket needs a later phase\n", n)
+}
+
+// metadataFailureLineCap is the most metadata_not_applied warning lines
+// printMetadataFailures prints one per failure; beyond it, the
+// remaining failures fold into a single count line.
+const metadataFailureLineCap = 20
+
+// metadataFailureLine names one metadata field a restore could not
+// apply, in the existing warning style.
+func metadataFailureLine(f restore.MetadataFailure) string {
+	return fmt.Sprintf("noahsark: restore: warning: %s: %s not applied: %s", f.Path, f.Field, f.Err)
+}
+
+// printMetadataFailures writes one warning line per metadata failure,
+// up to metadataFailureLineCap, folding any remaining failures into one
+// more line. It reports whether it printed anything, for the exit
+// code: a metadata failure is metadata loss (OPERATIONS.md's restore
+// exit code table, code 1).
+func printMetadataFailures(stderr io.Writer, failures []restore.MetadataFailure) bool {
+	for i, f := range failures {
+		if i >= metadataFailureLineCap {
+			_, _ = fmt.Fprintf(stderr, "noahsark: restore: warning: %d more metadata failure(s) not shown\n", len(failures)-metadataFailureLineCap)
+			break
+		}
+		_, _ = fmt.Fprintln(stderr, metadataFailureLine(f))
+	}
+	return len(failures) > 0
+}
+
+// metadataFailureSummaryLine counts the metadata fields a restore could
+// not apply, for the final report.
+func metadataFailureSummaryLine(n int) string {
+	return fmt.Sprintf("metadata not applied: %d field(s); see the warning(s) above\n", n)
 }
 
 // resolveDiscRoots builds the disc root list restore reads from: the
@@ -559,6 +600,7 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		return 2
 	}
 	m.Finish()
+	metaLoss := printMetadataFailures(stderr, m.MetadataFailures())
 
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
 	if m.Resumed() > 0 {
@@ -577,7 +619,10 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 	if paths := m.Unsupported(); len(paths) > 0 {
 		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(paths)))
 	}
-	if loss {
+	if fails := m.MetadataFailures(); len(fails) > 0 {
+		_, _ = fmt.Fprint(stdout, metadataFailureSummaryLine(len(fails)))
+	}
+	if loss || metaLoss {
 		return 1
 	}
 	if err := removeEmptySpoolRoot(spoolRoot); err != nil {

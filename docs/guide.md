@@ -367,6 +367,14 @@ diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
   change the exit code.
 - `resumed: N file(s) already restored` counts the files that were
   already correct.
+- `restore` applies mode, times and, only when it runs as root, owner to
+  every restored path. A field that fails to apply prints
+  `noahsark: restore: warning: <PATH>: <FIELD> not applied: <ERROR>`,
+  up to 20 lines, then one line with the remaining count. The summary
+  line reads `metadata not applied: N field(s); see the warning(s)
+  above`, and the exit code is 1. A restore that does not run as root
+  never attempts owner at all, so it never prints an owner warning and
+  never loses exit code 0 to it.
 - `noahsark ls --recursive --unstable-only ...` lists the files that a
   commit flagged as unstable. A `!` in the first column marks them.
 
@@ -471,6 +479,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --from-disc --disc=<MOUNT>`. |
 | `pack`: `remaining staged`, exit code 1 | The data did not fit. Do step 10. |
 | `restore --overwrite`: `warning: <PATH>: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
+| `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |
 | `restore`: `missing disc(s)`, exit code 3 | The message lists each disc by uuid. Find the disc by the uuid prefix on its sleeve. Restore again with that disc included. |
 | `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |
