@@ -8,9 +8,20 @@ type Option func(*restoreOptions)
 
 // restoreOptions holds every optional restriction a restore call accepts.
 type restoreOptions struct {
-	includes   []string
-	overwrite  bool
-	knownDiscs map[[16]byte]string
+	includes      []string
+	overwrite     bool
+	knownDiscs    map[[16]byte]string
+	onUnsupported func(path string, entryType uint8)
+}
+
+// WithUnsupportedEntry registers fn, called once for every entry whose
+// type this build does not restore: a device node, a FIFO or a socket.
+// The restore records the entry and continues, so a later entry in the
+// walk still reaches its path.
+func WithUnsupportedEntry(fn func(path string, entryType uint8)) Option {
+	return func(o *restoreOptions) {
+		o.onUnsupported = fn
+	}
 }
 
 // WithInclude restricts a restore to these snapshot-relative paths, and

@@ -341,8 +341,15 @@ diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
 - To restore only some paths, add `--include=<PATH>` one or more times.
   `plan` takes the same flag. Get the paths from
   `noahsark ls --recursive --repo=<REPO> <REF>`.
-- `restore` does not replace a file that exists. It prints
-  `skipped N existing path(s)`. Add `--overwrite` to replace them.
+- `restore` does not replace a path that exists, of any kind: a file, a
+  directory or a symlink. It leaves the path as it is and prints
+  `skipped N existing path(s)`. The exit code is 1. Add `--overwrite`
+  to replace them. `restore` never follows a symlink that it finds in
+  `<RESTORE_DIR>`, so it never writes outside that directory.
+- `restore` does not restore a device node, a FIFO or a socket. It
+  names each one, prints
+  `not restored: N unsupported entry(ies); a device node, FIFO or socket needs a later phase`
+  and exits with code 1. Every other file is restored.
 - `resumed: N file(s) already restored` counts the files that were
   already correct.
 - `noahsark ls --recursive --unstable-only ...` lists the files that a
@@ -448,6 +455,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
 | `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --from-disc --disc=<MOUNT>`. |
 | `pack`: `remaining staged`, exit code 1 | The data did not fit. Do step 10. |
+| `restore --overwrite`: `symlink <PATH>: directory not empty` | A directory holds the path of a symlink in the snapshot. `restore` never deletes a directory tree. Move or remove that directory, then restore again. |
 | `restore`: `missing disc(s)`, exit code 3 | The message lists each disc by uuid. Find the disc by the uuid prefix on its sleeve. Restore again with that disc included. |
 | `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |

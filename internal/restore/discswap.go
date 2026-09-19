@@ -27,7 +27,6 @@ type Manifest struct {
 	filesByChunk map[object.ID][]*pendingFile
 	dirsForMeta  []dirMeta
 	wp           *writePolicy
-	resumed      int
 }
 
 // pendingFile is one regular file the manifest still owes: its
@@ -64,6 +63,9 @@ func BuildManifest(c *cache.Cache, snap *format.Snapshot, outDir string, include
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return nil, err
+	}
 	m := &Manifest{
 		outDir:       outDir,
 		filesByChunk: make(map[object.ID][]*pendingFile),
@@ -81,12 +83,12 @@ func BuildManifest(c *cache.Cache, snap *format.Snapshot, outDir string, include
 		if !include {
 			continue
 		}
-		dest, err := joinSafe(outDir, rootPath)
+		dest, ok, err := ensureDir(outDir, splitPath(rootPath), m.wp)
 		if err != nil {
 			return nil, err
 		}
-		if err := os.MkdirAll(dest, 0o755); err != nil {
-			return nil, err
+		if !ok {
+			continue
 		}
 		if err := m.walkDir(c, object.ID(e.ContentID), dest, childFS); err != nil {
 			return nil, err
@@ -116,35 +118,31 @@ func (m *Manifest) walkDir(c *cache.Cache, treeID object.ID, dest string, fs *fi
 		}
 		switch e.EntryType {
 		case format.EntryTypeDirectory:
-			if err := os.MkdirAll(child, 0o755); err != nil {
+			sub, ok, err := ensureDir(dest, []string{name}, m.wp)
+			if err != nil {
 				return err
 			}
-			if err := m.walkDir(c, object.ID(e.ContentID), child, childFS); err != nil {
+			if !ok {
+				continue
+			}
+			if err := m.walkDir(c, object.ID(e.ContentID), sub, childFS); err != nil {
 				return err
 			}
-			m.dirsForMeta = append(m.dirsForMeta, dirMeta{child, e})
+			m.dirsForMeta = append(m.dirsForMeta, dirMeta{sub, e})
 		case format.EntryTypeRegular:
 			if err := m.addFile(c, child, object.ID(e.ContentID), e); err != nil {
 				return err
 			}
 		case format.EntryTypeSymlink:
-			target := ""
-			for _, tlv := range e.TLVs {
-				if tlv.Type == format.TLVTypeSymlinkTarget {
-					target = string(tlv.Payload)
-				}
-			}
-			if target == "" {
-				return fmt.Errorf("symlink %q has no target TLV", name)
-			}
-			if err := os.RemoveAll(child); err != nil {
+			target, err := symlinkTarget(e)
+			if err != nil {
 				return err
 			}
-			if err := os.Symlink(target, child); err != nil {
+			if err := restoreSymlink(child, target, m.wp); err != nil {
 				return err
 			}
 		default:
-			return fmt.Errorf("entry %q: entry type %d is not restored", name, e.EntryType)
+			m.wp.recordUnsupported(child, e.EntryType)
 		}
 	}
 	return nil
@@ -167,7 +165,7 @@ func (m *Manifest) addFile(c *cache.Cache, dest string, blobID object.ID, e form
 	if !m.wp.overwrite {
 		if resumed, found := existingFileStatus(dest, e, entries); found {
 			if resumed {
-				m.resumed++
+				m.wp.resumed++
 			} else {
 				m.wp.skipped++
 			}
@@ -232,24 +230,14 @@ func (m *Manifest) writeFile(spoolDir string, pf *pendingFile, prog *progress.Re
 		return 0, err
 	}
 	if !skipped {
-		for _, be := range pf.entries {
-			id := object.ID(be.ContentID)
+		_, err := writeChunks(f, pf.entries, prog, func(id object.ID) ([]byte, bool, error) {
 			data, err := os.ReadFile(SpoolObjectPath(spoolDir, id))
 			if err != nil {
-				_ = f.Close()
-				return 0, fmt.Errorf("chunk %s: %w", id.TextForm(), err)
+				return nil, false, fmt.Errorf("chunk %s: %w", id.TextForm(), err)
 			}
-			if uint64(len(data)) != be.Length {
-				_ = f.Close()
-				return 0, fmt.Errorf("chunk %s: length %d, blob entry says %d", id.TextForm(), len(data), be.Length)
-			}
-			if _, err := f.WriteAt(data, int64(be.FileOffset)); err != nil {
-				_ = f.Close()
-				return 0, err
-			}
-			prog.Add(int64(len(data)))
-		}
-		if err := f.Close(); err != nil {
+			return data, true, nil
+		})
+		if err != nil {
 			return 0, err
 		}
 		applyMetadata(pf.path, pf.treeEntry)
@@ -306,7 +294,11 @@ func (m *Manifest) Skipped() int { return m.wp.skipped }
 // Resumed is the number of existing paths left alone because overwrite
 // was not requested, but the path already matches the tree entry: an
 // earlier, interrupted disc-swap restore already wrote it.
-func (m *Manifest) Resumed() int { return m.resumed }
+func (m *Manifest) Resumed() int { return m.wp.resumed }
+
+// Unsupported lists every entry the manifest did not create, because
+// this build does not restore its entry type.
+func (m *Manifest) Unsupported() []UnsupportedEntry { return m.wp.unsupported }
 
 // fileAlreadyRestored reports whether dest, an existing regular file,
 // already holds e's data: either its size and mtime match e exactly, the

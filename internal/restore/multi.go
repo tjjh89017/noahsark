@@ -130,7 +130,7 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 	if err != nil {
 		return 0, 0, err
 	}
-	src.wp = &writePolicy{overwrite: o.overwrite}
+	src.wp = &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported}
 	for u, l := range o.knownDiscs {
 		if _, ok := src.discLabels[u]; !ok {
 			src.discLabels[u] = l
@@ -389,11 +389,8 @@ func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog
 	if !include {
 		return nil
 	}
-	dest, err := joinSafe(outDir, rootPath)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	dest, ok, err := ensureDir(outDir, splitPath(rootPath), src.wp)
+	if err != nil || !ok {
 		return err
 	}
 	if err := src.restoreDirContents(object.ID(e.ContentID), dest, prog, childFS); err != nil {
@@ -435,13 +432,14 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 	}
 	switch e.EntryType {
 	case format.EntryTypeDirectory:
-		if err := os.MkdirAll(child, 0o755); err != nil {
+		sub, ok, err := ensureDir(dir, []string{name}, src.wp)
+		if err != nil || !ok {
 			return err
 		}
-		if err := src.restoreDirContents(object.ID(e.ContentID), child, prog, fs); err != nil {
+		if err := src.restoreDirContents(object.ID(e.ContentID), sub, prog, fs); err != nil {
 			return err
 		}
-		applyMetadata(child, e)
+		applyMetadata(sub, e)
 		return nil
 	case format.EntryTypeRegular:
 		skipped, err := src.restoreFile(child, object.ID(e.ContentID), e, prog)
@@ -456,21 +454,14 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeSymlink:
-		target := ""
-		for _, t := range e.TLVs {
-			if t.Type == format.TLVTypeSymlinkTarget {
-				target = string(t.Payload)
-			}
-		}
-		if target == "" {
-			return fmt.Errorf("symlink %q has no target TLV", name)
-		}
-		if err := os.RemoveAll(child); err != nil {
+		target, err := symlinkTarget(e)
+		if err != nil {
 			return err
 		}
-		return os.Symlink(target, child)
+		return restoreSymlink(child, target, src.wp)
 	default:
-		return fmt.Errorf("entry %q: entry type %d is not restored", name, e.EntryType)
+		src.wp.recordUnsupported(child, e.EntryType)
+		return nil
 	}
 }
 
@@ -496,28 +487,13 @@ func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.Tree
 	if skipped {
 		return true, nil
 	}
-	defer func() { _ = f.Close() }()
 
-	complete := true
-	for _, be := range entries {
-		_, payload, ok := src.read(object.ID(be.ContentID), false)
-		if !ok {
-			complete = false
-			continue
-		}
-		if uint64(len(payload)) != be.Length {
-			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d",
-				object.ID(be.ContentID).TextForm(), len(payload), be.Length)
-		}
-		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
-			return false, err
-		}
-		prog.Add(int64(len(payload)))
-	}
-	if !complete {
-		// Leave the partially written file in place; the missing-disc
-		// error already names what is needed to finish it.
-		return false, nil
-	}
-	return false, nil
+	// A chunk no provided disc holds leaves the file partly written.
+	// That file stays in place: the missing-disc error already names
+	// what is needed to finish it.
+	_, err = writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
+		_, payload, ok := src.read(id, false)
+		return payload, ok, nil
+	})
+	return false, err
 }

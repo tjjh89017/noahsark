@@ -153,7 +153,15 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	opts := []restore.Option{restore.WithInclude(includeFlags), restore.WithOverwrite(*overwrite)}
+	var unsupported []string
+	opts := []restore.Option{
+		restore.WithInclude(includeFlags),
+		restore.WithOverwrite(*overwrite),
+		restore.WithUnsupportedEntry(func(path string, entryType uint8) {
+			unsupported = append(unsupported, path)
+			_, _ = fmt.Fprintln(stderr, unsupportedEntryLine(path, entryType))
+		}),
+	}
 	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
 		opts = append(opts, restore.WithKnownDiscs(known))
 	}
@@ -170,11 +178,30 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	if resumed > 0 {
 		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", resumed)
 	}
+	loss := false
 	if skipped > 0 {
 		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", skipped)
+		loss = true
+	}
+	if len(unsupported) > 0 {
+		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(unsupported)))
+		loss = true
+	}
+	if loss {
 		return 1
 	}
 	return 0
+}
+
+// unsupportedEntryLine names one entry the restore did not write
+// because this build does not restore its entry type.
+func unsupportedEntryLine(path string, entryType uint8) string {
+	return fmt.Sprintf("noahsark: restore: not restored: %s (entry type %d)", path, entryType)
+}
+
+// unsupportedSummaryLine counts those entries for the final report.
+func unsupportedSummaryLine(n int) string {
+	return fmt.Sprintf("not restored: %d unsupported entry(ies); a device node, FIFO or socket needs a later phase\n", n)
 }
 
 // resolveDiscRoots builds the disc root list restore reads from: the
@@ -407,6 +434,10 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		return 2
 	}
 
+	for _, u := range m.Unsupported() {
+		_, _ = fmt.Fprintln(stderr, unsupportedEntryLine(u.Path, u.EntryType))
+	}
+
 	if path, need, ok := m.FileExceedingBudget(stagingBudget); ok {
 		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s alone needs %d bytes of staging, above the staging budget of %d bytes; no split of one file's own chunks can honour it\n",
 			path, need, stagingBudget)
@@ -500,8 +531,16 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 	if m.Resumed() > 0 {
 		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", m.Resumed())
 	}
+	loss := false
 	if m.Skipped() > 0 {
 		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", m.Skipped())
+		loss = true
+	}
+	if paths := m.Unsupported(); len(paths) > 0 {
+		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(paths)))
+		loss = true
+	}
+	if loss {
 		return 1
 	}
 	if err := removeEmptySpoolRoot(spoolRoot); err != nil {
