@@ -107,7 +107,7 @@ func TestCommitWithNeitherArgNorConfigFails(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("commit: exit %d, want 2: %s", code, out)
 	}
-	want := "no SOURCE given and no source root in the config; pass a path or run init --source"
+	want := "no SOURCE given and no source root in the config; pass a path on the command line, or set sources.root in the config"
 	if !strings.Contains(out, want) {
 		t.Fatalf("commit output %q, want it to contain %q", out, want)
 	}

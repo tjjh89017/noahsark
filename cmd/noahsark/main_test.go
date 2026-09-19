@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -240,6 +241,69 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 	}
 	if code, out := runCmd(t, "-h"); code != 0 || !strings.Contains(out, "usage:") {
 		t.Fatalf("-h: exit %d, output %q", code, out)
+	}
+}
+
+// TestTopLevelUsageListsEveryFlag asserts that every flag a command's own
+// "-h" output defines also appears on that command's line, or lines, in
+// the top-level "--help" summary. It catches the summary going stale when
+// a command gains a flag, the bug this test was added to guard against.
+func TestTopLevelUsageListsEveryFlag(t *testing.T) {
+	_, topText := runCmd(t, "--help")
+
+	// alwaysOptional names flags every top-level line may leave out:
+	// --repo is accepted almost everywhere and is only spelled out where
+	// its meaning differs (verify); --disc and --discs-dir are explained
+	// once, in the paragraph under the command list, instead of being
+	// repeated on every disc-reading command's line.
+	alwaysOptional := map[string]bool{
+		"repo":      true,
+		"disc":      true,
+		"discs-dir": true,
+	}
+
+	cases := []struct {
+		args    []string // invoked with a trailing "-h"
+		topLine string   // the top-level line's prefix, as it appears indented
+	}{
+		{[]string{"init"}, "  init"},
+		{[]string{"commit"}, "  commit"},
+		{[]string{"pack"}, "  pack"},
+		{[]string{"image", "build"}, "  image build"},
+		{[]string{"verify"}, "  verify"},
+		{[]string{"restore"}, "  restore"},
+		{[]string{"ls"}, "  ls"},
+		{[]string{"log"}, "  log"},
+		{[]string{"plan"}, "  plan"},
+		{[]string{"rebuild-cache"}, "  rebuild-cache"},
+		{[]string{"disc", "list"}, "  disc list"},
+		{[]string{"disc", "burned"}, "  disc burned"},
+		{[]string{"gc"}, "  gc"},
+	}
+
+	flagNamePattern := regexp.MustCompile(`(?m)^  -(\S+)`)
+
+	for _, c := range cases {
+		args := append(append([]string{}, c.args...), "-h")
+		_, cmdHelp := runCmd(t, args...)
+		matches := flagNamePattern.FindAllStringSubmatch(cmdHelp, -1)
+
+		lineJoinPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(c.topLine) + `\b.*$`)
+		lines := lineJoinPattern.FindAllString(topText, -1)
+		if len(lines) == 0 {
+			t.Fatalf("%s: no top-level line found for prefix %q", strings.Join(c.args, " "), c.topLine)
+		}
+		block := strings.Join(lines, "\n")
+
+		for _, m := range matches {
+			name := m[1]
+			if alwaysOptional[name] {
+				continue
+			}
+			if !strings.Contains(block, "-"+name) {
+				t.Errorf("%s: top-level usage is missing --%s\nblock:\n%s", strings.Join(c.args, " "), name, block)
+			}
+		}
 	}
 }
 
