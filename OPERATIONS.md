@@ -130,7 +130,14 @@ Discovery runs in this order. The first hit wins.
 3. The current directory, then each ancestor up to the filesystem root,
    nearest first. The first directory that is a repository wins.
 
-A command that finds no repository exits with code 2 and says so.
+A command that needs a repository and finds none reports it and refuses to
+run. `init`, `commit`, `pack`, `gc` and `disc` treat a missing repository as
+a usage error and exit with code 2. `ls`, `log`, `plan` and `restore`'s
+disc-swap mode read through the local cache instead, so there a missing
+repository is a failure at run time, code 1. `rebuild-cache` creates the
+repository directory instead of failing when it finds none. `verify` with no
+repository still checks the disc tree; it only skips updating staging state.
+Section 19 gives the full convention.
 
 `init` refuses a directory that already is a repository. `init` refuses to
 create a repository inside another one.
@@ -1709,7 +1716,7 @@ Burn step record, 512 bytes, in execution order:
    `pack` under `disc.close_policy = when_full`. Under the default policy,
    `never`, no plan ever carries them.
 7. A `source_path` above 256 bytes or an `aux_path` above 184 bytes is an
-   error. The plan writer refuses to write the plan, `pack` exits with code 2,
+   error. The plan writer refuses to write the plan, `pack` exits with code 1,
    and the message names the path and the limit. The path is never truncated
    and never stored in a side file. Informative: a short `staging.dir` keeps
    every plan path far below the limit.
@@ -2580,8 +2587,8 @@ Exit codes:
 | Code | Meaning |
 |---:|---|
 | 0 | Everything applied. |
-| 1 | Data restored, with metadata loss. |
-| 2 | Data restore failed. |
+| 1 | A failure at run time: data restored with metadata loss, an existing path left alone without `--overwrite`, or data restore failed outright. |
+| 2 | A usage error, or a refused option. |
 | 3 | A required disc is missing (section 16.16). |
 
 ### 15.9 Loss report
@@ -2762,10 +2769,10 @@ The current build does not have `--checksum`, `--full-scan`, `--force`,
 `commit.retry_unstable` sets the retry count.
 
 Exit: 0 on success, also when the tree is unchanged and no snapshot was
-written; 1 when some files could not be read or were unstable, and the snapshot
-is committed all the same; 2 on failure or when the repository lock is held.
-In the current build, a failure at run time exits with code 1, and code 2 is a
-usage error or a refused option.
+written. 1 on a failure at run time, also when some files could not be read or
+were unstable, and the snapshot is committed all the same. 2 for a usage
+error, a refused option, or a repository lock held (the lock is a design item;
+this build does not hold one yet).
 
 The report lists every unstable path and says which branch was taken.
 
@@ -2785,8 +2792,9 @@ Pulls the change set of `SOURCE` into the mirror directory (section 7.4).
 | `--list-only` | Print the changed-path list and the byte total. Transfer nothing. |
 | `--rsync-arg` | Pass an extra argument through to `rsync`. |
 
-Exit: 0 on success; 1 when some paths could not be listed; the `rsync` exit
-code on a transfer failure; 2 when `rsync` is not installed.
+Exit: 0 on success. 1 on a failure at run time, also when some paths could
+not be listed, or when `rsync` is not installed. On a transfer failure, `sync`
+exits with `rsync`'s own exit code instead of one of these.
 
 ### 16.5 `catalog export` (Backlog)
 
@@ -2800,7 +2808,7 @@ Writes the current catalog to `DIR` as plain files (section 7.9).
 |---|---|
 | `--manifests` | How many recent manifests to include. Default `manifest.history_depth`. |
 
-Exit: 0 on success, 2 on failure.
+Exit: 0 on success, 1 on a failure at run time.
 
 ### 16.6 `import` (Backlog)
 
@@ -2815,8 +2823,10 @@ Verifies and imports a commit bundle (section 7.9).
 | `--ref` | The ref to move. Default the ref named in the bundle, else `LATEST`. |
 | `--keep` | Do not delete the bundle directory afterwards. |
 
-Exit: 0 on success; 1 when some objects were already present; 2 on a
-verification failure or a repository uuid mismatch.
+Exit: 0 on success. 1 on a failure at run time, also when some objects were
+already present, or on a verification failure. 2 when the bundle's repository
+uuid does not match this repository: the wrong bundle for this repository is
+a usage error.
 
 ### 16.7 `watch` (Phase 3)
 
@@ -2830,7 +2840,7 @@ Runs a change-recording daemon. It records changed paths and never commits.
 |---|---|
 | `--log` | Where to write the change log. |
 
-Exit: 0 on a clean stop, 2 on failure.
+Exit: 0 on a clean stop, 1 on a failure at run time.
 
 ### 16.8 `pack` (Phase 1)
 
@@ -2889,12 +2899,13 @@ It does not apply the `disc.min_fill` and `disc.max_wait` triggers: it packs
 when at least one object is STAGED. It refuses `--disc` by name as a Phase 2
 option.
 
-Exit: 0 on success, with nothing left STAGED; 1 when the run is smaller than
-requested: objects stay STAGED for the next disc, or nothing was STAGED; 2 on
-failure; 4 when a forced capacity conflicts with the recorded value. In the
-current build, a failure at run time exits with code 1. Code 2 is a usage
-error, a refused option, an `--out` directory that holds files, or a capacity
-that is too small for the run.
+Exit: 0 on success, with nothing left STAGED. 1 on a failure at run time,
+also when the run is smaller than requested: objects stay STAGED for the next
+disc, or nothing was STAGED. 2 for a usage error, a refused option, an
+`--out` directory that holds files, or a capacity too small for the run.
+Design also reserves 4 for a forced capacity that conflicts with a disc's
+already recorded value; this build never returns it, since that case needs
+`--disc` to continue an existing disc (Phase 2).
 
 ### 16.9 `append` (Phase 2)
 
@@ -2947,7 +2958,7 @@ uses a second drive when `burn.verify_device` names one and it is present.
 | Code | Meaning |
 |---:|---|
 | 0 | Success. |
-| 2 | The burn failed. |
+| 1 | The burn failed at run time. |
 | 3 | The expected disc is not in the drive. |
 | 4 | The burner version is unknown or unpatched, or `--exec` ran on a platform other than Linux. |
 
@@ -2964,7 +2975,8 @@ Closes an open disc by appending a closing run (section 12.4).
 | `--disc` | The disc to close. |
 | `--parity` | Add a disc-wide parity run over all data columns of all runs. Phase 3. |
 
-Exit: 0 on success, 2 on failure, 4 when the disc is already closed or sealed.
+Exit: 0 on success, 1 on a failure at run time, 4 when the disc is already
+closed or sealed.
 
 ### 16.12 `verify` (Phase 1)
 
@@ -3012,9 +3024,10 @@ The current build does not have `--disc`, `--run`, `--mapfile`, `--level`,
 `--drive` and `--report` yet. It always reads every object back. `--heal`
 refuses a run that has no FEC.
 
-Exit: 0 clean, 1 repaired or degraded, 2 unrecoverable loss, 3 disc missing.
-In the current build: 0 clean; 1 when the check or the heal failed, or when
-the repository does not know the disc; 2 on a usage error or a refused option.
+Exit: 0 clean. 1 on a failure at run time: the check or the heal failed, or
+the repository does not know the disc. 2 for a usage error or a refused
+option. Design also reserves 3 for a missing disc, once `--disc` and
+`--run` select a disc this build does not yet read on its own.
 
 ### 16.13 `scrub` (Phase 1)
 
@@ -3048,8 +3061,9 @@ Prints the health report of section 13.5.
 | `--library` | Report the per-library fields. |
 | `--object` | Report the per-object fields for this content id. |
 
-Exit: 0 when every disc is healthy, 1 when any disc is degraded, 2 when any
-disc is failed.
+Exit: 0 when every disc is healthy, 1 when any disc is degraded, 3 when any
+disc is failed. Code 2 stays free for a usage error under this build's
+convention.
 
 ### 16.15 `plan` (Phase 1)
 
@@ -3076,12 +3090,12 @@ label, objects and bytes to read.
 
 The current build does not have `--target`, `--drives` and `--score` yet.
 
-Exit: 0 when the plan accounts for every object; 1 when the plan holds at least
-one probable object; 3 when a required disc is missing from the inventory or a
-filter negative proves an object absent from every run. In the current build:
-1 on a failure at run time; 2 on a usage error, or when one file alone needs
-more staging than the budget; 3 when the cache is incomplete for the snapshot,
-or when an object has no run that the cache knows.
+Exit: 0 when the plan accounts for every object. 1 on a failure at run time;
+design also reserves 1 for a plan that holds at least one probable object,
+once filter negatives exist. 2 for a usage error, or when one file alone
+needs more staging than the budget. 3 when the cache is incomplete for the
+snapshot, when an object has no run the cache knows, or, once filter
+negatives exist, when one proves an object absent from every run.
 
 ### 16.16 `restore` (Phase 1)
 
@@ -3146,11 +3160,12 @@ The current build does not have `--drives`, `--no-owner`, `--no-flags`,
 `--report`, `--report-replay` and `--strict-unstable` yet. It refuses
 `--no-xattr`, `--no-acl` and `--translate-acl` by name as Phase 2 options.
 
-Exit: 0 all applied, 1 data restored with metadata loss, 2 data restore failed,
-3 a required disc is missing. In the current build: 1 also when `restore` left
-an existing path alone, and on a failure at run time; 2 on a usage error or a
-refused option; 3 when a required disc is not among the given discs, with each
-missing disc named by uuid.
+Exit: 0 when everything applied. 1 on a failure at run time, also when
+`restore` left an existing path alone without `--overwrite`, or, once that
+reporting exists, when metadata restored with loss. 2 for a usage error or a
+refused option. 3 when a required disc is missing: not among the given
+discs, or absent from the cache the disc-swap mode reads through; `restore`
+names the missing disc by uuid.
 
 ### 16.17 `rebuild-cache` (Phase 1)
 
@@ -3183,10 +3198,10 @@ line for each such disc.
 In the current build, `--from-disc` is mandatory, `--level` accepts 1 only, and
 `--snapshot` has no effect.
 
-Exit: 0 on success, 1 when the rebuild is partial, 3 when a needed disc is
-missing. In the current build: 1 also on a failure at run time, and when the
-given discs do not share one `repo_uuid`; 2 on a usage error; 3 when no usable
-disc was given.
+Exit: 0 on success. 1 on a failure at run time, also when the rebuild is
+partial, or when the given discs do not share one `repo_uuid`. 2 on a usage
+error. 3 when no usable disc was given, or, once needed, when a required disc
+is missing.
 
 ### 16.18 `consolidate` (Phase 3)
 
@@ -3201,7 +3216,7 @@ Packs a fresh, self-contained disc set for a snapshot (section 8.7).
 | `--snapshot` | The snapshot to consolidate. |
 | `--media` | Media type for the new set. |
 
-Exit: 0 on success, 2 on failure.
+Exit: 0 on success, 1 on a failure at run time.
 
 ### 16.19 `reindex` (Phase 3)
 
@@ -3217,7 +3232,8 @@ Builds the optional cross-algorithm side table of section 3.6.
 | `--disc` | Read this disc. Repeatable. |
 | `--all` | Read every disc. |
 
-Exit: 0 on success, 1 when some discs were not available, 2 on failure.
+Exit: 0 on success, 1 on a failure at run time, also when some discs were
+not available.
 
 ### 16.20 `gc` (Phase 1)
 
@@ -3241,9 +3257,13 @@ is not in the local cache.
 | `--force-after` | Shorten the retention for this run only. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 | `--yes` | Skip the confirmation of `--force-after`, for a script. Without `--yes`, `gc --force-after` refuses when standard input is not a terminal. |
 
-Exit: 0 on success, and always for `--dry-run`; 1 when nothing was eligible;
-2 on failure, on a usage error, and when the confirmation was refused or not
-possible.
+Exit: 0 on success, and always for `--dry-run`. 1 when nothing was eligible.
+2 on any other failure at run time, on a usage error, and when the
+`--force-after` confirmation was refused or not possible. `gc` is the one
+command that departs from the shared convention of section 19: it uses code
+2 for a run-time failure instead of code 1, and reserves code 1 for the
+"nothing was eligible" outcome, so a script can tell that apart from a real
+failure without parsing output.
 
 ### 16.21 `ls` (Phase 1)
 
@@ -3272,9 +3292,9 @@ An `UNSTABLE` entry is marked with `!` in the first column, and with
 `"unstable": true` under `--json`. Every other line has a space in the first
 column.
 
-Exit: 0 on success, 3 when a needed tree object is unavailable: the cache is
-incomplete for the snapshot, or a required disc was not given. In the current
-build: 1 on a failure at run time, 2 on a usage error.
+Exit: 0 on success. 1 on a failure at run time. 2 on a usage error. 3 when a
+needed tree object is unavailable: the cache is incomplete for the snapshot,
+or a required disc was not given.
 
 ### 16.22 `log` (Phase 1)
 
@@ -3299,8 +3319,8 @@ or a `SNAPSHOT`, it prints the details of that one snapshot. The disc rules of
 | `--json` | Print JSON. |
 | `--limit` | Print at most N entries. 0 means no limit. |
 
-Exit: 0 on success. In the current build: 1 on a failure at run time, 2 on a
-usage error, 3 when the cache is incomplete or a required disc was not given.
+Exit: 0 on success. 1 on a failure at run time. 2 on a usage error. 3 when
+the cache is incomplete for the snapshot, or a required disc was not given.
 
 ### 16.23 `disc` (Phase 1)
 
@@ -3352,9 +3372,9 @@ so every disc lifecycle state that needs one is reachable from the CLI.
 The current build does not have `disc label` and `disc mark-degraded` yet,
 because it keeps no `notes.bin`. It refuses each by name with exit code 2.
 
-Exit: 0 on success, 3 when the uuid is unknown. In the current build: 1 on a
-failure at run time, and when `burned --undo` names a verified disc; 2 on a
-usage error, and when a `DISC` matches no disc or more than one disc.
+Exit: 0 on success. 1 on a failure at run time, also when `burned --undo`
+names a disc that already has a CLEAN object. 2 for a usage error, a refused
+option, or when a `DISC` argument matches no disc or more than one disc.
 
 ### 16.24 `image` (Phase 1)
 
@@ -3388,9 +3408,9 @@ prints the exact `sudo noahsark image build ...` line to run. It prints
 The current build does not have `image build --run`, `image diff` and
 `image mount` yet. It refuses each by name with exit code 2.
 
-Exit: 0 on success, 2 on failure. In the current build: 1 on a failure at run
-time, and when `image build` is not root; 2 on a usage error, a refused
-option, or an existing `--out` without `--force`.
+Exit: 0 on success. 1 on a failure at run time, also when `image build` is
+not root. 2 for a usage error, a refused option, or an existing `--out`
+without `--force`.
 
 ---
 
@@ -3657,15 +3677,16 @@ Common exit codes:
 | Code | Meaning |
 |---:|---|
 | 0 | Success. |
-| 1 | Success with a warning, or partial success. |
-| 2 | Failure. |
-| 3 | A required disc or file is missing. |
+| 1 | A failure at run time, or a partial success that still needs the operator's attention. |
+| 2 | A usage error: a bad option, a bad argument, or a command or option not in this build. |
+| 3 | A required disc or object is missing. |
 | 4 | A precondition failed, for example an unpatched burner. |
 
-The current build differs for the commands that it has, except `gc`. Code 1 is
-also a failure at run time. Code 2 is a usage error, a refused option, or a
-refused command. The exit line of each command in the CLI reference gives the
-codes of the current build.
+Every command follows this convention, with one exception: `gc` uses code 2
+for an ordinary failure at run time and keeps code 1 for its own "nothing was
+eligible" outcome, so a script can tell that apart from a real failure
+without parsing output (16.20 gives the reason). The exit line of each
+command in the CLI reference gives its own codes under this convention.
 
 Command-specific meanings that narrow the common set:
 
@@ -3674,20 +3695,25 @@ Command-specific meanings that narrow the common set:
 | `init` | 2 | The directory already holds a repository, or `--repo-uuid` was given with neither sequence form. |
 | `commit` | 1 | Some files could not be read, or were unstable. |
 | `pack` | 1 | The run is smaller than requested, or a trigger was not met. Objects that stay STAGED after the run, and nothing STAGED at all, are this case. |
-| `pack` | 4 | A forced capacity conflicts with the recorded value. |
-| `append` | 4 | The disc is closed. |
-| `burn` | 3 | The expected disc is not in the drive. |
-| `burn` | 4 | The burner version is unknown or unpatched, or `--exec` ran on a platform other than Linux. |
-| `close` | 4 | The disc is already closed or sealed. |
-| `verify`, `scrub` | 1, 2 | Repaired or degraded; unrecoverable loss. |
-| `health` | 1, 2 | Any disc is degraded; any disc is failed. |
-| `plan` | 1, 3 | The plan holds at least one probable object; a required disc is missing, or a filter negative proves an object absent from every run. |
-| `restore` | 1, 2, 3 | Data restored with metadata loss, or an existing path left alone without `--overwrite`; data restore failed; a required disc is missing. |
+| `pack`, `append` | 4 | Design only, not yet built: a forced capacity conflicts with a disc's recorded value (`pack`); the disc is closed (`append`). |
+| `burn` | 1 | Design only, not yet built: the burn failed. |
+| `burn` | 3 | Design only, not yet built: the expected disc is not in the drive. |
+| `burn` | 4 | Design only, not yet built: the burner version is unknown or unpatched, or `--exec` ran on a platform other than Linux. |
+| `close` | 4 | Design only, not yet built: the disc is already closed or sealed. |
+| `verify` | 1 | The check or the heal failed, or the repository does not know the disc. |
+| `verify` | 3 | Design only, not yet built: a selected disc is missing. |
+| `health` | 1, 3 | Design only, not yet built: any disc is degraded (1); any disc is failed (3, since 2 is a usage error under this convention). |
+| `plan` | 1 | On a failure at run time; design also reserves 1 for a plan that holds at least one probable object, once filter negatives exist. |
+| `plan`, `ls`, `log`, `disc` | 3 | A required object is missing: the cache is incomplete for the snapshot, an object has no run the cache knows, or a required disc was not given. |
+| `restore` | 1 | Data restore failed at run time, an existing path was left alone without `--overwrite`, or, once that reporting exists, metadata restored with loss. |
+| `restore` | 3 | A required disc is missing, named by uuid. |
+| `rebuild-cache` | 3 | No usable disc was given. |
 | `rebuild-cache`, `reindex`, `sync` | 1 | The rebuild is partial; some discs were not available; some paths could not be listed. |
-| `import` | 1, 2 | Some objects were already present; a verification failure or a repository uuid mismatch. |
+| `import` | 1 | Some objects were already present, or a verification failure. |
+| `import` | 2 | The bundle's repository uuid does not match this repository. |
 | `gc` | 1 | Nothing was eligible. `gc --dry-run` always exits with code 0. |
-| `ls` | 3 | A needed tree object is unavailable. |
-| `disc` | 3 | The uuid is unknown. |
+| `gc` | 2 | Any other failure at run time, a usage error, or the `--force-after` confirmation refused or not possible. |
+| `disc` | 2 | A `DISC` argument matches no disc, or more than one disc. |
 
 Section 15.8 gives the restore metadata exit codes, which are the same set.
 
