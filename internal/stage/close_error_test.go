@@ -157,3 +157,109 @@ func TestMarkCleanSurfacesCloseError(t *testing.T) {
 		t.Fatal("a clean time whose Close failed must not be recorded")
 	}
 }
+
+// syncRecorder wraps a real *os.File and records the order in which its
+// Sync and Close run, so a test can prove a durable append flushes
+// before it closes. syncErr, when set, stands in for a disc that
+// refuses the flush.
+type syncRecorder struct {
+	*os.File
+	calls   *[]string
+	syncErr error
+}
+
+var errInjectedSync = errors.New("injected sync failure")
+
+func (f *syncRecorder) Sync() error {
+	*f.calls = append(*f.calls, "sync")
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.File.Sync()
+}
+
+func (f *syncRecorder) Close() error {
+	*f.calls = append(*f.calls, "close")
+	return f.File.Close()
+}
+
+// withSyncRecorder replaces openAppend so every appended record's file
+// records its own Sync and Close calls, and returns the call log.
+func withSyncRecorder(t *testing.T, syncErr error) *[]string {
+	t.Helper()
+	calls := new([]string)
+	orig := openAppend
+	openAppend = func(path string) (appendCloser, error) {
+		f, err := orig(path)
+		if err != nil {
+			return nil, err
+		}
+		osFile, ok := f.(*os.File)
+		if !ok {
+			t.Fatalf("openAppend returned a %T, want *os.File", f)
+		}
+		return &syncRecorder{File: osFile, calls: calls, syncErr: syncErr}, nil
+	}
+	t.Cleanup(func() { openAppend = orig })
+	return calls
+}
+
+// TestMarkGCEligibleSyncsBeforeClose checks the durable append: gc
+// removes a staged file right after this record, so the record must
+// reach the disc before the file goes away.
+func TestMarkGCEligibleSyncsBeforeClose(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("gc-me"))
+
+	calls := withSyncRecorder(t, nil)
+	if err := l.MarkGCEligible(id); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(*calls, ","); got != "sync,close" {
+		t.Fatalf("MarkGCEligible calls = %q, want \"sync,close\"", got)
+	}
+}
+
+// TestMarkGCEligibleSurfacesSyncError checks that a failed flush is
+// returned, not swallowed: gc must not delete bytes whose record never
+// reached the disc.
+func TestMarkGCEligibleSurfacesSyncError(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("gc-me"))
+
+	withSyncRecorder(t, errInjectedSync)
+	if err := l.MarkGCEligible(id); !errors.Is(err, errInjectedSync) {
+		t.Fatalf("MarkGCEligible error = %v, want it to wrap %v", err, errInjectedSync)
+	}
+	if _, ok := l.Get(id); ok {
+		t.Fatal("a record whose Sync failed must not appear in the log")
+	}
+}
+
+// TestCommitAppendDoesNotSync holds the other side of the rule: commit
+// writes one record per object, so the ordinary append must stay a
+// plain write and close. Only the record gc writes before a delete is
+// durable.
+func TestCommitAppendDoesNotSync(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := withSyncRecorder(t, nil)
+	if err := l.EnsureStaged(object.ComputeID([]byte("staged"))); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(*calls, ","); got != "close" {
+		t.Fatalf("EnsureStaged calls = %q, want \"close\"", got)
+	}
+}

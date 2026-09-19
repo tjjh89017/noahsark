@@ -436,13 +436,15 @@ func (l *Log) MarkBurnUndone(id object.ID) error {
 
 // MarkGCEligible appends a GCEligible record for id, carrying forward
 // its current run and disc. gc calls this once an object has stayed
-// Clean for at least staging.retain_after_clean.
+// Clean for at least staging.retain_after_clean, and then deletes the
+// object's staging file. The record is therefore written durably: it
+// must be on the disc before the bytes it accounts for go away.
 func (l *Log) MarkGCEligible(id object.ID) error {
 	rec := l.current[id]
 	rec.ContentID = id
 	rec.State = GCEligible
 	rec.Reason = ReasonNormal
-	return l.append(rec)
+	return l.appendRecord(rec, true)
 }
 
 // MarkDeleted appends a Deleted record for id, carrying forward its
@@ -583,9 +585,11 @@ func (l *Log) loadFedDiscs() error {
 }
 
 // appendCloser is the file-like value openAppend returns: enough to
-// write one record and close it. *os.File satisfies it.
+// write one record, flush it to stable storage and close it. *os.File
+// satisfies it.
 type appendCloser interface {
 	io.Writer
+	Sync() error
 	Close() error
 }
 
@@ -599,26 +603,49 @@ var openAppend = func(path string) (appendCloser, error) {
 	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 }
 
-// writeRecord appends buf to path and reports whether it is durably
-// written. A record is not durable until Close succeeds: a buffered
-// write can still be sitting in memory when Write returns, so every one
-// of state.db's four appenders (append, recordCleanTime, RecordBurnTime,
-// RecordFedDisc) goes through this one helper, and none of them may
-// treat a record as written, or update its own in-memory state, until
-// writeRecord itself returns nil. gc deletes a staged object's bytes
-// only after its DELETED record is durable; a swallowed Close error
-// would let it delete bytes a crash could still lose the record of.
+// writeRecord appends buf to path and reports whether it reached the
+// operating system. A record is not written until Close succeeds: a
+// buffered write can still be sitting in memory when Write returns, so
+// every one of state.db's four appenders (append, recordCleanTime,
+// RecordBurnTime, RecordFedDisc) goes through this one helper, and none
+// of them may treat a record as written, or update its own in-memory
+// state, until writeRecord itself returns nil.
+//
+// It does not flush the record to the disc. Commit writes one record
+// per object, and a sync per object would dominate its cost; a lost
+// tail there only replays as an object still STAGED, which the next
+// pack heals. A caller that is about to destroy what the record
+// describes must use writeRecordDurable instead.
 func writeRecord(path string, buf []byte) error {
+	return writeRecordTo(path, buf, false)
+}
+
+// writeRecordDurable is writeRecord, plus a flush to stable storage
+// before the close. gc deletes a staged object's bytes only after its
+// GC-ELIGIBLE record is durable: without the flush, a crash could take
+// the record away and leave the bytes gone, an object the log still
+// calls CLEAN with nothing behind it.
+func writeRecordDurable(path string, buf []byte) error {
+	return writeRecordTo(path, buf, true)
+}
+
+func writeRecordTo(path string, buf []byte, durable bool) error {
 	f, err := openAppend(path)
 	if err != nil {
 		return fmt.Errorf("stage: %w", err)
 	}
 	_, writeErr := f.Write(buf)
-	closeErr := f.Close()
-	if writeErr != nil {
-		return fmt.Errorf("stage: %w", writeErr)
+	var syncErr error
+	if durable && writeErr == nil {
+		syncErr = f.Sync()
 	}
-	if closeErr != nil {
+	closeErr := f.Close()
+	switch {
+	case writeErr != nil:
+		return fmt.Errorf("stage: %w", writeErr)
+	case syncErr != nil:
+		return fmt.Errorf("stage: %w", syncErr)
+	case closeErr != nil:
 		return fmt.Errorf("stage: %w", closeErr)
 	}
 	return nil
@@ -626,6 +653,13 @@ func writeRecord(path string, buf []byte) error {
 
 // append writes one record to state.db and updates the replayed state.
 func (l *Log) append(rec Record) error {
+	return l.appendRecord(rec, false)
+}
+
+// appendRecord writes one record to state.db and updates the replayed
+// state. A durable record is flushed to the disc before it counts as
+// written.
+func (l *Log) appendRecord(rec Record, durable bool) error {
 	if err := fixTornTail(l.path, &l.stateTail); err != nil {
 		return err
 	}
@@ -634,7 +668,11 @@ func (l *Log) append(rec Record) error {
 	buf := make([]byte, recordLen)
 	rec.encode(buf)
 
-	if err := writeRecord(l.path, buf); err != nil {
+	write := writeRecord
+	if durable {
+		write = writeRecordDurable
+	}
+	if err := write(l.path, buf); err != nil {
 		return err
 	}
 
