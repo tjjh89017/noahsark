@@ -56,6 +56,9 @@ type repoConfig struct {
 	// RetainAfterClean is staging.retain_after_clean: how long an
 	// object stays CLEAN before gc may move it to GC-ELIGIBLE.
 	RetainAfterClean time.Duration
+	// LockTimeout is repo.lock_timeout: how long a command waits for
+	// the repository lock before it gives up. 0 means fail at once.
+	LockTimeout time.Duration
 }
 
 // laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
@@ -100,6 +103,7 @@ var knownConfigKeys = map[string]bool{
 	"cache.snapshot_depth":       true,
 	"restore.staging_budget":     true,
 	"staging.retain_after_clean": true,
+	"repo.lock_timeout":          true,
 }
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
@@ -248,6 +252,15 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: staging.retain_after_clean: %w", err)
 			}
 			c.RetainAfterClean = d
+		case "repo.lock_timeout":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: repo.lock_timeout: %w", err)
+			}
+			if n < 0 {
+				return repoConfig{}, fmt.Errorf("config: repo.lock_timeout: must not be negative")
+			}
+			c.LockTimeout = time.Duration(n) * time.Second
 		}
 	}
 	if err := sc.Err(); err != nil {

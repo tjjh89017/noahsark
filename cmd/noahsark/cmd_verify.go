@@ -88,14 +88,30 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 
 	rr, verifyErr := image.ReadWithProgress(target, prog)
 
+	// verify takes the repository lock only when --repo resolves: with no
+	// --repo, verify never touches any repository's state, so there is
+	// nothing to lock, the same way "image build" and a --repo-less "ls"
+	// or "log" touch no repository.
 	var trailingHint string
 	if repoDir, err := discoverRepo(*repoFlag); err == nil {
+		cfg, cfgErr := readConfig(configPath(repoDir))
+		if cfgErr != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", cfgErr)
+			return 1
+		}
+		lk, code, ok := lockExclusive("verify", repoDir, cfg.LockTimeout, stderr)
+		if !ok {
+			return code
+		}
+
 		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, stdout, stderr)
 		if notInRepo {
+			releaseLock(lk)
 			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark rebuild-cache --from-disc --disc=%s to add it\n",
 				uuidText(ident.DiscUUID), ident.Label, repoDir, target)
 			return 1
 		}
+		releaseLock(lk)
 		trailingHint = hint
 	}
 
@@ -205,6 +221,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return "", false
 	}
+	warnIfTruncated("verify", stageLog, stderr)
 
 	if verifyErr != nil {
 		n := markVerifyFailed(stageLog, ident.DiscUUID, ident.RunSeq)

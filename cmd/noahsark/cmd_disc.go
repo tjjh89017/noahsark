@@ -91,6 +91,12 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 		return 2
 	}
+	lk, code, ok := lockExclusive("disc burned", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
@@ -106,6 +112,7 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 		return 1
 	}
+	warnIfTruncated("disc burned", stageLog, stderr)
 
 	for _, arg := range fs.Args() {
 		discUUID, err := resolveDiscArg(ledger.Rows, arg)
@@ -238,6 +245,13 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
 		return 2
 	}
+
+	lk, code, ok := lockShared("disc list", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
@@ -254,6 +268,7 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
 		return 1
 	}
+	warnIfTruncated("disc list", stageLog, stderr)
 	onDiscByDisc := stageLog.OnDiscCountByDisc()
 	packedByDisc := stageLog.PackedCountByDisc()
 	cleanByDisc := stageLog.CleanCountByDisc()

@@ -117,6 +117,12 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
+	lk, code, ok := lockExclusive("pack", repoDir, cfg.LockTimeout, stderr)
+	if !ok {
+		return code
+	}
+	defer releaseLock(lk)
+
 	if *capacityStr == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity")
 		return 2
@@ -221,6 +227,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
+	warnIfTruncated("pack", stageLog, stderr)
 
 	fecEnabled := cfg.FECEnabled
 	if *fecOn {

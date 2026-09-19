@@ -962,3 +962,45 @@ killed session reports `resumed: N file(s) already restored` and exits
 skipped and keeps the exit-1, `--overwrite`-to-replace behavior. Once
 every file is written and the run finishes, the now-empty
 `staging/restore/<snapshot-id>/` directory is removed.
+
+## 6. Concurrency and locking
+
+`internal/repolock` implements the repository lock: `flock` on
+`<repo>/lock`, exclusive or shared, non-blocking, retried until
+`repo.lock_timeout` passes (default 0, so a command fails at once). It
+never treats the lock file's existence as the lock; the file only
+carries the exclusive holder's pid, for the failure message, and is
+never removed, so a competing `open` always locks the same inode. A
+command that cannot get its lock prints
+`repository lock <path> is held by pid <PID>; wait for the other
+noahsark command to end` and exits 2, matching OPERATIONS.md's rule.
+
+Every state-writing command this build has takes the exclusive lock
+before it opens the state log: `init` (on the directory it just
+created), `commit`, `pack`, `gc` (`--dry-run` included, since it still
+replays the log to report what it would delete), `disc burned`,
+`rebuild-cache` and `restore`'s single-drive disc-swap mode. `verify`
+takes it only when `--repo` resolves to a repository; with no `--repo`
+it never touches any repository's state, the same reasoning that
+already applies to `image build`, and to `ls` and `log` reading
+straight from a disc instead of the cache. `plan`, `ls`, `log` and
+`disc list` take the shared lock, matching the read-only list
+OPERATIONS.md names; none of them ever reaches an appender
+(`internal/stage`'s `append`, `recordCleanTime`, `RecordBurnTime` or
+`RecordFedDisc`), so a shared lock is enough to keep them safe.
+
+`rebuild-cache` is on OPERATIONS.md's shared-lock list, alongside its
+own exclusive lock on the cache directory. This build takes the
+exclusive repository lock for it instead: it writes the state log
+(`EnsurePacked`, `RecordFedDisc`) and the disc and ref ledgers, and this
+build has no cache lock, so the repository lock is the only lock it has
+to keep those writes safe against a concurrent reader (`plan`, `ls`,
+`log`, `disc list`) or another writer (a second `rebuild-cache`, or
+`commit`, `pack`, `gc`, `disc burned`). `internal/stage`'s
+`fixTornTail`, which cuts off a torn tail before the first append to a
+file, assumes every append happens under the exclusive lock; a shared
+`rebuild-cache` would break that assumption by truncating and appending
+while another command replays the same file. `restore`'s
+all-discs-at-once mode never resolves a repository at all in this
+build, so it takes no lock, the same as `verify` and `image build` with
+no `--repo`.
