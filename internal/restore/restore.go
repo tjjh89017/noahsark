@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -37,6 +38,29 @@ type writePolicy struct {
 	overwrite bool
 	resumed   int
 	skipped   int
+	// unsupported holds every entry whose type this build does not
+	// restore, such as a device node, a FIFO or a socket.
+	unsupported   []UnsupportedEntry
+	onUnsupported func(path string, entryType uint8)
+}
+
+// UnsupportedEntry is one entry a restore did not write, because this
+// build does not restore its entry type.
+type UnsupportedEntry struct {
+	Path      string
+	EntryType uint8
+}
+
+// recordUnsupported notes one entry this build does not restore. The
+// walk continues, so every later entry still reaches its path.
+func (wp *writePolicy) recordUnsupported(path string, entryType uint8) {
+	if wp == nil {
+		return
+	}
+	wp.unsupported = append(wp.unsupported, UnsupportedEntry{Path: path, EntryType: entryType})
+	if wp.onUnsupported != nil {
+		wp.onUnsupported(path, entryType)
+	}
 }
 
 // existingFileStatus is the one decision every restore mode uses for a
@@ -126,7 +150,7 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 	prog.Start("restore: bytes written", int64(total))
 	defer prog.Done()
 
-	wp := &writePolicy{overwrite: o.overwrite}
+	wp := &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported}
 	for _, e := range rootTree.Entries {
 		if err := restoreRootEntry(base, absOut, e, prog, cache, fs, wp); err != nil {
 			return wp.resumed, wp.skipped, err
@@ -228,11 +252,8 @@ func restoreRootEntry(base, outDir string, e format.TreeEntry, prog *progress.Re
 	if !include {
 		return nil
 	}
-	dest, err := joinSafe(outDir, rootPath)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	dest, ok, err := ensureDir(outDir, splitPath(rootPath), wp)
+	if err != nil || !ok {
 		return err
 	}
 	if err := restoreDirContents(base, object.ID(e.ContentID), dest, prog, cache, childFS, wp); err != nil {
@@ -276,13 +297,14 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 	}
 	switch e.EntryType {
 	case format.EntryTypeDirectory:
-		if err := os.MkdirAll(child, 0o755); err != nil {
+		sub, ok, err := ensureDir(dir, []string{name}, wp)
+		if err != nil || !ok {
 			return err
 		}
-		if err := restoreDirContents(base, object.ID(e.ContentID), child, prog, cache, fs, wp); err != nil {
+		if err := restoreDirContents(base, object.ID(e.ContentID), sub, prog, cache, fs, wp); err != nil {
 			return err
 		}
-		applyMetadata(child, e)
+		applyMetadata(sub, e)
 		return nil
 	case format.EntryTypeRegular:
 		skipped, err := restoreFile(base, child, object.ID(e.ContentID), e, prog, cache, wp)
@@ -297,21 +319,14 @@ func restoreEntry(base, dir string, e format.TreeEntry, prog *progress.Reporter,
 		applyMetadata(child, e)
 		return nil
 	case format.EntryTypeSymlink:
-		target := ""
-		for _, t := range e.TLVs {
-			if t.Type == format.TLVTypeSymlinkTarget {
-				target = string(t.Payload)
-			}
-		}
-		if target == "" {
-			return fmt.Errorf("symlink %q has no target TLV", name)
-		}
-		if err := os.RemoveAll(child); err != nil {
+		target, err := symlinkTarget(e)
+		if err != nil {
 			return err
 		}
-		return os.Symlink(target, child)
+		return restoreSymlink(child, target, wp)
 	default:
-		return fmt.Errorf("entry %q: entry type %d is not restored", name, e.EntryType)
+		wp.recordUnsupported(child, e.EntryType)
+		return nil
 	}
 }
 
@@ -340,23 +355,15 @@ func restoreFile(base, dest string, blobID object.ID, e format.TreeEntry, prog *
 	if skipped {
 		return true, nil
 	}
-	defer func() { _ = f.Close() }()
 
-	for _, be := range entries {
-		_, payload, err := readVerified(base, object.ID(be.ContentID), false, cache)
+	_, err = writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
+		_, payload, err := readVerified(base, id, false, cache)
 		if err != nil {
-			return false, err
+			return nil, false, err
 		}
-		if uint64(len(payload)) != be.Length {
-			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d",
-				object.ID(be.ContentID).TextForm(), len(payload), be.Length)
-		}
-		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
-			return false, err
-		}
-		prog.Add(int64(len(payload)))
-	}
-	return false, nil
+		return payload, true, nil
+	})
+	return false, err
 }
 
 // openForWrite creates dest for a restore write, following the path
@@ -380,7 +387,7 @@ func openForWrite(dest string, e format.TreeEntry, entries []format.BlobEntry, w
 		}
 		return nil, true, nil
 	}
-	f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
 		if os.IsExist(err) {
 			// Raced with something else creating dest since the check
