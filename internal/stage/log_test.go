@@ -275,6 +275,101 @@ func TestTruncatedTailStopsReplay(t *testing.T) {
 	if _, ok := l2.Get(id2); ok {
 		t.Fatal("id2's record was corrupted and must not replay")
 	}
+
+	// Bug 3: Open must expose that the tail was truncated, and by how
+	// much, so every command that opens the log can report it.
+	truncated, ignored := l2.Truncated()
+	if !truncated {
+		t.Fatal("Truncated() = false, want true after a corrupted trailing record")
+	}
+	if ignored != recordLen {
+		t.Fatalf("Truncated() ignored %d byte(s), want %d (one whole record)", ignored, recordLen)
+	}
+}
+
+// TestTruncatedTailReportsNoTruncationOnCleanLog checks that Truncated
+// reports false when nothing is torn, so the warning never fires on an
+// ordinary, healthy log.
+func TestTruncatedTailReportsNoTruncationOnCleanLog(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("ok"))
+	if err := l.EnsureStaged(id); err != nil {
+		t.Fatal(err)
+	}
+
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated, ignored := l2.Truncated(); truncated || ignored != 0 {
+		t.Fatalf("Truncated() = (%v, %d), want (false, 0) on a healthy log", truncated, ignored)
+	}
+}
+
+// TestAppendAfterTornTailStaysReachable checks the append-after-torn-tail
+// hazard bug 3 also covers: a record appended after Open found a torn
+// tail must still be reachable by a later replay, not stranded behind
+// garbage replay stops at and never gets past.
+func TestAppendAfterTornTailStaysReachable(t *testing.T) {
+	dir := t.TempDir()
+	id1 := object.ComputeID([]byte("one"))
+	id2 := object.ComputeID([]byte("two"))
+	id3 := object.ComputeID([]byte("three"))
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(id1); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(id2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the last record's CRC, simulating a crash during an
+	// append, exactly as TestTruncatedTailStopsReplay does.
+	path := filepath.Join(dir, stateFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)-1] ^= 0xFF
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Open again, as a command would, and append a new record. Without
+	// bug 3's fix, this new record lands after the torn one, where no
+	// replay can ever reach it.
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l2.EnsureStaged(id3); err != nil {
+		t.Fatal(err)
+	}
+
+	l3, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := l3.Get(id1); !ok {
+		t.Fatal("id1 should still replay")
+	}
+	if _, ok := l3.Get(id2); ok {
+		t.Fatal("id2's record was corrupted and must not replay")
+	}
+	if _, ok := l3.Get(id3); !ok {
+		t.Fatal("id3 was appended after the torn tail and must still replay")
+	}
+	if truncated, _ := l3.Truncated(); truncated {
+		t.Fatal("Truncated() = true after the torn tail was cut off and a good record appended")
+	}
 }
 
 func TestIDsInState(t *testing.T) {
