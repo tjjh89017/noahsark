@@ -6,8 +6,127 @@ on:
   pull_request:
 
 jobs:
+  # Decides once whether this push or pull request touches anything but
+  # Markdown, docs/**, or LICENSE. Lint, Test, and the e2e matrix read
+  # its output and skip themselves for a docs-only change, so a
+  # documentation pull request does not wait 30 to 40 minutes for tests
+  # that cannot be affected.
+  decide:
+    name: Decide
+    runs-on: ubuntu-latest
+    outputs:
+      code_changed: ${{ steps.diff.outputs.code_changed }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether code changed
+        id: diff
+        shell: bash
+        run: |
+          # Default to "code changed" so any range we cannot compute
+          # (first push, force push, missing base) runs the full suite.
+          code_changed=true
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            diff_range="$base...$head"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.event.after }}"
+            diff_range="$base..$head"
+            case "$base" in
+              ""|0000000000000000000000000000000000000000)
+                diff_range=""
+                ;;
+            esac
+          fi
+
+          changed_files=""
+          if [ -n "$diff_range" ] && changed_files="$(git diff --name-only "$diff_range" 2>/dev/null)"; then
+            docs_only=true
+            while IFS= read -r path; do
+              [ -z "$path" ] && continue
+              case "$path" in
+                *.md|docs/*|LICENSE) ;;
+                *) docs_only=false ;;
+              esac
+            done <<< "$changed_files"
+            if [ "$docs_only" = "true" ]; then
+              code_changed=false
+            fi
+          fi
+
+          echo "Changed files:"
+          echo "${changed_files:-<diff unavailable, treating as code changed>}"
+          echo "code_changed=$code_changed"
+          echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
+
+  # Fast check for a documentation pull request: fails on a relative
+  # Markdown link whose target file does not exist. Ignores http(s)
+  # links and pure #anchor links. Runs on every pull request regardless
+  # of decide's output, so a docs-only change still gets a useful,
+  # seconds-long check instead of waiting on nothing.
+  docs-link-check:
+    name: Docs link check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check relative Markdown links
+        shell: python3 {0}
+        run: |
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(".")
+          files = []
+          for name in ["README.md", "CLAUDE.md", "OPERATIONS.md", "FORMAT.md", "NOTES.md"]:
+              p = root / name
+              if p.is_file():
+                  files.append(p)
+          docs_dir = root / "docs"
+          if docs_dir.is_dir():
+              files.extend(sorted(docs_dir.glob("*.md")))
+
+          link_re = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+          failures = []
+          for f in files:
+              text = f.read_text(encoding="utf-8", errors="replace")
+              for m in link_re.finditer(text):
+                  target = m.group(1).strip()
+                  if target.startswith("<") and target.endswith(">"):
+                      target = target[1:-1]
+                  if not target:
+                      continue
+                  if target.startswith(("http://", "https://", "mailto:")):
+                      continue
+                  if target.startswith("#"):
+                      continue
+                  path_part = target.split("#", 1)[0].strip()
+                  if not path_part:
+                      continue
+                  resolved = (f.parent / path_part).resolve()
+                  if not resolved.exists():
+                      failures.append(f"{f}: broken link '{target}' -> {resolved}")
+
+          if failures:
+              print("Broken relative Markdown links found:")
+              for line in failures:
+                  print(" -", line)
+              sys.exit(1)
+          print("No broken relative Markdown links found.")
+
   lint:
     name: Lint
+    needs: decide
+    if: needs.decide.outputs.code_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
@@ -23,6 +142,8 @@ jobs:
 
   unit:
     name: Test
+    needs: decide
+    if: needs.decide.outputs.code_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
@@ -46,8 +167,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     needs:
+      - decide
       - lint
       - unit
+    if: needs.decide.outputs.code_changed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -87,15 +210,22 @@ jobs:
           artifact-name: e2e-result-${{ matrix.slug }}
 
   # One stable check the branch ruleset can require in place of every
-  # e2e cell, so adding or dropping a cell never touches branch
-  # protection. e2e already needs lint and unit, so needing e2e alone
-  # covers all three. Downloads every e2e cell's result first and prints
-  # a summary table, so the run stays legible even when several cells
-  # failed, then evaluates e2e's result.
+  # e2e cell, lint, and unit, so adding or dropping a cell never touches
+  # branch protection. Always runs, so it can also gate a docs-only
+  # change where decide skipped lint, unit, and e2e on purpose. Passes
+  # when decide succeeded and each of lint, unit, e2e either succeeded
+  # or was skipped; fails on any failure, cancellation, or on decide
+  # itself failing (which leaves the others skipped for the wrong
+  # reason). Downloads every e2e cell's result first and prints a
+  # summary table, so the run stays legible even when several cells
+  # failed.
   e2e-required:
     name: E2E
     runs-on: ubuntu-latest
     needs:
+      - decide
+      - lint
+      - unit
       - e2e
     if: always()
     steps:
@@ -123,4 +253,24 @@ jobs:
           done
 
       - name: All required jobs passed
-        run: '[ "${{ needs.e2e.result }}" = "success" ]'
+        run: |
+          decide="${{ needs.decide.result }}"
+          lint="${{ needs.lint.result }}"
+          unit="${{ needs.unit.result }}"
+          e2e="${{ needs.e2e.result }}"
+          echo "decide=$decide lint=$lint unit=$unit e2e=$e2e"
+
+          if [ "$decide" != "success" ]; then
+            echo "decide did not succeed"
+            exit 1
+          fi
+
+          for result in "$lint" "$unit" "$e2e"; do
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "a required job did not pass: $result"
+                exit 1
+                ;;
+            esac
+          done
