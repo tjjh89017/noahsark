@@ -1064,3 +1064,25 @@ while another command replays the same file. `restore`'s
 all-discs-at-once mode never resolves a repository at all in this
 build, so it takes no lock, the same as `verify` and `image build` with
 no `--repo`.
+
+## 16. CLI reference, `init --next-run-seq`, `--next-disc-seq` and `--scan-discs`
+
+`pack` now takes the next `run_seq` and `disc_seq` from the disc
+ledger's highest recorded numbers, not from its row count, so a ledger
+`rebuild-cache` rebuilt with a gap (a disc known only through a
+sibling's DISCS table, never itself fed) cannot hand out a number a
+known disc already carries. This build still cannot know the numbers
+of a disc that both the repository and the disc itself are lost
+together: nothing surviving names it. `init --next-run-seq`,
+`--next-disc-seq` and `--scan-discs`, OPERATIONS.md's own answer to
+that case, are not in this build yet, matching "16. CLI reference"
+above. Instead, `rebuild-cache` warns on stderr, on every successful
+run, which disc it treats as the newest fed and which numbers the next
+`pack` assigns, so the operator can feed the true newest disc first
+and catch the gap before it is baked into a new run. `rebuild-cache`
+also refuses outright, before writing anything, when a disc it is fed
+would take a `run_seq` or `disc_seq` the ledger already has under a
+different disc uuid: the two discs' uuids differ even when their
+sequence numbers now collide, so the refusal cannot merge them by
+mistake, but nothing prevents the collision itself without the
+Backlog options above.

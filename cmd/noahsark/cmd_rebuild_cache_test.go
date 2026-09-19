@@ -571,3 +571,111 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 		t.Fatalf("the rebuilt repository's own staging/objects has %d file(s); the commit against --repo=%s leaked into it", rebuiltCount, lost)
 	}
 }
+
+// TestRebuildCacheWarnsSeqContinuesFromNewestFed asserts the stderr
+// warning rebuild-cache prints once it exits ok: it names the newest
+// disc actually fed, and the run_seq and disc_seq the next pack will
+// assign.
+func TestRebuildCacheWarnsSeqContinuesFromNewestFed(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=disc-one", "--out="+treeDir); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir)
+	if code != 0 {
+		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "disc-one") {
+		t.Fatalf("output %q does not name the fed disc's label", out)
+	}
+	if !strings.Contains(out, "run_seq 2, disc_seq 1") {
+		t.Fatalf("output %q does not state the next pack's numbers", out)
+	}
+	if !strings.Contains(out, "feed every disc") {
+		t.Fatalf("output %q does not tell the operator to feed every disc", out)
+	}
+}
+
+// TestRebuildCacheRefusesAReintroducedLostDisc packs two discs, loses
+// the repository together with the second (newer) disc, rebuilds from
+// the first disc alone, and packs a third disc: this repeats case A's
+// experiment and lands the third disc on the same run_seq and disc_seq
+// the lost second disc once had. It then feeds the lost second disc
+// back in and asserts rebuild-cache refuses, naming both disc uuids,
+// and leaves the ledger untouched, rather than silently letting two
+// discs share one sequence number.
+func TestRebuildCacheRefusesAReintroducedLostDisc(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	discOne := filepath.Join(work, "disc-one")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=one", "--out="+discOne); code != 0 {
+		t.Fatalf("pack 1: exit %d: %s", code, out)
+	}
+
+	src2 := writeFixtureSource(t)
+	if code, out := runCmd(t, "commit", "--repo="+repo, src2); code != 0 {
+		t.Fatalf("commit 2: exit %d: %s", code, out)
+	}
+	discTwoLost := filepath.Join(work, "disc-two-lost")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=two", "--out="+discTwoLost); code != 0 {
+		t.Fatalf("pack 2: exit %d: %s", code, out)
+	}
+
+	// Lose the repository and the second disc; only the first survives.
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discOne); code != 0 {
+		t.Fatalf("rebuild-cache (disc one only): exit %d: %s", code, out)
+	}
+
+	src3 := writeFixtureSource(t)
+	if code, out := runCmd(t, "commit", "--repo="+repo, src3); code != 0 {
+		t.Fatalf("commit 3: exit %d: %s", code, out)
+	}
+	discThree := filepath.Join(work, "disc-three")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=three", "--out="+discThree); code != 0 {
+		t.Fatalf("pack 3: exit %d: %s", code, out)
+	}
+
+	if got := discListUUIDCount(t, repo); got != 2 {
+		t.Fatalf("discs known before the reintroduced disc = %d, want 2", got)
+	}
+
+	// The "lost" second disc turns up after all. Feeding it now must be
+	// refused: its run_seq and disc_seq are already the third disc's.
+	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discTwoLost)
+	if code != 1 {
+		t.Fatalf("rebuild-cache (reintroduced disc two): exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "share a sequence number") {
+		t.Fatalf("output %q does not refuse over a shared sequence number", out)
+	}
+
+	if got := discListUUIDCount(t, repo); got != 2 {
+		t.Fatalf("discs known after the refused rebuild = %d, want 2 (unchanged)", got)
+	}
+}

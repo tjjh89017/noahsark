@@ -130,6 +130,39 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: cache:", err)
 	}
 
+	// Load every ledger and ref this repository already carries before
+	// writing anything, so a call fed only some of the discs merges into
+	// what earlier calls already recorded instead of erasing it, and so
+	// the collision check below has the full picture. A rebuild-cache
+	// call otherwise never sees another call's own state.
+	existingDiscs, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+	existingRefsLedger, err := image.LoadRefsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+	existingLocalRefs, err := readRefs(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		return 1
+	}
+
+	// A fed disc's own run_seq or disc_seq may already name a different
+	// disc, already in the ledger: two runs that were never meant to
+	// share a number, most likely because a lost disc's numbers were
+	// already reused by a pack made from an incomplete rebuild. Refuse
+	// the whole call before it writes anything, rather than let the
+	// ledger silently carry two discs under one number.
+	if a, b, found := discSeqCollision(results, existingDiscs.Rows); found {
+		_, _ = fmt.Fprintf(stderr, "noahsark: rebuild-cache: disc %s (run_seq %d, disc_seq %d) and disc %s (run_seq %d, disc_seq %d) share a sequence number; feeding both would corrupt the ledger; resolve which one is real before rebuilding from either\n",
+			uuidText(a.DiscUUID), a.RunSeq, a.DiscSeq, uuidText(b.DiscUUID), b.RunSeq, b.DiscSeq)
+		return 1
+	}
+
 	// EnsurePacked never resets an object past PACKED: an object already
 	// CLEAN, BURNED or later stays there. Count the two outcomes
 	// separately, so the summary never claims an object is PACKED when
@@ -160,26 +193,6 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 			_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
 			return 1
 		}
-	}
-
-	// Load every ledger and ref this repository already carries before
-	// replacing them, so a call fed only some of the discs merges into
-	// what earlier calls already recorded instead of erasing it. A
-	// rebuild-cache call otherwise never sees another call's own state.
-	existingDiscs, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
-		return 1
-	}
-	existingRefsLedger, err := image.LoadRefsLedger(cfg.StagingDir, repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
-		return 1
-	}
-	existingLocalRefs, err := readRefs(repoDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
-		return 1
 	}
 
 	discRows := mergeDiscsRows(results, existingDiscs.Rows)
@@ -221,8 +234,39 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		return 1
 	}
 
+	warnSeqContinuesFromNewestFed(stderr, discRows, stageLog)
+
 	_, _ = fmt.Fprintln(stdout, "rebuild-cache: ok")
 	return 0
+}
+
+// warnSeqContinuesFromNewestFed names the newest disc that has actually
+// been fed to rebuild-cache, across this call and any earlier one, and
+// the run_seq and disc_seq the next pack will assign from it. A disc
+// only named by a sibling disc's own DISCS table, never itself fed, may
+// not be the true newest disc of the lost repository: if a newer disc
+// existed and is never fed, the next pack reuses its numbers.
+func warnSeqContinuesFromNewestFed(stderr io.Writer, rows []format.DiscsRow, l *stage.Log) {
+	var newest format.DiscsRow
+	haveNewest := false
+	for _, row := range rows {
+		if !l.FedDiscs(row.DiscUUID) {
+			continue
+		}
+		if !haveNewest || row.RunSeq > newest.RunSeq {
+			newest = row
+			haveNewest = true
+		}
+	}
+	if !haveNewest {
+		return
+	}
+	nextRunSeq, nextDiscSeq := image.NextSeqNumbers(rows)
+	label := string(newest.Label[:newest.LabelLen])
+	_, _ = fmt.Fprintf(stderr, "noahsark: rebuild-cache: sequence numbers continue from disc %s (%s), run_seq %d, disc_seq %d, the newest disc fed so far\n",
+		uuidText(newest.DiscUUID), label, newest.RunSeq, newest.DiscSeq)
+	_, _ = fmt.Fprintf(stderr, "noahsark: rebuild-cache: if a newer disc exists and is never fed, the next pack reuses its numbers; feed every disc, the newest included; the next pack assigns run_seq %d, disc_seq %d\n",
+		nextRunSeq, nextDiscSeq)
 }
 
 // discsNotFed returns, sorted by uuid text, every row of the merged
@@ -323,6 +367,33 @@ func ensureRebuildRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 		return repoConfig{}, err
 	}
 	return cfg, nil
+}
+
+// discSeqCollision reports the first pair of rows, one a fed disc's own
+// row and one already in the ledger, that name the same run_seq or the
+// same disc_seq under two different disc uuids. It also catches a
+// collision between two discs fed in the same call. A collision this
+// finds means some earlier pack, made from a ledger that had not yet
+// seen the disc now being fed, already reused that disc's numbers.
+func discSeqCollision(results []*image.ReadResult, existingRows []format.DiscsRow) (a, b format.DiscsRow, found bool) {
+	byRunSeq := make(map[uint64]format.DiscsRow, len(existingRows))
+	byDiscSeq := make(map[uint64]format.DiscsRow, len(existingRows))
+	for _, row := range existingRows {
+		byRunSeq[row.RunSeq] = row
+		byDiscSeq[row.DiscSeq] = row
+	}
+	for _, rr := range results {
+		row := format.DiscsRow{DiscUUID: rr.Disc.DiscUUID, RunSeq: rr.Run.RunSeq, DiscSeq: rr.Run.DiscSeq}
+		if other, ok := byRunSeq[row.RunSeq]; ok && other.DiscUUID != row.DiscUUID {
+			return row, other, true
+		}
+		if other, ok := byDiscSeq[row.DiscSeq]; ok && other.DiscUUID != row.DiscUUID {
+			return row, other, true
+		}
+		byRunSeq[row.RunSeq] = row
+		byDiscSeq[row.DiscSeq] = row
+	}
+	return format.DiscsRow{}, format.DiscsRow{}, false
 }
 
 // mergeDiscsRows unions every provided disc's DISCS rows with existing,
