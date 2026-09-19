@@ -1228,9 +1228,9 @@ FORMAT.md section 9, and must record what it used.
 
 ### 9.1 Fill policy
 
-- The packer uses the forced capacity of section 12.6, which equals the
-  drive-reported capacity unless the user set `--capacity` or
-  `disc.force_capacity`.
+- The packer uses the forced capacity described under "Forced capacity",
+  which equals `--physical-capacity` unless the user gives a smaller
+  `--capacity`.
 - `disc.fill_ratio` fixes the safety margin.
 - `data_budget` and `fill_limit_sectors` are the only capacity figures that the
   packer, the superblock and the close policy use.
@@ -2094,11 +2094,14 @@ record the state in the disc directory, and must recommend a fresh disc.
 ### 12.6 Forced capacity
 
 A user may cap the usable capacity of one disc below what the drive reports.
-The CLI option is `pack --capacity`. The config key is `disc.force_capacity`.
+The CLI option is `pack --capacity`. The repository configuration holds no
+capacity key; every `pack` gives `--capacity` on the command line.
 
-In the current build, every `pack` takes `--capacity`, and the config holds no
-capacity. `pack` reads no drive, thus `pack --physical-capacity` gives the
-reported capacity. It defaults to the `--capacity` value.
+`pack` reads no drive, thus `pack --physical-capacity` gives the reported
+capacity. It defaults to the `--capacity` value. A `--capacity` value below
+`--physical-capacity` is a forced capacity: `pack` records it as forced in
+the superblock and in the DISC table. `pack` refuses a `--capacity` above
+`--physical-capacity`.
 
 FORMAT.md section 7.14 gives the superblock fields. The rules on the host side
 are:
@@ -3512,7 +3515,6 @@ Every key appears exactly once, in exactly one table below.
 | `disc.fill_ratio` | fraction | 0.95 | 1 | yes | Fraction of the forced capacity that data may use. |
 | `disc.min_fill` | fraction | 0.90 | 1 | no | `pack` triggers when staging fills this fraction of a disc's data budget. |
 | `disc.max_wait` | duration | 30 days | 1 | no | `pack` triggers when the oldest STAGED object is older than this. |
-| `disc.force_capacity` | bytes | unset | 1 | yes | Cap the usable capacity of a disc below the reported value. |
 | `disc.force_reserve` | bytes or percent | unset | 1 | yes | Replace the computed reserve. |
 | `disc.extra_reserve` | bytes or percent | unset | 1 | yes | Add to the computed reserve. |
 | `disc.expected_runs` | integer | 2 under profile 0, 32 under profiles 1 and 2 | 1 | yes | Expected number of future runs, used by the estimator of section 9.3. |
