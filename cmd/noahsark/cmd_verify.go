@@ -23,7 +23,7 @@ import (
 // "16. CLI reference".
 //
 // verify never moves an object from PACKED to BURNED itself: the
-// walkthrough has an operator loop-mount and verify an image before it
+// guide has an operator loop-mount and verify an image before it
 // is burned, and that tree's disc uuid is already in the ledger (pack
 // writes the ledger, not a burn step), so treating a ledger match alone
 // as proof of burning would let verify, and then gc, act on a disc that
