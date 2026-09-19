@@ -62,7 +62,8 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 // TestRestoreKeepsDirectoryAtSymlinkPath asserts that a directory tree
 // at the path of a symlink entry is never deleted: without
 // WithOverwrite it counts as skipped, and with WithOverwrite the
-// restore reports an error instead of removing the tree.
+// restore still leaves it alone, reports it through
+// WithOverwriteBlocked, and does not stop the walk.
 func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -88,15 +89,122 @@ func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 		t.Fatalf("the existing directory was deleted: %v", err)
 	}
 
-	_, _, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
-	if err == nil {
-		t.Fatal("WithOverwrite: want an error for a non-empty directory in the way")
+	var got []OverwriteBlockedEntry
+	_, skipped, err = Restore(treeDir, snapID, outDir, WithOverwrite(true), WithOverwriteBlocked(func(e OverwriteBlockedEntry) {
+		got = append(got, e)
+	}))
+	if err != nil {
+		t.Fatalf("WithOverwrite: want no error for a non-empty directory in the way, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "symlink "+linkPath+": directory not empty") {
-		t.Fatalf("error = %v, want it to name the symlink path and the non-empty directory", err)
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", skipped)
+	}
+	if len(got) != 1 {
+		t.Fatalf("overwrite-blocked records = %v, want exactly one", got)
+	}
+	if got[0].Path != linkPath {
+		t.Fatalf("path = %q, want %q", got[0].Path, linkPath)
+	}
+	if got[0].Kind != "symlink" {
+		t.Fatalf("kind = %q, want %q", got[0].Kind, "symlink")
+	}
+	if !strings.Contains(got[0].Reason, "not empty") {
+		t.Fatalf("reason = %q, want it to name the non-empty directory", got[0].Reason)
 	}
 	if _, err := os.Stat(inside); err != nil {
 		t.Fatalf("WithOverwrite deleted the existing directory: %v", err)
+	}
+	// A later entry in the walk still lands: the conflict must not stop
+	// the restore.
+	if _, err := os.Stat(filepath.Join(restoredRootOf(outDir, srcDir), "small.txt")); err != nil {
+		t.Fatalf("a later entry was not restored past the conflict: %v", err)
+	}
+}
+
+// TestRestoreKeepsDirectoryAtFilePath is TestRestoreKeepsDirectoryAtSymlinkPath
+// for a regular-file entry: a non-empty directory at that path survives
+// --overwrite too, and the walk carries on to a later entry.
+func TestRestoreKeepsDirectoryAtFilePath(t *testing.T) {
+	srcDir := buildFixtureSrc(t)
+	_, treeDir, snapID := buildFixtureTree(t, srcDir)
+
+	outDir := t.TempDir()
+	filePath := filepath.Join(restoredRootOf(outDir, srcDir), "small.txt")
+	inside := filepath.Join(filePath, "keep.txt")
+	if err := os.MkdirAll(filePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inside, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []OverwriteBlockedEntry
+	_, skipped, err := Restore(treeDir, snapID, outDir, WithOverwrite(true), WithOverwriteBlocked(func(e OverwriteBlockedEntry) {
+		got = append(got, e)
+	}))
+	if err != nil {
+		t.Fatalf("WithOverwrite: want no error for a non-empty directory in the way, got %v", err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", skipped)
+	}
+	if len(got) != 1 {
+		t.Fatalf("overwrite-blocked records = %v, want exactly one", got)
+	}
+	if got[0].Path != filePath {
+		t.Fatalf("path = %q, want %q", got[0].Path, filePath)
+	}
+	if got[0].Kind != "file" {
+		t.Fatalf("kind = %q, want %q", got[0].Kind, "file")
+	}
+	if !strings.Contains(got[0].Reason, "not empty") {
+		t.Fatalf("reason = %q, want it to name the non-empty directory", got[0].Reason)
+	}
+	if _, err := os.Stat(inside); err != nil {
+		t.Fatalf("WithOverwrite deleted the existing directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(restoredRootOf(outDir, srcDir), "link-to-small")); err != nil {
+		t.Fatalf("a later entry was not restored past the conflict: %v", err)
+	}
+}
+
+// TestEnsureDirLeavesUnremovableBlockerInPlace covers ensureDir's own
+// unlink failure: a directory entry blocked by a non-directory that
+// cannot be unlinked leaves the path exactly as found, counts it as
+// skipped, and reports it, instead of failing the whole call.
+func TestEnsureDirLeavesUnremovableBlockerInPlace(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can unlink a file in a read-only directory")
+	}
+	parent := t.TempDir()
+	blocker := filepath.Join(parent, "sub")
+	if err := os.WriteFile(blocker, []byte("in the way"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	wp := &writePolicy{overwrite: true}
+	_, ok, err := ensureDir(parent, []string{"sub"}, wp)
+	if err != nil {
+		t.Fatalf("ensureDir: want no error when the blocker cannot be unlinked, got %v", err)
+	}
+	if ok {
+		t.Fatal("ensureDir: want ok false, the blocker was not removed")
+	}
+	if wp.skipped != 1 {
+		t.Fatalf("skipped = %d, want 1", wp.skipped)
+	}
+	if len(wp.overwriteBlocked) != 1 {
+		t.Fatalf("overwrite-blocked records = %v, want exactly one", wp.overwriteBlocked)
+	}
+	if wp.overwriteBlocked[0].Kind != "directory" {
+		t.Fatalf("kind = %q, want %q", wp.overwriteBlocked[0].Kind, "directory")
+	}
+	if fi, err := os.Lstat(blocker); err != nil || fi.IsDir() {
+		t.Fatalf("the blocking file was removed or replaced: %v", err)
 	}
 }
 

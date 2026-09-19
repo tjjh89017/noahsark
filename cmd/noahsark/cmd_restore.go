@@ -154,12 +154,17 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	}
 
 	var unsupported []string
+	var blocked int
 	opts := []restore.Option{
 		restore.WithInclude(includeFlags),
 		restore.WithOverwrite(*overwrite),
 		restore.WithUnsupportedEntry(func(path string, entryType uint8) {
 			unsupported = append(unsupported, path)
 			_, _ = fmt.Fprintln(stderr, unsupportedEntryLine(path, entryType))
+		}),
+		restore.WithOverwriteBlocked(func(entry restore.OverwriteBlockedEntry) {
+			blocked++
+			_, _ = fmt.Fprintln(stderr, overwriteBlockedLine(entry))
 		}),
 	}
 	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
@@ -179,13 +184,16 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", resumed)
 	}
 	loss := false
-	if skipped > 0 {
-		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", skipped)
+	if skipped-blocked > 0 {
+		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", skipped-blocked)
+		loss = true
+	}
+	if blocked > 0 {
+		_, _ = fmt.Fprint(stdout, overwriteBlockedSummaryLine(blocked))
 		loss = true
 	}
 	if len(unsupported) > 0 {
 		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(unsupported)))
-		loss = true
 	}
 	if loss {
 		return 1
@@ -194,9 +202,24 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 }
 
 // unsupportedEntryLine names one entry the restore did not write
-// because this build does not restore its entry type.
+// because this build does not restore its entry type. It is a
+// warning, not a failure: an unsupported entry alone never changes the
+// exit code.
 func unsupportedEntryLine(path string, entryType uint8) string {
-	return fmt.Sprintf("noahsark: restore: not restored: %s (entry type %d)", path, entryType)
+	return fmt.Sprintf("noahsark: restore: warning: not restored: %s (entry type %d)", path, entryType)
+}
+
+// overwriteBlockedLine names one path --overwrite could not replace.
+func overwriteBlockedLine(entry restore.OverwriteBlockedEntry) string {
+	return fmt.Sprintf("noahsark: restore: warning: %s: %s", entry.Path, entry.Reason)
+}
+
+// overwriteBlockedSummaryLine counts the paths --overwrite could not
+// replace, for the final report. --overwrite was already given, so
+// this replaces the ordinary "pass --overwrite" advice, which would be
+// wrong here.
+func overwriteBlockedSummaryLine(n int) string {
+	return fmt.Sprintf("skipped %d existing path(s); --overwrite could not replace them; see the warning(s) above\n", n)
 }
 
 // unsupportedSummaryLine counts those entries for the final report.
@@ -444,6 +467,9 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 	for _, u := range m.Unsupported() {
 		_, _ = fmt.Fprintln(stderr, unsupportedEntryLine(u.Path, u.EntryType))
 	}
+	for _, b := range m.OverwriteBlocked() {
+		_, _ = fmt.Fprintln(stderr, overwriteBlockedLine(b))
+	}
 
 	if path, need, ok := m.FileExceedingBudget(stagingBudget); ok {
 		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s alone needs %d bytes of staging, above the staging budget of %d bytes; no split of one file's own chunks can honour it\n",
@@ -539,13 +565,17 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", m.Resumed())
 	}
 	loss := false
-	if m.Skipped() > 0 {
-		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", m.Skipped())
+	blocked := len(m.OverwriteBlocked())
+	if m.Skipped()-blocked > 0 {
+		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", m.Skipped()-blocked)
+		loss = true
+	}
+	if blocked > 0 {
+		_, _ = fmt.Fprint(stdout, overwriteBlockedSummaryLine(blocked))
 		loss = true
 	}
 	if paths := m.Unsupported(); len(paths) > 0 {
 		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(paths)))
-		loss = true
 	}
 	if loss {
 		return 1

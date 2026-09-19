@@ -2560,7 +2560,11 @@ invariant with its own calls.
    RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS` where available.
 3. Create symlinks with `symlinkat`. Do not validate or rewrite the target.
 4. With `--overwrite`, unlink the existing path first and then create. Never
-   open an existing path for truncation.
+   open an existing path for truncation. `restore` never removes a directory
+   tree recursively: when the unlink fails, most often because a non-empty
+   directory stands where a symlink or a file must go, the path is left
+   exactly as found, counted as skipped, reported on a warning line, and the
+   walk continues.
 5. Phase 2: create hardlinks with `linkat` and flags 0, never
    `AT_SYMLINK_FOLLOW`.
 6. On Windows, open with `FILE_FLAG_OPEN_REPARSE_POINT`, and reject reserved
@@ -2586,8 +2590,8 @@ Exit codes:
 
 | Code | Meaning |
 |---:|---|
-| 0 | Everything applied. |
-| 1 | A failure at run time: data restored with metadata loss, an existing path left alone without `--overwrite`, or data restore failed outright. |
+| 0 | Everything applied. A device node, a FIFO or a socket in the snapshot alone does not change this: it is outside the scope of a restore, not a failure, and is reported on a warning line. |
+| 1 | A failure at run time: data restored with metadata loss, an existing path left alone without `--overwrite`, a path `--overwrite` could not replace because a non-empty directory stood in its way, or data restore failed outright. |
 | 2 | A usage error, or a refused option. |
 | 3 | A required disc is missing (section 16.16). |
 

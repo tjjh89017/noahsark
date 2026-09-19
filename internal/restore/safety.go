@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -20,7 +21,11 @@ import (
 // when overwrite is requested, and only by an unlink; without
 // overwrite, ensureDir reports ok false, counts the path as skipped and
 // leaves it exactly as found. The caller then leaves that whole subtree
-// alone.
+// alone. With overwrite, an unlink that fails (most often a permission
+// problem, since the blocking path is not itself a directory here)
+// leaves the path exactly as found too, counts it as skipped and
+// reports it through wp's overwrite-blocked report, instead of
+// stopping the whole restore.
 func ensureDir(parent string, components []string, wp *writePolicy) (path string, ok bool, err error) {
 	path = parent
 	for _, name := range components {
@@ -44,7 +49,8 @@ func ensureDir(parent string, components []string, wp *writePolicy) (path string
 				return "", false, nil
 			}
 			if err := unlinkExisting("directory", child); err != nil {
-				return "", false, err
+				wp.recordOverwriteBlocked("directory", child, err)
+				return "", false, nil
 			}
 		}
 		if err := os.Mkdir(child, 0o755); err != nil && !os.IsExist(err) {
@@ -58,9 +64,11 @@ func ensureDir(parent string, components []string, wp *writePolicy) (path string
 // restoreSymlink creates a symlink at path with target. An existing
 // symlink that already has the same target counts as resumed. Any other
 // existing path stays as found and counts as skipped, unless overwrite
-// is requested: then the path is unlinked first, which fails on a
-// directory that still holds entries. The existing tree is never
-// deleted recursively.
+// is requested: then the path is unlinked first. Unlinking fails on a
+// directory that still holds entries; that failure, and any other
+// unlink failure, leaves path exactly as found, counts it as skipped
+// and reports it through wp's overwrite-blocked report. The existing
+// tree is never deleted recursively.
 func restoreSymlink(path, target string, wp *writePolicy) error {
 	fi, err := os.Lstat(path)
 	switch {
@@ -83,10 +91,22 @@ func restoreSymlink(path, target string, wp *writePolicy) error {
 			return nil
 		}
 		if err := unlinkExisting("symlink", path); err != nil {
-			return err
+			wp.recordOverwriteBlocked("symlink", path, err)
+			return nil
 		}
 	}
 	return os.Symlink(target, path)
+}
+
+// overwriteBlockReason turns unlinkExisting's own error into a short,
+// human-readable cause. A directory that still holds entries is the
+// expected case and gets its own wording; anything else falls back to
+// the underlying error text.
+func overwriteBlockReason(err error) string {
+	if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+		return "a directory that is not empty is in the way; restore does not remove it"
+	}
+	return err.Error()
 }
 
 // unlinkExisting removes one path that stands where kind must be
