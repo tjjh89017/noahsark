@@ -344,7 +344,8 @@ is still committed and safe either way, only flagged or left out of
 this one snapshot.
 
 `pack` cannot select objects by `disc.min_fill` or `disc.max_wait`,
-because no staging state log exists to age objects in. It instead takes
+because `pack` does not read the staging state log to age objects by.
+It instead takes
 the snapshot(s) to place explicitly, by `--ref` (resolved through the
 local ref file) or repeated `--snapshot`. With neither given, `pack`
 does not default to `LATEST`: a repository whose every commit names its
@@ -442,12 +443,13 @@ path, restoring everything under it when it names a directory) and
 `--overwrite` are implemented: `restore` otherwise leaves an existing
 path alone rather than overwrite it, reports `skipped N existing
 path(s)` and exits 1 when any were left alone, so a repeated restore
-never silently overwrites unless asked. Every other restore flag
-(`--plan`, `--drives`, `--staging-budget`, `--interactive`,
-`--no-eject`, `--no-owner`, `--numeric-owner`,
-`--no-flags`, `--no-times`, `--no-hardlinks`, `--metadata-strict`,
-`--report`, `--report-replay`, `--strict-unstable`) is Phase 1 but not
-defined, since `Restore` takes no such option today.
+never silently overwrites unless asked. `--plan`, `--staging-budget`,
+`--interactive` and `--no-eject` are now defined, for the disc-swap
+mode's `--mount` and `--plan` resume. Every other restore flag
+(`--drives`, `--no-owner`, `--numeric-owner`, `--no-flags`,
+`--no-times`, `--no-hardlinks`, `--metadata-strict`, `--report`,
+`--report-replay`, `--strict-unstable`) is Phase 1 but not defined,
+since `Restore` takes no such option today.
 
 `ls`, `log` and `plan` resolve SNAPSHOT through `internal/cache` when
 no disc root, `--disc` or `--discs-dir` is given: `looksLikeDiscRoot`
@@ -467,10 +469,10 @@ paths alone) would need by the disc that holds it, walking cached tree
 and blob objects; a blob the cache does not hold still counts as one
 object, since blob caching only covers what pack or rebuild-cache
 processed after it was added, and its own absence is not, by itself,
-an incomplete cache the way a missing tree is. `--drives`,
-`--staging-budget`, `--score` and `--target` are not defined, since no
-multi-drive planner, staging budget model or byte-vs-object scoring
-exists yet, and `plan` records no restore target. The JSON `--out`
+an incomplete cache the way a missing tree is. `--staging-budget` is
+now defined. `--drives`, `--score` and `--target` are not defined,
+since no multi-drive planner or byte-vs-object scoring exists yet, and
+`plan` records no restore target. The JSON `--out`
 writes covers `discs[]`'s `order`, `disc_uuid`, `disc_seq`, `label`,
 `runs`, `objects_to_read` and `bytes_to_read`, `missing_discs`,
 `peak_staging_bytes` (the largest single object of known size),
