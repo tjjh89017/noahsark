@@ -21,7 +21,7 @@ import (
 // restore and verify do. ls reads tree objects only; it never opens a
 // chunk.
 func cmdLs(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark ls [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]",
+	fs := newFlagSet("noahsark ls [--long] [--recursive] [--json] [--unstable-only] [DISC-ROOT] SNAPSHOT [PATH]",
 		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts --disc (repeatable), --discs-dir or a DISC-ROOT positional to read a disc instead. "+
 			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.", stderr)
 	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
@@ -53,7 +53,7 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case cacheMode:
 		if fs.NArg() < 1 || fs.NArg() > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] [--json] [--unstable-only] SNAPSHOT [PATH]")
 			return 2
 		}
 		positional = fs.Args()
@@ -65,13 +65,13 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 		src, cacheObj = cs, c
 	case multi:
 		if fs.NArg() < 1 || fs.NArg() > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls --disc=ROOT [--disc=ROOT]... SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls --disc=ROOT [--disc=ROOT]... [--long] [--recursive] [--json] [--unstable-only] SNAPSHOT [PATH]")
 			return 2
 		}
 		positional = fs.Args()
 	default:
 		if fs.NArg() < 2 || fs.NArg() > 3 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls DISC-ROOT SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] [--json] [--unstable-only] DISC-ROOT SNAPSHOT [PATH]")
 			return 2
 		}
 		positional = fs.Args()[1:]

@@ -70,10 +70,14 @@ func resolveMediaType(mediaGiven bool, media, capacityStr string) (format.MediaT
 // flags: object selection by staging fill or age (disc.min_fill,
 // disc.max_wait), locality presets and burn-plan output do not exist in
 // this build, so pack instead takes the snapshot(s) to place explicitly,
-// by --ref (default LATEST) or repeated --snapshot. See
-// docs/decisions.md, "16. CLI reference".
+// by --ref or repeated --snapshot; with neither given, it carries
+// forward every pending ref, falling back to LATEST only when that
+// leaves nothing. See docs/decisions.md, "16. CLI reference".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if refuseLaterPhaseFlags("pack", args, stderr) {
+		return 2
+	}
+	if refuseNotYetImplementedFlags("pack", args, stderr) {
 		return 2
 	}
 

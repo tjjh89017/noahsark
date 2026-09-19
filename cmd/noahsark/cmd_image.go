@@ -18,11 +18,11 @@ import (
 // docs/decisions.md, "16. CLI reference".
 func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE --capacity=N [--force] TREE-DIR")
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR")
+		_, _ = fmt.Fprintln(stdout, "usage: noahsark image build --out=FILE --capacity=N [--force] TREE-DIR")
 		return 0
 	}
 	if args[0] != "build" {
@@ -33,7 +33,7 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 2
 	}
 
-	fs := newFlagSet("noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR",
+	fs := newFlagSet("noahsark image build --out=FILE --capacity=N [--force] TREE-DIR",
 		"Build a disc image from a packed tree directory.", stderr)
 	out := fs.String("out", "", "output image path")
 	capacityStr := fs.String("capacity", "", "image length (sectors, or e.g. 25GB)")
@@ -45,7 +45,7 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 2
 	}
 	if fs.NArg() != 1 || *out == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE [--capacity=N] [--force] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE --capacity=N [--force] TREE-DIR")
 		return 2
 	}
 	treeDir := fs.Arg(0)

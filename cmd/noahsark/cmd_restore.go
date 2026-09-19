@@ -40,8 +40,13 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	if refuseLaterPhaseFlags("restore", args, stderr) {
 		return 2
 	}
+	if refuseNotYetImplementedFlags("restore", args, stderr) {
+		return 2
+	}
 
-	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR|DISC-ROOT] SNAPSHOT OUT-DIR\n       noahsark restore --plan=FILE --mount=DIR [--overwrite] OUT-DIR",
+	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR\n"+
+		"       noahsark restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] SNAPSHOT OUT-DIR\n"+
+		"       noahsark restore --plan=FILE --mount=DIR [--overwrite] [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR",
 		"Restore a snapshot to a directory. Accepts --disc (repeatable) or --discs-dir in place of DISC-ROOT for the all-discs-at-once mode. --plan resumes a plan file written by \"plan --out\" instead of naming SNAPSHOT.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	var discFlags stringList

@@ -27,7 +27,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
-	fs := newFlagSet("noahsark commit [SOURCE] [--repo=PATH] [--ref=NAME] [-m MESSAGE]",
+	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]",
 		"Commit a source directory tree as a new snapshot.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "LATEST", "ref to move")
@@ -39,7 +39,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 	if fs.NArg() > 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [SOURCE] [--repo=PATH] [--ref=NAME] [-m MESSAGE]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]")
 		return 2
 	}
 
