@@ -113,10 +113,6 @@ MAGIC_DISCS = _magic(b"DISCS")
 OBJECT_KIND_NAMES = {1: "chunk", 2: "blob", 3: "tree", 4: "snapshot"}
 COMPRESSION_NAMES = {0: "none", 1: "zstd", 2: "lz4"}
 
-# Hash algorithm registry (multicodec codes). This decoder implements only
-# sha2-256, the one Phase 1 writes; every other code is reserved.
-HASH_ALGO_SHA256 = 0x12
-
 ENTRY_TYPE_NAMES = {
     1: "regular",
     2: "directory",
@@ -164,21 +160,6 @@ def decode_common_header(buf: bytes, where: str):
         "version_minor": version_minor,
         "header_len": header_len,
     }
-
-
-def variable_area_start(common: dict, known_len: int, where: str) -> int:
-    """header_len is the common header plus the structure's fixed body, so
-    it marks where the variable-length part of the structure begins. A
-    header_len smaller than the fixed body this decoder knows is refused;
-    a larger one means a newer minor version appended fields this decoder
-    does not know, and the excess is skipped rather than misread."""
-    header_len = common["header_len"]
-    if header_len < known_len:
-        raise FormatError(
-            f"{where}: header_len {header_len} smaller than the known fixed "
-            f"body ({known_len})"
-        )
-    return header_len
 
 
 def object_header_fields(body: bytes):
@@ -298,22 +279,7 @@ def decode_object_bytes(
     not compare it against any file name; read_object_file does that."""
     common = decode_common_header(buf, where)
     obj_header = decode_object_header(buf, where, verify_crc=verify_crc)
-    # header_len for an object file is the common header, the object
-    # header, and that object kind's own fixed body (for example the
-    # blob or tree fixed fields before its entries): section 6.1's kind
-    # sections skip header_len - known bytes there, inside the
-    # decompressed payload. It never moves where the stored (possibly
-    # compressed) bytes start, which is always right after the object
-    # header; only refuse it here when it is too small to cover even the
-    # object header.
     fixed_len = COMMON_HEADER_LEN + OBJECT_HEADER_LEN
-    variable_area_start(common, fixed_len, where)
-    hash_algo = obj_header["hash_algo"]
-    if hash_algo != HASH_ALGO_SHA256:
-        raise FormatError(
-            f"{where}: unsupported hash_algo 0x{hash_algo:02x}; "
-            f"only sha2-256 (0x{HASH_ALGO_SHA256:02x}) is implemented"
-        )
     stored = buf[fixed_len : fixed_len + obj_header["stored_len"]]
     if len(stored) != obj_header["stored_len"]:
         raise FormatError(f"{where}: stored bytes truncated")
@@ -366,34 +332,15 @@ def read_object_file(path: str, report: Report = None) -> ObjectFile:
 BLOB_ENTRY_LEN = 48
 
 
-BLOB_BODY_FIXED_LEN = 24
-
-
-def parse_blob(payload: bytes, where: str, header_len: int = None):
-    """header_len is the object's common-header header_len (common header
-    plus object header plus the kind's own fixed body, section 6.1); a
-    caller that already decoded the object passes it so a minor-version
-    field appended to the blob's fixed part, ahead of the entries, is
-    skipped instead of misread. A caller that has only the payload, with
-    no header_len available, leaves it out and gets this version's known
-    fixed length."""
+def parse_blob(payload: bytes, where: str):
     entry_count, total_size = struct.unpack_from("<QQ", payload, 0)
     entry_size, hash_algo, digest_len, level = struct.unpack_from(
         "<HBBB", payload, 16
     )
     if level > 1:
         raise FormatError(f"{where}: blob level {level} above 1")
-    if header_len is None:
-        off = BLOB_BODY_FIXED_LEN
-    else:
-        kind_fixed_len = header_len - (COMMON_HEADER_LEN + OBJECT_HEADER_LEN)
-        if kind_fixed_len < BLOB_BODY_FIXED_LEN:
-            raise FormatError(
-                f"{where}: header_len {header_len} smaller than the known "
-                f"blob fixed body"
-            )
-        off = kind_fixed_len
     entries = []
+    off = 24
     for _ in range(entry_count):
         content_id = payload[off : off + 32]
         length, file_offset = struct.unpack_from("<QQ", payload, off + 32)
@@ -499,27 +446,12 @@ def parse_tree_entry(buf: bytes, where: str):
     }
 
 
-TREE_BODY_FIXED_LEN = 8
-
-
-def parse_tree(payload: bytes, where: str, header_len: int = None):
-    """header_len, as in parse_blob, is the object's common-header
-    header_len; it locates the end of the tree's own fixed part
-    (entry_count and the reserved u32), ahead of the entries."""
+def parse_tree(payload: bytes, where: str):
     entry_count, reserved_u32 = struct.unpack_from("<II", payload, 0)
     if reserved_u32 != 0:
         raise FormatError(f"{where}: tree reserved_u32 not zero")
-    if header_len is None:
-        pos = TREE_BODY_FIXED_LEN
-    else:
-        kind_fixed_len = header_len - (COMMON_HEADER_LEN + OBJECT_HEADER_LEN)
-        if kind_fixed_len < TREE_BODY_FIXED_LEN:
-            raise FormatError(
-                f"{where}: header_len {header_len} smaller than the known "
-                f"tree fixed body"
-            )
-        pos = kind_fixed_len
     entries = []
+    pos = 8
     prev_key = None
     for _ in range(entry_count):
         e = parse_tree_entry(payload[pos:], where)
@@ -568,10 +500,7 @@ def parse_snapshot_meta(buf: bytes, where: str):
     return records
 
 
-def parse_snapshot(payload: bytes, where: str, header_len: int = None):
-    """header_len, as in parse_blob, is the object's common-header
-    header_len; it locates the end of the snapshot's own fixed fields,
-    ahead of the meta TLVs."""
+def parse_snapshot(payload: bytes, where: str):
     root_tree = payload[0:32].hex()
     parent = payload[32:64].hex()
     generation = struct.unpack_from("<Q", payload, 64)[0]
@@ -585,17 +514,7 @@ def parse_snapshot(payload: bytes, where: str, header_len: int = None):
     )
     if reserved_u8 != 0:
         raise FormatError(f"{where}: snapshot reserved_u8 not zero")
-    if header_len is None:
-        meta_start = SNAPSHOT_FIXED_LEN
-    else:
-        kind_fixed_len = header_len - (COMMON_HEADER_LEN + OBJECT_HEADER_LEN)
-        if kind_fixed_len < SNAPSHOT_FIXED_LEN:
-            raise FormatError(
-                f"{where}: header_len {header_len} smaller than the known "
-                f"snapshot fixed body"
-            )
-        meta_start = kind_fixed_len
-    meta = parse_snapshot_meta(payload[meta_start:], where)
+    meta = parse_snapshot_meta(payload[SNAPSHOT_FIXED_LEN:], where)
     if len(meta) != meta_count:
         raise FormatError(
             f"{where}: meta_count {meta_count} does not match {len(meta)} records found"
@@ -631,11 +550,6 @@ def parse_disc(buf: bytes, where: str):
     common = decode_common_header(buf, where)
     if common["magic_kind"] != MAGIC_DISC:
         raise FormatError(f"{where}: not a disc superblock")
-    # The superblock is always read and CRC-checked as its whole fixed
-    # 2048-byte file; nothing here locates a variable area from
-    # header_len, so header_len is read (decode_common_header) but not
-    # otherwise acted on, the same as any field this decoder does not
-    # need.
     disc_uuid = buf[32:48]
     repo_uuid = buf[48:64]
     disc_seq, capacity_sectors, capacity_forced_sectors = struct.unpack_from(
@@ -685,9 +599,6 @@ def parse_run(buf: bytes, where: str):
     common = decode_common_header(buf, where)
     if common["magic_kind"] != MAGIC_RUN:
         raise FormatError(f"{where}: not a run header")
-    # The run header is always read and CRC-checked as its whole fixed
-    # 512-byte structure; nothing here locates a variable area from
-    # header_len, so header_len is read but not otherwise acted on.
     disc_uuid = buf[32:48]
     repo_uuid = buf[48:64]
     run_seq, disc_seq = struct.unpack_from("<QQ", buf, 64)
@@ -755,19 +666,18 @@ def parse_index(buf: bytes, where: str):
     if crc32c(buf[0:76]) != header_crc32c:
         raise FormatError(f"{where}: INDEX header_crc32c mismatch")
 
-    variable_start = variable_area_start(common, INDEX_HEADER_LEN, where)
     total = (
-        variable_start
+        INDEX_HEADER_LEN
         + file_count * INDEX_FILE_RECORD_LEN
         + object_count * INDEX_OBJECT_RECORD_LEN
         + prereq_count * INDEX_PREREQ_RECORD_LEN
     )
     if len(buf) < total:
         raise FormatError(f"{where}: INDEX buffer shorter than container_len")
-    if crc32c(buf[variable_start:total]) != body_crc32c:
+    if crc32c(buf[INDEX_HEADER_LEN:total]) != body_crc32c:
         raise FormatError(f"{where}: INDEX body_crc32c mismatch")
 
-    off = variable_start
+    off = INDEX_HEADER_LEN
     files = []
     for _ in range(file_count):
         row = buf[off : off + INDEX_FILE_RECORD_LEN]
@@ -844,14 +754,13 @@ def parse_refs(buf: bytes, where: str):
     if crc32c(buf[0:68]) != header_crc32c:
         raise FormatError(f"{where}: REFS header_crc32c mismatch")
 
-    variable_start = variable_area_start(common, REFS_HEADER_LEN, where)
-    total = variable_start + record_count * REF_RECORD_LEN
+    total = REFS_HEADER_LEN + record_count * REF_RECORD_LEN
     if len(buf) < total:
         raise FormatError(f"{where}: REFS buffer shorter than its record count")
-    if crc32c(buf[variable_start:total]) != body_crc32c:
+    if crc32c(buf[REFS_HEADER_LEN:total]) != body_crc32c:
         raise FormatError(f"{where}: REFS body_crc32c mismatch")
 
-    off = variable_start
+    off = REFS_HEADER_LEN
     records = []
     for _ in range(record_count):
         row = buf[off : off + REF_RECORD_LEN]
@@ -918,14 +827,13 @@ def parse_discs(buf: bytes, where: str):
     if crc32c(buf[0:68]) != header_crc32c:
         raise FormatError(f"{where}: DISCS header_crc32c mismatch")
 
-    variable_start = variable_area_start(common, DISCS_HEADER_LEN, where)
-    total = variable_start + record_count * DISCS_ROW_LEN
+    total = DISCS_HEADER_LEN + record_count * DISCS_ROW_LEN
     if len(buf) < total:
         raise FormatError(f"{where}: DISCS buffer shorter than its record count")
-    if crc32c(buf[variable_start:total]) != body_crc32c:
+    if crc32c(buf[DISCS_HEADER_LEN:total]) != body_crc32c:
         raise FormatError(f"{where}: DISCS body_crc32c mismatch")
 
-    off = variable_start
+    off = DISCS_HEADER_LEN
     rows = []
     for _ in range(record_count):
         row = buf[off : off + DISCS_ROW_LEN]
@@ -1166,7 +1074,7 @@ class Repo:
             obj = self.read_object(ref["snapshot_id"], under="snapshots", report=report)
         if obj.payload is None:
             raise FormatError(f"snapshot {name!r} could not be decompressed")
-        snap = parse_snapshot(obj.payload, f"snapshot {name!r}", obj.common["header_len"])
+        snap = parse_snapshot(obj.payload, f"snapshot {name!r}")
         snap["content_id"] = obj.content_id_hex
         return snap
 
@@ -1204,7 +1112,7 @@ def walk_tree(repo: Repo, tree_id_hex: str, path_prefix: str, report: Report, vi
         if obj.payload is None:
             report.fail(tree_id_hex, "tree could not be decompressed, walk stopped here")
             return
-        tree = parse_tree(obj.payload, f"tree {tree_id_hex}", obj.common["header_len"])
+        tree = parse_tree(obj.payload, f"tree {tree_id_hex}")
     except (FormatError, FileNotFoundError) as e:
         report.fail(tree_id_hex, f"tree could not be read, walk stopped here: {e}")
         return
@@ -1229,7 +1137,7 @@ def iter_file_chunks(repo: Repo, blob_id_hex: str, report: Report):
     if obj.payload is None:
         report.fail(blob_id_hex, "blob could not be decompressed")
         return
-    blob = parse_blob(obj.payload, f"blob {blob_id_hex}", obj.common["header_len"])
+    blob = parse_blob(obj.payload, f"blob {blob_id_hex}")
     if blob["level"] == 0:
         for e in blob["entries"]:
             yield e["content_id"], e["length"], e["file_offset"]
@@ -1398,87 +1306,19 @@ def restore_symlink(dest: str, target: bytes):
     os.symlink(target_str, dest)
 
 
-def describe_missing_object(cid_hex: str, idx: dict, discs: dict) -> str:
-    """Adds context to an object-not-found message: when cid_hex is a
-    Prereqs entry of the run's INDEX, names the run_seq that stores it and,
-    when DISCS gives it, that run's disc label or uuid, so the person knows
-    which disc to load."""
-    want = text_form(cid_hex)
-    for p in idx.get("prereqs", []):
-        if text_form(p["content_id"]) != want:
-            continue
-        run_seq = p["run_seq"]
-        for row in discs.get("rows", []):
-            if row["run_seq"] == run_seq:
-                disc = row["label"] or row["disc_uuid"].hex()
-                return f"; it is a prerequisite stored in run {run_seq} on disc {disc}"
-        return f"; it is a prerequisite stored in run {run_seq}"
-    return ""
-
-
-def restore_file(
-    repo: Repo, dest: str, blob_id_hex: str, report: Report, idx: dict, discs: dict
-) -> bool:
-    """Writes one regular file's chunks into dest. Writes to a temporary
-    name beside dest and renames it into place only on full success, and
-    removes the temporary file on any failure, so a file that could not be
-    fully restored never looks complete. Returns whether it succeeded."""
-    try:
-        chunks = sorted(iter_file_chunks(repo, blob_id_hex, report), key=lambda c: c[2])
-    except (FormatError, OSError) as e:
-        report.fail(dest, f"blob {blob_id_hex} could not be read: {e}{describe_missing_object(blob_id_hex, idx, discs)}")
-        return False
-
-    tmp = dest + ".noahsark-partial"
-    ok = True
-    try:
-        with open(tmp, "wb") as out:
-            for content_id_hex, length, file_offset in chunks:
-                try:
-                    obj = repo.read_object(content_id_hex, under="objects", report=report)
-                except (FormatError, OSError) as e:
-                    report.fail(
-                        dest,
-                        f"chunk {content_id_hex} could not be read: {e}"
-                        f"{describe_missing_object(content_id_hex, idx, discs)}",
-                    )
-                    ok = False
-                    break
-                if obj.payload is None:
-                    report.fail(dest, f"chunk {content_id_hex} could not be expanded")
-                    ok = False
-                    break
-                if len(obj.payload) != length:
-                    report.fail(dest, f"chunk {content_id_hex} length mismatch")
-                    ok = False
-                    break
-                out.write(obj.payload)
-    except OSError as e:
-        report.fail(dest, f"could not write the file: {e}")
-        ok = False
-
-    if ok:
-        os.replace(tmp, dest)
-    else:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-    return ok
-
-
-def safe_dest(out_dir: str, path: str, report: Report) -> str:
-    """Joins path under out_dir and refuses a result that would land
-    outside out_dir. A root entry name is unescaped before it reaches this
-    function (unescape_root_name), and the escape can turn a name that
-    passed tree-entry validation into one holding '/' or '..' segments;
-    this is the last line of defense against writing outside --out."""
-    out_abs = os.path.abspath(out_dir)
-    candidate = os.path.abspath(os.path.join(out_abs, path.lstrip("/")))
-    if candidate != out_abs and not candidate.startswith(out_abs + os.sep):
-        report.fail(path, f"path would restore outside --out ({out_dir!r}); entry skipped")
-        return None
-    return candidate
+def restore_file(repo: Repo, dest: str, blob_id_hex: str, report: Report):
+    chunks = sorted(
+        iter_file_chunks(repo, blob_id_hex, report), key=lambda c: c[2]
+    )
+    with open(dest, "wb") as out:
+        for content_id_hex, length, file_offset in chunks:
+            obj = repo.read_object(content_id_hex, under="objects", report=report)
+            if obj.payload is None:
+                report.fail(dest, f"chunk {content_id_hex} could not be expanded")
+                continue
+            if len(obj.payload) != length:
+                report.fail(dest, f"chunk {content_id_hex} length mismatch")
+            out.write(obj.payload)
 
 
 def apply_metadata(dest: str, entry, report: Report):
@@ -1499,70 +1339,35 @@ def cmd_restore(args):
     snap = repo.read_snapshot(args.snapshot, report=report)
     os.makedirs(args.out, exist_ok=True)
 
-    # The Prereqs table of the run's INDEX, and DISCS, let a failure name
-    # the disc that holds a missing object. Their own failure to parse is
-    # not fatal to restore; it only costs that extra context in a message.
-    try:
-        idx = repo.index(repo.newest_seq)
-    except (FormatError, OSError) as e:
-        report.fail(args.disc_root, f"could not read INDEX for prerequisite context: {e}")
-        idx = {"prereqs": []}
-    try:
-        discs = repo.discs()
-    except (FormatError, OSError) as e:
-        report.fail(args.disc_root, f"could not read DISCS for prerequisite context: {e}")
-        discs = {"rows": []}
-
-    counts = {"files": 0, "failed": 0}
-
     def visit(path, entry):
         # A root entry's decoded name is the source's absolute path (the
         # root tree's escape); strip its leading '/' so it joins under
-        # --out instead of replacing it. safe_dest also refuses a decoded
-        # name that would otherwise escape --out (for example through a
-        # corrupted root name that unescapes to a '..' segment).
-        dest = safe_dest(args.out, path, report)
-        if dest is None:
-            if entry["entry_type"] == 1:
-                counts["files"] += 1
-                counts["failed"] += 1
-            return
+        # --out instead of replacing it.
+        dest = os.path.join(args.out, path.lstrip("/"))
         entry_type = entry["entry_type"]
-        try:
-            if entry_type == 2:  # directory
-                os.makedirs(dest, exist_ok=True)
-                apply_metadata(dest, entry, report)
-            elif entry_type == 1:  # regular
-                counts["files"] += 1
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                if restore_file(repo, dest, entry["content_id"], report, idx, discs):
-                    apply_metadata(dest, entry, report)
-                else:
-                    counts["failed"] += 1
-            elif entry_type == 3:  # symlink
-                target = b""
-                for t in entry["tlvs"]:
-                    if t["type"] == TLV_SYMLINK_TARGET:
-                        target = t["payload"]
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                restore_symlink(dest, target)
-            else:
-                report.fail(dest, f"entry type {entry_type} not restored by this decoder")
-        except OSError as e:
-            report.fail(dest, f"could not restore this entry: {e}")
-            if entry_type == 1:
-                counts["failed"] += 1
+        if entry_type == 2:  # directory
+            os.makedirs(dest, exist_ok=True)
+            apply_metadata(dest, entry, report)
+        elif entry_type == 1:  # regular
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            restore_file(repo, dest, entry["content_id"], report)
+            apply_metadata(dest, entry, report)
+        elif entry_type == 3:  # symlink
+            target = b""
+            for t in entry["tlvs"]:
+                if t["type"] == TLV_SYMLINK_TARGET:
+                    target = t["payload"]
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            restore_symlink(dest, target)
+        else:
+            report.fail(dest, f"entry type {entry_type} not restored by this decoder")
 
     walk_tree(repo, snap["root_tree"], "", report, visit)
 
     if report.ok():
         print(f"restore: wrote snapshot into {args.out}")
     else:
-        print(
-            f"restore: {counts['failed']} of {counts['files']} file(s) failed, "
-            f"{len(report.failures)} problem(s) total",
-            file=sys.stderr,
-        )
+        print(f"restore: {len(report.failures)} problem(s)", file=sys.stderr)
     return 0 if report.ok() else 1
 
 
