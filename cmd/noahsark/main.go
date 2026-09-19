@@ -129,9 +129,9 @@ func printUsage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `usage: noahsark <command> [arguments]
 
 Phase 1 commands:
-  init    Set up a repository directory.
-  commit  SOURCE [--ref=NAME]
-  pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]
+  init    [--repo=PATH] [--source=PATH]
+  commit  [SOURCE] [--ref=NAME] [-m MESSAGE]
+  pack    [--ref=NAME | --snapshot=ID]... --capacity=N [--physical-capacity=N] [--label=TEXT] [--media=NAME] [--out=DIR] [--fec | --no-fec] [--close]
   image build --out=FILE [--capacity=N] [--force] TREE-DIR
   verify  [DISC-ROOT] [--repo=DIR] --image=PATH [--heal] [--out=DIR]
   restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
@@ -139,11 +139,11 @@ Phase 1 commands:
   restore --plan=FILE --mount=DIR [--overwrite] [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
   ls      [DISC-ROOT] SNAPSHOT [PATH] [--long] [--recursive] [--json] [--unstable-only]
   log     [DISC-ROOT] [REF|SNAPSHOT] [--limit=N] [--json]
-  plan    [--include=PATH]... [--out=FILE] SNAPSHOT
+  plan    [--include=PATH]... [--out=FILE] [--staging-budget=SIZE] SNAPSHOT
   rebuild-cache --from-disc [--disc=ROOT]... [--discs-dir=DIR] [--level=1] [--snapshot=ID]
   disc list [--json]
   disc burned [--undo] DISC [DISC...]
-  gc      [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]
+  gc      [--dry-run] [--verbose] [--keep-snapshots=N] [--force-after=DURATION] [--yes]
 
 ls and log resolve SNAPSHOT through the local cache when no disc is
 given; give a DISC-ROOT, or --disc=ROOT (repeatable) or --discs-dir=DIR

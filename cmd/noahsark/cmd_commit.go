@@ -61,7 +61,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		source = fs.Arg(0)
 	}
 	if source == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: commit: no SOURCE given and no source root in the config; pass a path or run init --source")
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit: no SOURCE given and no source root in the config; pass a path on the command line, or set sources.root in the config")
 		return 2
 	}
 

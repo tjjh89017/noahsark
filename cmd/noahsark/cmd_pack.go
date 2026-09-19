@@ -77,7 +77,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
-	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--label=TEXT] [--media=NAME] [--out=DIR]",
+	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--physical-capacity=N] [--label=TEXT] [--media=NAME] [--out=DIR] [--fec | --no-fec] [--close]",
 		"Pack staged objects into the next run.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
