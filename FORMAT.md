@@ -2821,7 +2821,7 @@ not license to change a setting silently.
 | Spare mode and spare reserve bytes | The `spare_area` term, hence `reserve` and `data_budget`. Fixed per disc at format time. |
 | Expected runs per disc | `catalog_growth`, hence `reserve` and `data_budget`. |
 | Fill ratio | `safety_margin`, hence `reserve` and `data_budget`. |
-| Forced capacity, `disc.force_capacity` | `capacity_forced_sectors` in the superblock and in DISCS, hence every run's budget on the disc (section 7.13). |
+| Forced capacity, `pack --capacity` | `capacity_forced_sectors` in the superblock and in DISCS, hence every run's budget on the disc (section 7.13). |
 | FEC scheme and geometry, `fec.scheme`, `fec.k` and `fec.m` | The stripe shape, the column count, the parity file set and the checksum column, hence the FEC stream layout of every run (sections 10.1 and 10.2). Version 1 fixes `k` 231 and `m` 23 and refuses any other value. |
 | Optional metadata switches | Which optional metadata fields are present in every new tree entry. |
 | Source type, `source.type` | The `source_type` and `source_flags` bytes of every new snapshot payload, hence its content id (section 6.14). |
