@@ -8,10 +8,11 @@ type Option func(*restoreOptions)
 
 // restoreOptions holds every optional restriction a restore call accepts.
 type restoreOptions struct {
-	includes      []string
-	overwrite     bool
-	knownDiscs    map[[16]byte]string
-	onUnsupported func(path string, entryType uint8)
+	includes           []string
+	overwrite          bool
+	knownDiscs         map[[16]byte]string
+	onUnsupported      func(path string, entryType uint8)
+	onOverwriteBlocked func(entry OverwriteBlockedEntry)
 }
 
 // WithUnsupportedEntry registers fn, called once for every entry whose
@@ -21,6 +22,16 @@ type restoreOptions struct {
 func WithUnsupportedEntry(fn func(path string, entryType uint8)) Option {
 	return func(o *restoreOptions) {
 		o.onUnsupported = fn
+	}
+}
+
+// WithOverwriteBlocked registers fn, called once for every path
+// --overwrite could not replace, most often a directory that still
+// holds entries. The path is left exactly as found, and the walk
+// continues into every other path.
+func WithOverwriteBlocked(fn func(entry OverwriteBlockedEntry)) Option {
+	return func(o *restoreOptions) {
+		o.onOverwriteBlocked = fn
 	}
 }
 

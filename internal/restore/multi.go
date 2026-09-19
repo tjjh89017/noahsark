@@ -130,7 +130,7 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 	if err != nil {
 		return 0, 0, err
 	}
-	src.wp = &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported}
+	src.wp = &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked}
 	for u, l := range o.knownDiscs {
 		if _, ok := src.discLabels[u]; !ok {
 			src.discLabels[u] = l

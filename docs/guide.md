@@ -353,10 +353,18 @@ diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
   `skipped N existing path(s)`. The exit code is 1. Add `--overwrite`
   to replace them. `restore` never follows a symlink that it finds in
   `<RESTORE_DIR>`, so it never writes outside that directory.
+- `restore` never deletes a directory tree, even with `--overwrite`. If
+  a non-empty directory stands where a symlink or a file must go, it
+  prints
+  `noahsark: restore: warning: <PATH>: a directory that is not empty is in the way; restore does not remove it`,
+  leaves that directory as it is, counts it as skipped, and continues
+  with the rest of the walk. The summary line then reads
+  `skipped N existing path(s); --overwrite could not replace them; see the warning(s) above`.
 - `restore` does not restore a device node, a FIFO or a socket. It
-  names each one, prints
-  `not restored: N unsupported entry(ies); a device node, FIFO or socket needs a later phase`
-  and exits with code 1. Every other file is restored.
+  names each one on a warning line and prints
+  `not restored: N unsupported entry(ies); a device node, FIFO or socket needs a later phase`.
+  Every other file is restored, and an unsupported entry alone does not
+  change the exit code.
 - `resumed: N file(s) already restored` counts the files that were
   already correct.
 - `noahsark ls --recursive --unstable-only ...` lists the files that a
@@ -462,7 +470,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
 | `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --from-disc --disc=<MOUNT>`. |
 | `pack`: `remaining staged`, exit code 1 | The data did not fit. Do step 10. |
-| `restore --overwrite`: `symlink <PATH>: directory not empty` | A directory holds the path of a symlink in the snapshot. `restore` never deletes a directory tree. Move or remove that directory, then restore again. |
+| `restore --overwrite`: `warning: <PATH>: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
 | `restore`: `missing disc(s)`, exit code 3 | The message lists each disc by uuid. Find the disc by the uuid prefix on its sleeve. Restore again with that disc included. |
 | `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |

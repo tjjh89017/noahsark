@@ -42,6 +42,11 @@ type writePolicy struct {
 	// restore, such as a device node, a FIFO or a socket.
 	unsupported   []UnsupportedEntry
 	onUnsupported func(path string, entryType uint8)
+	// overwriteBlocked holds every path --overwrite could not replace,
+	// because removing what stood there failed; most often a directory
+	// that still holds entries. Each one also counts in skipped.
+	overwriteBlocked   []OverwriteBlockedEntry
+	onOverwriteBlocked func(entry OverwriteBlockedEntry)
 }
 
 // UnsupportedEntry is one entry a restore did not write, because this
@@ -60,6 +65,31 @@ func (wp *writePolicy) recordUnsupported(path string, entryType uint8) {
 	wp.unsupported = append(wp.unsupported, UnsupportedEntry{Path: path, EntryType: entryType})
 	if wp.onUnsupported != nil {
 		wp.onUnsupported(path, entryType)
+	}
+}
+
+// OverwriteBlockedEntry is one path left exactly as found because
+// --overwrite could not remove what stood there. kind names what the
+// snapshot entry wanted to create at path: "symlink", "file" or
+// "directory". reason is a short, human-readable cause.
+type OverwriteBlockedEntry struct {
+	Path   string
+	Kind   string
+	Reason string
+}
+
+// recordOverwriteBlocked notes one path --overwrite could not clear.
+// It counts as skipped, the same as a path left alone without
+// --overwrite, and the walk continues into every other path.
+func (wp *writePolicy) recordOverwriteBlocked(kind, path string, unlinkErr error) {
+	if wp == nil {
+		return
+	}
+	wp.skipped++
+	entry := OverwriteBlockedEntry{Path: path, Kind: kind, Reason: overwriteBlockReason(unlinkErr)}
+	wp.overwriteBlocked = append(wp.overwriteBlocked, entry)
+	if wp.onOverwriteBlocked != nil {
+		wp.onOverwriteBlocked(entry)
 	}
 }
 
@@ -150,7 +180,7 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 	prog.Start("restore: bytes written", int64(total))
 	defer prog.Done()
 
-	wp := &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported}
+	wp := &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked}
 	for _, e := range rootTree.Entries {
 		if err := restoreRootEntry(base, absOut, e, prog, cache, fs, wp); err != nil {
 			return wp.resumed, wp.skipped, err
@@ -372,10 +402,19 @@ func restoreFile(base, dest string, blobID object.ID, e format.TreeEntry, prog *
 // existingFileStatus, the one rule every restore mode shares; with
 // --overwrite, the existing path is unlinked first and then created.
 // A file created this way is always new, so O_TRUNC is never needed.
+// An unlink that fails, most often because dest is a non-empty
+// directory, leaves dest exactly as found, counts it as skipped and
+// reports it through wp's overwrite-blocked report, instead of
+// stopping the restore.
 func openForWrite(dest string, e format.TreeEntry, entries []format.BlobEntry, wp *writePolicy) (f *os.File, skipped bool, err error) {
 	if wp != nil && wp.overwrite {
-		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
-			return nil, false, err
+		if _, statErr := os.Lstat(dest); statErr == nil {
+			if err := unlinkExisting("file", dest); err != nil {
+				wp.recordOverwriteBlocked("file", dest, err)
+				return nil, true, nil
+			}
+		} else if !os.IsNotExist(statErr) {
+			return nil, false, statErr
 		}
 	} else if resumed, found := existingFileStatus(dest, e, entries); found {
 		if wp != nil {

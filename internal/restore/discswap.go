@@ -300,6 +300,11 @@ func (m *Manifest) Resumed() int { return m.wp.resumed }
 // this build does not restore its entry type.
 func (m *Manifest) Unsupported() []UnsupportedEntry { return m.wp.unsupported }
 
+// OverwriteBlocked lists every path --overwrite could not replace,
+// because removing what stood there failed. Each one also counts in
+// Skipped.
+func (m *Manifest) OverwriteBlocked() []OverwriteBlockedEntry { return m.wp.overwriteBlocked }
+
 // fileAlreadyRestored reports whether dest, an existing regular file,
 // already holds e's data: either its size and mtime match e exactly, the
 // way applyMetadata leaves a file this restore wrote itself, or its
