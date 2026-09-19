@@ -19,10 +19,22 @@ import (
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default.
 const defaultRetryUnstable = 1
 
-// errEntryVanished marks a path that was present in a directory listing
-// but gone by the time the writer opened or stat'd it. The caller skips
-// the path and reports it; it does not abort the commit.
-var errEntryVanished = errors.New("object: entry vanished during commit")
+// skipErr marks a source path the walker could not commit: gone since
+// its parent directory was listed, or blocked by an open, read or
+// readdir error such as EACCES or EIO. The caller skips the path and
+// reports reason; it does not abort the commit. An error on the source
+// root itself is never wrapped this way, so it stays a hard error.
+type skipErr struct {
+	reason string
+}
+
+func (e *skipErr) Error() string { return e.reason }
+
+// asSkip reports whether err is a skip-marked source-read failure, and
+// its reason text.
+func asSkip(err error) (*skipErr, bool) {
+	return errors.AsType[*skipErr](err)
+}
 
 // Fixed header lengths of the four object kinds: the common header, the
 // object header, and each kind's own fixed body, before any variable
@@ -45,10 +57,13 @@ type Summary struct {
 	// caught: the file changed while it was being read, and the writer
 	// stored the content it read and set the UNSTABLE flag.
 	Unstable []UnstablePath
-	// Skipped lists every path the writer could not commit because it
-	// vanished between being listed and being opened. The commit
-	// continues without it.
-	Skipped []string
+	// Skipped lists every path the writer could not commit: it vanished
+	// between being listed and being opened, or an open, read or
+	// readdir error blocked it (for example EACCES or EIO). The commit
+	// continues without it. Any chunk already staged for a skipped
+	// file's content stays in staging as an orphan; gc reclaims it like
+	// any other object nothing references.
+	Skipped []SkippedPath
 	// Reachable lists every chunk, blob and tree id this commit's root
 	// tree reaches, whether or not the writer actually staged its file.
 	// A caller that needs the commit's full object graph must read it
@@ -56,6 +71,11 @@ type Summary struct {
 	// OnDisc reported as already on a disc never gets a staging file to
 	// walk into.
 	Reachable []ID
+	// Rewritten lists every object id whose staging file already existed
+	// under the right name but did not hold the right bytes (for
+	// example a file truncated by a prior crash). The writer rewrote it
+	// in place; the caller should warn about each one.
+	Rewritten []ID
 }
 
 // UnstablePath names one path the in-flight change detection flagged, and
@@ -65,6 +85,12 @@ type Summary struct {
 type UnstablePath struct {
 	Path   string
 	Branch string
+}
+
+// SkippedPath names one path the writer could not commit, and why.
+type SkippedPath struct {
+	Path   string
+	Reason string
 }
 
 // Writer commits one source directory tree into a staging directory as
@@ -92,6 +118,11 @@ type Writer struct {
 	// caller replaces it to make a stat differ deterministically,
 	// without touching the real filesystem clock. Defaults to os.Lstat.
 	Stat func(path string) (os.FileInfo, error)
+
+	// Open is the seam every regular file's content read goes through.
+	// A caller replaces it to inject an open or mid-read error, without
+	// touching the real filesystem. Defaults to os.Open.
+	Open func(path string) (io.ReadCloser, error)
 
 	// Progress reports bytes of regular-file content chunked during
 	// Commit. A nil Progress reports nothing.
@@ -132,6 +163,7 @@ func NewWriter(stagingDir string) *Writer {
 		RestatAfterRead: true,
 		RetryUnstable:   defaultRetryUnstable,
 		Stat:            os.Lstat,
+		Open:            func(path string) (io.ReadCloser, error) { return os.Open(path) },
 	}
 }
 
@@ -221,18 +253,15 @@ func regularFileBytes(root string) int64 {
 func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 	des, err := os.ReadDir(dirPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return ID{}, errEntryVanished
-		}
-		return ID{}, err
+		return ID{}, &skipErr{reason: err.Error()}
 	}
 
 	entries := make([]format.TreeEntry, 0, len(des))
 	for _, de := range des {
 		childPath := filepath.Join(dirPath, de.Name())
-		te, vanished, err := w.commitEntry(childPath, de.Name(), sum)
-		if vanished {
-			sum.Skipped = append(sum.Skipped, w.relPath(childPath))
+		te, err := w.commitEntry(childPath, de.Name(), sum)
+		if se, ok := asSkip(err); ok {
+			sum.Skipped = append(sum.Skipped, SkippedPath{Path: w.relPath(childPath), Reason: se.reason})
 			continue
 		}
 		if err != nil {
@@ -245,16 +274,14 @@ func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 }
 
 // commitEntry builds the tree entry for one directory child, writing
-// whatever chunk, blob or tree objects its content needs. The second
-// return value reports that path vanished after the directory listing
-// named it; the caller skips it rather than failing the commit.
-func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry, bool, error) {
+// whatever chunk, blob or tree objects its content needs. A path that
+// vanished after the directory listing named it, or that an open, read
+// or readdir error blocked, comes back as a skipErr; the caller skips it
+// rather than failing the commit.
+func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry, error) {
 	info, err := w.Stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return format.TreeEntry{}, true, nil
-		}
-		return format.TreeEntry{}, false, err
+		return format.TreeEntry{}, &skipErr{reason: err.Error()}
 	}
 
 	te := format.TreeEntry{
@@ -268,21 +295,15 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 	case mode.IsDir():
 		te.EntryType = format.EntryTypeDirectory
 		id, err := w.commitDir(path, sum)
-		if errors.Is(err, errEntryVanished) {
-			return te, true, nil
-		}
 		if err != nil {
-			return te, false, err
+			return te, err
 		}
 		te.ContentID = id
 	case mode.IsRegular():
 		te.EntryType = format.EntryTypeRegular
 		id, size, unstable, err := w.commitFile(path, info, sum)
-		if errors.Is(err, errEntryVanished) {
-			return te, true, nil
-		}
 		if err != nil {
-			return te, false, err
+			return te, err
 		}
 		te.ContentID = id
 		te.Size = uint64(size)
@@ -294,10 +315,7 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 		te.EntryType = format.EntryTypeSymlink
 		target, err := os.Readlink(path)
 		if err != nil {
-			if os.IsNotExist(err) {
-				return te, true, nil
-			}
-			return te, false, err
+			return te, &skipErr{reason: err.Error()}
 		}
 		te.TLVs = []format.TLV{{Type: format.TLVTypeSymlinkTarget, Payload: []byte(target)}}
 	case mode&os.ModeNamedPipe != 0:
@@ -312,9 +330,9 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 		}
 		te.RdevMajor, te.RdevMinor = rdevMajorMinor(info)
 	default:
-		return te, false, fmt.Errorf("object: unsupported entry type for %s", path)
+		return te, fmt.Errorf("object: unsupported entry type for %s", path)
 	}
-	return te, false, nil
+	return te, nil
 }
 
 // commitFile reads and chunks path, applying in-flight change detection:
@@ -359,16 +377,16 @@ func (w *Writer) commitFile(path string, before os.FileInfo, sum *Summary) (id I
 }
 
 // readAndChunk chunks path, writes every new chunk and one blob over
-// their ids, and returns the blob id and the file's size. A file that
-// vanished after its caller opened it (removed between listing and open)
-// is reported as errEntryVanished.
+// their ids, and returns the blob id and the file's size. An open error,
+// or a read error partway through the file (for example a file that
+// vanished after its caller opened it, or an EIO mid-read), is reported
+// as a skipErr: the caller drops the whole entry rather than staging a
+// blob over truncated content. Any chunk already written to staging
+// before the failure stays there as an orphan.
 func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
-	f, err := os.Open(path)
+	f, err := w.Open(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return ID{}, 0, errEntryVanished
-		}
-		return ID{}, 0, err
+		return ID{}, 0, &skipErr{reason: err.Error()}
 	}
 	defer func() { _ = f.Close() }()
 
@@ -381,7 +399,7 @@ func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
 			break
 		}
 		if err != nil {
-			return ID{}, 0, err
+			return ID{}, 0, &skipErr{reason: err.Error()}
 		}
 		id, err := w.writeChunk(chunk, sum)
 		if err != nil {
@@ -428,11 +446,14 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 	if _, err := c.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, mismatched, err := writeObjectFile(w.objectPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
+	if mismatched {
+		sum.Rewritten = append(sum.Rewritten, id)
+	}
 	return id, nil
 }
 
@@ -469,11 +490,14 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	if _, err := b.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, mismatched, err := writeObjectFile(w.objectPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
+	if mismatched {
+		sum.Rewritten = append(sum.Rewritten, id)
+	}
 	return id, nil
 }
 
@@ -505,11 +529,14 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	if _, err := t.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, mismatched, err := writeObjectFile(w.objectPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
+	if mismatched {
+		sum.Rewritten = append(sum.Rewritten, id)
+	}
 	return id, nil
 }
 
@@ -554,11 +581,14 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	if _, err := s.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.snapshotPath(id), buf)
+	isNew, mismatched, err := writeObjectFile(w.snapshotPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
+	if mismatched {
+		sum.Rewritten = append(sum.Rewritten, id)
+	}
 	return id, nil
 }
 
@@ -601,39 +631,86 @@ func commonHeader(kind format.Magic, headerLen int) format.CommonHeader {
 }
 
 // writeObjectFile writes data to path through a temp file and a rename,
-// so a crash leaves no partial object. It does nothing and reports false
-// when an object with this name already exists: two objects sharing a
-// content id share identical bytes, so there is nothing to add.
-func writeObjectFile(path string, data []byte) (isNew bool, err error) {
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
-	} else if !os.IsNotExist(err) {
-		return false, err
+// so a crash leaves no partial object. When an object with this name
+// already exists, its bytes are compared against data, size first and
+// then content, before it is trusted: two objects sharing a content id
+// share identical bytes, so a real match needs no write. A file that
+// exists under the right name but does not hold the same bytes (for
+// example truncated by a prior crash) is corrupt; writeObjectFile
+// rewrites it through the same temp-file-and-rename path and reports
+// mismatched, so the caller can warn the operator by the object's id.
+func writeObjectFile(path string, data []byte) (isNew bool, mismatched bool, err error) {
+	if fi, statErr := os.Stat(path); statErr == nil {
+		same, cmpErr := existingObjectMatches(path, fi, data)
+		if cmpErr != nil {
+			return false, false, cmpErr
+		}
+		if same {
+			return false, false, nil
+		}
+		mismatched = true
+	} else if !os.IsNotExist(statErr) {
+		return false, false, statErr
 	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, err
+		return false, mismatched, err
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
-		return false, err
+		return false, mismatched, err
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return false, err
+		return false, mismatched, err
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		return false, err
+		return false, mismatched, err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
+		return false, mismatched, err
+	}
+	return true, mismatched, nil
+}
+
+// existingObjectMatches reports whether the file at path, whose
+// os.Stat result is fi, holds exactly data. The size is compared first;
+// only a size match reads the file, in fixed-size chunks against the
+// data already held in memory, so comparing one object never holds a
+// second full copy of a large payload.
+func existingObjectMatches(path string, fi os.FileInfo, data []byte) (bool, error) {
+	if fi.Size() != int64(len(data)) {
+		return false, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	defer func() { _ = f.Close() }()
+
+	buf := make([]byte, 64*1024)
+	var offset int
+	for offset < len(data) {
+		n, err := f.Read(buf)
+		if n > 0 {
+			if !bytes.Equal(buf[:n], data[offset:offset+n]) {
+				return false, nil
+			}
+			offset += n
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	return offset == len(data), nil
 }
 
 // countObject adds id to sum as new or existing. id counts as existing

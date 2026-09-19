@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // runCmd runs one command in process and returns its exit code and the
@@ -207,6 +208,60 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 	}
 	if !strings.Contains(out, "unstable: 1, skipped: 0") {
 		t.Fatalf("output = %q, want the unstable/skipped count line", out)
+	}
+}
+
+// TestCommitRecordsStagedBeforeMovingRef replaces refs.txt with a
+// directory, so the ref move step fails after Commit itself succeeds.
+// It asserts that every object Commit reached, and the snapshot object
+// itself, already carry a Staged state log record. commit must record
+// every new object as STAGED before it moves the ref: a crash or a
+// failure between the two steps must never leave a ref pointing at a
+// snapshot whose objects pack cannot find, since pack only ever places
+// an id it finds STAGED.
+func TestCommitRecordsStagedBeforeMovingRef(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	// A directory in refs.txt's place makes writeRefs's os.WriteFile
+	// fail, without needing a permission trick that root would ignore.
+	if err := os.MkdirAll(filepath.Join(repo, "refs.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	if code != 1 {
+		t.Fatalf("commit: exit %d, want 1 (the ref move must fail); output: %s", code, out)
+	}
+
+	cfg, err := readConfig(configPath(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapEntries, err := os.ReadDir(filepath.Join(cfg.StagingDir, "snapshots"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapEntries) != 1 {
+		t.Fatalf("staging/snapshots has %d entries, want exactly 1", len(snapEntries))
+	}
+	snapID, err := object.ParseID(snapEntries[0].Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := stage.Open(cfg.StagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := l.Get(snapID)
+	if !ok || rec.State != stage.Staged {
+		t.Fatalf("snapshot %s state = %+v, ok=%v, want a Staged record despite the ref move failing", snapEntries[0].Name(), rec, ok)
 	}
 }
 

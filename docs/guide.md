@@ -82,8 +82,14 @@ staged: 7 objects, 3001388 bytes
   The file is committed and flagged. Commit again when the source is
   quiet. Exit code 1 means that a path was unstable or skipped; the
   snapshot is still committed.
-- A `skipped <PATH>` line names a file that was deleted during the scan.
-  No action is necessary.
+- A `skipped <PATH>: <REASON>` line names a file or directory that
+  vanished during the scan, or that an open, read or permission error
+  blocked. The rest of the tree still commits. Fix the reason (for
+  example, restore read permission) and commit again to include it.
+- A `warning: object <ID> was staged but corrupt; rewritten` line names
+  a staged object file that existed but did not hold the right bytes
+  (for example, truncated by an earlier crash). Commit rewrote it; no
+  action is necessary.
 
 To commit a different directory one time, add it as an argument:
 `noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>`.

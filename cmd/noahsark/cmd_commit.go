@@ -97,12 +97,17 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 1
 	}
 
-	if err := updateRef(repoDir, *ref, snapID); err != nil {
+	// Every new object is recorded STAGED before the ref moves to point
+	// at this snapshot. A crash between the two steps must never leave
+	// a ref that names a snapshot whose objects have no state log
+	// record: pack only places an id it finds STAGED, so an object with
+	// no record is never packed.
+	if err := markStaged(cfg.StagingDir, snapID, sum.Reachable); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 
-	if err := markStaged(cfg.StagingDir, snapID, sum.Reachable); err != nil {
+	if err := updateRef(repoDir, *ref, snapID); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
@@ -110,11 +115,14 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
+	for _, id := range sum.Rewritten {
+		_, _ = fmt.Fprintf(stdout, "warning: object %s was staged but corrupt; rewritten\n", id.TextForm())
+	}
 	for _, u := range sum.Unstable {
 		_, _ = fmt.Fprintf(stdout, "unstable %s branch=%s\n", u.Path, u.Branch)
 	}
 	for _, p := range sum.Skipped {
-		_, _ = fmt.Fprintf(stdout, "skipped %s\n", p)
+		_, _ = fmt.Fprintf(stdout, "skipped %s: %s\n", p.Path, p.Reason)
 	}
 	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
 
