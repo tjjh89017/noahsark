@@ -613,6 +613,11 @@ during an append.
 
 An object with no record after a truncated replay is treated as STAGED.
 
+Each append to the state log reports an error from the write or from the
+close of the log file. The command then stops and does not act on that record.
+The tool reports a torn tail as a warning and truncates it before the next
+append.
+
 ### 4.4 What a partial `pack` leaves behind
 
 `pack` writes local files only. It touches no disc, so an interrupted `pack`
@@ -646,6 +651,10 @@ reason 1, deletes the partial plan directory, and takes the next `run_seq`.
 5. GC never deletes a burn plan that has not reached CLEAN. GC does delete a
    partial plan directory whose `run_seq` appears in no PACKED record.
 6. `gc --dry-run` prints what it would delete and how many bytes it would free.
+7. `gc` syncs the GC-ELIGIBLE record to disk before it deletes the staged
+   file, then marks the object DELETED. A sync error stops `gc` before the
+   delete, so a crash can never take the record away and leave the staged
+   file gone.
 
 ---
 
@@ -1187,6 +1196,24 @@ Triggers, evaluated after every burn:
 
 `health` reports the trigger metrics, so a consolidation is visible before it
 is needed.
+
+### 8.8 Integrity checks and durable recording
+
+`pack` checks the content id of every staged object it selects, so a corrupt
+staged file cannot reach a disc. It checks a chunk while it copies the
+chunk's bytes into the run tree.
+
+When a chunk fails this check, `pack` removes the part-written run tree
+under `--out`. It records no object as PACKED, saves no ledger, and uses no
+run or disc sequence number for that attempt. The operator runs `commit`
+again to rewrite the corrupt staged object, then runs `pack` again.
+
+`pack` syncs every file and every directory of the run tree it wrote, in one
+pass, once the write is complete. It marks the run's objects PACKED and
+saves the disc and ref ledgers only after that sync pass succeeds, so the
+state log never claims a run the local disk does not hold. A sync error is a
+failure at run time: `pack` records nothing, and the run and disc sequence
+numbers stay free for the next `pack`.
 
 ---
 
@@ -3755,6 +3782,9 @@ names the run seq and the disc uuid.
 | 20 | A disc is substituted | Refuse the disc. Report the expected and found value. |
 | 21 | Media generation goes out of production | Migrate the library. |
 | 22 | A disc reaches `scrub.max_disc_age` | Proactive re-burn. |
+| 23 | A staged object fails its content id check during `pack` | `pack` removes the part-written run tree and records nothing. The operator runs `commit` again to rewrite the corrupt staged object, then runs `pack` again. |
+| 24 | A sync error during `pack` | `pack` records no object as PACKED and saves no ledger. The run and disc sequence numbers stay free. The operator runs `pack` again. |
+| 25 | A sync error in `gc` | `gc` stops before the delete. The object stays GC-ELIGIBLE and the staged file stays in place. The operator runs `gc` again. |
 
 ---
 
