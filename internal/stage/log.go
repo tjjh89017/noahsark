@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -163,18 +164,46 @@ func decodeRecord(buf []byte) (Record, bool) {
 	return r, ok
 }
 
+// tailState is one companion file's replay outcome: whether replay
+// stopped at a bad CRC before reaching the end of the file, and how far
+// short of the end it stopped. A writer that appends to this file must
+// first cut off that torn tail (fixTornTail), so a new, good record
+// never lands past bytes replay will always stop before and so never
+// reach.
+type tailState struct {
+	validLen     int64
+	truncated    bool
+	ignoredBytes int64
+	fixed        bool
+}
+
 // Log is one repository's staging state log: the replayed current state
 // of every object it has seen, plus the open file new records append to.
 type Log struct {
 	path      string
 	current   map[object.ID]Record
 	nextSeq   uint64
+	stateTail tailState
+
 	cleanPath string
 	cleanAt   map[object.ID]time.Time
-	burnPath  string
-	burnAt    map[[16]byte]time.Time
-	fedPath   string
-	fedDiscs  map[[16]byte]bool
+	cleanTail tailState
+
+	burnPath string
+	burnAt   map[[16]byte]time.Time
+	burnTail tailState
+
+	fedPath  string
+	fedDiscs map[[16]byte]bool
+	fedTail  tailState
+}
+
+// Truncated reports whether Open's replay of state.db stopped at a bad
+// CRC before reaching the file's end, and how many trailing bytes it
+// ignored. OPERATIONS.md requires the tool to report a truncated log;
+// every command that opens the log checks this and prints that warning.
+func (l *Log) Truncated() (truncated bool, ignoredBytes int64) {
+	return l.stateTail.truncated, l.stateTail.ignoredBytes
 }
 
 // Open reads and replays stagingDir's state.db, if one exists, and
@@ -200,7 +229,8 @@ func Open(stagingDir string) (*Log, error) {
 			return nil, fmt.Errorf("stage: %w", err)
 		}
 	} else {
-		for off := 0; off+recordLen <= len(data); off += recordLen {
+		off := 0
+		for ; off+recordLen <= len(data); off += recordLen {
 			rec, ok := decodeRecord(data[off : off+recordLen])
 			if !ok {
 				break
@@ -209,6 +239,11 @@ func Open(stagingDir string) (*Log, error) {
 			if rec.Sequence >= l.nextSeq {
 				l.nextSeq = rec.Sequence + 1
 			}
+		}
+		l.stateTail.validLen = int64(off)
+		if off < len(data) {
+			l.stateTail.truncated = true
+			l.stateTail.ignoredBytes = int64(len(data) - off)
 		}
 	}
 	if err := l.loadCleanTimes(); err != nil {
@@ -221,6 +256,27 @@ func Open(stagingDir string) (*Log, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// fixTornTail cuts path back to tail.validLen when Open found a torn
+// tail past the last valid record it replayed, so the append that
+// follows lands right after the newest record replay can actually
+// reach, instead of after garbage no replay will ever get past. It does
+// nothing once it has already fixed this Log's own view of path, and
+// nothing at all when Open found no torn tail.
+func fixTornTail(path string, tail *tailState) error {
+	if tail.fixed {
+		return nil
+	}
+	tail.fixed = true
+	if !tail.truncated {
+		return nil
+	}
+	if err := os.Truncate(path, tail.validLen); err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	tail.truncated = false
+	return nil
 }
 
 // Get returns the current record for id and whether one exists. An id
@@ -410,22 +466,18 @@ func (l *Log) CleanTime(id object.ID) (time.Time, bool) {
 // RecordBurnTime appends a record to the burn time companion log,
 // naming when "disc burned" ran for discUUID.
 func (l *Log) RecordBurnTime(discUUID [16]byte) error {
+	if err := fixTornTail(l.burnPath, &l.burnTail); err != nil {
+		return err
+	}
+
 	buf := make([]byte, burnTimeRecordLen)
 	copy(buf[0:16], discUUID[:])
 	binary.LittleEndian.PutUint64(buf[16:24], uint64(time.Now().UnixNano()))
 	crc := crc32.Checksum(buf[0:24], crc32cTable)
 	binary.LittleEndian.PutUint32(buf[24:28], crc)
 
-	if err := os.MkdirAll(filepath.Dir(l.burnPath), 0o755); err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	f, err := os.OpenFile(l.burnPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(buf); err != nil {
-		return fmt.Errorf("stage: %w", err)
+	if err := writeRecord(l.burnPath, buf); err != nil {
+		return err
 	}
 
 	l.burnAt[discUUID] = time.Unix(0, int64(binary.LittleEndian.Uint64(buf[16:24])))
@@ -450,7 +502,8 @@ func (l *Log) loadBurnTimes() error {
 		}
 		return fmt.Errorf("stage: %w", err)
 	}
-	for off := 0; off+burnTimeRecordLen <= len(data); off += burnTimeRecordLen {
+	off := 0
+	for ; off+burnTimeRecordLen <= len(data); off += burnTimeRecordLen {
 		rec := data[off : off+burnTimeRecordLen]
 		crc := binary.LittleEndian.Uint32(rec[24:28])
 		if crc != crc32.Checksum(rec[0:24], crc32cTable) {
@@ -460,6 +513,11 @@ func (l *Log) loadBurnTimes() error {
 		copy(discUUID[:], rec[0:16])
 		nanos := int64(binary.LittleEndian.Uint64(rec[16:24]))
 		l.burnAt[discUUID] = time.Unix(0, nanos)
+	}
+	l.burnTail.validLen = int64(off)
+	if off < len(data) {
+		l.burnTail.truncated = true
+		l.burnTail.ignoredBytes = int64(len(data) - off)
 	}
 	return nil
 }
@@ -472,21 +530,16 @@ func (l *Log) RecordFedDisc(discUUID [16]byte) error {
 	if l.fedDiscs[discUUID] {
 		return nil
 	}
+	if err := fixTornTail(l.fedPath, &l.fedTail); err != nil {
+		return err
+	}
 	buf := make([]byte, fedDiscRecordLen)
 	copy(buf[0:16], discUUID[:])
 	crc := crc32.Checksum(buf[0:16], crc32cTable)
 	binary.LittleEndian.PutUint32(buf[16:20], crc)
 
-	if err := os.MkdirAll(filepath.Dir(l.fedPath), 0o755); err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	f, err := os.OpenFile(l.fedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(buf); err != nil {
-		return fmt.Errorf("stage: %w", err)
+	if err := writeRecord(l.fedPath, buf); err != nil {
+		return err
 	}
 
 	l.fedDiscs[discUUID] = true
@@ -510,7 +563,8 @@ func (l *Log) loadFedDiscs() error {
 		}
 		return fmt.Errorf("stage: %w", err)
 	}
-	for off := 0; off+fedDiscRecordLen <= len(data); off += fedDiscRecordLen {
+	off := 0
+	for ; off+fedDiscRecordLen <= len(data); off += fedDiscRecordLen {
 		rec := data[off : off+fedDiscRecordLen]
 		crc := binary.LittleEndian.Uint32(rec[16:20])
 		if crc != crc32.Checksum(rec[0:16], crc32cTable) {
@@ -520,25 +574,68 @@ func (l *Log) loadFedDiscs() error {
 		copy(discUUID[:], rec[0:16])
 		l.fedDiscs[discUUID] = true
 	}
+	l.fedTail.validLen = int64(off)
+	if off < len(data) {
+		l.fedTail.truncated = true
+		l.fedTail.ignoredBytes = int64(len(data) - off)
+	}
+	return nil
+}
+
+// appendCloser is the file-like value openAppend returns: enough to
+// write one record and close it. *os.File satisfies it.
+type appendCloser interface {
+	io.Writer
+	Close() error
+}
+
+// openAppend opens path for appending, creating it and its parent
+// directory as needed. Tests replace it to inject a Close failure a
+// record's writer must still surface.
+var openAppend = func(path string) (appendCloser, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+}
+
+// writeRecord appends buf to path and reports whether it is durably
+// written. A record is not durable until Close succeeds: a buffered
+// write can still be sitting in memory when Write returns, so every one
+// of state.db's four appenders (append, recordCleanTime, RecordBurnTime,
+// RecordFedDisc) goes through this one helper, and none of them may
+// treat a record as written, or update its own in-memory state, until
+// writeRecord itself returns nil. gc deletes a staged object's bytes
+// only after its DELETED record is durable; a swallowed Close error
+// would let it delete bytes a crash could still lose the record of.
+func writeRecord(path string, buf []byte) error {
+	f, err := openAppend(path)
+	if err != nil {
+		return fmt.Errorf("stage: %w", err)
+	}
+	_, writeErr := f.Write(buf)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return fmt.Errorf("stage: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("stage: %w", closeErr)
+	}
 	return nil
 }
 
 // append writes one record to state.db and updates the replayed state.
 func (l *Log) append(rec Record) error {
+	if err := fixTornTail(l.path, &l.stateTail); err != nil {
+		return err
+	}
+
 	rec.Sequence = l.nextSeq
 	buf := make([]byte, recordLen)
 	rec.encode(buf)
 
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(buf); err != nil {
-		return fmt.Errorf("stage: %w", err)
+	if err := writeRecord(l.path, buf); err != nil {
+		return err
 	}
 
 	l.current[rec.ContentID] = rec
@@ -557,7 +654,8 @@ func (l *Log) loadCleanTimes() error {
 		}
 		return fmt.Errorf("stage: %w", err)
 	}
-	for off := 0; off+cleanTimeRecordLen <= len(data); off += cleanTimeRecordLen {
+	off := 0
+	for ; off+cleanTimeRecordLen <= len(data); off += cleanTimeRecordLen {
 		rec := data[off : off+cleanTimeRecordLen]
 		crc := binary.LittleEndian.Uint32(rec[40:44])
 		if crc != crc32.Checksum(rec[0:40], crc32cTable) {
@@ -568,28 +666,29 @@ func (l *Log) loadCleanTimes() error {
 		nanos := int64(binary.LittleEndian.Uint64(rec[32:40]))
 		l.cleanAt[id] = time.Unix(0, nanos)
 	}
+	l.cleanTail.validLen = int64(off)
+	if off < len(data) {
+		l.cleanTail.truncated = true
+		l.cleanTail.ignoredBytes = int64(len(data) - off)
+	}
 	return nil
 }
 
 // recordCleanTime appends one record to the clean time companion log
 // and updates the in-memory record MarkClean and CleanTime share.
 func (l *Log) recordCleanTime(id object.ID, when time.Time) error {
+	if err := fixTornTail(l.cleanPath, &l.cleanTail); err != nil {
+		return err
+	}
+
 	buf := make([]byte, cleanTimeRecordLen)
 	copy(buf[0:32], id[:])
 	binary.LittleEndian.PutUint64(buf[32:40], uint64(when.UnixNano()))
 	crc := crc32.Checksum(buf[0:40], crc32cTable)
 	binary.LittleEndian.PutUint32(buf[40:44], crc)
 
-	if err := os.MkdirAll(filepath.Dir(l.cleanPath), 0o755); err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	f, err := os.OpenFile(l.cleanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(buf); err != nil {
-		return fmt.Errorf("stage: %w", err)
+	if err := writeRecord(l.cleanPath, buf); err != nil {
+		return err
 	}
 
 	l.cleanAt[id] = when
