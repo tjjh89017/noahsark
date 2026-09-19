@@ -150,7 +150,8 @@ dvd+rw-mediainfo <DEVICE> | grep 'Free Blocks'
 ```
 
 If the block count is less than the preset, add
-`--physical-capacity=<BLOCK_COUNT>` to the `pack` command.
+`--physical-capacity=<BLOCK_COUNT>` to the `pack` command. `pack` refuses a
+`--capacity` above `--physical-capacity`.
 
 Expected result: a line `packed run 1 on disc <seq> into <DISC_DIR>`, a
 `next steps:` block with the commands of steps 5 to 7 filled in, and the
