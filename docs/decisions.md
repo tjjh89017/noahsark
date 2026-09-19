@@ -503,8 +503,8 @@ later run's copy of DISCS (and `disc list`) sees it from the next pack
 on.
 
 Burning the folder `pack` produces directly, without running `image
-build`, is a documented, supported use: see README.md, "Burning
-without UDF".
+build`, is a documented, supported use: see docs/guide.md, "Burn
+the disc".
 
 ## 7.6 In-flight change detection
 
@@ -572,7 +572,7 @@ packing guidance has a number to check against without waiting for a
 This build has no `burn` or `close` command: the operator burns with
 `growisofs` by hand, following the command `pack` prints. Something
 still has to tell the staging state machine that the burn happened, and
-it cannot be a disc-uuid check inside `verify`: the walkthrough has an
+it cannot be a disc-uuid check inside `verify`: the guide has an
 operator loop-mount and verify the image before burning it, to catch a
 build problem early, and that loop-mounted tree's disc uuid is already
 in the ledger, because `pack` writes the ledger, not a burn step. A

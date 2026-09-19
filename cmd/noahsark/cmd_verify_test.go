@@ -55,7 +55,7 @@ func copyTree(t *testing.T, src, dst string) {
 
 // TestVerifyLeavesObjectsPackedBeforeDiscBurned runs verify on a
 // byte-identical copy of the packed tree, outside staging, standing in
-// for the walkthrough's loop-mount-before-burning check: since nothing
+// for the guide's loop-mount-before-burning check: since nothing
 // has run "disc burned" yet, verify must leave every object PACKED and
 // warn that the disc is not marked burned, even though its uuid is
 // already in the ledger.

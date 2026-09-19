@@ -4,7 +4,7 @@
 # genisoimage (falling back to xorriso when genisoimage is missing),
 # loop-mounts it read-only, and runs the same verify, decoder and
 # restore checks the other scenarios run against a UDF mount. It also
-# builds a second, Joliet-only ISO to prove README.md's warning against
+# builds a second, Joliet-only ISO to prove the docs/guide.md warning against
 # Joliet: Joliet truncates the 68-character object names, so an object
 # lookup on that mount must fail. A third image, plain ISO 9660 level 4
 # with no Rock Ridge, proves the opposite case: this runner's
@@ -12,8 +12,8 @@
 # (NOAHSARK, README.txt, FORMAT.txt, DISC.bin and so on), and the
 # readers still accept it.
 #
-# The main image in this scenario still uses README.md's "Burning
-# without UDF" convenience path (Rock Ridge, not FORMAT.md's Phase 3
+# The main image in this scenario still uses the docs/guide.md
+# "Burn the disc" directory alternative (Rock Ridge, not FORMAT.md's Phase 3
 # profile 2): Rock Ridge keeps exact case, so iso_assert_fixed_files can
 # compare the mount against the packed tree byte for byte. See lib.sh
 # for build_binary and the media_* helpers, and assert.sh for
