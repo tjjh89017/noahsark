@@ -616,7 +616,12 @@ once `staging.retain_after_clean` has passed since its CLEAN time, and
 only a GC-ELIGIBLE object is ever deleted, after confirming its
 presence in the cached INDEX of the run the state log says holds it; an
 object whose run is not cached is left alone and reported separately,
-never deleted on trust. OPERATIONS.md's own CLI reference (16.20) gives
+never deleted on trust. The GC-ELIGIBLE record goes to the disc before
+the staged file is removed: that one append syncs before it closes, so
+a crash can never take the record away and leave the bytes gone. No
+other append syncs, because `commit` writes one record per object and a
+sync per object would set its pace; a lost tail there only replays as
+an object still STAGED, which the next `pack` heals. OPERATIONS.md's own CLI reference (16.20) gives
 `gc` only `--dry-run` and `--force-after`; this build adds
 `--keep-snapshots` alongside them, since 17.12 already says `gc`
 applies `cache.snapshot_depth`, and `--keep-snapshots` is that same
@@ -695,6 +700,38 @@ construction is exact and needs no search: for every selected tree,
 blob or snapshot, a direct child absent from the selected set is
 necessarily already PACKED (by construction), and its recorded run_seq
 from the state log is the Prereqs row's `run_seq`.
+
+`pack` checks that every staged object really holds the content its
+name promises, so corruption in the staging store cannot reach a disc.
+Where the check runs follows from what each kind costs to read. A tree,
+a blob and a snapshot are small and the selection walk decodes them
+anyway, so they are checked there. A chunk is the bulk of the data and
+the walk needs nothing out of it, so it is checked while the run copies
+it into the output tree: the payload streams through a decompressor
+into a hash in the same pass that writes it, so the check adds no read
+and holds no more than one chunk's decoder window. A length that
+differs from the length selection sized the object by is the same fault
+as a payload that hashes to another id. `pack` still reads a chunk once
+more, to hash the staged file for its `INDEX` row; that hash orders the
+role 13 rows, so it must be known before the run is laid out.
+
+A chunk that fails this check fails after part of the run is already
+written. `pack` then removes the whole `NOAHSARK` tree it wrote under
+`--out` and returns. Nothing past the write runs, so no object is
+recorded PACKED, no ledger is saved, and the run and disc sequence
+numbers stay free for the next `pack`. Parity is computed over the same
+stream and is removed with the rest.
+
+`pack` flushes what it wrote before it records anything. One pass at
+the end of the write syncs every file and every directory of the run
+tree and returns the first error it meets. Only then does `pack` mark
+its objects PACKED and save the ledgers, so the state log can never
+claim a run the local disk does not hold. The flush is one pass rather
+than one per file as each file closes: with FEC on, the measured pack
+of 512 MiB took 13.5 s that way against 22.1 s per file. The flush is
+not free either way, since it waits for bytes an unflushed `pack` only
+left to background writeback: the same 512 MiB packs in 5.3 s with no
+flush at all.
 
 ## 11.3 DISCS and 12. Disc lifecycle, closing and appending
 

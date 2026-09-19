@@ -333,8 +333,65 @@ func TestPackRefusesATruncatedStagedChunk(t *testing.T) {
 		t.Fatalf("Pack error = %q, want it to name the chunk id %s", err, chunkID.TextForm())
 	}
 
+	assertNoRunAndNothingPacked(t, outDir, stagingDir)
+}
+
+// TestPackRefusesAStagedChunkWithAFlippedByte flips one payload byte of
+// a committed chunk, leaving its length alone, standing in for silent
+// corruption of the staging store. Nothing before the run's own copy
+// pass reads a chunk's payload, so only that pass can catch this. Pack
+// must refuse the chunk by name, take its part-written run away again,
+// and record nothing.
+func TestPackRefusesAStagedChunkWithAFlippedByte(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapID := commitNamedFixture(t, stagingDir, "only")
+	markStagedFromCommit(t, stagingDir, snapID, l)
+
+	chunkID := object.ComputeID([]byte("content of only"))
+	chunkPath := filepath.Join(stagingDir, "objects", chunkID.FanoutByte(), chunkID.TextForm())
+	data, err := os.ReadFile(chunkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)-1] ^= 0xff
+	if err := os.WriteFile(chunkPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	opts := packOpts(stagingDir, snapID, outDir, sectorsFor(50_000_000), 1, l)
+	_, err = Pack(opts)
+	if err == nil {
+		t.Fatal("Pack: expected an error over the flipped byte, got none")
+	}
+	if !strings.Contains(err.Error(), chunkID.TextForm()) {
+		t.Fatalf("Pack error = %q, want it to name the chunk id %s", err, chunkID.TextForm())
+	}
+	if !strings.Contains(err.Error(), "does not match its own content") {
+		t.Fatalf("Pack error = %q, want it to report a content mismatch", err)
+	}
+
+	assertNoRunAndNothingPacked(t, outDir, stagingDir)
+}
+
+// assertNoRunAndNothingPacked checks what a refused pack must leave
+// behind: no run under the output directory, and no Packed record in
+// the state log as it replays from disk.
+func assertNoRunAndNothingPacked(t *testing.T, outDir, stagingDir string) {
+	t.Helper()
 	if entries, statErr := os.ReadDir(outDir); statErr == nil && len(entries) != 0 {
 		t.Fatalf("outDir is not empty, a run was written despite the corrupt chunk")
+	}
+	replayed, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := replayed.CountState(stage.Packed); n != 0 {
+		t.Fatalf("state log holds %d Packed records after a refused pack, want 0", n)
 	}
 }
 

@@ -89,8 +89,9 @@ type fileRow struct {
 	data []byte // bytes to write; nil when filled in later (RUN,
 	// RUN2, checksum, parity, and INDEX itself) or when srcPath names
 	// the bytes instead.
-	srcPath  string // staged file to stream-copy from; set instead of data for a chunk-sized object.
-	path     string // path under OutputDir, relative, forward slashes.
+	srcPath  string    // staged file to stream-copy from; set instead of data for a chunk-sized object.
+	srcID    object.ID // content id the copy of srcPath must hash to.
+	path     string    // path under OutputDir, relative, forward slashes.
 	inStream bool
 }
 
@@ -212,6 +213,7 @@ func Build(opts BuildOptions) (*Result, error) {
 			row.data = h.Bytes
 		} else {
 			row.srcPath = StagedPath(opts.StagingDir, h.ID, h.Kind)
+			row.srcID = h.ID
 		}
 		rows = append(rows, row)
 	}
@@ -416,6 +418,11 @@ func appendFECRows(rows []fileRow, fecEnabled bool) (fecPlan, error) {
 // correction section on how a stripe's columns are laid out across the
 // stream). prog reports bytes of object rows placed, and, when the run
 // carries FEC, stripes encoded; a nil prog reports nothing.
+//
+// Every file it writes, and every directory that received a new entry,
+// is flushed to stable storage before it returns. Pack records the run
+// PACKED right after this call, and that record must never outlive the
+// bytes it claims.
 func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, prog *progress.Reporter) error {
 	rows := plan.rows
 	seqDir := fmt.Sprintf("%010d", runSeq)
@@ -448,7 +455,7 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 			sink = digester
 		}
 		if r.srcPath != "" {
-			if err := copyFileStream(r.srcPath, full, 0o644, sink); err != nil {
+			if err := copyFileStream(r.srcPath, full, 0o644, sink, r.srcID, r.byteLen); err != nil {
 				return err
 			}
 		} else {
@@ -471,7 +478,7 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 	prog.Done()
 
 	if plan.layout == nil {
-		return nil
+		return syncTree(outputDir)
 	}
 	digester.Wait()
 	digester.PadRemaining()
@@ -493,7 +500,10 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
 		return err
 	}
-	return buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths, digester.digests, prog)
+	if err := buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths, digester.digests, prog); err != nil {
+		return err
+	}
+	return syncTree(outputDir)
 }
 
 func padLen(n int) int {

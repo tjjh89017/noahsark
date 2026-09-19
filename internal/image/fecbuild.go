@@ -239,11 +239,27 @@ func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderC
 		}
 	}()
 
+	// Every file this pass creates is closed by closeAll before the
+	// pass reports success, and a Close error is a lost write, so
+	// closeAll returns it instead of dropping it in a defer.
+	var open []*os.File
+	closeAll := func() error {
+		var first error
+		for _, f := range open {
+			if err := f.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+		open = nil
+		return first
+	}
+	defer func() { _ = closeAll() }()
+
 	checksumFile, err := os.Create(checksumPath)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = checksumFile.Close() }()
+	open = append(open, checksumFile)
 	checksumW := bufio.NewWriter(checksumFile)
 
 	parityW := make([]*bufio.Writer, fec.M)
@@ -252,7 +268,7 @@ func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderC
 		if err != nil {
 			return err
 		}
-		defer func() { _ = f.Close() }()
+		open = append(open, f)
 		w := bufio.NewWriter(f)
 		if _, err := w.Write(runHeaderCopy); err != nil {
 			return err
@@ -330,5 +346,5 @@ func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderC
 			return err
 		}
 	}
-	return nil
+	return closeAll()
 }
