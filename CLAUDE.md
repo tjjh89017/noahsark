@@ -9,8 +9,9 @@ authorities. `NOTES.md` is informative.
 NoahsArk is a backup system for write-once Blu-ray optical media. It writes
 content-addressed objects to discs and reads them back years later. It uses
 content-defined chunking for dedup, self-describing on-disc tables, and
-Reed-Solomon self-healing per run. The implementation language is Go. The
-project is spec-only today. No code exists yet.
+Reed-Solomon self-healing per run. The implementation language is Go. The Go
+implementation of Phase 1 exists under `cmd/noahsark` and `internal/`. The
+specification documents stay the design authority.
 
 ## Where the truth lives
 
@@ -148,11 +149,17 @@ This is the layout in use.
 cmd/noahsark          CLI
 internal/format       structures, encode, decode, golden tests, carving reader
 internal/chunker      Gear table, FastCDC
+internal/cache        local cache: blobs, trees, runs, INDEX
 internal/object       chunk, blob, tree, snapshot writers over a source tree
 internal/fec          GF(2^8), Reed-Solomon, checksum column, stream mapping
+internal/plan         restore planning from local cache, disc order
+internal/progress     progress reporter for long-running commands
 internal/image        lay out /NOAHSARK for one run, INDEX, RUN, DISC, REFS,
                       DISCS, decoder.py, parity; mkudffs image build
+internal/repolock     repository advisory lock for concurrent state access
 internal/restore      walk a snapshot from a mounted image, write files
+internal/stage        staging state machine, state log records
+docs/                 guide.md (operator guide), decisions.md, fec-reference.md
 reference/decoder.py  the on-disc reference decoder
 .github/actions/test  composite action
 ```
