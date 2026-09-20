@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -144,14 +145,14 @@ func TestEnsurePackedKeepsProgressPastPacked(t *testing.T) {
 				if err := l.MarkBurned(id, 1, discUUID); err != nil {
 					t.Fatal(err)
 				}
-				if err := l.MarkClean(id); err != nil {
+				if err := l.MarkVerified(id); err != nil {
 					t.Fatal(err)
 				}
 			case GCEligible:
 				if err := l.MarkBurned(id, 1, discUUID); err != nil {
 					t.Fatal(err)
 				}
-				if err := l.MarkClean(id); err != nil {
+				if err := l.MarkVerified(id); err != nil {
 					t.Fatal(err)
 				}
 				if err := l.MarkGCEligible(id); err != nil {
@@ -161,7 +162,7 @@ func TestEnsurePackedKeepsProgressPastPacked(t *testing.T) {
 				if err := l.MarkBurned(id, 1, discUUID); err != nil {
 					t.Fatal(err)
 				}
-				if err := l.MarkClean(id); err != nil {
+				if err := l.MarkVerified(id); err != nil {
 					t.Fatal(err)
 				}
 				if err := l.MarkGCEligible(id); err != nil {
@@ -465,9 +466,9 @@ func TestBurnedCleanTransitions(t *testing.T) {
 	}
 
 	if _, ok := l.CleanTime(id); ok {
-		t.Fatal("CleanTime reported a time before MarkClean ran")
+		t.Fatal("CleanTime reported a time before MarkVerified ran")
 	}
-	if err := l.MarkClean(id); err != nil {
+	if err := l.MarkVerified(id); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok = l.Get(id)
@@ -476,7 +477,7 @@ func TestBurnedCleanTransitions(t *testing.T) {
 	}
 	cleanAt, ok := l.CleanTime(id)
 	if !ok || cleanAt.IsZero() {
-		t.Fatalf("CleanTime after MarkClean: got %v, %v", cleanAt, ok)
+		t.Fatalf("CleanTime after MarkVerified: got %v, %v", cleanAt, ok)
 	}
 
 	// The clean time survives a reopen, replayed from the companion log.
@@ -535,7 +536,7 @@ func TestGCEligibleAndDeleted(t *testing.T) {
 	if err := l.MarkBurned(id, 1, discUUID); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.MarkClean(id); err != nil {
+	if err := l.MarkVerified(id); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.MarkGCEligible(id); err != nil {
@@ -597,5 +598,136 @@ func TestStateOnDisc(t *testing.T) {
 		if got := state.OnDisc(); got != want {
 			t.Errorf("State(%d).OnDisc() = %v, want %v", state, got, want)
 		}
+	}
+}
+
+// TestVerifyCountRisesWithEachVerify checks the verify count of an
+// object over the two verifies of the two identical discs: 0 while
+// Burned, 1 after the first verify, 2 after the second. The object stays
+// Clean, and the count survives a reopen of the log.
+func TestVerifyCountRisesWithEachVerify(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk a"))
+	discUUID := [16]byte{0x5A}
+
+	if err := l.EnsureStaged(id); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkPacked(id, 2, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 2, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok := l.Get(id); !ok || rec.VerifyCount != 0 {
+		t.Fatalf("Burned record %+v, %v, want verify count 0", rec, ok)
+	}
+
+	for want := uint8(1); want <= 2; want++ {
+		if err := l.MarkVerified(id); err != nil {
+			t.Fatal(err)
+		}
+		rec, ok := l.Get(id)
+		if !ok || rec.State != Clean || rec.VerifyCount != want {
+			t.Fatalf("after verify %d: got %+v, %v, want Clean with verify count %d", want, rec, ok, want)
+		}
+	}
+
+	if lowest := l.MinCleanVerifyCountByDisc()[discUUID]; lowest != 2 {
+		t.Fatalf("MinCleanVerifyCountByDisc = %d, want 2", lowest)
+	}
+
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := l2.Get(id)
+	if !ok || rec.State != Clean || rec.VerifyCount != 2 {
+		t.Fatalf("after reopen: got %+v, %v, want Clean with verify count 2", rec, ok)
+	}
+}
+
+// TestVerifyCountSurvivesGCStates checks that the GC-ELIGIBLE and
+// DELETED records carry the verify count forward.
+func TestVerifyCountSurvivesGCStates(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk b"))
+	discUUID := [16]byte{0x7C}
+
+	if err := l.MarkPacked(id, 1, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 1, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := l.MarkVerified(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.MarkGCEligible(id); err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok := l.Get(id); !ok || rec.State != GCEligible || rec.VerifyCount != 2 {
+		t.Fatalf("GCEligible record %+v, %v, want verify count 2", rec, ok)
+	}
+	if err := l.MarkDeleted(id); err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok := l.Get(id); !ok || rec.State != Deleted || rec.VerifyCount != 2 {
+		t.Fatalf("Deleted record %+v, %v, want verify count 2", rec, ok)
+	}
+}
+
+// TestSecondVerifyKeepsTheFirstCleanTime checks that the retention
+// period counts from the first verify: a later verify raises the count
+// and leaves the clean time exactly as it was.
+func TestSecondVerifyKeepsTheFirstCleanTime(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID([]byte("chunk c"))
+	discUUID := [16]byte{0x1D}
+
+	if err := l.MarkPacked(id, 1, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkBurned(id, 1, discUUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.MarkVerified(id); err != nil {
+		t.Fatal(err)
+	}
+	first, ok := l.CleanTime(id)
+	if !ok {
+		t.Fatal("CleanTime reported no time after the first verify")
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	if err := l.MarkVerified(id); err != nil {
+		t.Fatal(err)
+	}
+	second, ok := l.CleanTime(id)
+	if !ok || !second.Equal(first) {
+		t.Fatalf("CleanTime after the second verify: got %v, %v, want %v", second, ok, first)
+	}
+
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, ok := l2.CleanTime(id)
+	if !ok || !reopened.Equal(first) {
+		t.Fatalf("reopened CleanTime: got %v, %v, want %v", reopened, ok, first)
 	}
 }

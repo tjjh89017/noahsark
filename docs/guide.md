@@ -222,7 +222,9 @@ sudo umount <MOUNT>
 ```
 
 This reads every object back and checks it. Expected result: the lines
-`verify: marked N object(s) CLEAN` and `verify: ok`, exit code 0.
+`verify: marked N object(s) CLEAN`,
+`verify: copy 1 of 2 verified; verify the second copy before gc` and
+`verify: ok`, exit code 0.
 
 - `verify: disc 0 is not marked burned`: do step 6, then verify again.
 - A mount failure or a verify failure: discard the disc. Burn a new disc
@@ -235,7 +237,16 @@ Load a second blank disc. Run the same burn command from step 5 again,
 with the same `<IMAGE>` or `<DISC_DIR>`. Then do step 7 for this disc.
 Do not pack again. Do not do step 6 again.
 
-Two identical discs are the redundancy of this backup.
+Two identical discs are the redundancy of this backup. The second verify
+is necessary: `gc` frees the staged data only after two successful
+verifies. Expected result of this second verify:
+`verify: 2 of 2 copies verified`.
+
+The two copies carry the same disc uuid, thus the tool counts successful
+verify passes and cannot see which physical disc you put in the drive.
+
+Keep one copy only? Then put `gc.min_verified_copies = 1` in
+`<REPO>/config`. One verify is then sufficient for `gc`.
 
 ## 9. Label and store
 
@@ -246,11 +257,12 @@ noahsark disc list --repo=<REPO>
 Expected result, one line for each disc:
 
 ```
-330db42b-893f-388c-6565-0eec93b1841b  seq=0  label="2026-09-14 run1"  ...  objects=7  packed=0  clean=7
+330db42b-893f-388c-6565-0eec93b1841b  seq=0  label="2026-09-14 run1"  ...  objects=7  packed=0  clean=7  verified=2/2
 ```
 
-`packed=0` shows that the disc is burned and verified. After `gc`
-deletes the staged objects, `clean` also goes to 0. This is normal.
+`packed=0` shows that the disc is burned and verified. `verified=2/2`
+shows that both copies passed `verify`. After `gc` deletes the staged
+objects, `clean` also goes to 0. This is normal.
 
 Write on each sleeve: the first 8 characters of the uuid, the `seq`, the
 label, the date, and `A` or `B`. Store copy B in a different building.
@@ -389,15 +401,25 @@ noahsark gc --repo=<REPO> --dry-run
 noahsark gc --repo=<REPO>
 ```
 
-`gc` deletes staged objects that are verified (CLEAN) and older than
-`staging.retain_after_clean`, 7 days by default. Expected result of the
-dry run: the totals that `gc` would delete, or
-`gc: nothing is eligible yet` with the earliest date. A real `gc` exits
-with code 0 after it deletes objects, 1 if no object was eligible, and 2
-on a failure.
+`gc` deletes staged objects that are verified (CLEAN), verified
+`gc.min_verified_copies` times (2 by default), and older than
+`staging.retain_after_clean`, 7 days by default. The retention counts
+from the first verify. Expected result of the dry run: the totals that
+`gc` would delete, or `gc: nothing is eligible yet` with the earliest
+date. A real `gc` exits with code 0 after it deletes objects, 1 if no
+object was eligible, and 2 on a failure.
+
+`gc` prints one line for each disc it holds objects back for:
+
+```
+gc: disc 330db42b-893f-388c-6565-0eec93b1841b: 1 of 2 copies verified; 42 object(s) held; verify the second copy
+```
+
+Verify the second copy (step 8), then run `gc` again.
 
 - `--force-after=<DURATION>`, for example `1h`, shortens the retention
-  for one run. It asks for confirmation. Add `--yes` in a script.
+  for one run. It does not pass by the verify count. It asks for
+  confirmation. Add `--yes` in a script.
 - `--keep-snapshots=<N>` also trims the local cache to the newest N
   snapshots. By default, `gc` does not trim the cache.
   `rebuild-cache` restores trimmed data.
@@ -482,6 +504,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `image build` refuses the `mkudffs` version | Upgrade `udftools` to 2.3 or later, or burn the directory (step 5, alternative). |
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
 | `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --disc=<MOUNT>`. |
+| `gc`: `C of 2 copies verified; N object(s) held` | Only one copy passed `verify`. Burn and verify the second copy (step 8), then run `gc` again. With one copy only, set `gc.min_verified_copies = 1` in `<REPO>/config`. |
 | `pack`: `remaining staged`, exit code 1 | The data did not fit. Do step 10. |
 | `restore --overwrite`: `warning: <PATH>: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
 | `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |

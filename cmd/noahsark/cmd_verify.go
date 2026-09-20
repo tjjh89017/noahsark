@@ -10,6 +10,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/restore"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -31,10 +32,12 @@ import (
 // that records a burn; verify only ever reads that state. When --repo
 // resolves to a repository, and DISC.bin's uuid matches a row in that
 // repository's disc ledger, a successful verify moves every BURNED
-// object of the newest run to CLEAN, and warns when a PACKED object of
-// that run remains, naming the `disc burned` command to run. A failed
-// verify moves any object still at BURNED back to PACKED, with the
-// verify-failed reason.
+// object of the newest run to CLEAN, adds 1 to the verify count of every
+// CLEAN object of that run, and warns when a PACKED object of that run
+// remains, naming the `disc burned` command to run. The second identical
+// disc raises that count, and gc waits for it. A failed verify moves any
+// object still at BURNED back to PACKED, with the verify-failed reason,
+// and leaves the CLEAN objects alone.
 func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark verify [--repo=DIR] [--heal] [--out=DIR] DISC-ROOT",
 		"Read a disc tree back and check it, optionally healing it first.", stderr)
@@ -219,14 +222,20 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return "", false
 	}
-	if n > 0 {
+	count, haveClean := runVerifyCount(stageLog, ident.DiscUUID, ident.RunSeq)
+	if haveClean {
 		if err := recordLedgerVerify(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		}
 		if err := cacheRunFromDisc(cfg, repoUUID, target); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		}
+	}
+	if n > 0 {
 		_, _ = fmt.Fprintf(stdout, "verify: marked %d object(s) CLEAN (disc %s, run %d)\n", n, uuidText(ident.DiscUUID), ident.RunSeq)
+	}
+	if haveClean {
+		_, _ = fmt.Fprintln(stdout, verifyCountLine(count, cfg.MinVerifiedCopies))
 	}
 
 	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID, ident.RunSeq)
@@ -240,7 +249,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	}
 	hintLine := fmt.Sprintf("verify: disc %d is not marked burned; run: noahsark disc burned --repo=%s %s",
 		discSeq, repoDir, uuidText(ident.DiscUUID))
-	if n > 0 {
+	if n > 0 || haveClean {
 		_, _ = fmt.Fprintln(stdout, hintLine)
 		return "", false
 	}
@@ -290,24 +299,64 @@ func countInState(l *stage.Log, state stage.State, discUUID [16]byte, runSeq uin
 }
 
 // markVerifyClean moves every object of run runSeq on disc discUUID
-// that is at BURNED to CLEAN, and reports how many objects it moved. An
-// object already CLEAN is left alone, so a repeat verify of an
-// already-clean disc is a no-op. A PACKED object of the same run is
-// left untouched: verify never marks anything BURNED itself, only
-// `disc burned` does.
+// that is at BURNED to CLEAN with verify count 1, and adds 1 to the
+// verify count of every object of that run that is already CLEAN. It
+// reports how many objects it moved from BURNED. The operator verifies
+// the second identical disc this way: the disc uuid is the same, so the
+// count of the run, not the state, is what says both copies read back.
+// A PACKED object of the same run is left untouched: verify never marks
+// anything BURNED itself, only `disc burned` does.
 func markVerifyClean(l *stage.Log, discUUID [16]byte, runSeq uint64) (int, error) {
-	n := 0
-	for _, id := range l.IDsInState(stage.Burned) {
+	burned := idsOfRunInState(l, stage.Burned, discUUID, runSeq)
+	alreadyClean := idsOfRunInState(l, stage.Clean, discUUID, runSeq)
+	for _, id := range append(burned, alreadyClean...) {
+		if err := l.MarkVerified(id); err != nil {
+			return 0, err
+		}
+	}
+	return len(burned), nil
+}
+
+// idsOfRunInState returns the ids of the objects of run runSeq on disc
+// discUUID that are currently in state.
+func idsOfRunInState(l *stage.Log, state stage.State, discUUID [16]byte, runSeq uint64) []object.ID {
+	var ids []object.ID
+	for _, id := range l.IDsInState(state) {
 		rec, ok := l.Get(id)
 		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
 			continue
 		}
-		if err := l.MarkClean(id); err != nil {
-			return n, err
-		}
-		n++
+		ids = append(ids, id)
 	}
-	return n, nil
+	return ids
+}
+
+// runVerifyCount returns the lowest verify count of the CLEAN objects of
+// run runSeq on disc discUUID, and whether the run has a CLEAN object at
+// all. gc acts on the lowest count, so verify reports the same one.
+func runVerifyCount(l *stage.Log, discUUID [16]byte, runSeq uint64) (uint8, bool) {
+	var lowest uint8
+	found := false
+	for _, id := range idsOfRunInState(l, stage.Clean, discUUID, runSeq) {
+		rec, ok := l.Get(id)
+		if !ok {
+			continue
+		}
+		if !found || rec.VerifyCount < lowest {
+			lowest = rec.VerifyCount
+			found = true
+		}
+	}
+	return lowest, found
+}
+
+// verifyCountLine is the line verify prints for the verify count of a
+// run: it tells the operator whether gc still waits for another copy.
+func verifyCountLine(count uint8, minCopies int) string {
+	if int(count) < minCopies {
+		return fmt.Sprintf("verify: copy %d of %d verified; verify the second copy before gc", count, minCopies)
+	}
+	return fmt.Sprintf("verify: %d of %d copies verified", count, minCopies)
 }
 
 // markVerifyFailed moves every object of run runSeq on disc discUUID

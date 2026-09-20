@@ -568,8 +568,11 @@ GC-ELIGIBLE, DELETED) and the transitions, and gives `state.db` an
 append-only role, but no byte layout.
 
 `internal/stage` picks the simplest deterministic record: fixed-width,
-70 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
-crc32c), append-only, one record per transition. A reader replays from
+71 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
+verify_count, crc32c), append-only, one record per transition. The
+`verify_count` byte counts the successful verifies of the object, so
+`gc` can hold the staged bytes until `gc.min_verified_copies` copies
+read back. A reader replays from
 the start and stops at the first record whose CRC fails, exactly
 matching the "truncated log" rule; a record after a bad one is ignored.
 The newest record per content id, by file order (equivalently by
@@ -578,7 +581,9 @@ overwrites an existing record, so a re-commit of already-packed content
 can never resurrect it to STAGED. The record still carries no
 timestamp, so a CLEAN transition's wall time goes into a second,
 append-only companion file, `clean_times.db` (content id, unix
-nanoseconds, crc32c), replayed the same way. `disc burned`'s own moment
+nanoseconds, crc32c), replayed the same way. Only the first verify
+writes that time, so the retention period counts from the first verify
+and a second verify never restarts it. `disc burned`'s own moment
 is not recorded anywhere: nothing in this build ever reads it back, so
 there is no `burn_times.db` companion file.
 

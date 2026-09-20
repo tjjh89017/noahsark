@@ -357,30 +357,45 @@ There are exactly two arrows back, and both go from BURNED to PACKED: a failed
 `verify`, and `disc burned --undo`. The packed disc root and the image stay on
 the local disk, thus the operator burns the same image again.
 
+CLEAN has one arrow to itself: a `verify` of an object that is already CLEAN.
+It adds 1 to that object's verify count. The operator verifies the second copy
+this way, and `gc` frees an object only at `gc.min_verified_copies` verifies.
+
 ### 4.2 Transition rules
 
 1. `verify` is the only transition from BURNED to CLEAN. There is no timer and
    no manual override. An object stays in staging until the disc that holds it
    has been read back and checked.
-2. The tool never concludes by itself that a burn occurred. `disc burned` is
+2. Each object counts its successful verifies. A successful `verify` of a
+   BURNED object moves it to CLEAN and sets the count to 1. A successful
+   `verify` of an object that is already CLEAN keeps it CLEAN and adds 1 to
+   the count. The count stops at 255. A GC-ELIGIBLE record and a DELETED
+   record carry the count forward.
+3. The clean time is the time of the first successful verify. A later verify
+   does not change it. Thus the retention period counts from the first verify.
+4. The two identical copies of a disc carry the same disc uuid. The tool
+   cannot tell one copy from the other. The count counts successful verify
+   passes, not distinct physical discs.
+5. The tool never concludes by itself that a burn occurred. `disc burned` is
    the only transition from PACKED to BURNED. The operator runs it after the
    burn. `verify` never moves a PACKED object: a disc root that passes
    `verify` can be an image that no one burned.
-3. GC never deletes an object that is not CLEAN.
-4. GC is a separate command. The operator runs it manually.
-5. `disc burned --undo` moves the BURNED objects of a disc back to PACKED,
+6. GC never deletes an object that is not CLEAN.
+7. GC is a separate command. The operator runs it manually.
+8. `disc burned --undo` moves the BURNED objects of a disc back to PACKED,
    with reason 1, after a bad burn. It refuses a disc that has a CLEAN object.
-6. A run that fails verify moves its objects from BURNED back to PACKED, with
+9. A run that fails verify moves its objects from BURNED back to PACKED, with
    reason 2. The writer appends one PACKED record with reason 2 per object of
-   that run. The disc root and the image of the run stay on the local disk,
+   that run. A failed verify leaves a CLEAN object alone and does not change
+   its count. The disc root and the image of the run stay on the local disk,
    thus the operator burns the same image on a new disc and verifies it.
-7. `commit` is the only entry point. A new object enters the machine at
-   STAGED. `rebuild-cache` records the objects of a fed disc as
-   PACKED.
-8. The state log is authoritative only for objects that are not yet CLEAN.
-   Everything about a CLEAN object is derivable from the discs.
-9. There is no transition from PACKED back to STAGED. `verify --heal` repairs
-   a disc root and writes no staged object.
+10. `commit` is the only entry point. A new object enters the machine at
+    STAGED. `rebuild-cache` records the objects of a fed disc as
+    PACKED.
+11. The state log is authoritative only for objects that are not yet CLEAN.
+    Everything about a CLEAN object is derivable from the discs.
+12. There is no transition from PACKED back to STAGED. `verify --heal` repairs
+    a disc root and writes no staged object.
 
 ### 4.3 State log replay
 
@@ -419,21 +434,25 @@ deletes the part-written directory and runs `pack` again.
 
 1. An object may be deleted only in state GC-ELIGIBLE.
 2. An object reaches GC-ELIGIBLE only after `staging.retain_after_clean` has
-   passed since it reached CLEAN.
-3. GC must confirm, before every delete, that the object is present in at least
+   passed since it first reached CLEAN.
+3. An object reaches GC-ELIGIBLE only when its verify count is at least
+   `gc.min_verified_copies`, default 2. Two identical discs are the
+   redundancy, thus `gc` holds the staged data until the second copy passes
+   `verify`. `--force-after` shortens the retention period only. It never
+   passes by this count. An operator who keeps one copy only sets
+   `gc.min_verified_copies = 1`.
+4. GC must confirm, before every delete, that the object is present in at least
    one run whose verification passed. The confirmation is an exact lookup in
    the cached `INDEX.bin` of that run. `gc` leaves an object alone, and
    reports it, when the cache does not hold the INDEX of the run.
-4. `gc --dry-run` prints what it would delete and how many bytes it would free.
-5. `gc` syncs the GC-ELIGIBLE record to disk before it deletes the staged
+5. `gc --dry-run` prints what it would delete and how many bytes it would free.
+6. `gc` syncs the GC-ELIGIBLE record to disk before it deletes the staged
    file, then marks the object DELETED. A sync error stops `gc` before the
    delete, so a crash can never take the record away and leave the staged
    file gone.
-
-A known gap: an object becomes CLEAN when one copy of the disc passes
-`verify`. `gc` can therefore delete the staged objects before the second copy
-exists. Until a rule closes this gap, the operator keeps the image until the
-two copies pass `verify`. GitHub issue #28 tracks the rule.
+7. `gc` prints one line for each disc that holds objects back, in the dry run
+   and in the real run:
+   `gc: disc UUID: C of N copies verified; K object(s) held; verify the second copy`.
 
 ---
 
@@ -1004,7 +1023,13 @@ A disc that does not mount fails verify. There is no scan of the raw medium
 and no recovery by carving. The operator discards the disc and burns the same
 image on a new disc.
 
-On a successful verify the BURNED objects of the run move to CLEAN.
+On a successful verify the BURNED objects of the run move to CLEAN, and each
+one gets verify count 1. An object of the run that is already CLEAN stays
+CLEAN, and its count goes up by 1. `verify` prints the count of the run, for
+example `verify: copy 1 of 2 verified; verify the second copy before gc`.
+
+The operator verifies both copies. The second verify is not optional: `gc`
+frees the staged data only at `gc.min_verified_copies` verifies.
 
 Recommendation: eject and reload the disc before the verify, and verify the
 second copy in a different drive when one is available.
@@ -1463,18 +1488,20 @@ noahsark verify [--repo=DIR] [--heal [--out=DIR]] DISC-ROOT
 ```
 
 Reads a disc root back and checks it. On success it moves the run's BURNED
-objects to CLEAN.
+objects to CLEAN, and adds 1 to the verify count of every CLEAN object of the
+run.
 
 `DISC-ROOT` is the mount point of a disc or of a loop-mounted image, or a
 packed disc root. It is the one required positional argument. `verify`
 never mounts anything. It always reads every object back.
 
-`verify` moves BURNED objects to CLEAN and no other objects. It never moves a
-PACKED object to BURNED: a disc root that passes, such as a loop-mounted image
-before the burn, does not prove that a burn occurred. When a PACKED object of
-the run remains, `verify` prints the `disc burned` command to run, after the
+`verify` moves BURNED objects to CLEAN, and adds 1 to the count of the CLEAN
+objects of the run. It moves no other object. It never moves a PACKED object
+to BURNED: a disc root that passes, such as a loop-mounted image before the
+burn, does not prove that a burn occurred. When a PACKED object of the run
+remains, `verify` prints the `disc burned` command to run, after the
 `verify: ok` line. A failed verify moves the BURNED objects of the run back to
-PACKED, as "Transition rules" says.
+PACKED and leaves the CLEAN objects alone, as "Transition rules" says.
 
 With a repository, `verify` refuses a disc whose uuid the disc list of that
 repository does not hold. The message names `--repo` and
@@ -1482,7 +1509,12 @@ repository does not hold. The message names `--repo` and
 checks the disc root and changes no state.
 
 On success it prints `verify: marked N object(s) CLEAN` when N is at least 1,
-then `verify: ok`.
+then one line for the verify count of the run, for example
+`verify: copy 1 of 2 verified; verify the second copy before gc` or
+`verify: 2 of 2 copies verified`, then `verify: ok`.
+
+The two copies of a disc carry the same disc uuid. `verify` counts successful
+passes. Two verifies of the same physical disc count as two.
 
 | Option | Meaning |
 |---|---|
@@ -1612,6 +1644,12 @@ Deletes staging objects that are GC-ELIGIBLE, under the rules of section 4.5.
 It leaves an object alone, and reports it, when the run that holds the object
 is not in the local cache.
 
+`gc` holds an object whose verify count is below `gc.min_verified_copies`,
+default 2. It prints one line for each disc that holds objects back:
+`gc: disc UUID: C of N copies verified; K object(s) held; verify the second copy`.
+It prints that line in the dry run and in the real run. No option passes by
+this count; `gc.min_verified_copies` is the only control.
+
 `gc` never trims the local cache by default. It trims the cache only when
 `--keep-snapshots` is given, or when `cache.snapshot_depth` is above 0.
 
@@ -1619,7 +1657,7 @@ is not in the local cache.
 |---|---|
 | `--dry-run` | Print the totals that `gc` would delete, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
 | `--keep-snapshots` | Keep the cached trees and blobs that only the newest N snapshots reach, and drop the rest. Default `cache.snapshot_depth`. 0 means no limit. `rebuild-cache` brings dropped data back. |
-| `--force-after` | Shorten the retention for this run only. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
+| `--force-after` | Shorten the retention for this run only. It does not change the verify count rule. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 | `--yes` | Skip the confirmation of `--force-after`, for a script. Without `--yes`, `gc --force-after` refuses when standard input is not a terminal. |
 
 Exit: 0 on success, and always for `--dry-run`. 1 when nothing was eligible.
@@ -1697,10 +1735,13 @@ noahsark disc burned [--repo=PATH] [--undo] DISC [DISC...]
 Give the options after the subcommand.
 
 `list` prints one line for each disc: uuid, `seq`, `label`, `capacity`, `used`,
-`runs`, `objects`, `packed` and `clean`. `packed` counts the objects of the
-disc that are PACKED, and `clean` counts the objects that are CLEAN. After the
-discs it prints the `staged: N objects, B bytes` line that `commit` prints.
-`--json` prints the same fields as a JSON array.
+`runs`, `objects`, `packed`, `clean` and `verified`. `packed` counts the
+objects of the disc that are PACKED, and `clean` counts the objects that are
+CLEAN. `verified` prints `C/N`: `C` is the lowest verify count of the CLEAN
+objects of the disc, and `N` is `gc.min_verified_copies`. `C` is 0 when the
+disc has no CLEAN object. After the discs it prints the
+`staged: N objects, B bytes` line that `commit` prints. `--json` prints the
+same fields as a JSON array, with the count in `verified_copies`.
 
 `burned` tells the repository that the operator burned each named `DISC`. It
 moves every PACKED object of the runs of that disc to BURNED, and records the
@@ -1759,7 +1800,8 @@ A build must refuse an unknown key with a clear message that names the key.
 The build reads these keys: `repo.uuid`, `staging.dir`, `sources.root`,
 `commit.restat_after_read`, `commit.retry_unstable`, `fec.scheme`, `cache.dir`,
 `cache.format_version`, `cache.snapshot_depth`, `restore.staging_budget`,
-`staging.retain_after_clean` and `repo.lock_timeout`. It refuses each other
+`staging.retain_after_clean`, `gc.min_verified_copies` and
+`repo.lock_timeout`. It refuses each other
 key of the tables below. Those keys name the values that the build holds as
 constants. The second pass of GitHub issue #26 decides which of them stay.
 
@@ -1834,7 +1876,8 @@ Every key appears exactly once, in exactly one table below.
 | Key | Type | Default | Changes disc bytes | Meaning |
 |---|---|---|---|---|
 | `staging.dir` | path | `<repo>/staging` | no | Staging store location. A relative path is relative to the repository directory. `init` writes `staging`. |
-| `staging.retain_after_clean` | duration | 7 days | no | Retention before an object becomes GC-eligible. |
+| `staging.retain_after_clean` | duration | 7 days | no | Retention before an object becomes GC-eligible. It counts from the first successful verify. |
+| `gc.min_verified_copies` | integer | 2 | no | Successful verifies an object needs before `gc` may delete it. The default holds the staged data until the second identical disc passes `verify`. A value below 1 is a config error. An operator who keeps one copy only sets 1. |
 | `cache.dir` | path | see section 2.4 | no | Local cache location. |
 | `cache.format_version` | integer | 1 | no | Delete and rebuild on a mismatch. |
 | `cache.snapshot_depth` | integer | 0 | no | How many of the newest snapshots the cache keeps trees for; 0 means unlimited, and `gc` then trims nothing from the cache. `gc` applies it. `gc --keep-snapshots` overrides it for one run. |
