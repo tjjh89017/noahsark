@@ -6,6 +6,7 @@
 package plan
 
 import (
+	"bytes"
 	"fmt"
 	"slices"
 	"sort"
@@ -30,17 +31,17 @@ type DiscEntry struct {
 	DiscUUID [16]byte
 	Label    string
 	Created  int64
-	Runs     []uint64
 	Objects  []ObjectEntry
 	Bytes    uint64
 }
 
 // MissingEntry is one group of objects a plan could not place: either a
-// resolved run whose disc no cached DISCS row names, or an object no
-// cached run's INDEX names at all (RunSeq 0).
+// resolved disc that no cached DISCS row describes, or an object no
+// cached INDEX names at all (HasDisc false).
 type MissingEntry struct {
-	RunSeq  uint64
-	Objects int
+	DiscUUID [16]byte
+	HasDisc  bool
+	Objects  int
 }
 
 // Result is the outcome of grouping every needed object by the disc
@@ -348,7 +349,7 @@ func rootPathOf(e format.TreeEntry) string {
 }
 
 // group maps every needed object to a disc through c.LocateObject and
-// c.DiscForRun, groups the result by disc, and orders the discs by
+// c.DiscRow, groups the result by disc, and orders the discs by
 // "14.1 The planner"'s tie-breaks: most bytes first, then the newer
 // disc, then the lower disc_seq.
 //
@@ -369,18 +370,19 @@ func rootPathOf(e format.TreeEntry) string {
 // of.
 func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []object.ID) *Result {
 	byDisc := make(map[[16]byte]*DiscEntry)
-	missingByRun := make(map[uint64]int)
+	missingByDisc := make(map[[16]byte]int)
+	missingDiscUnknown := 0
 
 	r := &Result{}
 	for _, id := range order {
 		loc, found := c.LocateObject(id)
 		if !found {
-			missingByRun[0]++
+			missingDiscUnknown++
 			continue
 		}
-		row, found := c.DiscForRun(loc.RunSeq)
+		row, found := c.DiscRow(loc.DiscUUID)
 		if !found {
-			missingByRun[loc.RunSeq]++
+			missingByDisc[loc.DiscUUID]++
 			continue
 		}
 		if needed[id] != format.ObjectKindChunk {
@@ -393,9 +395,6 @@ func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []objec
 			e = &DiscEntry{DiscSeq: row.DiscSeq, DiscUUID: row.DiscUUID, Label: discRowLabel(row), Created: row.CreatedSec}
 			byDisc[row.DiscUUID] = e
 		}
-		if !slices.Contains(e.Runs, loc.RunSeq) {
-			e.Runs = append(e.Runs, loc.RunSeq)
-		}
 		e.Objects = append(e.Objects, ObjectEntry{ID: id, Kind: needed[id], Bytes: loc.PayloadLen})
 		e.Bytes += loc.PayloadLen
 		r.TotalObjects++
@@ -407,7 +406,6 @@ func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []objec
 
 	discs := make([]DiscEntry, 0, len(byDisc))
 	for _, e := range byDisc {
-		slices.Sort(e.Runs)
 		discs = append(discs, *e)
 	}
 	sort.Slice(discs, func(i, j int) bool {
@@ -425,13 +423,16 @@ func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []objec
 	}
 	r.Discs = discs
 
-	runSeqs := make([]uint64, 0, len(missingByRun))
-	for seq := range missingByRun {
-		runSeqs = append(runSeqs, seq)
+	uuids := make([][16]byte, 0, len(missingByDisc))
+	for uuid := range missingByDisc {
+		uuids = append(uuids, uuid)
 	}
-	slices.Sort(runSeqs)
-	for _, seq := range runSeqs {
-		r.Missing = append(r.Missing, MissingEntry{RunSeq: seq, Objects: missingByRun[seq]})
+	slices.SortFunc(uuids, func(a, b [16]byte) int { return bytes.Compare(a[:], b[:]) })
+	for _, uuid := range uuids {
+		r.Missing = append(r.Missing, MissingEntry{DiscUUID: uuid, HasDisc: true, Objects: missingByDisc[uuid]})
+	}
+	if missingDiscUnknown > 0 {
+		r.Missing = append(r.Missing, MissingEntry{Objects: missingDiscUnknown})
 	}
 
 	return r

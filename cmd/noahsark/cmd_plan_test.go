@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tjjh89017/noahsark/internal/cache"
 )
 
 // multiDiscPlanFixture packs writeMultiDiscFixtureSource's tree across
@@ -153,17 +155,16 @@ func TestPlanJSONOutput(t *testing.T) {
 		Switches int    `json:"switches"`
 		Passes   int    `json:"passes"`
 		Discs    []struct {
-			Order         int      `json:"order"`
-			DiscUUID      string   `json:"disc_uuid"`
-			DiscSeq       uint64   `json:"disc_seq"`
-			Label         string   `json:"label"`
-			Runs          []uint64 `json:"runs"`
-			ObjectsToRead int      `json:"objects_to_read"`
-			BytesToRead   uint64   `json:"bytes_to_read"`
+			Order         int    `json:"order"`
+			DiscUUID      string `json:"disc_uuid"`
+			DiscSeq       uint64 `json:"disc_seq"`
+			Label         string `json:"label"`
+			ObjectsToRead int    `json:"objects_to_read"`
+			BytesToRead   uint64 `json:"bytes_to_read"`
 		} `json:"discs"`
 		MissingDiscs []struct {
-			RunSeq  uint64 `json:"run_seq"`
-			Objects int    `json:"objects"`
+			DiscUUID string `json:"disc_uuid"`
+			Objects  int    `json:"objects"`
 		} `json:"missing_discs"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
@@ -197,15 +198,15 @@ func TestPlanJSONOutput(t *testing.T) {
 	}
 }
 
-// TestPlanMissingRun deletes one cached run's INDEX after a two-disc
-// pack, so some objects that run alone stored become unresolvable, and
+// TestPlanMissingDisc deletes one cached disc's INDEX after a two-disc
+// pack, so some objects that disc alone stored become unresolvable, and
 // checks plan reports them under missing_discs and exits 3.
-func TestPlanMissingRun(t *testing.T) {
+func TestPlanMissingDisc(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, _, _ := multiDiscPlanFixture(t)
 
 	cacheDir := repoCacheDir(t, repo)
-	if err := os.RemoveAll(filepath.Join(cacheDir, "runs", "1")); err != nil {
+	if err := os.RemoveAll(filepath.Join(cacheDir, "discs", firstCachedDiscUUID(t, cacheDir))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -216,9 +217,30 @@ func TestPlanMissingRun(t *testing.T) {
 	if !strings.Contains(out, "missing:") {
 		t.Fatalf("plan output %q does not report a missing group", out)
 	}
-	if !strings.Contains(out, "no run known") {
+	if !strings.Contains(out, "disc unknown") {
 		t.Fatalf("plan output %q does not name what is missing", out)
 	}
+}
+
+// firstCachedDiscUUID returns the text form of the uuid of the disc
+// with disc_seq 0, the first disc the fixture packed.
+func firstCachedDiscUUID(t *testing.T, cacheDir string) string {
+	t.Helper()
+	c, err := cache.Open(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discs, err := c.Discs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range discs.Rows {
+		if row.DiscSeq == 0 {
+			return uuidText(row.DiscUUID)
+		}
+	}
+	t.Fatal("no cached DISCS row has disc_seq 0")
+	return ""
 }
 
 // TestPlanEmptyCacheNamesTheFix checks that "plan" against a repository
@@ -235,8 +257,8 @@ func TestPlanEmptyCacheNamesTheFix(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("plan (empty cache): exit 0, want a failure: %s", out)
 	}
-	if !strings.Contains(out, "no run is cached yet") {
-		t.Fatalf("plan (empty cache) output %q missing \"no run is cached yet\"", out)
+	if !strings.Contains(out, "no disc is cached yet") {
+		t.Fatalf("plan (empty cache) output %q missing \"no disc is cached yet\"", out)
 	}
 	if !strings.Contains(out, "rebuild-cache") {
 		t.Fatalf("plan (empty cache) output %q missing the fix, rebuild-cache", out)

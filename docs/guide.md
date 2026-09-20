@@ -514,6 +514,6 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `restore` or `ls`: ref `is not on the provided disc(s)` | A newer disc holds the ref. Give more discs. |
 | `is neither a snapshot id nor a known ref name` | The local cache does not know the name. Run `log` to list the names. |
 | `log`: `roots: (none)` | The root tree is on a disc that you did not give, or `gc` trimmed it from the cache. Give all discs, or run `rebuild-cache`. |
-| `plan`: `cache: no run is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
+| `plan`: `cache: no disc is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
 | `repository lock <REPO>/lock is held by pid <PID>` | Wait for the other noahsark command to end. |

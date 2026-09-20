@@ -479,8 +479,8 @@ named; `plan` reads the cache only, matching OPERATIONS.md's "reads
 nothing from a disc beyond the catalog." All three report the same
 incomplete-cache message and exit code 3 through the shared
 `reportSourceError`/`formatIncompleteError` helpers, resolving the
-disc to insert through `cache.LocateObject` and `cache.DiscForRun`
-where a cached run's INDEX or DISCS table allows it.
+disc to insert through `cache.LocateObject` and `cache.DiscRow`
+where a cached disc's INDEX or DISCS table allows it.
 
 `plan` groups every object a restore of SNAPSHOT (or of `--include`'s
 paths alone) would need by the disc that holds it, walking cached tree
@@ -492,7 +492,7 @@ now defined. `--drives`, `--score` and `--target` are not defined,
 since no multi-drive planner or byte-vs-object scoring exists yet, and
 `plan` records no restore target. The JSON `--out`
 writes covers `discs[]`'s `order`, `disc_uuid`, `disc_seq`, `label`,
-`runs`, `objects_to_read` and `bytes_to_read`, `missing_discs`,
+`objects_to_read` and `bytes_to_read`, `missing_discs`,
 `peak_staging_bytes` (the largest single object of known size),
 `switches` and `passes`; every other "14.4 The plan file" field
 (`objects_exact`, `objects_probable`, `estimated_seconds`,

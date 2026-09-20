@@ -159,7 +159,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	printHeldForCopies(stdout, stageLog, cfg.MinVerifiedCopies)
 	_, _ = fmt.Fprintf(stdout, "gc: cache: %s %d tree(s)/blob(s), %d bytes\n", verb, treesDeleted, treesBytes)
 	if uncached > 0 {
-		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their run's INDEX is not cached\n", uncached)
+		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncached)
 	}
 
 	if objDeleted == 0 && treesDeleted == 0 {
@@ -290,29 +290,31 @@ func printHeldForCopies(stdout io.Writer, l *stage.Log, minCopies int) {
 }
 
 // gcObj is one staging object gc's rules allow deleting: its id, the
-// path to its staged file, the size to report and free, the run it
+// path to its staged file, the size to report and free, the disc it
 // belongs to, and whether it must still be promoted from CLEAN to
 // GC-ELIGIBLE before a real (non-dry-run) delete.
 type gcObj struct {
 	id       object.ID
 	path     string
 	size     uint64
-	runSeq   uint64
+	discUUID [16]byte
 	wasClean bool
 }
 
 // gcPlanStagingObjects lists every staging object gc's rules allow
-// deleting as of now, without changing any state. An object whose run's
-// INDEX is not cached is left off the list and counted separately:
+// deleting as of now, without changing any state. An object whose own
+// disc has no cached INDEX is left off the list and counted separately:
 // OPERATIONS.md's GC rules require confirming presence through the
-// cached manifest before every delete.
+// cached index before every delete. The disc uuid of the object's own
+// state record is the key, so an index of another disc that repeats the
+// same run_seq can never stand in for it.
 func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAfterClean time.Duration, minCopies int, now time.Time) (objs []gcObj, uncached int) {
 	for _, id := range gcCandidates(l, retainAfterClean, minCopies, now) {
 		rec, ok := l.Get(id)
 		if !ok {
 			continue
 		}
-		idx, err := c.IndexForRun(rec.RunSeq)
+		idx, err := c.IndexForDisc(rec.DiscUUID)
 		if err != nil {
 			uncached++
 			continue
@@ -328,7 +330,7 @@ func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retai
 		if fi, err := os.Stat(path); err == nil {
 			size = uint64(fi.Size())
 		}
-		objs = append(objs, gcObj{id: id, path: path, size: size, runSeq: rec.RunSeq, wasClean: rec.State == stage.Clean})
+		objs = append(objs, gcObj{id: id, path: path, size: size, discUUID: rec.DiscUUID, wasClean: rec.State == stage.Clean})
 	}
 	return objs, uncached
 }
@@ -367,30 +369,31 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int
 	return deleted, bytesFreed
 }
 
-// printDryRunGroupSummary prints one line per run_seq objs groups by,
-// each with that run's own eligible object count and bytes, in
-// ascending run_seq order. It is gc --dry-run's whole report.
+// printDryRunGroupSummary prints one line per disc objs groups by, each
+// with that disc's own eligible object count and bytes, in uuid text
+// order. It is gc --dry-run's whole report.
 func printDryRunGroupSummary(objs []gcObj, stdout io.Writer) {
 	type group struct {
 		objects int
 		bytes   uint64
 	}
-	byRun := make(map[uint64]*group)
-	var runSeqs []uint64
+	byDisc := make(map[string]*group)
+	var uuids []string
 	for _, o := range objs {
-		g, ok := byRun[o.runSeq]
+		text := uuidText(o.discUUID)
+		g, ok := byDisc[text]
 		if !ok {
 			g = &group{}
-			byRun[o.runSeq] = g
-			runSeqs = append(runSeqs, o.runSeq)
+			byDisc[text] = g
+			uuids = append(uuids, text)
 		}
 		g.objects++
 		g.bytes += o.size
 	}
-	slices.Sort(runSeqs)
-	for _, seq := range runSeqs {
-		g := byRun[seq]
-		_, _ = fmt.Fprintf(stdout, "would delete: run %d: %d object(s), %d bytes\n", seq, g.objects, g.bytes)
+	slices.Sort(uuids)
+	for _, text := range uuids {
+		g := byDisc[text]
+		_, _ = fmt.Fprintf(stdout, "would delete: disc %s: %d object(s), %d bytes\n", text, g.objects, g.bytes)
 	}
 }
 
@@ -444,8 +447,8 @@ func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, b
 
 // gcTrimCache keeps only the trees and blobs reachable from the newest
 // keep cached snapshots, and deletes the rest, reporting how many
-// objects and bytes it removed. Every runs/<seq>/ catalog copy and
-// every snapshot object are always kept.
+// objects and bytes it removed. Every discs/<disc-uuid>/ catalog copy
+// and every snapshot object are always kept.
 func gcTrimCache(c *cache.Cache, keep int, dryRun bool) (int, uint64, error) {
 	newest, err := c.NewestSnapshotsByTime(keep)
 	if err != nil {

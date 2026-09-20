@@ -10,18 +10,18 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// WriteRun copies one run's three catalog files into the cache, byte
-// for byte, replacing whatever runs/<seq>/ already holds.
-func (c *Cache) WriteRun(seq uint64, indexBuf, refsBuf, discsBuf []byte) error {
-	dir := c.runDir(seq)
+// WriteDisc copies one disc's three catalog files into the cache, byte
+// for byte, replacing whatever discs/<disc-uuid>/ already holds.
+func (c *Cache) WriteDisc(uuid [16]byte, indexBuf, refsBuf, discsBuf []byte) error {
+	dir := c.discDir(uuid)
 	if err := atomicWriteFile(filepath.Join(dir, IndexFileName), indexBuf); err != nil {
-		return fmt.Errorf("cache: run %d: INDEX.bin: %w", seq, err)
+		return fmt.Errorf("cache: disc %s: INDEX.bin: %w", uuidText(uuid), err)
 	}
 	if err := atomicWriteFile(filepath.Join(dir, RefsFileName), refsBuf); err != nil {
-		return fmt.Errorf("cache: run %d: REFS.bin: %w", seq, err)
+		return fmt.Errorf("cache: disc %s: REFS.bin: %w", uuidText(uuid), err)
 	}
 	if err := atomicWriteFile(filepath.Join(dir, DiscsFileName), discsBuf); err != nil {
-		return fmt.Errorf("cache: run %d: DISCS.bin: %w", seq, err)
+		return fmt.Errorf("cache: disc %s: DISCS.bin: %w", uuidText(uuid), err)
 	}
 	return nil
 }
@@ -90,7 +90,7 @@ func WriteFromRoot(c *Cache, root string) (*image.ReadResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cache: %w", err)
 	}
-	if err := c.WriteRun(rr.Index.RunSeq, indexBuf, refsBuf, discsBuf); err != nil {
+	if err := c.WriteDisc(rr.Disc.DiscUUID, indexBuf, refsBuf, discsBuf); err != nil {
 		return nil, err
 	}
 

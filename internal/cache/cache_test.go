@@ -61,9 +61,9 @@ func TestWriteFromRootPopulatesCache(t *testing.T) {
 		t.Fatalf("ListSnapshots = %v, want [%s]", ids, snapID.TextForm())
 	}
 
-	idx, err := c.IndexForRun(rr.Index.RunSeq)
+	idx, err := c.IndexForDisc(rr.Disc.DiscUUID)
 	if err != nil {
-		t.Fatalf("IndexForRun: %v", err)
+		t.Fatalf("IndexForDisc: %v", err)
 	}
 	if len(idx.Objects) != len(rr.Index.Objects) {
 		t.Fatalf("cached INDEX object count = %d, want %d", len(idx.Objects), len(rr.Index.Objects))
@@ -185,24 +185,24 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	if incomplete.MissingTree != missingID {
 		t.Fatalf("IncompleteError.MissingTree = %s, want %s", incomplete.MissingTree.TextForm(), missingID.TextForm())
 	}
-	if incomplete.RunSeq != 0 || incomplete.HasDiscUUID {
-		t.Fatalf("IncompleteError resolved a run/disc it should not have: %+v", incomplete)
+	if incomplete.HasDiscUUID {
+		t.Fatalf("IncompleteError resolved a disc it should not have: %+v", incomplete)
 	}
 	if c.Complete(snapID) {
 		t.Fatal("Complete = true, want false")
 	}
 }
 
-// TestCheckCompleteResolvesRunAndDisc plants a cached run whose INDEX
-// Prereqs table and whose DISCS table together name the run and disc
-// that hold a missing tree, and checks CheckComplete resolves both.
-func TestCheckCompleteResolvesRunAndDisc(t *testing.T) {
+// TestCheckCompleteResolvesDisc plants one cached disc whose INDEX
+// Prereqs table and whose own DISCS table together name the disc that
+// holds a missing tree, and checks CheckComplete resolves that disc.
+func TestCheckCompleteResolvesDisc(t *testing.T) {
 	c, err := cache.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	missingID := object.ComputeID([]byte("a tree only run 7 stores"))
+	missingID := object.ComputeID([]byte("a tree only another disc stores"))
 	rootTree := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Name:      []byte("child"),
@@ -217,50 +217,14 @@ func TestCheckCompleteResolvesRunAndDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const knownRunSeq = 3
-	idx := &format.Index{
-		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1},
-		RunSeq:      knownRunSeq,
-		PrereqCount: 1,
-		HashAlgo:    format.HashAlgoSHA256,
-		DigestLen:   32,
-		Prereqs: []format.IndexPrereqRecord{
-			{ContentID: missingID, RunSeq: 7},
-		},
-	}
-	idxBuf := make([]byte, idx.EncodedLen())
-	if _, err := idx.Encode(idxBuf); err != nil {
-		t.Fatal(err)
-	}
-
-	discUUID := [16]byte{9, 9, 9, 9}
-	discs := &format.DiscsTable{
-		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1},
-		HashAlgo:    format.HashAlgoSHA256,
-		DigestLen:   32,
-		RecordCount: 1,
-		RecordSize:  format.DiscsRowLen,
-		Rows: []format.DiscsRow{
-			{RunSeq: 7, DiscUUID: discUUID, RunStatus: 1, Health: 1},
-		},
-	}
-	discsBuf := make([]byte, format.DiscsHeaderLen+len(discs.Rows)*format.DiscsRowLen)
-	if _, err := discs.Encode(discsBuf); err != nil {
-		t.Fatal(err)
-	}
-
-	refs := &format.RefsTable{
-		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1},
-		HashAlgo:   format.HashAlgoSHA256,
-		DigestLen:  32,
-		RecordSize: format.RefRecordLen,
-	}
-	refsBuf := make([]byte, format.RefsHeaderLen)
-	if _, err := refs.Encode(refsBuf); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := c.WriteRun(knownRunSeq, idxBuf, refsBuf, discsBuf); err != nil {
+	cachedDisc := [16]byte{3, 3, 3, 3}
+	holderDisc := [16]byte{9, 9, 9, 9}
+	idxBuf := encodeTestIndex(t, 3, nil, []format.IndexPrereqRecord{{ContentID: missingID, RunSeq: 7}})
+	discsBuf := encodeTestDiscs(t, []format.DiscsRow{
+		{RunSeq: 3, DiscUUID: cachedDisc, RunStatus: 1, Health: 1},
+		{RunSeq: 7, DiscUUID: holderDisc, RunStatus: 1, Health: 1},
+	})
+	if err := c.WriteDisc(cachedDisc, idxBuf, encodeTestRefs(t), discsBuf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -269,12 +233,121 @@ func TestCheckCompleteResolvesRunAndDisc(t *testing.T) {
 	if !ok {
 		t.Fatalf("CheckComplete error type = %T, want *cache.IncompleteError", err)
 	}
-	if incomplete.RunSeq != 7 {
-		t.Fatalf("IncompleteError.RunSeq = %d, want 7", incomplete.RunSeq)
+	if !incomplete.HasDiscUUID || incomplete.DiscUUID != holderDisc {
+		t.Fatalf("IncompleteError disc = %v (has=%v), want %v", incomplete.DiscUUID, incomplete.HasDiscUUID, holderDisc)
 	}
-	if !incomplete.HasDiscUUID || incomplete.DiscUUID != discUUID {
-		t.Fatalf("IncompleteError disc = %v (has=%v), want %v", incomplete.DiscUUID, incomplete.HasDiscUUID, discUUID)
+}
+
+// TestLocateObjectKeysByDiscNotRunSeq caches two discs that carry the
+// same run_seq, as two discs do after a lost repository. Each object
+// must resolve to the disc that really holds it. The Prereqs row of one
+// disc must resolve through that disc's own DISCS table, never through
+// the other disc's table.
+func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
+	c, err := cache.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
+
+	discA := [16]byte{0xaa}
+	discB := [16]byte{0xbb}
+	objA := object.ComputeID([]byte("object stored on disc A"))
+	objB := object.ComputeID([]byte("object stored on disc B"))
+	prereqOnly := object.ComputeID([]byte("object only a prereq row names"))
+	const sharedRunSeq = 5
+
+	idxA := encodeTestIndex(t, sharedRunSeq,
+		[]format.IndexObjectRecord{{ContentID: objA, PayloadLen: 11, Kind: format.ObjectKindChunk}}, nil)
+	discsA := encodeTestDiscs(t, []format.DiscsRow{{RunSeq: sharedRunSeq, DiscUUID: discA, RunStatus: 1, Health: 1}})
+	if err := c.WriteDisc(discA, idxA, encodeTestRefs(t), discsA); err != nil {
+		t.Fatal(err)
+	}
+
+	idxB := encodeTestIndex(t, sharedRunSeq,
+		[]format.IndexObjectRecord{{ContentID: objB, PayloadLen: 22, Kind: format.ObjectKindChunk}},
+		[]format.IndexPrereqRecord{{ContentID: prereqOnly, RunSeq: sharedRunSeq}})
+	discsB := encodeTestDiscs(t, []format.DiscsRow{{RunSeq: sharedRunSeq, DiscUUID: discB, RunStatus: 1, Health: 1}})
+	if err := c.WriteDisc(discB, idxB, encodeTestRefs(t), discsB); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		id   object.ID
+		disc [16]byte
+		size uint64
+	}{
+		{"objects row of disc A", objA, discA, 11},
+		{"objects row of disc B", objB, discB, 22},
+		{"prereqs row of disc B", prereqOnly, discB, 0},
+	}
+	for _, tc := range cases {
+		loc, found := c.LocateObject(tc.id)
+		if !found {
+			t.Fatalf("%s: LocateObject found nothing", tc.name)
+		}
+		if loc.DiscUUID != tc.disc {
+			t.Fatalf("%s: disc = %v, want %v", tc.name, loc.DiscUUID, tc.disc)
+		}
+		if loc.PayloadLen != tc.size {
+			t.Fatalf("%s: PayloadLen = %d, want %d", tc.name, loc.PayloadLen, tc.size)
+		}
+	}
+}
+
+// encodeTestIndex builds a minimal, valid INDEX holding the given
+// Objects and Prereqs rows, encoded ready for cache.WriteDisc.
+func encodeTestIndex(t *testing.T, runSeq uint64, objects []format.IndexObjectRecord, prereqs []format.IndexPrereqRecord) []byte {
+	t.Helper()
+	idx := &format.Index{
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1},
+		RunSeq:      runSeq,
+		ObjectCount: uint32(len(objects)),
+		PrereqCount: uint32(len(prereqs)),
+		HashAlgo:    format.HashAlgoSHA256,
+		DigestLen:   32,
+		Objects:     objects,
+		Prereqs:     prereqs,
+	}
+	buf := make([]byte, idx.EncodedLen())
+	if _, err := idx.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf
+}
+
+// encodeTestDiscs builds a minimal, valid DISCS table holding rows.
+func encodeTestDiscs(t *testing.T, rows []format.DiscsRow) []byte {
+	t.Helper()
+	discs := &format.DiscsTable{
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1},
+		HashAlgo:    format.HashAlgoSHA256,
+		DigestLen:   32,
+		RecordCount: uint64(len(rows)),
+		RecordSize:  format.DiscsRowLen,
+		Rows:        rows,
+	}
+	buf := make([]byte, format.DiscsHeaderLen+len(rows)*format.DiscsRowLen)
+	if _, err := discs.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf
+}
+
+// encodeTestRefs builds a minimal, valid empty REFS table.
+func encodeTestRefs(t *testing.T) []byte {
+	t.Helper()
+	refs := &format.RefsTable{
+		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1},
+		HashAlgo:   format.HashAlgoSHA256,
+		DigestLen:  32,
+		RecordSize: format.RefRecordLen,
+	}
+	buf := make([]byte, format.RefsHeaderLen)
+	if _, err := refs.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf
 }
 
 // encodeTestTree builds a minimal, valid Tree object with one entry,

@@ -6,6 +6,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // appendConfigLine appends one "key = value" line to repo's config
@@ -133,7 +138,7 @@ func TestGCRetentionGate(t *testing.T) {
 
 // TestGCDryRunDefaultIsASummary checks that gc --dry-run prints no
 // per-object "would delete" line, only the staging totals and one
-// grouped line per run.
+// grouped line per disc.
 func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	oldClock := gcClock
 	defer func() { gcClock = oldClock }()
@@ -158,8 +163,8 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	if strings.Contains(out, "would delete 0 object") {
 		t.Fatalf("gc --dry-run output %q, want more than 0 objects", out)
 	}
-	if !strings.Contains(out, "would delete: run ") {
-		t.Fatalf("gc --dry-run output %q missing the grouped run summary line", out)
+	if !strings.Contains(out, "would delete: disc ") {
+		t.Fatalf("gc --dry-run output %q missing the grouped disc summary line", out)
 	}
 }
 
@@ -307,4 +312,122 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	if !strings.Contains(out, "deleted 0 object") {
 		t.Fatalf("gc output %q, want 0 objects deleted", out)
 	}
+}
+
+// TestGCPlanTakesTheIndexOfTheObjectsOwnDisc caches two discs that
+// carry the same run_seq, as two discs do after a lost repository. gc
+// must confirm a staged object in the cached INDEX of the disc its own
+// state record names. The INDEX of the other disc must never stand in
+// for it.
+func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
+	stagingDir := t.TempDir()
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	discA := [16]byte{0xaa}
+	discB := [16]byte{0xbb}
+	const sharedRunSeq = 5
+	onDiscA := object.ComputeID([]byte("an object disc A holds"))
+	onDiscB := object.ComputeID([]byte("an object staged for disc B, named by disc A's INDEX alone"))
+
+	for _, staged := range []struct {
+		id   object.ID
+		disc [16]byte
+	}{{onDiscA, discA}, {onDiscB, discB}} {
+		if err := l.EnsureStaged(staged.id); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.MarkPacked(staged.id, sharedRunSeq, staged.disc); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.MarkBurned(staged.id, sharedRunSeq, staged.disc); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := l.MarkVerified(staged.id); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	c, err := cache.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexOfA := encodeGCIndex(t, sharedRunSeq, []format.IndexObjectRecord{
+		{ContentID: onDiscA, PayloadLen: 10, StoredLen: 10, Kind: format.ObjectKindChunk},
+		{ContentID: onDiscB, PayloadLen: 20, StoredLen: 20, Kind: format.ObjectKindChunk},
+	})
+	if err := c.WriteDisc(discA, indexOfA, encodeGCRefs(t), encodeGCDiscs(t, discA, sharedRunSeq)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.WriteDisc(discB, encodeGCIndex(t, sharedRunSeq, nil), encodeGCRefs(t), encodeGCDiscs(t, discB, sharedRunSeq)); err != nil {
+		t.Fatal(err)
+	}
+
+	objs, uncached := gcPlanStagingObjects(l, c, stagingDir, 0, 2, time.Now())
+	if len(objs) != 1 {
+		t.Fatalf("gcPlanStagingObjects returned %d object(s), want 1", len(objs))
+	}
+	if objs[0].id != onDiscA || objs[0].discUUID != discA {
+		t.Fatalf("candidate = %s on disc %v, want %s on disc %v",
+			objs[0].id.TextForm(), objs[0].discUUID, onDiscA.TextForm(), discA)
+	}
+	if uncached != 1 {
+		t.Fatalf("uncached = %d, want 1: disc B's own INDEX names no object", uncached)
+	}
+}
+
+// encodeGCIndex builds a minimal, valid INDEX holding rows.
+func encodeGCIndex(t *testing.T, runSeq uint64, rows []format.IndexObjectRecord) []byte {
+	t.Helper()
+	idx := &format.Index{
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1},
+		RunSeq:      runSeq,
+		ObjectCount: uint32(len(rows)),
+		HashAlgo:    format.HashAlgoSHA256,
+		DigestLen:   32,
+		Objects:     rows,
+	}
+	buf := make([]byte, idx.EncodedLen())
+	if _, err := idx.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf
+}
+
+// encodeGCDiscs builds a DISCS table naming one disc and its run.
+func encodeGCDiscs(t *testing.T, uuid [16]byte, runSeq uint64) []byte {
+	t.Helper()
+	discs := &format.DiscsTable{
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1},
+		HashAlgo:    format.HashAlgoSHA256,
+		DigestLen:   32,
+		RecordCount: 1,
+		RecordSize:  format.DiscsRowLen,
+		Rows:        []format.DiscsRow{{RunSeq: runSeq, DiscUUID: uuid, RunStatus: 1, Health: 1}},
+	}
+	buf := make([]byte, format.DiscsHeaderLen+format.DiscsRowLen)
+	if _, err := discs.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf
+}
+
+// encodeGCRefs builds a minimal, valid empty REFS table.
+func encodeGCRefs(t *testing.T) []byte {
+	t.Helper()
+	refs := &format.RefsTable{
+		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1},
+		HashAlgo:   format.HashAlgoSHA256,
+		DigestLen:  32,
+		RecordSize: format.RefRecordLen,
+	}
+	buf := make([]byte, format.RefsHeaderLen)
+	if _, err := refs.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	return buf
 }

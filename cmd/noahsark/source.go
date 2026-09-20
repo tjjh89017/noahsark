@@ -136,17 +136,12 @@ func formatIncompleteError(cmd string, e *cache.IncompleteError) string {
 // "noahsark: <cmd>:" prefix, for a caller that wraps it inside its own
 // already-prefixed message instead of printing it standalone.
 func incompleteErrorBody(e *cache.IncompleteError) string {
-	switch {
-	case e.HasDiscUUID:
-		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s (%s) and run rebuild-cache",
-			e.Snapshot.TextForm(), uuidText(e.DiscUUID), e.Label)
-	case e.RunSeq != 0:
-		return fmt.Sprintf("snapshot %s is not complete in the cache; insert the disc that holds run %d and run rebuild-cache",
-			e.Snapshot.TextForm(), e.RunSeq)
-	default:
-		return fmt.Sprintf("snapshot %s is not complete in the cache; run rebuild-cache with the disc that holds it",
-			e.Snapshot.TextForm())
+	if e.HasDiscUUID {
+		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s%s and run rebuild-cache",
+			e.Snapshot.TextForm(), uuidText(e.DiscUUID), cache.LabelSuffix(e.Label))
 	}
+	return fmt.Sprintf("snapshot %s is not complete in the cache; run rebuild-cache with the disc that holds it",
+		e.Snapshot.TextForm())
 }
 
 // reportSourceError prints err the way ls, log and plan all report a

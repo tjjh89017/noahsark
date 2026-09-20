@@ -83,8 +83,8 @@ func (c *Cache) Complete(id object.ID) bool {
 }
 
 // IncompleteError reports that a snapshot's tree set is not fully
-// present in the cache, naming, when it can be resolved, the run or
-// the disc that holds a missing tree.
+// present in the cache, naming, when it can be resolved, the disc that
+// holds a missing tree.
 type IncompleteError struct {
 	// Snapshot is the snapshot whose tree set is incomplete.
 	Snapshot object.ID
@@ -92,29 +92,32 @@ type IncompleteError struct {
 	// Snapshot itself when the cache never received the snapshot
 	// object at all.
 	MissingTree object.ID
-	// RunSeq is the run known to store MissingTree, resolved through a
-	// cached run's INDEX Objects or Prereqs table. Zero when unknown.
-	RunSeq uint64
-	// DiscUUID is the disc that run was burned onto, resolved through a
-	// cached DISCS table. HasDiscUUID is false when unknown.
+	// DiscUUID is the disc known to store MissingTree, resolved through
+	// a cached disc's INDEX Objects or Prereqs table. HasDiscUUID is
+	// false when unknown.
 	DiscUUID    [16]byte
 	HasDiscUUID bool
-	// Label is that disc's on-disc label, when HasDiscUUID is true.
+	// Label is that disc's on-disc label, empty when no cached DISCS
+	// row names the disc.
 	Label string
 }
 
 func (e *IncompleteError) Error() string {
-	switch {
-	case e.HasDiscUUID:
-		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; run %d, disc %s (%s) holds it",
-			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq, uuidText(e.DiscUUID), e.Label)
-	case e.RunSeq != 0:
-		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; run %d holds it, but no cached DISCS row names its disc",
-			e.Snapshot.TextForm(), e.MissingTree.TextForm(), e.RunSeq)
-	default:
-		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; no cached run's INDEX names the run that holds it",
-			e.Snapshot.TextForm(), e.MissingTree.TextForm())
+	if e.HasDiscUUID {
+		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; disc %s%s holds it",
+			e.Snapshot.TextForm(), e.MissingTree.TextForm(), uuidText(e.DiscUUID), LabelSuffix(e.Label))
 	}
+	return fmt.Sprintf("snapshot %s: object %s is missing from the cache; no cached INDEX names the disc that holds it",
+		e.Snapshot.TextForm(), e.MissingTree.TextForm())
+}
+
+// LabelSuffix renders a disc label for a message that already names the
+// disc uuid, and renders nothing when the label is unknown.
+func LabelSuffix(label string) string {
+	if label == "" {
+		return ""
+	}
+	return " (" + label + ")"
 }
 
 // CheckComplete reports whether id's tree set is present in the cache.
@@ -188,8 +191,8 @@ func (c *Cache) refreshComplete(id object.ID) error {
 }
 
 // incompleteError builds an IncompleteError for snapshot id and its
-// first missing tree, resolving the tree's owning run and disc through
-// LocateObject and DiscForRun.
+// first missing tree, resolving the disc that holds the tree through
+// LocateObject and its label through DiscRow.
 func (c *Cache) incompleteError(id, missingTree object.ID) *IncompleteError {
 	e := &IncompleteError{Snapshot: id, MissingTree: missingTree}
 
@@ -197,64 +200,69 @@ func (c *Cache) incompleteError(id, missingTree object.ID) *IncompleteError {
 	if !found {
 		return e
 	}
-	e.RunSeq = loc.RunSeq
-
-	row, found := c.DiscForRun(loc.RunSeq)
-	if !found {
-		return e
-	}
-	e.DiscUUID = row.DiscUUID
+	e.DiscUUID = loc.DiscUUID
 	e.HasDiscUUID = true
-	e.Label = discLabelText(row)
+	if row, found := c.DiscRow(loc.DiscUUID); found {
+		e.Label = discLabelText(row)
+	}
 	return e
 }
 
-// ObjectLocation reports where a cached run's INDEX says one object
+// ObjectLocation reports where a cached disc's INDEX says one object
 // lives.
 type ObjectLocation struct {
-	// RunSeq is the run that stores the object.
-	RunSeq uint64
+	// DiscUUID is the disc that stores the object.
+	DiscUUID [16]byte
 	// PayloadLen is the object's uncompressed size. SizeKnown is true
-	// only when the run named by RunSeq is itself cached, so its own
-	// Objects row, which carries the size, was read directly; a run
-	// known only through another cached run's Prereqs table names the
-	// run but not the size.
+	// only when the disc named by DiscUUID is itself cached, so its own
+	// Objects row, which carries the size, was read directly; a disc
+	// known only through another cached disc's Prereqs table names the
+	// disc but not the size.
 	PayloadLen uint64
 	SizeKnown  bool
 }
 
-// LocateObject looks across every cached run's INDEX for id, first in
-// each run's own Objects table, then, failing that, in each run's
-// Prereqs table, and reports the run_seq that stores it. An Objects
-// table match is preferred and returned at once, since it also carries
-// the object's size; a Prereqs table match is kept only as a fallback,
-// in case some other cached run's Objects table still resolves the
-// same id with its size.
+// LocateObject looks across every cached disc's INDEX for id, first in
+// each disc's own Objects table, then, failing that, in each disc's
+// Prereqs table, and reports the disc that stores it. An Objects table
+// match is preferred and returned at once, since it also carries the
+// object's size; a Prereqs table match is kept only as a fallback, in
+// case some other cached disc's Objects table still resolves the same
+// id with its size.
+//
+// A Prereqs row names a run_seq, a number the host assigns. Each disc
+// resolves its own Prereqs rows through its own cached DISCS table, so
+// a run_seq that repeats on another disc never sends the lookup to the
+// wrong disc.
 func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
-	seqs, err := c.cachedRunSeqs()
+	uuids, err := c.cachedDiscs()
 	if err != nil {
 		return ObjectLocation{}, false
 	}
 	var fallback ObjectLocation
 	haveFallback := false
-	for _, seq := range seqs {
-		idx, err := c.IndexForRun(seq)
+	for _, uuid := range uuids {
+		idx, err := c.IndexForDisc(uuid)
 		if err != nil {
 			continue
 		}
 		for _, row := range idx.Objects {
 			if object.ID(row.ContentID) == id {
-				return ObjectLocation{RunSeq: idx.RunSeq, PayloadLen: row.PayloadLen, SizeKnown: true}, true
+				return ObjectLocation{DiscUUID: uuid, PayloadLen: row.PayloadLen, SizeKnown: true}, true
 			}
 		}
-		if !haveFallback {
-			for _, row := range idx.Prereqs {
-				if object.ID(row.ContentID) == id {
-					fallback = ObjectLocation{RunSeq: row.RunSeq}
-					haveFallback = true
-					break
-				}
+		if haveFallback {
+			continue
+		}
+		for _, row := range idx.Prereqs {
+			if object.ID(row.ContentID) != id {
+				continue
 			}
+			if holder, ok := c.runHolderOf(uuid, row.RunSeq); ok {
+				fallback = ObjectLocation{DiscUUID: holder}
+				haveFallback = true
+			}
+			break
 		}
 	}
 	if haveFallback {
@@ -263,15 +271,40 @@ func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
 	return ObjectLocation{}, false
 }
 
-// DiscForRun looks up run_seq's row in the newest cached DISCS table.
-func (c *Cache) DiscForRun(runSeq uint64) (format.DiscsRow, bool) {
-	discs, err := c.Discs()
+// runHolderOf returns the disc that uuid's own cached DISCS table names
+// for runSeq.
+func (c *Cache) runHolderOf(uuid [16]byte, runSeq uint64) ([16]byte, bool) {
+	discs, err := c.discsTableOf(uuid)
 	if err != nil {
-		return format.DiscsRow{}, false
+		return [16]byte{}, false
 	}
 	for _, row := range discs.Rows {
 		if row.RunSeq == runSeq {
-			return row, true
+			return row.DiscUUID, true
+		}
+	}
+	return [16]byte{}, false
+}
+
+// DiscRow returns the DISCS row for uuid: the disc's own cached table
+// first, then the table of any other cached disc that names it.
+func (c *Cache) DiscRow(uuid [16]byte) (format.DiscsRow, bool) {
+	if row, found := c.ownDiscRow(uuid); found {
+		return row, true
+	}
+	uuids, err := c.cachedDiscs()
+	if err != nil {
+		return format.DiscsRow{}, false
+	}
+	for _, other := range uuids {
+		discs, err := c.discsTableOf(other)
+		if err != nil {
+			continue
+		}
+		for _, row := range discs.Rows {
+			if row.DiscUUID == uuid {
+				return row, true
+			}
 		}
 	}
 	return format.DiscsRow{}, false

@@ -70,14 +70,18 @@ func TestPackPopulatesCache(t *testing.T) {
 		t.Fatalf("ListSnapshots = %v, want [%s]", ids, snapID.TextForm())
 	}
 
-	if _, err := c.IndexForRun(1); err != nil {
-		t.Fatalf("IndexForRun(1): %v", err)
-	}
 	if _, err := c.Refs(); err != nil {
 		t.Fatalf("Refs: %v", err)
 	}
-	if _, err := c.Discs(); err != nil {
+	discs, err := c.Discs()
+	if err != nil {
 		t.Fatalf("Discs: %v", err)
+	}
+	if len(discs.Rows) != 1 {
+		t.Fatalf("cached DISCS row count = %d, want 1", len(discs.Rows))
+	}
+	if _, err := c.IndexForDisc(discs.Rows[0].DiscUUID); err != nil {
+		t.Fatalf("IndexForDisc: %v", err)
 	}
 
 	snap, err := c.ReadSnapshot(snapID)
