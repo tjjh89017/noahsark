@@ -90,12 +90,12 @@ func TestAppendSurfacesCloseErrorAndKeepsStateConsistent(t *testing.T) {
 	}
 }
 
-// TestMarkCleanSurfacesCloseError checks recordCleanTime, reached
-// through MarkClean, the same way. It injects the Close failure only on
+// TestMarkVerifiedSurfacesCloseError checks recordCleanTime, reached
+// through MarkVerified, the same way. It injects the Close failure only on
 // clean_times.db, so state.db's own Burned-to-Clean record still writes
-// cleanly and the failure is isolated to the companion log MarkClean
+// cleanly and the failure is isolated to the companion log MarkVerified
 // writes second.
-func TestMarkCleanSurfacesCloseError(t *testing.T) {
+func TestMarkVerifiedSurfacesCloseError(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
 	if err != nil {
@@ -110,8 +110,8 @@ func TestMarkCleanSurfacesCloseError(t *testing.T) {
 	}
 
 	withFailingCloseForSuffix(t, cleanTimeFileName)
-	if err := l.MarkClean(id); !errors.Is(err, errInjectedClose) {
-		t.Fatalf("MarkClean error = %v, want it to wrap %v", err, errInjectedClose)
+	if err := l.MarkVerified(id); !errors.Is(err, errInjectedClose) {
+		t.Fatalf("MarkVerified error = %v, want it to wrap %v", err, errInjectedClose)
 	}
 	if _, ok := l.CleanTime(id); ok {
 		t.Fatal("a clean time whose Close failed must not be recorded")

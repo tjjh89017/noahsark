@@ -24,8 +24,10 @@ func appendConfigLine(t *testing.T, repo, line string) {
 
 // packAndVerifyDisc commits src into repo, packs it, copies the packed
 // tree outside the repository's staging directory to stand in for a
-// mounted disc, marks it burned, and verifies it, so the run's objects
-// reach CLEAN and its catalog enters the local cache.
+// mounted disc, marks it burned, and verifies it two times, so the run's
+// objects reach CLEAN with the verify count gc's default asks for, and
+// its catalog enters the local cache. The two verifies stand for the two
+// identical discs the operator burns from the same tree.
 func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	t.Helper()
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
@@ -42,8 +44,10 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
-		t.Fatalf("verify: exit %d: %s", code, out)
+	for copyNumber := 1; copyNumber <= 2; copyNumber++ {
+		if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+			t.Fatalf("verify copy %d: exit %d: %s", copyNumber, code, out)
+		}
 	}
 }
 
@@ -204,8 +208,10 @@ func TestGCTrimsCacheToNewestSnapshots(t *testing.T) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discA); code != 0 {
 		t.Fatalf("disc burned 1: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, mountedA); code != 0 {
-		t.Fatalf("verify 1: exit %d: %s", code, out)
+	for range 2 {
+		if code, out := runCmd(t, "verify", "--repo="+repo, mountedA); code != 0 {
+			t.Fatalf("verify 1: exit %d: %s", code, out)
+		}
 	}
 
 	if err := os.WriteFile(filepath.Join(src, "new.txt"), []byte("a brand new file for the second snapshot"), 0o644); err != nil {
@@ -227,8 +233,10 @@ func TestGCTrimsCacheToNewestSnapshots(t *testing.T) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discB); code != 0 {
 		t.Fatalf("disc burned 2: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, mountedB); code != 0 {
-		t.Fatalf("verify 2: exit %d: %s", code, out)
+	for range 2 {
+		if code, out := runCmd(t, "verify", "--repo="+repo, mountedB); code != 0 {
+			t.Fatalf("verify 2: exit %d: %s", code, out)
+		}
 	}
 
 	// Before trimming, both snapshots list fine from the cache alone.

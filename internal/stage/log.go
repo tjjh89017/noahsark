@@ -82,8 +82,12 @@ const (
 
 // recordLen is the fixed size of one state.db record: sequence (8),
 // content id (32), state (1), run_seq (8), disc_uuid (16), reason (1),
-// crc32c (4).
-const recordLen = 8 + 32 + 1 + 8 + 16 + 1 + 4
+// verify_count (1), crc32c (4).
+const recordLen = 8 + 32 + 1 + 8 + 16 + 1 + 1 + 4
+
+// maxVerifyCount is the largest value VerifyCount holds. A further
+// verify keeps the count there instead of wrapping to zero.
+const maxVerifyCount = 255
 
 // stateFileName is the state log's file name inside a staging directory,
 // matching OPERATIONS.md's staging store layout.
@@ -112,6 +116,11 @@ type Record struct {
 	RunSeq    uint64
 	DiscUUID  [16]byte
 	Reason    Reason
+	// VerifyCount is how many successful verifies the object has had.
+	// gc deletes an object only at gc.min_verified_copies verifies, so
+	// the staged bytes stay until the second identical disc passes
+	// verify.
+	VerifyCount uint8
 }
 
 func (r *Record) encode(buf []byte) {
@@ -121,8 +130,9 @@ func (r *Record) encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[41:49], r.RunSeq)
 	copy(buf[49:65], r.DiscUUID[:])
 	buf[65] = byte(r.Reason)
-	crc := crc32.Checksum(buf[0:66], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[66:70], crc)
+	buf[66] = r.VerifyCount
+	crc := crc32.Checksum(buf[0:67], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[67:71], crc)
 }
 
 // decode reads one record from buf, which must be exactly recordLen
@@ -135,8 +145,9 @@ func decodeRecord(buf []byte) (Record, bool) {
 	r.RunSeq = binary.LittleEndian.Uint64(buf[41:49])
 	copy(r.DiscUUID[:], buf[49:65])
 	r.Reason = Reason(buf[65])
-	crc := binary.LittleEndian.Uint32(buf[66:70])
-	ok := crc == crc32.Checksum(buf[0:66], crc32cTable)
+	r.VerifyCount = buf[66]
+	crc := binary.LittleEndian.Uint32(buf[67:71])
+	ok := crc == crc32.Checksum(buf[0:67], crc32cTable)
 	return r, ok
 }
 
@@ -319,6 +330,24 @@ func (l *Log) CleanCountByDisc() map[[16]byte]int {
 	return l.CountByDiscInState(Clean)
 }
 
+// MinCleanVerifyCountByDisc returns, for every disc uuid the log has a
+// Clean record for, the lowest verify count of the objects currently
+// Clean on it. That lowest count is what gc acts on, so it is what "disc
+// list" reports for the disc.
+func (l *Log) MinCleanVerifyCountByDisc() map[[16]byte]uint8 {
+	counts := make(map[[16]byte]uint8)
+	for _, rec := range l.current {
+		if rec.State != Clean {
+			continue
+		}
+		if lowest, ok := counts[rec.DiscUUID]; ok && lowest <= rec.VerifyCount {
+			continue
+		}
+		counts[rec.DiscUUID] = rec.VerifyCount
+	}
+	return counts
+}
+
 // CountByDiscInState returns, for every disc uuid the log has a record
 // for at state, the number of distinct objects currently at state on
 // that disc.
@@ -352,18 +381,29 @@ func (l *Log) MarkBurned(id object.ID, runSeq uint64, discUUID [16]byte) error {
 	return l.append(Record{ContentID: id, State: Burned, RunSeq: runSeq, DiscUUID: discUUID})
 }
 
-// MarkClean appends a Clean record for id, carrying forward its current
-// run and disc, and records the time of this transition in the clean
-// time companion log. verify is the only caller: this is the Burned to
-// Clean transition, and OPERATIONS.md gives it no timer and no manual
-// override.
-func (l *Log) MarkClean(id object.ID) error {
+// MarkVerified appends a Clean record for id, carrying forward its
+// current run and disc, and adds 1 to its verify count. verify is the
+// only caller. It marks the Burned to Clean transition, and it also
+// marks a verify of an object that is already Clean: the operator
+// verifies the second identical disc that way, and the count is what
+// tells gc that both copies are readable.
+//
+// The clean time is recorded once, at the first verify, so the retention
+// period counts from the first verify and a later verify never restarts
+// it.
+func (l *Log) MarkVerified(id object.ID) error {
 	rec := l.current[id]
 	rec.ContentID = id
 	rec.State = Clean
 	rec.Reason = ReasonNormal
+	if rec.VerifyCount < maxVerifyCount {
+		rec.VerifyCount++
+	}
 	if err := l.append(rec); err != nil {
 		return err
+	}
+	if _, ok := l.cleanAt[id]; ok {
+		return nil
 	}
 	return l.recordCleanTime(id, time.Now())
 }
@@ -568,7 +608,7 @@ func (l *Log) loadCleanTimes() error {
 }
 
 // recordCleanTime appends one record to the clean time companion log
-// and updates the in-memory record MarkClean and CleanTime share.
+// and updates the in-memory record MarkVerified and CleanTime share.
 func (l *Log) recordCleanTime(id object.ID, when time.Time) error {
 	if err := fixTornTail(l.cleanPath, &l.cleanTail); err != nil {
 		return err

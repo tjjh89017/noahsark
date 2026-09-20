@@ -56,6 +56,11 @@ type repoConfig struct {
 	// RetainAfterClean is staging.retain_after_clean: how long an
 	// object stays CLEAN before gc may move it to GC-ELIGIBLE.
 	RetainAfterClean time.Duration
+	// MinVerifiedCopies is gc.min_verified_copies: how many successful
+	// verifies an object needs before gc may delete it. The default of 2
+	// keeps the staged bytes until the second identical disc passes
+	// verify.
+	MinVerifiedCopies int
 	// LockTimeout is repo.lock_timeout: how long a command waits for
 	// the repository lock before it gives up. 0 means fail at once.
 	LockTimeout time.Duration
@@ -75,6 +80,7 @@ var knownConfigKeys = map[string]bool{
 	"cache.snapshot_depth":       true,
 	"restore.staging_budget":     true,
 	"staging.retain_after_clean": true,
+	"gc.min_verified_copies":     true,
 	"repo.lock_timeout":          true,
 }
 
@@ -96,6 +102,10 @@ const defaultRestoreStagingBudget = 16 * 1024 * 1024 * 1024
 // defaultRetainAfterClean is staging.retain_after_clean's default: 7
 // days.
 const defaultRetainAfterClean = 7 * 24 * time.Hour
+
+// defaultMinVerifiedCopies is gc.min_verified_copies' default: 2, one
+// verify for each of the two identical discs.
+const defaultMinVerifiedCopies = 2
 
 // parseRetentionDuration parses a duration for staging.retain_after_clean:
 // a plain integer with a "d" suffix for whole days, since
@@ -140,6 +150,7 @@ func readConfig(path string) (repoConfig, error) {
 		CacheSnapshotDepth:   defaultCacheSnapshotDepth,
 		RestoreStagingBudget: defaultRestoreStagingBudget,
 		RetainAfterClean:     defaultRetainAfterClean,
+		MinVerifiedCopies:    defaultMinVerifiedCopies,
 	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -218,6 +229,15 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: staging.retain_after_clean: %w", err)
 			}
 			c.RetainAfterClean = d
+		case "gc.min_verified_copies":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: gc.min_verified_copies: %w", err)
+			}
+			if n < 1 {
+				return repoConfig{}, fmt.Errorf("config: gc.min_verified_copies: must be at least 1")
+			}
+			c.MinVerifiedCopies = n
 		case "repo.lock_timeout":
 			n, err := strconv.Atoi(value)
 			if err != nil {

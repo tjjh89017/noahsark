@@ -46,7 +46,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	repoFlag := fs.String("repo", "", "repository root")
 	dryRun := fs.Bool("dry-run", false, "print what would be deleted, and free nothing")
 	keepSnapshots := fs.Int("keep-snapshots", -1, "keep cache trees and blobs reachable from only the newest N snapshots; default cache.snapshot_depth")
-	forceAfter := fs.String("force-after", "", "shorten retention to this duration for this run only, ignoring staging.retain_after_clean; requires confirmation")
+	forceAfter := fs.String("force-after", "", "shorten retention to this duration for this run only, ignoring staging.retain_after_clean; it does not pass by gc.min_verified_copies; requires confirmation")
 	yes := fs.Bool("yes", false, "skip --force-after's interactive confirmation")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
@@ -126,7 +126,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		retainAfterClean = retainAfterCleanOverride
 	}
 
-	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, retainAfterClean, gcClock())
+	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, retainAfterClean, cfg.MinVerifiedCopies, gcClock())
 	if retainAfterCleanOverride >= 0 && !*dryRun && len(candidates) > 0 {
 		if code, ok := confirmForceAfter(candidates, *yes, stdout, stderr); !ok {
 			return code
@@ -156,6 +156,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	if *dryRun {
 		printDryRunGroupSummary(candidates, stdout)
 	}
+	printHeldForCopies(stdout, stageLog, cfg.MinVerifiedCopies)
 	_, _ = fmt.Fprintf(stdout, "gc: cache: %s %d tree(s)/blob(s), %d bytes\n", verb, treesDeleted, treesBytes)
 	if uncached > 0 {
 		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their run's INDEX is not cached\n", uncached)
@@ -164,7 +165,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	if objDeleted == 0 && treesDeleted == 0 {
 		if *dryRun {
 			if uncached == 0 {
-				printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean)
+				printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean, cfg.MinVerifiedCopies)
 			}
 			return 0
 		}
@@ -177,8 +178,8 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 // where nothing is eligible for deletion yet, naming the earliest date
 // a CLEAN object reaches retainAfterClean and becomes eligible, when the
 // staging log holds a CLEAN object to measure that from.
-func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration) {
-	when, ok := earliestEligibleAt(l, retainAfterClean, gcClock())
+func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration, minCopies int) {
+	when, ok := earliestEligibleAt(l, retainAfterClean, minCopies, gcClock())
 	if !ok {
 		_, _ = fmt.Fprintln(stdout, "gc: nothing is eligible yet")
 		return
@@ -188,11 +189,16 @@ func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean ti
 
 // earliestEligibleAt returns the earliest time some CLEAN object reaches
 // retainAfterClean and becomes GC-ELIGIBLE, and whether the staging log
-// holds any CLEAN object to measure that from.
-func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, now time.Time) (time.Time, bool) {
+// holds any CLEAN object to measure that from. An object with fewer than
+// minCopies verifies has no such date yet: only another verify, not the
+// passing of time, can free it.
+func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) (time.Time, bool) {
 	var earliest time.Time
 	found := false
 	for _, id := range l.IDsInState(stage.Clean) {
+		if !hasVerifiedCopies(l, id, minCopies) {
+			continue
+		}
 		cleanAt, ok := l.CleanTime(id)
 		if !ok {
 			continue
@@ -207,12 +213,23 @@ func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, now time.T
 }
 
 // gcCandidates returns every object id eligible for deletion: already
-// GC-ELIGIBLE, or CLEAN for at least retainAfterClean as of now. It does
-// not itself change any state; the caller promotes CLEAN to GC-ELIGIBLE
-// only when it is not a dry run.
-func gcCandidates(l *stage.Log, retainAfterClean time.Duration, now time.Time) []object.ID {
-	ids := l.IDsInState(stage.GCEligible)
+// GC-ELIGIBLE, or CLEAN for at least retainAfterClean as of now. An
+// object with fewer than minCopies successful verifies is never a
+// candidate: two identical discs are the redundancy, so the staged bytes
+// stay until the second copy has been read back. It does not itself
+// change any state; the caller promotes CLEAN to GC-ELIGIBLE only when
+// it is not a dry run.
+func gcCandidates(l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) []object.ID {
+	var ids []object.ID
+	for _, id := range l.IDsInState(stage.GCEligible) {
+		if hasVerifiedCopies(l, id, minCopies) {
+			ids = append(ids, id)
+		}
+	}
 	for _, id := range l.IDsInState(stage.Clean) {
+		if !hasVerifiedCopies(l, id, minCopies) {
+			continue
+		}
 		cleanAt, ok := l.CleanTime(id)
 		if !ok {
 			continue
@@ -223,6 +240,53 @@ func gcCandidates(l *stage.Log, retainAfterClean time.Duration, now time.Time) [
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
 	return ids
+}
+
+// hasVerifiedCopies reports whether id has at least minCopies successful
+// verifies.
+func hasVerifiedCopies(l *stage.Log, id object.ID, minCopies int) bool {
+	rec, ok := l.Get(id)
+	return ok && int(rec.VerifyCount) >= minCopies
+}
+
+// printHeldForCopies prints one line for each disc that holds CLEAN
+// objects back because the disc has fewer than minCopies successful
+// verifies. It names the lowest count of the disc, the number of objects
+// held, and the action that frees them.
+func printHeldForCopies(stdout io.Writer, l *stage.Log, minCopies int) {
+	type held struct {
+		objects int
+		lowest  uint8
+	}
+	byDisc := make(map[[16]byte]*held)
+	for _, id := range l.IDsInState(stage.Clean) {
+		rec, ok := l.Get(id)
+		if !ok || int(rec.VerifyCount) >= minCopies {
+			continue
+		}
+		h, ok := byDisc[rec.DiscUUID]
+		if !ok {
+			h = &held{lowest: rec.VerifyCount}
+			byDisc[rec.DiscUUID] = h
+		}
+		h.objects++
+		if rec.VerifyCount < h.lowest {
+			h.lowest = rec.VerifyCount
+		}
+	}
+	uuids := make([]string, 0, len(byDisc))
+	order := make(map[string][16]byte, len(byDisc))
+	for u := range byDisc {
+		text := uuidText(u)
+		uuids = append(uuids, text)
+		order[text] = u
+	}
+	slices.Sort(uuids)
+	for _, text := range uuids {
+		h := byDisc[order[text]]
+		_, _ = fmt.Fprintf(stdout, "gc: disc %s: %d of %d copies verified; %d object(s) held; verify the second copy\n",
+			text, h.lowest, minCopies, h.objects)
+	}
 }
 
 // gcObj is one staging object gc's rules allow deleting: its id, the
@@ -242,8 +306,8 @@ type gcObj struct {
 // INDEX is not cached is left off the list and counted separately:
 // OPERATIONS.md's GC rules require confirming presence through the
 // cached manifest before every delete.
-func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAfterClean time.Duration, now time.Time) (objs []gcObj, uncached int) {
-	for _, id := range gcCandidates(l, retainAfterClean, now) {
+func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAfterClean time.Duration, minCopies int, now time.Time) (objs []gcObj, uncached int) {
+	for _, id := range gcCandidates(l, retainAfterClean, minCopies, now) {
 		rec, ok := l.Get(id)
 		if !ok {
 			continue
