@@ -224,9 +224,10 @@ func TestGCForceAfterDoesNotBypassTheVerifyCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0s", "--yes")
+	setGCStdin(t, strings.NewReader("y\n"))
+	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0s")
 	if code != 1 {
-		t.Fatalf("gc --force-after=0s --yes: exit %d, want 1 (nothing eligible): %s", code, out)
+		t.Fatalf("gc --force-after=0s: exit %d, want 1 (nothing eligible): %s", code, out)
 	}
 	if !strings.Contains(out, "1 of 2 copies verified") {
 		t.Fatalf("gc --force-after output %q, want the held line", out)

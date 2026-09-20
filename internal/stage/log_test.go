@@ -78,7 +78,10 @@ func TestOpenReplaysAcrossOpens(t *testing.T) {
 	}
 }
 
-func TestEnsurePackedIsIdempotent(t *testing.T) {
+// TestEnsureOnDiscIsIdempotent checks that a repeat rebuild from the
+// same discs appends nothing: the first call records the object, and
+// every later call finds it already known.
+func TestEnsureOnDiscIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
 	if err != nil {
@@ -88,43 +91,27 @@ func TestEnsurePackedIsIdempotent(t *testing.T) {
 	var discUUID [16]byte
 	discUUID[0] = 0xCD
 
-	if err := l.EnsurePacked(id, 5, discUUID); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.EnsurePacked(id, 5, discUUID); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.EnsurePacked(id, 5, discUUID); err != nil {
-		t.Fatal(err)
+	for range 3 {
+		if err := l.EnsureOnDisc(id, 5, discUUID); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	rec, ok := l.Get(id)
-	if !ok || rec.State != Packed || rec.RunSeq != 5 || rec.DiscUUID != discUUID || rec.Sequence != 1 {
-		t.Fatalf("got %+v, %v, want a single Packed record at sequence 1", rec, ok)
-	}
-
-	// A different run or disc still appends: EnsurePacked only skips a
-	// write that would record exactly what is already current.
-	discUUID2 := discUUID
-	discUUID2[1] = 0xEF
-	if err := l.EnsurePacked(id, 6, discUUID2); err != nil {
-		t.Fatal(err)
-	}
-	rec, ok = l.Get(id)
-	if !ok || rec.RunSeq != 6 || rec.DiscUUID != discUUID2 || rec.Sequence != 2 {
-		t.Fatalf("got %+v, %v, want run 6 at sequence 2", rec, ok)
+	if !ok || rec.State != OnDiscOnly || rec.RunSeq != 5 || rec.DiscUUID != discUUID || rec.Sequence != 1 {
+		t.Fatalf("got %+v, %v, want a single OnDiscOnly record at sequence 1", rec, ok)
 	}
 }
 
-// TestEnsurePackedKeepsProgressPastPacked checks that replaying a
-// disc's own catalog through EnsurePacked never undoes progress a
-// verify or a gc already recorded: an object already Burned, Clean,
-// GCEligible or Deleted stays exactly there.
-func TestEnsurePackedKeepsProgressPastPacked(t *testing.T) {
+// TestEnsureOnDiscKeepsAKnownState checks that replaying a disc's own
+// catalog through EnsureOnDisc never undoes what the log already knows:
+// an object already Packed, Burned, Clean or OnDiscOnly stays exactly
+// there, and no record is appended.
+func TestEnsureOnDiscKeepsAKnownState(t *testing.T) {
 	var discUUID [16]byte
 	discUUID[0] = 0x11
 
-	for _, state := range []State{Burned, Clean, GCEligible, Deleted} {
+	for _, state := range []State{Packed, Burned, Clean, OnDiscOnly} {
 		t.Run(stateName(state), func(t *testing.T) {
 			dir := t.TempDir()
 			l, err := Open(dir)
@@ -136,53 +123,35 @@ func TestEnsurePackedKeepsProgressPastPacked(t *testing.T) {
 			if err := l.MarkPacked(id, 1, discUUID); err != nil {
 				t.Fatal(err)
 			}
+			if state != Packed {
+				if err := l.MarkBurned(id, 1, discUUID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			switch state {
-			case Burned:
-				if err := l.MarkBurned(id, 1, discUUID); err != nil {
-					t.Fatal(err)
-				}
 			case Clean:
-				if err := l.MarkBurned(id, 1, discUUID); err != nil {
-					t.Fatal(err)
-				}
 				if err := l.MarkVerified(id); err != nil {
 					t.Fatal(err)
 				}
-			case GCEligible:
-				if err := l.MarkBurned(id, 1, discUUID); err != nil {
-					t.Fatal(err)
-				}
+			case OnDiscOnly:
 				if err := l.MarkVerified(id); err != nil {
 					t.Fatal(err)
 				}
-				if err := l.MarkGCEligible(id); err != nil {
-					t.Fatal(err)
-				}
-			case Deleted:
-				if err := l.MarkBurned(id, 1, discUUID); err != nil {
-					t.Fatal(err)
-				}
-				if err := l.MarkVerified(id); err != nil {
-					t.Fatal(err)
-				}
-				if err := l.MarkGCEligible(id); err != nil {
-					t.Fatal(err)
-				}
-				if err := l.MarkDeleted(id); err != nil {
+				if err := l.MarkOnDisc(id); err != nil {
 					t.Fatal(err)
 				}
 			}
 
 			seqBefore, _ := l.Get(id)
-			if err := l.EnsurePacked(id, 1, discUUID); err != nil {
+			if err := l.EnsureOnDisc(id, 1, discUUID); err != nil {
 				t.Fatal(err)
 			}
 			rec, ok := l.Get(id)
 			if !ok || rec.State != state {
-				t.Fatalf("EnsurePacked changed state to %+v, want unchanged %v", rec, state)
+				t.Fatalf("EnsureOnDisc changed state to %+v, want unchanged %v", rec, state)
 			}
 			if rec.Sequence != seqBefore.Sequence {
-				t.Fatalf("EnsurePacked appended a record: sequence %d, want unchanged %d", rec.Sequence, seqBefore.Sequence)
+				t.Fatalf("EnsureOnDisc appended a record: sequence %d, want unchanged %d", rec.Sequence, seqBefore.Sequence)
 			}
 		})
 	}
@@ -198,10 +167,8 @@ func stateName(s State) string {
 		return "Burned"
 	case Clean:
 		return "Clean"
-	case GCEligible:
-		return "GCEligible"
-	case Deleted:
-		return "Deleted"
+	case OnDiscOnly:
+		return "OnDiscOnly"
 	default:
 		return "unknown"
 	}
@@ -480,7 +447,7 @@ func TestBurnedCleanTransitions(t *testing.T) {
 		t.Fatalf("CleanTime after MarkVerified: got %v, %v", cleanAt, ok)
 	}
 
-	// The clean time survives a reopen, replayed from the companion log.
+	// The clean time survives a reopen: it is a field of the record.
 	l2, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -518,7 +485,9 @@ func TestVerifyFailedReturnsBurnedToPacked(t *testing.T) {
 	}
 }
 
-func TestGCEligibleAndDeleted(t *testing.T) {
+// TestMarkOnDiscIsTerminal checks the one state gc records before it
+// unlinks a staged file.
+func TestMarkOnDiscIsTerminal(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
 	if err != nil {
@@ -539,19 +508,12 @@ func TestGCEligibleAndDeleted(t *testing.T) {
 	if err := l.MarkVerified(id); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.MarkGCEligible(id); err != nil {
+	if err := l.MarkOnDisc(id); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok := l.Get(id)
-	if !ok || rec.State != GCEligible {
-		t.Fatalf("got %+v, %v, want GCEligible", rec, ok)
-	}
-	if err := l.MarkDeleted(id); err != nil {
-		t.Fatal(err)
-	}
-	rec, ok = l.Get(id)
-	if !ok || rec.State != Deleted {
-		t.Fatalf("got %+v, %v, want Deleted", rec, ok)
+	if !ok || rec.State != OnDiscOnly || rec.DiscUUID != discUUID {
+		t.Fatalf("got %+v, %v, want OnDiscOnly on disc %x", rec, ok, discUUID)
 	}
 }
 
@@ -583,16 +545,15 @@ func TestBurnUndoReturnsBurnedToPacked(t *testing.T) {
 }
 
 // TestStateOnDisc checks that OnDisc names every state a disc already
-// holds an object's data for: Packed, Burned, Clean, GCEligible and
-// Deleted, and only those.
+// holds an object's data for: Packed, Burned, Clean and OnDiscOnly, and
+// only those.
 func TestStateOnDisc(t *testing.T) {
 	onDisc := map[State]bool{
 		Staged:     false,
 		Packed:     true,
 		Burned:     true,
 		Clean:      true,
-		GCEligible: true,
-		Deleted:    true,
+		OnDiscOnly: true,
 	}
 	for state, want := range onDisc {
 		if got := state.OnDisc(); got != want {
@@ -651,9 +612,9 @@ func TestVerifyCountRisesWithEachVerify(t *testing.T) {
 	}
 }
 
-// TestVerifyCountSurvivesGCStates checks that the GC-ELIGIBLE and
-// DELETED records carry the verify count forward.
-func TestVerifyCountSurvivesGCStates(t *testing.T) {
+// TestVerifyCountSurvivesOnDisc checks that the ON-DISC record carries
+// the verify count and the clean time forward.
+func TestVerifyCountSurvivesOnDisc(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
 	if err != nil {
@@ -673,17 +634,20 @@ func TestVerifyCountSurvivesGCStates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := l.MarkGCEligible(id); err != nil {
+	cleanAt, ok := l.CleanTime(id)
+	if !ok {
+		t.Fatal("CleanTime reported no time after two verifies")
+	}
+	if err := l.MarkOnDisc(id); err != nil {
 		t.Fatal(err)
 	}
-	if rec, ok := l.Get(id); !ok || rec.State != GCEligible || rec.VerifyCount != 2 {
-		t.Fatalf("GCEligible record %+v, %v, want verify count 2", rec, ok)
+	rec, ok := l.Get(id)
+	if !ok || rec.State != OnDiscOnly || rec.VerifyCount != 2 {
+		t.Fatalf("OnDiscOnly record %+v, %v, want verify count 2", rec, ok)
 	}
-	if err := l.MarkDeleted(id); err != nil {
-		t.Fatal(err)
-	}
-	if rec, ok := l.Get(id); !ok || rec.State != Deleted || rec.VerifyCount != 2 {
-		t.Fatalf("Deleted record %+v, %v, want verify count 2", rec, ok)
+	carried, ok := l.CleanTime(id)
+	if !ok || !carried.Equal(cleanAt) {
+		t.Fatalf("clean time after MarkOnDisc: got %v, %v, want %v", carried, ok, cleanAt)
 	}
 }
 
@@ -713,7 +677,7 @@ func TestSecondVerifyKeepsTheFirstCleanTime(t *testing.T) {
 		t.Fatal("CleanTime reported no time after the first verify")
 	}
 
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(time.Millisecond)
 	if err := l.MarkVerified(id); err != nil {
 		t.Fatal(err)
 	}
@@ -729,5 +693,107 @@ func TestSecondVerifyKeepsTheFirstCleanTime(t *testing.T) {
 	reopened, ok := l2.CleanTime(id)
 	if !ok || !reopened.Equal(first) {
 		t.Fatalf("reopened CleanTime: got %v, %v, want %v", reopened, ok, first)
+	}
+}
+
+// TestPartialTailRecordIsCut writes a real short file: two good records
+// and a few bytes of a third. Open must cut the partial record and
+// report the cut, and the file on the disk must shrink, so the next
+// append lands right after the last good record.
+func TestPartialTailRecordIsCut(t *testing.T) {
+	dir := t.TempDir()
+	id1 := object.ComputeID([]byte("one"))
+	id2 := object.ComputeID([]byte("two"))
+	id3 := object.ComputeID([]byte("three"))
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(id1); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.EnsureStaged(id2); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, stateFileName)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{1, 2, 3, 4, 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	l2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncated, ignored := l2.Truncated()
+	if !truncated || ignored != 5 {
+		t.Fatalf("Truncated() = (%v, %d), want (true, 5)", truncated, ignored)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != int64(2*recordLen) {
+		t.Fatalf("file size after Open = %d, want %d", fi.Size(), 2*recordLen)
+	}
+
+	if err := l2.EnsureStaged(id3); err != nil {
+		t.Fatal(err)
+	}
+	l3, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := l3.Get(id3); !ok {
+		t.Fatal("the record appended after the cut must replay")
+	}
+	if truncated, _ := l3.Truncated(); truncated {
+		t.Fatal("Truncated() = true after the partial tail was cut")
+	}
+}
+
+// TestBadRecordInTheMiddleIsAnError writes a real short file of three
+// records and breaks the middle one. Good records follow it, so this is
+// damage, not a torn tail: Open must report it and leave the file
+// alone, rather than silently drop the good records behind it.
+func TestBadRecordInTheMiddleIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"one", "two", "three"} {
+		if err := l.EnsureStaged(object.ComputeID([]byte(name))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	path := filepath.Join(dir, stateFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[recordLen+1] ^= 0xFF
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(dir); err == nil {
+		t.Fatal("Open accepted a log with a bad record in the middle")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != int64(len(data)) {
+		t.Fatalf("Open changed the file: size %d, want %d", fi.Size(), len(data))
 	}
 }

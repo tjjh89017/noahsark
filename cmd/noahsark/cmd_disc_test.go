@@ -11,6 +11,11 @@ import (
 
 var discListLineRe = regexp.MustCompile(`^([0-9a-f-]{36})  seq=(\d+)  label="([^"]*)"  capacity=(\d+)  used=(\d+)  objects=(\d+)  packed=(\d+)  clean=(\d+)  verified=(\d+)/(\d+)$`)
 
+// discListOnDiscOnlyLineRe matches the shorter line "disc list" prints
+// for a disc whose objects staging holds no file for: gc freed them, or
+// rebuild-cache read them from the disc itself.
+var discListOnDiscOnlyLineRe = regexp.MustCompile(`^([0-9a-f-]{36})  seq=(\d+)  label="([^"]*)"  capacity=(\d+)  used=(\d+)  objects=(\d+)  on disc only$`)
+
 // TestDiscListReportsPackedDiscs packs one disc and checks that
 // "disc list" prints its uuid, seq, label, capacity, used bytes and
 // packed object count, plus the staged line.
@@ -139,12 +144,15 @@ func TestDiscListUsedSectorsSurviveRebuildCache(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("disc list output = %q, want one disc line and one staged line", out)
 	}
-	m := discListLineRe.FindStringSubmatch(lines[0])
+	m := discListOnDiscOnlyLineRe.FindStringSubmatch(lines[0])
 	if m == nil {
-		t.Fatalf("disc line %q does not match the expected column order", lines[0])
+		t.Fatalf("disc line %q does not match the on-disc-only column order", lines[0])
 	}
 	if m[5] == "0" {
 		t.Fatalf("used = %q, want nonzero after rebuild-cache", m[5])
+	}
+	if m[6] == "0" {
+		t.Fatalf("objects = %q, want nonzero after rebuild-cache", m[6])
 	}
 }
 

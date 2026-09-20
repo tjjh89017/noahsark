@@ -62,7 +62,7 @@ func withFailingCloseForSuffix(t *testing.T, suffix string) {
 func TestWriteRecordSurfacesCloseError(t *testing.T) {
 	withFailingClose(t)
 	dir := t.TempDir()
-	if err := writeRecord(dir+"/state.db", []byte("x")); !errors.Is(err, errInjectedClose) {
+	if err := writeRecord(dir+"/state.db", []byte("x"), false); !errors.Is(err, errInjectedClose) {
 		t.Fatalf("writeRecord error = %v, want it to wrap %v", err, errInjectedClose)
 	}
 }
@@ -87,34 +87,6 @@ func TestAppendSurfacesCloseErrorAndKeepsStateConsistent(t *testing.T) {
 	}
 	if _, ok := l.Get(id); ok {
 		t.Fatal("a record whose Close failed must not appear as staged")
-	}
-}
-
-// TestMarkVerifiedSurfacesCloseError checks recordCleanTime, reached
-// through MarkVerified, the same way. It injects the Close failure only on
-// clean_times.db, so state.db's own Burned-to-Clean record still writes
-// cleanly and the failure is isolated to the companion log MarkVerified
-// writes second.
-func TestMarkVerifiedSurfacesCloseError(t *testing.T) {
-	dir := t.TempDir()
-	l, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := object.ComputeID([]byte("clean-me"))
-	if err := l.MarkPacked(id, 1, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.MarkBurned(id, 1, [16]byte{}); err != nil {
-		t.Fatal(err)
-	}
-
-	withFailingCloseForSuffix(t, cleanTimeFileName)
-	if err := l.MarkVerified(id); !errors.Is(err, errInjectedClose) {
-		t.Fatalf("MarkVerified error = %v, want it to wrap %v", err, errInjectedClose)
-	}
-	if _, ok := l.CleanTime(id); ok {
-		t.Fatal("a clean time whose Close failed must not be recorded")
 	}
 }
 
@@ -164,10 +136,10 @@ func withSyncRecorder(t *testing.T, syncErr error) *[]string {
 	return calls
 }
 
-// TestMarkGCEligibleSyncsBeforeClose checks the durable append: gc
-// removes a staged file right after this record, so the record must
-// reach the disc before the file goes away.
-func TestMarkGCEligibleSyncsBeforeClose(t *testing.T) {
+// TestMarkOnDiscSyncsBeforeClose checks the durable append: gc unlinks
+// a staged file right after this record, so the record must reach the
+// disk before the file goes away.
+func TestMarkOnDiscSyncsBeforeClose(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
 	if err != nil {
@@ -176,18 +148,18 @@ func TestMarkGCEligibleSyncsBeforeClose(t *testing.T) {
 	id := object.ComputeID([]byte("gc-me"))
 
 	calls := withSyncRecorder(t, nil)
-	if err := l.MarkGCEligible(id); err != nil {
+	if err := l.MarkOnDisc(id); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(*calls, ","); got != "sync,close" {
-		t.Fatalf("MarkGCEligible calls = %q, want \"sync,close\"", got)
+		t.Fatalf("MarkOnDisc calls = %q, want \"sync,close\"", got)
 	}
 }
 
-// TestMarkGCEligibleSurfacesSyncError checks that a failed flush is
+// TestMarkOnDiscSurfacesSyncError checks that a failed flush is
 // returned, not swallowed: gc must not delete bytes whose record never
-// reached the disc.
-func TestMarkGCEligibleSurfacesSyncError(t *testing.T) {
+// reached the disk.
+func TestMarkOnDiscSurfacesSyncError(t *testing.T) {
 	dir := t.TempDir()
 	l, err := Open(dir)
 	if err != nil {
@@ -196,8 +168,8 @@ func TestMarkGCEligibleSurfacesSyncError(t *testing.T) {
 	id := object.ComputeID([]byte("gc-me"))
 
 	withSyncRecorder(t, errInjectedSync)
-	if err := l.MarkGCEligible(id); !errors.Is(err, errInjectedSync) {
-		t.Fatalf("MarkGCEligible error = %v, want it to wrap %v", err, errInjectedSync)
+	if err := l.MarkOnDisc(id); !errors.Is(err, errInjectedSync) {
+		t.Fatalf("MarkOnDisc error = %v, want it to wrap %v", err, errInjectedSync)
 	}
 	if _, ok := l.Get(id); ok {
 		t.Fatal("a record whose Sync failed must not appear in the log")

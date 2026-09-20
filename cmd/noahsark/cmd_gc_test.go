@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,98 +184,6 @@ func countFiles(dir string) (int, error) {
 	return n, err
 }
 
-// TestGCTrimsCacheToNewestSnapshots packs and verifies two discs, each
-// holding one snapshot, then runs gc --keep-snapshots=1: the older
-// snapshot's own trees must be dropped from the cache, so ls on it
-// reports the cache incomplete, while ls on the newest snapshot still
-// works from the cache alone.
-func TestGCTrimsCacheToNewestSnapshots(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-
-	src := writeFixtureSource(t)
-	code, commitOut := runCmd(t, "commit", "--repo="+repo, src)
-	if code != 0 {
-		t.Fatalf("commit 1: exit %d: %s", code, commitOut)
-	}
-	snapA := snapshotIDFromCommit(t, commitOut)
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack 1: exit %d: %s", code, packOut)
-	}
-	treeA := packedTreeDir(t, packOut)
-	discA := packedDiscUUID(t, packOut)
-	mountedA := filepath.Join(work, "mountedA")
-	copyTree(t, treeA, mountedA)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discA); code != 0 {
-		t.Fatalf("disc burned 1: exit %d: %s", code, out)
-	}
-	for range 2 {
-		if code, out := runCmd(t, "verify", "--repo="+repo, mountedA); code != 0 {
-			t.Fatalf("verify 1: exit %d: %s", code, out)
-		}
-	}
-
-	if err := os.WriteFile(filepath.Join(src, "new.txt"), []byte("a brand new file for the second snapshot"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	code, commitOut = runCmd(t, "commit", "--repo="+repo, src)
-	if code != 0 {
-		t.Fatalf("commit 2: exit %d: %s", code, commitOut)
-	}
-	snapB := snapshotIDFromCommit(t, commitOut)
-	code, packOut = runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack 2: exit %d: %s", code, packOut)
-	}
-	treeB := packedTreeDir(t, packOut)
-	discB := packedDiscUUID(t, packOut)
-	mountedB := filepath.Join(work, "mountedB")
-	copyTree(t, treeB, mountedB)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discB); code != 0 {
-		t.Fatalf("disc burned 2: exit %d: %s", code, out)
-	}
-	for range 2 {
-		if code, out := runCmd(t, "verify", "--repo="+repo, mountedB); code != 0 {
-			t.Fatalf("verify 2: exit %d: %s", code, out)
-		}
-	}
-
-	// Before trimming, both snapshots list fine from the cache alone.
-	if code, out := runCmd(t, "ls", "--repo="+repo, snapA); code != 0 {
-		t.Fatalf("ls snapA (before trim): exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "ls", "--repo="+repo, snapB); code != 0 {
-		t.Fatalf("ls snapB (before trim): exit %d: %s", code, out)
-	}
-
-	code, out := runCmd(t, "gc", "--repo="+repo, "--keep-snapshots=1")
-	if code != 0 {
-		t.Fatalf("gc --keep-snapshots=1: exit %d: %s", code, out)
-	}
-	if strings.Contains(out, "cache: deleted 0 tree") {
-		t.Fatalf("gc output %q, want more than 0 cache trees deleted", out)
-	}
-
-	// The older snapshot is no longer complete in the cache.
-	code, out = runCmd(t, "ls", "--repo="+repo, snapA)
-	if code == 0 {
-		t.Fatalf("ls snapA (after trim): exit 0, want the cache reported incomplete: %s", out)
-	}
-	if !strings.Contains(out, "not complete in the cache") {
-		t.Fatalf("ls snapA (after trim) output %q missing the incomplete-cache message", out)
-	}
-
-	// The newest snapshot still lists fine, entirely from the cache.
-	if code, out := runCmd(t, "ls", "--repo="+repo, snapB); code != 0 {
-		t.Fatalf("ls snapB (after trim): exit %d: %s", code, out)
-	}
-}
-
 // TestGCRefusesAnUncachedRun runs gc with the local cache emptied: gc
 // must not delete any object whose run's INDEX it cannot confirm
 // against, even though the object is otherwise eligible.
@@ -430,4 +339,58 @@ func encodeGCRefs(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return buf
+}
+
+// TestGCWritesTheRecordBeforeTheUnlink fails the unlink of every staged
+// file, the way a crash right after the durable record does. The first
+// run must leave every object recorded ON-DISC with its file still
+// there. The second run, with the unlink working again, must find those
+// orphans and free them. The record always comes first: the other order
+// would leave an object the log calls CLEAN with no bytes behind it.
+func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
+	oldClock, oldRemove := gcClock, gcRemove
+	defer func() { gcClock, gcRemove = oldClock, oldRemove }()
+
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	before := time.Now()
+	packAndVerifyDisc(t, work, repo, src)
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+
+	objDir := filepath.Join(repo, "staging", "objects")
+	staged, err := countFiles(objDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged == 0 {
+		t.Fatal("the test needs staged object files to free")
+	}
+
+	gcRemove = func(string) error { return errors.New("injected unlink failure") }
+	if code, out := runCmd(t, "gc", "--repo="+repo); code == 0 {
+		t.Fatalf("gc with a failing unlink: exit 0, want non-zero (nothing freed): %s", out)
+	}
+	if n, err := countFiles(objDir); err != nil || n != staged {
+		t.Fatalf("staging/objects has %d file(s), %v; want the %d orphans left behind", n, err, staged)
+	}
+	if n := countByState(t, repo, stage.OnDiscOnly); n == 0 {
+		t.Fatal("gc unlinked before it recorded: no ON-DISC record survived the failed unlink")
+	}
+	if n := countByState(t, repo, stage.Clean); n != 0 {
+		t.Fatalf("%d object(s) still CLEAN; the record must go to the disk before the unlink", n)
+	}
+
+	gcRemove = oldRemove
+	code, out := runCmd(t, "gc", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
+	}
+	if n, err := countFiles(objDir); err != nil || n != 0 {
+		t.Fatalf("staging/objects has %d file(s), %v; want the orphans freed", n, err)
+	}
 }

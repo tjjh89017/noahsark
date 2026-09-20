@@ -69,7 +69,7 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	}
 
 	filesBefore, bytesBefore := stagingObjectsSnapshot(t, repo)
-	deletedBefore := countByState(t, repo, stage.Deleted)
+	deletedBefore := countByState(t, repo, stage.OnDiscOnly)
 
 	// A commit of the same, unchanged source must find every chunk,
 	// blob and tree already on the disc gc just freed, and must not
@@ -99,7 +99,7 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	if n := countByState(t, repo, stage.Staged); n != 1 {
 		t.Fatalf("Staged objects after re-commit = %d, want 1 (the new snapshot only)", n)
 	}
-	if n := countByState(t, repo, stage.Deleted); n != deletedBefore {
+	if n := countByState(t, repo, stage.OnDiscOnly); n != deletedBefore {
 		t.Fatalf("Deleted objects after re-commit = %d, want unchanged %d", n, deletedBefore)
 	}
 }

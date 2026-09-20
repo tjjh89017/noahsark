@@ -199,6 +199,10 @@ type discSummary struct {
 	OnDiscObjects int    `json:"on_disc_objects"`
 	PackedObjects int    `json:"packed_objects"`
 	CleanObjects  int    `json:"clean_objects"`
+	// OnDiscOnlyObjects is how many of the disc's objects staging holds
+	// no file for: gc freed them, or rebuild-cache read them from the
+	// disc itself. Such an object waits for no burn and no verify.
+	OnDiscOnlyObjects int `json:"on_disc_only_objects"`
 	// VerifiedCopies is the lowest verify count of the CLEAN objects of
 	// the disc, and 0 when the disc has no CLEAN object. gc frees an
 	// object at gc.min_verified_copies verifies, so this is the number
@@ -259,9 +263,10 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 	onDiscByDisc := stageLog.OnDiscCountByDisc()
 	packedByDisc := stageLog.PackedCountByDisc()
 	cleanByDisc := stageLog.CleanCountByDisc()
+	onDiscOnlyByDisc := stageLog.CountByDiscInState(stage.OnDiscOnly)
 	verifiedByDisc := stageLog.MinCleanVerifyCountByDisc()
 
-	discs := summarizeDiscs(ledger.Rows, onDiscByDisc, packedByDisc, cleanByDisc, verifiedByDisc, cfg.MinVerifiedCopies)
+	discs := summarizeDiscs(ledger.Rows, onDiscByDisc, packedByDisc, cleanByDisc, onDiscOnlyByDisc, verifiedByDisc, cfg.MinVerifiedCopies)
 
 	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
 	if err != nil {
@@ -285,9 +290,17 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 	}
 
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "%s  seq=%d  label=%q  capacity=%d  used=%d  objects=%d  packed=%d  clean=%d  verified=%d/%d\n",
-			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.OnDiscObjects, d.PackedObjects, d.CleanObjects,
-			d.VerifiedCopies, d.MinCopies)
+		head := fmt.Sprintf("%s  seq=%d  label=%q  capacity=%d  used=%d  objects=%d",
+			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.OnDiscObjects)
+		// A disc whose objects are all on the disc alone holds nothing
+		// back. A packed or clean count of 0 and a verify count of 0
+		// would read as work still to do.
+		if d.OnDiscObjects > 0 && d.OnDiscOnlyObjects == d.OnDiscObjects {
+			_, _ = fmt.Fprintf(stdout, "%s  on disc only\n", head)
+			continue
+		}
+		_, _ = fmt.Fprintf(stdout, "%s  packed=%d  clean=%d  verified=%d/%d\n",
+			head, d.PackedObjects, d.CleanObjects, d.VerifiedCopies, d.MinCopies)
 	}
 	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
 	return 0
@@ -296,10 +309,10 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 // summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
 // ascending disc_seq order, and folds each disc's rows into one
 // discSummary: the label and forced capacity of its newest run, the sum
-// of used_sectors across every run, the disc's on-disc,
-// packed, and clean object counts, and its verify count against
+// of used_sectors across every run, the disc's on-disc, packed, clean
+// and on-disc-only object counts, and its verify count against
 // minCopies.
-func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByDisc map[[16]byte]int, verifiedByDisc map[[16]byte]uint8, minCopies int) []discSummary {
+func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByDisc, onDiscOnlyByDisc map[[16]byte]int, verifiedByDisc map[[16]byte]uint8, minCopies int) []discSummary {
 	order := make([]string, 0)
 	byUUID := make(map[string][]format.DiscsRow)
 	for _, r := range rows {
@@ -322,16 +335,17 @@ func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByD
 			usedSectors += r.UsedSectors
 		}
 		discs = append(discs, discSummary{
-			UUID:           key,
-			Seq:            newest.DiscSeq,
-			Label:          labelText(newest.Label[:newest.LabelLen]),
-			CapacityBytes:  newest.CapacityForcedSectors * image.SectorSize,
-			UsedBytes:      usedSectors * image.SectorSize,
-			OnDiscObjects:  onDiscByDisc[newest.DiscUUID],
-			PackedObjects:  packedByDisc[newest.DiscUUID],
-			CleanObjects:   cleanByDisc[newest.DiscUUID],
-			VerifiedCopies: verifiedByDisc[newest.DiscUUID],
-			MinCopies:      minCopies,
+			UUID:              key,
+			Seq:               newest.DiscSeq,
+			Label:             labelText(newest.Label[:newest.LabelLen]),
+			CapacityBytes:     newest.CapacityForcedSectors * image.SectorSize,
+			UsedBytes:         usedSectors * image.SectorSize,
+			OnDiscObjects:     onDiscByDisc[newest.DiscUUID],
+			PackedObjects:     packedByDisc[newest.DiscUUID],
+			CleanObjects:      cleanByDisc[newest.DiscUUID],
+			OnDiscOnlyObjects: onDiscOnlyByDisc[newest.DiscUUID],
+			VerifiedCopies:    verifiedByDisc[newest.DiscUUID],
+			MinCopies:         minCopies,
 		})
 	}
 	return discs

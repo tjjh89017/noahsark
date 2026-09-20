@@ -98,15 +98,15 @@ scenario_rebuild() {
 	log "rebuild: --include restore of one file and one directory matches"
 
 	# rebuild-cache with disc 1 alone: exit 0, and the state
-	# log's packed count must equal disc 1's own INDEX object count.
+	# log's on-disc count must equal disc 1's own INDEX object count.
 	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1"
-	local index_count1 packed_count1
+	local index_count1 ondisc_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
-	packed_count1="$(run_tool ci-state-count "$repo/staging")"
-	if [ "$packed_count1" != "$index_count1" ]; then
-		fail "rebuild: packed count $packed_count1 does not equal disc 1 INDEX object count $index_count1"
+	ondisc_count1="$(run_tool ci-state-count "$repo/staging")"
+	if [ "$ondisc_count1" != "$index_count1" ]; then
+		fail "rebuild: on-disc count $ondisc_count1 does not equal disc 1 INDEX object count $index_count1"
 	fi
-	log "rebuild: rebuild-cache from disc 1 recorded $packed_count1 packed objects, matching INDEX"
+	log "rebuild: rebuild-cache from disc 1 recorded $ondisc_count1 on-disc objects, matching INDEX"
 
 	# Change the source: about REBUILD_ADD_BYTES of new files, a rewritten
 	# file and a few appended files (ci-incremental-fixture's mutate),
@@ -154,25 +154,25 @@ scenario_rebuild() {
 	run_tool ci-incremental-fixture check "$restored_next$src" "$hashes_next"
 	log "rebuild: NEXT restored from both discs matches"
 
-	# rebuild-cache again, with both discs: exit 0, same packed count as
+	# rebuild-cache again, with both discs: exit 0, same on-disc count as
 	# after the first rebuild plus disc 2's own new objects.
 	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1" --disc="$mnt2"
-	local index_count2 packed_count2 want_count2
+	local index_count2 ondisc_count2 want_count2
 	index_count2="$(run_tool ci-index-count "$mnt2")"
-	packed_count2="$(run_tool ci-state-count "$repo/staging")"
+	ondisc_count2="$(run_tool ci-state-count "$repo/staging")"
 	want_count2=$((index_count1 + index_count2))
-	if [ "$packed_count2" != "$want_count2" ]; then
-		fail "rebuild: packed count after 2-disc rebuild is $packed_count2, want $want_count2 (disc 1 + disc 2 INDEX object counts)"
+	if [ "$ondisc_count2" != "$want_count2" ]; then
+		fail "rebuild: on-disc count after 2-disc rebuild is $ondisc_count2, want $want_count2 (disc 1 + disc 2 INDEX object counts)"
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
 	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1" --disc="$mnt2"
-	local packed_count3
-	packed_count3="$(run_tool ci-state-count "$repo/staging")"
-	if [ "$packed_count3" != "$packed_count2" ]; then
-		fail "rebuild: packed count changed on a repeat 2-disc rebuild: $packed_count2 then $packed_count3"
+	local ondisc_count3
+	ondisc_count3="$(run_tool ci-state-count "$repo/staging")"
+	if [ "$ondisc_count3" != "$ondisc_count2" ]; then
+		fail "rebuild: on-disc count changed on a repeat 2-disc rebuild: $ondisc_count2 then $ondisc_count3"
 	fi
-	log "rebuild: 2-disc rebuild is idempotent at $packed_count2 packed objects"
+	log "rebuild: 2-disc rebuild is idempotent at $ondisc_count2 on-disc objects"
 
 	# rebuild-cache with only disc 2: exit 1, naming disc 1's uuid.
 	rm -rf "$repo"

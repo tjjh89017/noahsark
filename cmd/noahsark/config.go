@@ -44,17 +44,13 @@ type repoConfig struct {
 	// CacheFormatVersion is cache.format_version. A cache whose stored
 	// version differs is deleted and rebuilt, never migrated.
 	CacheFormatVersion int
-	// CacheSnapshotDepth is cache.snapshot_depth: how many of the newest
-	// snapshots the cache keeps trees for. 0 means unlimited. gc applies
-	// this key when it trims the cache.
-	CacheSnapshotDepth int
 	// RestoreStagingBudget is restore.staging_budget, in bytes: the
 	// peak staging/restore/ size a restore must stay under. A
 	// disc-swap restore splits a disc's reads into passes so spool
 	// usage never exceeds this.
 	RestoreStagingBudget uint64
 	// RetainAfterClean is staging.retain_after_clean: how long an
-	// object stays CLEAN before gc may move it to GC-ELIGIBLE.
+	// object stays CLEAN before gc may free its staged file.
 	RetainAfterClean time.Duration
 	// MinVerifiedCopies is gc.min_verified_copies: how many successful
 	// verifies an object needs before gc may delete it. The default of 2
@@ -77,7 +73,6 @@ var knownConfigKeys = map[string]bool{
 	"fec.scheme":                 true,
 	"cache.dir":                  true,
 	"cache.format_version":       true,
-	"cache.snapshot_depth":       true,
 	"restore.staging_budget":     true,
 	"staging.retain_after_clean": true,
 	"gc.min_verified_copies":     true,
@@ -90,10 +85,6 @@ const defaultRetryUnstable = 1
 
 // defaultCacheFormatVersion is cache.format_version's Phase 1 default.
 const defaultCacheFormatVersion = 1
-
-// defaultCacheSnapshotDepth is cache.snapshot_depth's Phase 1 default:
-// 0, unlimited. gc reads this key when it trims the cache.
-const defaultCacheSnapshotDepth = 0
 
 // defaultRestoreStagingBudget is restore.staging_budget's Phase 1
 // default: 16 GiB.
@@ -147,7 +138,6 @@ func readConfig(path string) (repoConfig, error) {
 		RestatAfterRead:      true,
 		RetryUnstable:        defaultRetryUnstable,
 		CacheFormatVersion:   defaultCacheFormatVersion,
-		CacheSnapshotDepth:   defaultCacheSnapshotDepth,
 		RestoreStagingBudget: defaultRestoreStagingBudget,
 		RetainAfterClean:     defaultRetainAfterClean,
 		MinVerifiedCopies:    defaultMinVerifiedCopies,
@@ -208,15 +198,6 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: cache.format_version: %w", err)
 			}
 			c.CacheFormatVersion = n
-		case "cache.snapshot_depth":
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: cache.snapshot_depth: %w", err)
-			}
-			if n < 0 {
-				return repoConfig{}, fmt.Errorf("config: cache.snapshot_depth: must not be negative")
-			}
-			c.CacheSnapshotDepth = n
 		case "restore.staging_budget":
 			n, err := parseByteSize(value)
 			if err != nil {

@@ -237,6 +237,14 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	}
 
 	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID)
+	if n == 0 && !haveClean && stillPacked == 0 {
+		// Every object of the disc is on the disc alone: gc freed the
+		// staged files, or rebuild-cache read the disc into an empty
+		// staging. The verify still read every object back; there is
+		// simply no staging state left to move.
+		_, _ = fmt.Fprintf(stdout, "verify: disc %s holds no staged object; nothing to mark\n", uuidText(ident.DiscUUID))
+		return "", false
+	}
 	if stillPacked == 0 {
 		return "", false
 	}
