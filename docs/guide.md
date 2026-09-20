@@ -279,8 +279,7 @@ earlier discs too.
 This build cannot append to a burned disc. `append` is a later-phase
 command. More data always goes on a new disc. To seal a disc against
 later appends, add `--close` to `pack`. Then use the burn command that
-`pack` prints. See OPERATIONS.md, "Disc lifecycle, closing and
-appending".
+`pack` prints. See OPERATIONS.md, "Disc lifecycle and closing".
 
 ## 11. Restore
 
@@ -467,7 +466,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
   or set `fec.scheme = rs255-gf8` in `<REPO>/config`. `--no-fec`
   overrides the config for one pack. FEC uses approximately 9.4% of the
   disc. `noahsark verify --heal <MOUNT>` repairs a run that has FEC. It
-  refuses a run without FEC. See OPERATIONS.md, "Verify, scrub and heal".
+  refuses a run without FEC. See OPERATIONS.md, "Verify and heal".
 - **Progress.** Long commands print a progress line to stderr. Use
   `--quiet` or `--no-progress` to stop it.
 - **Upgrades.** A newer build reads the discs of an older build. A build

@@ -112,7 +112,7 @@ The cache is never inside the repository, so that deleting the cache and
 deleting the repository stay independent acts.
 
 Every disc of a repository carries `repo_uuid`. A lost repository is therefore
-recreated by `rebuild-cache --from-disc`, which takes `repo.uuid` from the
+recreated by `rebuild-cache`, which takes `repo.uuid` from the
 discs. Nothing in the repository directory is a source of truth except the
 state log for objects that are not yet CLEAN and the local ref log for refs
 whose run is not yet CLEAN.
@@ -188,14 +188,14 @@ verified. It must not report it as healthy.
 
 ### 2.7 Cache-less operation
 
-Every command must work with the cache absent, after `rebuild-cache
---from-disc` or with the disc roots given on the command line.
+Every command must work with the cache absent, after `rebuild-cache`
+or with the disc roots given on the command line.
 
 | Command | Behaviour with no cache |
 |---|---|
 | `commit` | Works. With no cached INDEX, no exact lookup is possible, thus `commit` stages each chunk again. |
 | `pack` | Works. It packs the staged objects. |
-| `plan`, `restore --mount` | Need the cache. The operator runs `rebuild-cache --from-disc` first. |
+| `plan`, `restore --mount` | Need the cache. The operator runs `rebuild-cache` first. |
 | `restore` with disc roots | Works from the given discs alone. It needs no repository. |
 | `verify` | Works from the disc root alone. |
 | `ls`, `log` | With a disc root, read the discs. With none, need the cache. |
@@ -375,7 +375,7 @@ the local disk, thus the operator burns the same image again.
    that run. The disc root and the image of the run stay on the local disk,
    thus the operator burns the same image on a new disc and verifies it.
 7. `commit` is the only entry point. A new object enters the machine at
-   STAGED. `rebuild-cache --from-disc` records the objects of a fed disc as
+   STAGED. `rebuild-cache` records the objects of a fed disc as
    PACKED.
 8. The state log is authoritative only for objects that are not yet CLEAN.
    Everything about a CLEAN object is derivable from the discs.
@@ -460,7 +460,7 @@ two copies pass `verify`. GitHub issue #28 tracks the rule.
    A record with `run_seq` 0, or one naming a run that is not yet CLEAN, is
    authoritative and is never dropped.
 5. A record with a bad CRC ends the replay, as in section 4.3.
-6. `rebuild-cache --from-disc` on a recreated repository supplies every ref
+6. `rebuild-cache` on a recreated repository supplies every ref
    from the discs.
 
 ### 5.2 The pending snapshot chain
@@ -1051,7 +1051,7 @@ give the same plan; and the tie-breaks below are applied in the stated order.
 **Coverage.** An object whose content id is absent from the Objects table of
 every run is missing, and that is a proof. A plan with any missing object
 fails up front. When the cache does not hold the INDEX of a run, the planner
-says so and names `rebuild-cache --from-disc` as the fix.
+says so and names `rebuild-cache` as the fix.
 
 **Algorithm.** The two steps below are **informative**. Any algorithm that
 meets the requirements conforms.
@@ -1185,7 +1185,7 @@ If the newest disc is lost, each other disc carries the state as of its own
 burn. Both paths must exist and both must be tested.
 
 The disc-swap mode needs the cache. After a lost repository, the operator runs
-`rebuild-cache --from-disc` one time for each disc, then restores.
+`rebuild-cache` one time for each disc, then restores.
 
 ---
 
@@ -1372,7 +1372,7 @@ repository path, the staging path and, with `--source`, the source path.
 
 A fresh repository starts at `run_seq` 1 and `disc_seq` 0. `pack` takes the
 next numbers from the maximum that the disc ledger holds.
-`rebuild-cache --from-disc` recreates a lost repository from its discs; do not
+`rebuild-cache` recreates a lost repository from its discs; do not
 run `init` first.
 
 Exit: 0 on success; 1 when a file could not be written; 2 on a usage error, or
@@ -1413,7 +1413,7 @@ The report lists every unstable path and says which branch was taken.
 
 ```
 noahsark pack [--repo=PATH] [--ref=NAME | --snapshot=ID...] --capacity=N
-              [--physical-capacity=N] [--label=TEXT] [--media=NAME]
+              [--physical-capacity=N] [--label=TEXT]
               [--out=DIR] [--fec | --no-fec] [--close]
 ```
 
@@ -1438,8 +1438,7 @@ invocation, and it starts a new disc for each run.
 |---|---|
 | `--ref` | An extra ref name to carry onto the disc. `pack` carries every pending ref without it. |
 | `--snapshot` | A snapshot id whose refs the run carries. Repeatable. |
-| `--media` | Media type for a new disc: any name from the media type registry of FORMAT.md's "Registries", or a `--capacity` preset name. A space in a name may be written as `-`. Default: the media type of the `--capacity` preset, else `BD-R-SL-25`. |
-| `--capacity` | Target capacity of the disc (section 12.6). Mandatory on every `pack`. The config holds no default. The value is a preset name (`dvd+r`, `dvd-r`, `bd25`, `bd50`, `bd100`, `bd128`), a plain integer, which is a count of 2048-byte sectors, or a byte size with a decimal unit (`k`, `M`, `G`, `T`, `kB`, `MB`, `GB`, `TB`) or a binary unit (`Ki`, `Mi`, `Gi`, `Ti`, `KiB`, `MiB`, `GiB`, `TiB`). `G` is not `Gi`. |
+| `--capacity` | Target capacity of the disc (section 12.6). Mandatory on every `pack`. The config holds no default. The value is a preset name (`dvd+r`, `dvd-r`, `bd25`, `bd50`, `bd100`, `bd128`), a plain integer, which is a count of 2048-byte sectors, or a byte size with a decimal unit (`k`, `M`, `G`, `T`, `kB`, `MB`, `GB`, `TB`) or a binary unit (`Ki`, `Mi`, `Gi`, `Ti`, `KiB`, `MiB`, `GiB`, `TiB`). `G` is not `Gi`. The media type recorded in `DISC.bin` follows the `--capacity` preset, else `BD-R-SL-25`; it is informational only. |
 | `--physical-capacity` | The physical capacity of the disc, in the same forms. Default: the `--capacity` value. Give it only when `--capacity` forces a smaller limit than the disc has, or when the drive reports fewer sectors than the preset. |
 | `--label` | Human label, printed on the disc. |
 | `--out` | The directory that receives the disc root. It must be empty or absent. Default `<repo>/staging/plans/<disc uuid>/tree`. |
@@ -1461,14 +1460,13 @@ capacity too small for the run.
 
 ```
 noahsark verify [--repo=DIR] [--heal [--out=DIR]] DISC-ROOT
-noahsark verify [--repo=DIR] [--heal [--out=DIR]] --image=PATH
 ```
 
 Reads a disc root back and checks it. On success it moves the run's BURNED
 objects to CLEAN.
 
-`DISC-ROOT` and `--image` name the same thing: the mount point of a disc or of
-a loop-mounted image, or a packed disc root. Give only one of them. `verify`
+`DISC-ROOT` is the mount point of a disc or of a loop-mounted image, or a
+packed disc root. It is the one required positional argument. `verify`
 never mounts anything. It always reads every object back.
 
 `verify` moves BURNED objects to CLEAN and no other objects. It never moves a
@@ -1480,7 +1478,7 @@ PACKED, as "Transition rules" says.
 
 With a repository, `verify` refuses a disc whose uuid the disc list of that
 repository does not hold. The message names `--repo` and
-`rebuild-cache --from-disc` as the two fixes. With no repository, `verify`
+`rebuild-cache --disc` as the two fixes. With no repository, `verify`
 checks the disc root and changes no state.
 
 On success it prints `verify: marked N object(s) CLEAN` when N is at least 1,
@@ -1489,7 +1487,6 @@ then `verify: ok`.
 | Option | Meaning |
 |---|---|
 | `--repo` | The repository whose staging state to update. "Repository discovery" gives the search order. |
-| `--image` | The path of a mounted disc or image, or of a packed disc root. |
 | `--heal` | Repair the disc root with the Reed-Solomon parity of the run before the check. It refuses a run that has no FEC. |
 | `--out` | With `--heal`, write the healed disc root into this directory, not in place. |
 
@@ -1578,8 +1575,7 @@ by uuid.
 ### 16.17 `rebuild-cache`
 
 ```
-noahsark rebuild-cache [--repo=PATH] --from-disc [--disc=ROOT]...
-                       [--discs-dir=DIR]
+noahsark rebuild-cache [--repo=PATH] [--disc=ROOT]... [--discs-dir=DIR]
 ```
 
 Rebuilds the local cache from discs. It also rebuilds the repository state
@@ -1600,7 +1596,6 @@ line for each such disc.
 |---|---|
 | `--disc` | A disc root to read. Repeatable. |
 | `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
-| `--from-disc` | Read from the discs. Mandatory. |
 
 Exit: 0 on success. 1 on a failure at run time, also when the rebuild is
 partial, or when the given discs do not share one `repo_uuid`. 2 on a usage
@@ -1609,7 +1604,7 @@ error. 3 when no usable disc was given.
 ### 16.20 `gc`
 
 ```
-noahsark gc [--repo=PATH] [--dry-run [--verbose]] [--keep-snapshots=N]
+noahsark gc [--repo=PATH] [--dry-run] [--keep-snapshots=N]
             [--force-after=DURATION] [--yes]
 ```
 
@@ -1623,8 +1618,7 @@ is not in the local cache.
 | Option | Meaning |
 |---|---|
 | `--dry-run` | Print the totals that `gc` would delete, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
-| `--verbose` | With `--dry-run`, print one `would delete` line for each object in place of the summary. |
-| `--keep-snapshots` | Keep the cached trees and blobs that only the newest N snapshots reach, and drop the rest. Default `cache.snapshot_depth`. 0 means no limit. `rebuild-cache --from-disc` brings dropped data back. |
+| `--keep-snapshots` | Keep the cached trees and blobs that only the newest N snapshots reach, and drop the rest. Default `cache.snapshot_depth`. 0 means no limit. `rebuild-cache` brings dropped data back. |
 | `--force-after` | Shorten the retention for this run only. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 | `--yes` | Skip the confirmation of `--force-after`, for a script. Without `--yes`, `gc --force-after` refuses when standard input is not a terminal. |
 
@@ -1910,8 +1904,8 @@ same image.
 | 3 | One copy of a disc is lost or bad later | Read from the other copy: `restore` with its disc root. Burn a new copy from the kept image, or from an image that `ddrescue` reads from the good copy. When the run has FEC, `verify --heal --out=DIR` can repair a copy of the bad disc root. |
 | 4 | The two copies of a disc are lost | `restore` with the other discs restores what they hold and names each object that it cannot find. Then `commit` the source into a new repository. |
 | 5 | The newest disc is lost | Each other disc carries the catalog as of its own burn. `restore`, `ls` and `log` work with the discs that remain. |
-| 6 | The local cache is lost or wrong | `rebuild-cache --from-disc`, one time for each disc. |
-| 7 | The repository directory is lost | `rebuild-cache --from-disc --repo=<new>`, one time for each disc. Do not run `init` first. Then `disc burned` and `verify` for each disc. |
+| 6 | The local cache is lost or wrong | `rebuild-cache`, one time for each disc. |
+| 7 | The repository directory is lost | `rebuild-cache --repo=<new>`, one time for each disc. Do not run `init` first. Then `disc burned` and `verify` for each disc. |
 | 8 | The state log is truncated by a crash | The tool replays up to the bad record, reports the torn tail and truncates it before the next append. Run the interrupted command again. |
 | 9 | `pack` stops: a staged object fails its content id check, or a sync error occurs | `pack` records nothing, and the sequence numbers stay free. For a corrupt staged object, run `commit` again. Delete the part-written `--out` directory. Run `pack` again. |
 | 10 | A sync error in `gc` | `gc` stops before the delete. Run `gc` again. |

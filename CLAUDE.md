@@ -40,20 +40,19 @@ Use this table to find a topic, by document and heading, not by number
 | Compression rules | FORMAT.md | "5. Compression" |
 | Chunk, blob, tree, snapshot, ref | FORMAT.md | "6. Objects" |
 | Disc, run, and append behaviour (on-disc) | FORMAT.md | "7. Disc and run model" |
-| Disc, run, and append behaviour (host-side) | OPERATIONS.md | "12. Disc lifecycle, closing and appending" |
-| Recovery by carving | FORMAT.md | "7.10 Recovery by carving" |
+| Disc, run, and append behaviour (host-side) | OPERATIONS.md | "12. Disc lifecycle and closing" |
 | Disc filesystem profiles (on-disc layout) | FORMAT.md | "8. Filesystem profiles and the volume tree" |
 | The reference decoder | FORMAT.md | "8.6 Reference decoder" |
-| Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burn plan and burning" |
+| Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burning" |
 | Reed-Solomon parity (on-disc layout) | FORMAT.md | "10. Forward error correction" |
-| Self-healing, scrub, and verify (host-side) | OPERATIONS.md | "13. Verify, scrub and heal" |
+| Self-healing and verify (host-side) | OPERATIONS.md | "13. Verify and heal" |
 | The run index and the catalog | FORMAT.md | "11. The run index and the catalog" |
 | Local cache | OPERATIONS.md | "2.4 Local cache layout" |
 | Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
 | Packing and locality | OPERATIONS.md | "8. Packing and locality" |
 | Restore planning | OPERATIONS.md | "14. Restore" |
 | File metadata and permissions | OPERATIONS.md | "15. Metadata restore policy" |
-| Commit flow, quick check, mirror mode | OPERATIONS.md | "7. Commit" |
+| Commit flow and the quick check | OPERATIONS.md | "7. Commit" |
 | Command syntax | OPERATIONS.md | "16. CLI reference" |
 | Config keys | OPERATIONS.md | "17. Configuration reference" |
 | Format versioning rules | FORMAT.md | "12. Reader and writer rules" |
@@ -95,17 +94,6 @@ Implementation notes" section.
   `udftools` 2.3 or later. Refuse to run the burn path on an older or
   unpatched build.
 
-## Phase discipline
-
-- Implement Phase 1 only, unless the user asks for a later phase.
-- The phase table lives in NOTES.md's "1.5 Implementation phases" and
-  OPERATIONS.md's "16. CLI reference" sections. Check a command's or a
-  config key's phase tag before you touch it.
-- A Phase 1 build must refuse a later-phase option or key with a clear
-  message. Do not silently ignore it.
-- Never start a Backlog item without an explicit decision from the user.
-  Backlog items are specified and reserved in the format, but not scheduled.
-
 ## Testing rules
 
 Follow OPERATIONS.md's "22. Test list" and "23. Manual physical checklist"
@@ -114,7 +102,8 @@ sections. In summary:
 - Test image-first. Build a filesystem image, loop-mount it, verify it,
   simulate append and damage on the image. Physical burns are a manual
   checklist, not CI.
-- Put CI test steps in a composite action at `.github/actions/test/`.
+- Put CI test steps in the composite actions under `.github/actions/`
+  (`lint`, `unit`, `e2e`).
   Workflows call the composite action; they do not repeat its steps.
 - When a tool's behaviour is an open question, write a probe action under
   `.github/actions/probe-<topic>/`. A probe records an unknown answer; a test
@@ -147,7 +136,7 @@ This is the layout in use.
 
 ```
 cmd/noahsark          CLI
-internal/format       structures, encode, decode, golden tests, carving reader
+internal/format       structures, encode, decode, golden tests
 internal/chunker      Gear table, FastCDC
 internal/cache        local cache: blobs, trees, runs, INDEX
 internal/object       chunk, blob, tree, snapshot writers over a source tree
@@ -161,15 +150,14 @@ internal/restore      walk a snapshot from a mounted image, write files
 internal/stage        staging state machine, state log records
 docs/                 guide.md (operator guide), decisions.md, fec-reference.md
 reference/decoder.py  the on-disc reference decoder
-.github/actions/test  composite action
+.github/actions       composite actions: lint, unit, e2e
 ```
 
 ## How to work on this repo
 
 1. Read the FORMAT.md or OPERATIONS.md section for the topic before writing
    or changing code.
-2. Check the phase tag for the command, key, or feature you touch.
-3. Write the golden-file test first, then the encode and decode functions.
-4. Never change a frozen on-disc format without a version bump and a matching
+2. Write the golden-file test first, then the encode and decode functions.
+3. Never change a frozen on-disc format without a version bump and a matching
    FORMAT.md change. Ask the user before changing anything FORMAT.md calls
    frozen.
