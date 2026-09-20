@@ -42,7 +42,7 @@ func buildFixtureTreeNoFEC(t *testing.T, srcDir string) (treeDir string, snapID 
 }
 
 // TestHealRefusesRunWithNoFEC checks that Heal on a scheme 0 run (no
-// FEC) fails clearly, naming the run, and touches nothing: there is no
+// FEC) fails clearly, naming the disc, and touches nothing: there is no
 // checksum column or parity to repair from.
 func TestHealRefusesRunWithNoFEC(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
@@ -60,7 +60,7 @@ func TestHealRefusesRunWithNoFEC(t *testing.T) {
 	if !strings.Contains(err.Error(), "no FEC") {
 		t.Fatalf("expected the error to say the run has no FEC, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "1") {
-		t.Fatalf("expected the error to name the run seq, got: %v", err)
+	if !strings.Contains(err.Error(), uuidText([16]byte{5, 6, 7, 8})) {
+		t.Fatalf("expected the error to name the disc uuid, got: %v", err)
 	}
 }

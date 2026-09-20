@@ -181,6 +181,117 @@ func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 	t.Logf("missing disc error: %v", missing)
 }
 
+// packOneDisc commits src into stagingDir and packs whatever that commit
+// left unpacked onto one new disc.
+func packOneDisc(t *testing.T, stagingDir string, l *stage.Log, src string, repoUUID, discUUID [16]byte, name, label string) (object.ID, string) {
+	t.Helper()
+	w := object.NewWriter(stagingDir)
+	w.Now = multiFixedClock
+	snap, _, err := w.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs, err := image.CollectReachable(stagingDir, []object.ID{snap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range objs {
+		if err := l.EnsureStaged(o.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	sectors := (uint64(20_000_000) + image.SectorSize - 1) / image.SectorSize
+	if _, err := image.Pack(image.PackOptions{
+		StagingDir:              stagingDir,
+		Snapshots:               []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
+		TargetCapacitySectors:   sectors,
+		PhysicalCapacitySectors: sectors,
+		OutputDir:               dir,
+		RepoUUID:                repoUUID,
+		DiscUUID:                discUUID,
+		Label:                   label,
+		FECEnabled:              true,
+		Now:                     multiFixedClock,
+		StageLog:                l,
+	}); err != nil {
+		t.Fatalf("pack %s: %v", label, err)
+	}
+	return snap, dir
+}
+
+// TestRestoreMultiRunSeqRepeatedAcrossLineages gives the restore two
+// discs of different lineages that both carry run sequence number 1.
+// The prerequisite must resolve through the DISCS table of the disc that
+// wrote the Prereqs row, so the missing object is reported against the
+// disc that really holds it, not against the unrelated disc that reuses
+// the same number.
+func TestRestoreMultiRunSeqRepeatedAcrossLineages(t *testing.T) {
+	writeRandom := func(dir, name string, seed int64) {
+		t.Helper()
+		data := make([]byte, 400_000)
+		if _, err := rand.New(rand.NewSource(seed)).Read(data); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Lineage A: disc 1 holds the first commit, disc 2 holds only what
+	// the second commit added. Disc 2's Prereqs name run 1 of lineage A.
+	stagingA := t.TempDir()
+	logA, err := stage.Open(stagingA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoA := [16]byte{9, 9, 9}
+	srcA := t.TempDir()
+	writeRandom(srcA, "first.bin", 11)
+	_, disc1Dir := packOneDisc(t, stagingA, logA, srcA, repoA, [16]byte{1}, "A1", "a-one")
+	writeRandom(srcA, "second.bin", 12)
+	snapA2, disc2Dir := packOneDisc(t, stagingA, logA, srcA, repoA, [16]byte{2}, "A2", "a-two")
+
+	// Lineage B: a separate repository. Its only disc is run 1 as well.
+	stagingB := t.TempDir()
+	logB, err := stage.Open(stagingB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcB := t.TempDir()
+	writeRandom(srcB, "other.bin", 21)
+	_, disc3Dir := packOneDisc(t, stagingB, logB, srcB, [16]byte{8, 8, 8}, [16]byte{3}, "B1", "b-one")
+
+	// Disc 1 is not provided. Lineage B's disc must not be mistaken for
+	// it, although both discs hold a run 1.
+	outDir := t.TempDir()
+	_, _, err = RestoreMulti([]string{disc2Dir, disc3Dir}, snapA2, outDir)
+	if err == nil {
+		t.Fatal("expected a missing-disc error")
+	}
+	missing, ok := err.(*MissingDiscError)
+	if !ok {
+		t.Fatalf("expected *MissingDiscError, got %T: %v", err, err)
+	}
+	if _, ok := missing.ByDisc[[16]byte{1}]; !ok {
+		t.Fatalf("expected disc 1 to be named, got ByDisc=%v", missing.ByDisc)
+	}
+	if _, ok := missing.ByDisc[[16]byte{3}]; ok {
+		t.Fatalf("lineage B's disc must not be named, got ByDisc=%v", missing.ByDisc)
+	}
+	if !strings.Contains(missing.Error(), uuidText([16]byte{1})) || !strings.Contains(missing.Error(), "a-one") {
+		t.Fatalf("expected the error to name disc 1 and its label, got %q", missing.Error())
+	}
+
+	// With disc 1 back, the restore finds every object on the right
+	// disc, although lineage B's disc is still in the set.
+	outDir = t.TempDir()
+	if _, _, err := RestoreMulti([]string{disc1Dir, disc2Dir, disc3Dir}, snapA2, outDir); err != nil {
+		t.Fatalf("RestoreMulti: %v", err)
+	}
+	compareTrees(t, srcA, filepath.Join(outDir, srcA))
+}
+
 // TestRestoreMultiUnnamedMissingListsDiscsTableCandidate covers the case
 // where the missing object is not named by any provided disc's Prereqs
 // row, because no provided disc's snapshot ever referenced it. The only
