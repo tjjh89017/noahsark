@@ -68,7 +68,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	}
 	if len(results) == 0 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: no usable disc found")
-		return 3
+		return 1
 	}
 
 	repoUUID := results[0].Run.RepoUUID
@@ -93,7 +93,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	// it takes the repository's exclusive lock instead: the repository
 	// lock is the only lock this build has to keep those writes safe
 	// against a concurrent reader or another writer.
-	lk, code, ok := lockExclusive("rebuild-cache", repoDir, cfg.LockTimeout, stderr)
+	lk, code, ok := lockRepo("rebuild-cache", repoDir, stderr)
 	if !ok {
 		return code
 	}

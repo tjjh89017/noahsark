@@ -279,8 +279,8 @@ func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 	}
 
 	code, out = runCmd(t, "ls", "--recursive", "--disc="+discRoots[0], "--disc="+discRoots[2], snapID)
-	if code != 3 {
-		t.Fatalf("ls: exit %d, want 3: %s", code, out)
+	if code != 1 {
+		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "missing disc") {
 		t.Fatalf("ls output %q does not name a missing disc", out)

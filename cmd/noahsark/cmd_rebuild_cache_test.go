@@ -280,8 +280,8 @@ func TestRebuildCacheNoUsableDisc(t *testing.T) {
 	}
 
 	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+empty)
-	if code != 3 {
-		t.Fatalf("exit %d, want 3: %s", code, out)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: %s", code, out)
 	}
 }
 

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -170,9 +169,6 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	resumed, skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		if _, ok := errors.AsType[*restore.MissingDiscError](err); ok {
-			return 3
-		}
 		return 1
 	}
 	metaLoss := printMetadataFailures(stderr, metadataFailures)
@@ -340,7 +336,7 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		return 1
 	}
 
-	lk, code, ok := lockExclusive("restore", repoDir, cfg.LockTimeout, stderr)
+	lk, code, ok := lockRepo("restore", repoDir, stderr)
 	if !ok {
 		return code
 	}
@@ -454,7 +450,7 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 				msg = fmt.Sprintf("noahsark: restore: --plan=%s names a snapshot not known to this repository's cache: %s", planFile, incompleteErrorBody(ie))
 			}
 			_, _ = fmt.Fprintln(stderr, msg)
-			return 3
+			return 1
 		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
@@ -489,7 +485,7 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 	printPlanText(stdout, result, passSplit)
 	if len(result.Missing) > 0 {
 		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d object(s) have no run known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
-		return 3
+		return 1
 	}
 
 	m, err := restore.BuildManifest(c, snap, outDir, includes, overwrite)

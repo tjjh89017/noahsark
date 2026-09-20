@@ -54,15 +54,6 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		positional = fs.Args()
-		if repoDir, err := discoverRepo(*repoFlag); err == nil {
-			if cfg, err := readConfig(configPath(repoDir)); err == nil {
-				lk, code, ok := lockShared("log", repoDir, cfg.LockTimeout, stderr)
-				if !ok {
-					return code
-				}
-				defer releaseLock(lk)
-			}
-		}
 		cs, c, err := openCacheSource(*repoFlag)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)

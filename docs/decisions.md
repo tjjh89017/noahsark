@@ -477,7 +477,7 @@ root always is one and the other two never are in ordinary use. `ls`
 and `log` keep their old disc-reading path unchanged when a disc is
 named; `plan` reads the cache only, matching OPERATIONS.md's "reads
 nothing from a disc beyond the catalog." All three report the same
-incomplete-cache message and exit code 3 through the shared
+incomplete-cache message and exit code 1 through the shared
 `reportSourceError`/`formatIncompleteError` helpers, resolving the
 disc to insert through `cache.LocateObject` and `cache.DiscRow`
 where a cached disc's INDEX or DISCS table allows it.
@@ -1033,45 +1033,35 @@ every file is written and the run finishes, the now-empty
 
 ## 6. Concurrency and locking
 
-`internal/repolock` implements the repository lock: `flock` on
-`<repo>/lock`, exclusive or shared, non-blocking, retried until
-`repo.lock_timeout` passes (default 0, so a command fails at once). It
-never treats the lock file's existence as the lock; the file only
-carries the exclusive holder's pid, for the failure message, and is
-never removed, so a competing `open` always locks the same inode. A
-command that cannot get its lock prints
-`repository lock <path> is held by pid <PID>; wait for the other
-noahsark command to end` and exits 2, matching OPERATIONS.md's rule.
+`internal/repolock` implements the repository lock: a non-blocking
+exclusive `flock` on `<repo>/lock`, and nothing else. It never treats
+the lock file's existence as the lock, and never removes it, so a
+competing `open` always locks the same inode. A command that cannot get
+its lock prints `repository lock <path> is held; another noahsark
+command runs on this repository` and exits 1, matching OPERATIONS.md's
+rule.
 
-Every state-writing command this build has takes the exclusive lock
-before it opens the state log: `init` (on the directory it just
-created), `commit`, `pack`, `gc` (`--dry-run` included, since it still
-replays the log to report what it would delete), `disc burned`,
-`rebuild-cache` and `restore`'s single-drive disc-swap mode. `verify`
-takes it only when `--repo` resolves to a repository; with no `--repo`
-it never touches any repository's state, the same reasoning that
-already applies to `image build`, and to `ls` and `log` reading
-straight from a disc instead of the cache. `plan`, `ls`, `log` and
-`disc list` take the shared lock, matching the read-only list
-OPERATIONS.md names; none of them ever reaches an appender
-(`internal/stage`'s `append` or `recordCleanTime`), so a shared lock is
-enough to keep them safe.
+Every state-writing command this build has takes the lock before it
+opens the state log: `init` (on the directory it just created),
+`commit`, `pack`, `gc` (`--dry-run` included, since it still replays the
+log to report what it would delete), `disc burned`, `rebuild-cache` and
+`restore`'s single-drive disc-swap mode. `verify` takes it only when
+`--repo` resolves to a repository; with no `--repo` it never touches any
+repository's state, the same reasoning that already applies to `image
+build`, and to `ls` and `log` reading straight from a disc instead of
+the cache. `plan`, `ls`, `log` and `disc list` take no lock at all.
 
-`rebuild-cache` is on OPERATIONS.md's shared-lock list, alongside its
-own exclusive lock on the cache directory. This build takes the
-exclusive repository lock for it instead: it writes the state log
-(`EnsurePacked`) and the disc and ref ledgers, and this
-build has no cache lock, so the repository lock is the only lock it has
-to keep those writes safe against a concurrent reader (`plan`, `ls`,
-`log`, `disc list`) or another writer (a second `rebuild-cache`, or
-`commit`, `pack`, `gc`, `disc burned`). `internal/stage`'s
-`fixTornTail`, which cuts off a torn tail before the first append to a
-file, assumes every append happens under the exclusive lock; a shared
-`rebuild-cache` would break that assumption by truncating and appending
-while another command replays the same file. `restore`'s
-all-discs-at-once mode never resolves a repository at all in this
-build, so it takes no lock, the same as `verify` and `image build` with
-no `--repo`.
+`disc list` is the one lock-free command that still opens the state
+log, so it uses `stage.OpenReadOnly` instead of `stage.Open`: both
+replay the log the same way and cut the same torn tail from the
+in-memory result, but only `stage.Open` (used by the exclusive lock
+holders) also truncates the file on disk. A lock-free `disc list` that
+raced a concurrent append could otherwise observe a torn tail that is
+really an append still in progress, and truncating it would corrupt the
+writer's work; `stage.OpenReadOnly` leaves the file untouched, so this
+can never happen. `restore`'s all-discs-at-once mode never resolves a
+repository at all in this build, so it takes no lock, the same as
+`verify` and `image build` with no `--repo`.
 
 ## 16. CLI reference, `init --next-run-seq`, `--next-disc-seq` and `--scan-discs`
 

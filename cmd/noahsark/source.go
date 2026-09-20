@@ -145,22 +145,20 @@ func incompleteErrorBody(e *cache.IncompleteError) string {
 }
 
 // reportSourceError prints err the way ls, log and plan all report a
-// read failure, and picks the exit code: 3 when a *cache.Cache is in
-// use and CheckComplete resolves the failure to an incomplete snapshot,
-// 3 also for a disc-based *restore.MissingDiscError, 1 otherwise. c is
-// nil in disc mode.
+// read failure. An incomplete cached snapshot and a missing disc are
+// both a failure at run time, exit code 1, the same as any other read
+// failure here; a missing disc or an incomplete cache is not a bad
+// argument, so it never takes the usage-error code. c is nil in disc
+// mode.
 func reportSourceError(cmd string, stderr io.Writer, err error, c *cache.Cache, snapID object.ID) int {
 	if c != nil {
 		if ce := c.CheckComplete(snapID); ce != nil {
 			if ie, ok := errors.AsType[*cache.IncompleteError](ce); ok {
 				_, _ = fmt.Fprintln(stderr, formatIncompleteError(cmd, ie))
-				return 3
+				return 1
 			}
 		}
 	}
 	_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-	if _, ok := errors.AsType[*restore.MissingDiscError](err); ok {
-		return 3
-	}
 	return 1
 }

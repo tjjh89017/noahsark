@@ -82,12 +82,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	// or "log" touch no repository.
 	var trailingHint string
 	if repoDir, err := discoverRepo(*repoFlag); err == nil {
-		cfg, cfgErr := readConfig(configPath(repoDir))
-		if cfgErr != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", cfgErr)
-			return 1
-		}
-		lk, code, ok := lockExclusive("verify", repoDir, cfg.LockTimeout, stderr)
+		lk, code, ok := lockRepo("verify", repoDir, stderr)
 		if !ok {
 			return code
 		}

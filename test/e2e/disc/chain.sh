@@ -121,9 +121,10 @@ chain_small_order() {
 # chain_pack_one WORK REPO N PACKFLAGS IMAGECAP builds and packs disc N,
 # images it at IMAGECAP, mounts, populates and verifies it, then
 # unmounts, keeping the image but deleting the packed tree. It also frees
-# the staged copy of each object on this disc. It fails unless pack exits 1 with a remaining-staged report:
-# every disc in this scenario is sized so real objects remain after it.
-# It sets CHAIN_REMAINING_BYTES.
+# the staged copy of each object on this disc. It fails unless pack exits
+# 0 with a remaining-staged report: every disc in this scenario is sized
+# so real objects remain after it, and leftover staged data is not a
+# pack failure. It sets CHAIN_REMAINING_BYTES.
 chain_pack_one() {
 	local work="$1" repo="$2" n="$3" packflags="$4" imagecap="$5"
 	local ddir="$work/disc$n"
@@ -141,8 +142,8 @@ chain_pack_one() {
 	code=$?
 	set -e
 	cat "$logf"
-	if [ "$code" -ne 1 ]; then
-		fail "chain: pack disc $n: exit $code, want 1 (objects should remain staged)"
+	if [ "$code" -ne 0 ]; then
+		fail "chain: pack disc $n: exit $code, want 0 (objects should remain staged)"
 	fi
 	if ! grep -q "remaining staged:" "$logf"; then
 		fail "chain: pack disc $n: missing remaining-staged report"

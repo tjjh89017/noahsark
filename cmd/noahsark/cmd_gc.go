@@ -75,7 +75,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 
 	// gc --dry-run still reads the state log to report what it would
 	// delete, so it takes the same lock as a real gc.
-	lk, code, ok := lockExclusive("gc", repoDir, cfg.LockTimeout, stderr)
+	lk, code, ok := lockRepo("gc", repoDir, stderr)
 	if !ok {
 		return code
 	}
@@ -84,23 +84,23 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 2
+		return 1
 	}
 	stageLog, err := stage.Open(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 2
+		return 1
 	}
 	warnIfTruncated("gc", stageLog, stderr)
 	cacheDir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 2
+		return 1
 	}
 	c, err := cache.Open(cacheDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 2
+		return 1
 	}
 
 	retainAfterClean := cfg.RetainAfterClean
@@ -115,7 +115,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 	}
-	objDeleted, objBytes := gcApplyStagingObjects(stageLog, candidates, *dryRun)
+	objDeleted, objBytes, failures := gcApplyStagingObjects(stageLog, candidates, *dryRun)
 
 	verb := "deleted"
 	if *dryRun {
@@ -130,15 +130,22 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncached)
 	}
 
-	if objDeleted == 0 {
-		if *dryRun {
-			if uncached == 0 {
-				printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean, cfg.MinVerifiedCopies)
-			}
-			return 0
-		}
+	// A staged file gc could not unlink is a failure at run time, named
+	// by its path and the underlying error, never silently folded into
+	// "nothing eligible".
+	for _, f := range failures {
+		_, _ = fmt.Fprintf(stderr, "noahsark: gc: %s: %v\n", f.path, f.err)
+	}
+	if len(failures) > 0 {
 		return 1
 	}
+
+	if objDeleted == 0 && *dryRun && uncached == 0 {
+		printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean, cfg.MinVerifiedCopies)
+	}
+	// Nothing eligible, whether reported by --dry-run or found true by a
+	// real run, is success: gc did everything the repository's state
+	// allows, and there was nothing to free.
 	return 0
 }
 
@@ -321,11 +328,20 @@ func gcOrphans(l *stage.Log, stagingDir string) []gcObj {
 	return objs
 }
 
+// gcFailure names one staging object gc could not free, and why, so the
+// operator sees a reason instead of a bare zero count.
+type gcFailure struct {
+	path string
+	err  error
+}
+
 // gcApplyStagingObjects deletes (or, under dryRun, reports) every object
 // gcPlanStagingObjects listed. Under dryRun, gcApplyStagingObjects
 // prints nothing per object, leaving the report to
-// printDryRunGroupSummary's per-run summary.
-func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int, bytesFreed uint64) {
+// printDryRunGroupSummary's per-run summary. It reports every object it
+// could not record or unlink, instead of counting it as freed nothing
+// with no reason given.
+func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int, bytesFreed uint64, failures []gcFailure) {
 	for _, o := range objs {
 		if dryRun {
 			deleted++
@@ -339,11 +355,13 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int
 		// with no bytes behind it.
 		if o.needsRecord {
 			if err := l.MarkOnDisc(o.id); err != nil {
+				failures = append(failures, gcFailure{path: o.path, err: fmt.Errorf("recording it ON-DISC: %w", err)})
 				continue
 			}
 		}
 		removeErr := gcRemove(o.path)
 		if removeErr != nil && !os.IsNotExist(removeErr) {
+			failures = append(failures, gcFailure{path: o.path, err: removeErr})
 			continue
 		}
 		// A file already gone (IsNotExist) frees nothing this run: count
@@ -353,7 +371,7 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int
 			bytesFreed += o.size
 		}
 	}
-	return deleted, bytesFreed
+	return deleted, bytesFreed, failures
 }
 
 // printDryRunGroupSummary prints one line per disc objs groups by, each
@@ -408,7 +426,7 @@ func confirmForceAfter(objs []gcObj, stdout, stderr io.Writer) (exitCode int, ok
 	}
 	if answer != "y" && answer != "yes" {
 		_, _ = fmt.Fprintln(stdout, "gc: --force-after not confirmed; nothing deleted")
-		return 2, false
+		return 1, false
 	}
 	return 0, true
 }
