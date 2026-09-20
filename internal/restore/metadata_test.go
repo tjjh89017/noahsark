@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,24 +54,25 @@ func TestApplyMetadataRecordsFailure(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	var got []MetadataFailure
-	_, _, err := Restore(treeDir, snapID, outDir, WithMetadataFailure(func(f MetadataFailure) {
-		got = append(got, f)
-	}))
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
+	got := problemsOf(rep, KindMetadata)
 	if len(got) == 0 {
 		t.Fatal("no metadata failure recorded, want at least one")
 	}
-	for _, f := range got {
-		if f.Field != "mode" {
-			t.Fatalf("field = %q, want %q", f.Field, "mode")
+	if rep.Count(KindMetadata) == 0 {
+		t.Fatal("the report counts no metadata failure")
+	}
+	for _, p := range got {
+		if !strings.Contains(p.Err.Error(), "mode not applied") {
+			t.Fatalf("problem = %v, want a mode failure", p.Err)
 		}
-		if !errors.Is(f.Err, injected) {
-			t.Fatalf("err = %v, want %v", f.Err, injected)
+		if !errors.Is(p.Err, injected) {
+			t.Fatalf("err = %v, want %v", p.Err, injected)
 		}
-		if f.Path == "" {
+		if p.Path == "" {
 			t.Fatal("empty path in a metadata failure")
 		}
 	}
@@ -96,16 +98,13 @@ func TestApplyMetadataSkipsOwnerWhenUnprivileged(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	var got []MetadataFailure
-	_, _, err := Restore(treeDir, snapID, outDir, WithMetadataFailure(func(f MetadataFailure) {
-		got = append(got, f)
-	}))
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
-	for _, f := range got {
-		if f.Field == "owner" {
-			t.Fatalf("an owner failure was reported although the restore is unprivileged: %+v", f)
+	for _, p := range problemsOf(rep, KindMetadata) {
+		if strings.Contains(p.Err.Error(), "owner not applied") {
+			t.Fatalf("an owner failure was reported although the restore is unprivileged: %+v", p)
 		}
 	}
 }
@@ -122,19 +121,16 @@ func TestApplyMetadataReportsOwnerFailureWhenPrivileged(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	var got []MetadataFailure
-	_, _, err := Restore(treeDir, snapID, outDir, WithMetadataFailure(func(f MetadataFailure) {
-		got = append(got, f)
-	}))
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	found := false
-	for _, f := range got {
-		if f.Field == "owner" {
+	for _, p := range problemsOf(rep, KindMetadata) {
+		if strings.Contains(p.Err.Error(), "owner not applied") {
 			found = true
-			if !errors.Is(f.Err, injected) {
-				t.Fatalf("err = %v, want %v", f.Err, injected)
+			if !errors.Is(p.Err, injected) {
+				t.Fatalf("err = %v, want %v", p.Err, injected)
 			}
 		}
 	}
@@ -152,7 +148,7 @@ func TestSymlinkMetadataNeverFollowsLink(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	if _, _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 

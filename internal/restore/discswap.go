@@ -139,10 +139,10 @@ func (m *Manifest) walkDir(c *cache.Cache, treeID object.ID, dest string, fs *fi
 				return err
 			}
 			if err := restoreSymlink(child, target, e, m.wp); err != nil {
-				return err
+				m.wp.failed(child, err)
 			}
 		default:
-			m.wp.recordUnsupported(child, e.EntryType)
+			m.wp.unsupported(child, e.EntryType)
 		}
 	}
 	return nil
@@ -165,9 +165,9 @@ func (m *Manifest) addFile(c *cache.Cache, dest string, blobID object.ID, e form
 	if !m.wp.overwrite {
 		if resumed, found := existingFileStatus(dest, e, entries); found {
 			if resumed {
-				m.wp.resumed++
+				m.wp.resume()
 			} else {
-				m.wp.skipped++
+				m.wp.skip(dest)
 			}
 			return nil
 		}
@@ -230,17 +230,14 @@ func (m *Manifest) writeFile(spoolDir string, pf *pendingFile, prog *progress.Re
 		return 0, err
 	}
 	if !skipped {
-		_, err := writeChunks(f, pf.entries, prog, func(id object.ID) ([]byte, bool, error) {
-			data, err := os.ReadFile(SpoolObjectPath(spoolDir, id))
-			if err != nil {
-				return nil, false, fmt.Errorf("chunk %s: %w", id.TextForm(), err)
-			}
-			return data, true, nil
-		})
+		// A file that fails here is recorded and the assembly goes on
+		// to the next file, the same rule the disc-root walk follows.
+		err := writeChunksFrom(f, pf.entries, prog, spoolDir)
 		if err != nil {
-			return 0, err
+			m.wp.failed(pf.path, err)
+		} else {
+			applyMetadata(pf.path, pf.treeEntry, m.wp)
 		}
-		applyMetadata(pf.path, pf.treeEntry, m.wp)
 	}
 	pf.written = true
 	for _, be := range pf.entries {
@@ -251,6 +248,19 @@ func (m *Manifest) writeFile(spoolDir string, pf *pendingFile, prog *progress.Re
 		}
 	}
 	return freedBytes, nil
+}
+
+// writeChunksFrom writes every blob entry's spooled payload into f, and
+// closes f.
+func writeChunksFrom(f *os.File, entries []format.BlobEntry, prog *progress.Reporter, spoolDir string) error {
+	_, err := writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
+		data, err := os.ReadFile(SpoolObjectPath(spoolDir, id))
+		if err != nil {
+			return nil, false, fmt.Errorf("chunk %s: %w", id.TextForm(), err)
+		}
+		return data, true, nil
+	})
+	return err
 }
 
 // FileExceedingBudget returns the path and total chunk bytes of the
@@ -286,29 +296,9 @@ func (m *Manifest) Finish() {
 	}
 }
 
-// Skipped is the number of existing paths left alone because overwrite
-// was not requested and the path disagreed with the tree entry it must
-// match to count as already restored.
-func (m *Manifest) Skipped() int { return m.wp.skipped }
-
-// Resumed is the number of existing paths left alone because overwrite
-// was not requested, but the path already matches the tree entry: an
-// earlier, interrupted disc-swap restore already wrote it.
-func (m *Manifest) Resumed() int { return m.wp.resumed }
-
-// Unsupported lists every entry the manifest did not create, because
-// this build does not restore its entry type.
-func (m *Manifest) Unsupported() []UnsupportedEntry { return m.wp.unsupported }
-
-// OverwriteBlocked lists every path --overwrite could not replace,
-// because removing what stood there failed. Each one also counts in
-// Skipped.
-func (m *Manifest) OverwriteBlocked() []OverwriteBlockedEntry { return m.wp.overwriteBlocked }
-
-// MetadataFailures lists every metadata_not_applied event: a mode,
-// times or owner field this manifest's restore could not apply to an
-// already-written path.
-func (m *Manifest) MetadataFailures() []MetadataFailure { return m.wp.metadataFailures }
+// Report is what this manifest's restore did not do, in the one form
+// every restore mode reports through.
+func (m *Manifest) Report() Report { return m.wp.report }
 
 // fileAlreadyRestored reports whether dest, an existing regular file,
 // already holds e's data: either its size and mtime match e exactly, the

@@ -91,9 +91,9 @@ func TestRestoreMountWithDiscFlagsIsAnError(t *testing.T) {
 }
 
 // TestRestoreTwoArgsWithNoMountPrintsUsage checks that "restore
-// DISC-ROOT SNAPSHOT", missing OUT-DIR and given no --mount, prints the
-// usage line instead of silently entering disc-swap mode with DISC-ROOT
-// misread as SNAPSHOT.
+// DISC-ROOT SNAPSHOT", missing OUT-DIR and given no --mount, names the
+// disc root and prints the usage line, instead of silently entering
+// disc-swap mode with DISC-ROOT misread as SNAPSHOT.
 func TestRestoreTwoArgsWithNoMountPrintsUsage(t *testing.T) {
 	treeDir, snapID, _ := lsFixture(t)
 
@@ -101,8 +101,11 @@ func TestRestoreTwoArgsWithNoMountPrintsUsage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("restore DISC-ROOT SNAPSHOT (no OUT-DIR): exit %d, want 2: %s", code, out)
 	}
-	if !strings.HasPrefix(out, "usage: noahsark restore") {
+	if !strings.Contains(out, "usage: noahsark restore") {
 		t.Fatalf("restore DISC-ROOT SNAPSHOT (no OUT-DIR) output %q, want the usage line", out)
+	}
+	if !strings.Contains(out, "OUT-DIR is missing") {
+		t.Fatalf("restore DISC-ROOT SNAPSHOT (no OUT-DIR) output %q, want the missing OUT-DIR named", out)
 	}
 }
 

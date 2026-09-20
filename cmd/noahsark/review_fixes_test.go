@@ -126,8 +126,11 @@ func TestRestoreOverwrite(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("restore without --overwrite: exit %d, want 1; output: %s", code, out)
 	}
-	if !strings.Contains(out, "skipped 1 existing path(s)") {
+	if !strings.Contains(out, "not restored: 1 existing path(s)") {
 		t.Fatalf("output = %q, want a skipped-path count", out)
+	}
+	if !strings.Contains(out, "pass --overwrite to replace it") {
+		t.Fatalf("output = %q, want the skipped path named with the --overwrite advice", out)
 	}
 	if got, err := readFile(preexisting); err != nil || got != "pre-existing, different content" {
 		t.Fatalf("existing file was modified without --overwrite: %q, %v", got, err)

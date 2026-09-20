@@ -44,11 +44,14 @@ func TestRestoreContinuesPastFIFO(t *testing.T) {
 	if !strings.Contains(out, "not restored: 1 unsupported entry(ies)") {
 		t.Fatalf("output = %q, want the unsupported-entry summary", out)
 	}
-	if !strings.Contains(out, "noahsark: restore: warning: not restored:") {
+	if !strings.Contains(out, "noahsark: restore: warning:") {
 		t.Fatalf("output = %q, want the per-entry line to read as a warning", out)
 	}
-	if !strings.Contains(out, "(entry type 6)") {
-		t.Fatalf("output = %q, want the FIFO's own line", out)
+	if !strings.Contains(out, "FIFO not restored") {
+		t.Fatalf("output = %q, want the FIFO named by its own kind", out)
+	}
+	if strings.Contains(out, "entry type 6") {
+		t.Fatalf("output = %q, want a kind name, never a raw entry type", out)
 	}
 	for _, rel := range []string{"a.txt", "sub/b.txt"} {
 		if _, err := os.Stat(filepath.Join(restoredDir, src, rel)); err != nil {

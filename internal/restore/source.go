@@ -1,6 +1,7 @@
 package restore
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,14 +140,23 @@ func (s *Source) SnapshotIDs() ([]object.ID, error) {
 	return ids, nil
 }
 
+// ErrNoSnapshotArg reports that the snapshot argument is empty. It has
+// its own message, because an empty name quoted back at the operator
+// names nothing. Every command that takes a snapshot reports it.
+var ErrNoSnapshotArg = errors.New("no snapshot given; name a ref, or a snapshot id from noahsark log")
+
 // ParseSnapshotArg resolves arg as a snapshot id: either a multihash text
-// id, or a name found in REFS. A ref that does not resolve, or a
-// malformed id, is reported as an error naming arg. A ref not among the
+// id, or a name found in REFS. An empty arg, a ref that does not
+// resolve, or a malformed id, is reported as an error naming what the
+// operator typed. A ref not among the
 // provided discs' merged REFS is reported as not on those discs, since a
 // later disc in the chain, not given here, may carry it, unless arg
 // itself looks like a truncated snapshot id, which is never a valid ref
 // name and is reported as that instead.
 func (s *Source) ParseSnapshotArg(arg string) (object.ID, error) {
+	if arg == "" {
+		return object.ID{}, ErrNoSnapshotArg
+	}
 	if id, err := object.ParseID(arg); err == nil {
 		return id, nil
 	}

@@ -29,8 +29,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, _, err := restore.Restore(root, snapID, outDir); err != nil {
+	rep, err := restore.Restore(root, snapID, outDir)
+	for _, p := range rep.Problems {
+		_, _ = fmt.Fprintf(os.Stderr, "ci-restore: %s: %s\n", p.Path, p.Err)
+	}
+	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "ci-restore:", err)
+		os.Exit(1)
+	}
+	if rep.Failed() {
 		os.Exit(1)
 	}
 	fmt.Println("ci-restore: restored snapshot", snapID.TextForm(), "into", outDir)

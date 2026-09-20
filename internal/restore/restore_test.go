@@ -85,15 +85,15 @@ func TestRestoreFromImageAfterStagingDeleted(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if _, _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir); err != nil {
 		t.Fatal(err)
 	}
 	compareRestoredTree(t, srcDir, outDir)
 }
 
 // TestRestoreRejectsCorruptChunk corrupts one chunk's payload bytes and
-// checks that Restore, with no healing, fails with a content id
-// mismatch instead of writing bad data.
+// checks that Restore, with no healing, reports the file as not
+// restored, with a content id mismatch, instead of writing bad data.
 func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -106,13 +106,25 @@ func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	flipByte(t, chunkPath, 70) // inside the payload, past the 64-byte header
 
 	outDir := t.TempDir()
-	_, _, err = Restore(treeDir, snapID, outDir)
-	if err == nil {
-		t.Fatal("expected Restore to fail on a corrupted chunk")
+	rep, err := Restore(treeDir, snapID, outDir)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
 	}
-	if !strings.Contains(err.Error(), "content id does not verify") &&
-		!strings.Contains(err.Error(), "crc mismatch") {
-		t.Fatalf("expected a content id or crc error, got: %v", err)
+	if !rep.Failed() {
+		t.Fatal("expected Restore to report a failure on a corrupted chunk")
+	}
+	failed := problemsOf(rep, KindFile)
+	if len(failed) == 0 {
+		t.Fatal("expected a file problem naming the corrupted chunk")
+	}
+	for _, p := range failed {
+		if !strings.Contains(p.Err.Error(), "content id does not verify") &&
+			!strings.Contains(p.Err.Error(), "crc mismatch") {
+			t.Fatalf("expected a content id or crc error, got: %v", p.Err)
+		}
+		if p.Path == "" {
+			t.Fatal("the failed file has no path")
+		}
 	}
 }
 
@@ -164,12 +176,12 @@ func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, skipped, err := Restore(treeDir, snapID, outDir)
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
 	got, err := os.ReadFile(preexisting)
 	if err != nil {
@@ -179,12 +191,12 @@ func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 		t.Fatalf("existing file was modified without WithOverwrite: %q", got)
 	}
 
-	_, skipped, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
+	rep, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 0 {
-		t.Fatalf("skipped = %d, want 0 with WithOverwrite", skipped)
+	if rep.Skipped() != 0 {
+		t.Fatalf("skipped = %d, want 0 with WithOverwrite", rep.Skipped())
 	}
 	got, err = os.ReadFile(preexisting)
 	if err != nil {

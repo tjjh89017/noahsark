@@ -54,7 +54,7 @@ func TestHealRepairsCorruptedStripes(t *testing.T) {
 		t.Fatal(err)
 	}
 	outDir := t.TempDir()
-	if _, _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir); err != nil {
 		t.Fatalf("Restore after Heal: %v", err)
 	}
 	compareRestoredTree(t, srcDir, outDir)

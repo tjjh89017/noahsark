@@ -315,7 +315,9 @@ noahsark log --repo=<REPO>
 noahsark plan --repo=<REPO> <REF>
 ```
 
-`log` lists the snapshots, newest first, with their refs. `plan` lists
+`log` lists the snapshots, newest first, with their refs. The first
+column is the full snapshot id. `restore`, `ls` and `plan` take that id
+in place of a `<REF>`. `plan` lists
 the discs that the restore needs: uuid, label, objects and bytes. The two
 commands read the local cache, not a disc. If `<REPO>` is lost, use
 `noahsark log <MOUNT>` on the newest disc. Use a `<REF>` or a snapshot id
@@ -363,36 +365,49 @@ code 0. The files are below `<RESTORE_DIR><SOURCE>`. Compare them:
 diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
 ```
 
+`restore` has one report. It names each path that it did not restore on
+one warning line, then prints one summary line:
+
+```
+noahsark: restore: warning: <PATH>: a path is already here; pass --overwrite to replace it
+noahsark: restore: warning: <PATH>: FIFO not restored; this build restores a file, a directory or a symlink only
+restored snapshot <id> into <RESTORE_DIR>
+not restored: 1 existing path(s), 1 unsupported entry(ies); see the warning(s) above
+```
+
+`restore` prints 20 warning lines at most, then one line with the count
+of the rest. The summary line counts each kind.
+
 - To restore only some paths, add `--include=<PATH>` one or more times.
   `plan` takes the same flag. Get the paths from
   `noahsark ls --recursive --repo=<REPO> <REF>`.
 - `restore` does not replace a path that exists, of any kind: a file, a
-  directory or a symlink. It leaves the path as it is and prints
-  `skipped N existing path(s)`. The exit code is 1. Add `--overwrite`
-  to replace them. `restore` never follows a symlink that it finds in
-  `<RESTORE_DIR>`, so it never writes outside that directory.
+  directory or a symlink. It leaves the path as it is and names it.
+  The exit code is 1. Add `--overwrite` to replace them. `restore`
+  never follows a symlink that it finds in `<RESTORE_DIR>`, so it never
+  writes outside that directory.
 - `restore` never deletes a directory tree, even with `--overwrite`. If
   a non-empty directory stands where a symlink or a file must go, it
   prints
-  `noahsark: restore: warning: <PATH>: a directory that is not empty is in the way; restore does not remove it`,
-  leaves that directory as it is, counts it as skipped, and continues
-  with the rest of the walk. The summary line then reads
-  `skipped N existing path(s); --overwrite could not replace them; see the warning(s) above`.
+  `noahsark: restore: warning: <PATH>: symlink not created: a directory that is not empty is in the way; restore does not remove it`,
+  leaves that directory as it is, and continues with the rest of the
+  walk. The exit code is 1.
 - `restore` does not restore a device node, a FIFO or a socket. It
-  names each one on a warning line and prints
-  `not restored: N unsupported entry(ies); a device node, FIFO or socket needs a later phase`.
-  Every other file is restored, and an unsupported entry alone does not
-  change the exit code.
+  names each one by its kind, `FIFO`, `socket` or `device`, never by a
+  number. Every other file is restored, and an unsupported entry alone
+  does not change the exit code.
 - `resumed: N file(s) already restored` counts the files that were
   already correct.
+- A file that `restore` cannot write, because an object on the disc does
+  not verify or because the write failed, is a failure: `restore` names
+  the file, writes no bad data into it, goes on to the next file, and
+  exits 1.
 - `restore` applies mode, times and, only when it runs as root, owner to
   every restored path. A field that fails to apply prints
   `noahsark: restore: warning: <PATH>: <FIELD> not applied: <ERROR>`,
-  up to 20 lines, then one line with the remaining count. The summary
-  line reads `metadata not applied: N field(s); see the warning(s)
-  above`, and the exit code is 1. A restore that does not run as root
-  never attempts owner at all, so it never prints an owner warning and
-  never loses exit code 0 to it.
+  and the exit code is 1. A restore that does not run as root never
+  attempts owner at all, so it never prints an owner warning and never
+  loses exit code 0 to it.
 - `noahsark ls --recursive --unstable-only ...` lists the files that a
   commit flagged as unstable. A `!` in the first column marks them.
 
@@ -516,13 +531,17 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --disc=<MOUNT>`. |
 | `gc`: `C of 2 copies verified; N object(s) held` | Only one copy passed `verify`. Burn and verify the second copy (step 8), then run `gc` again. With one copy only, set `gc.min_verified_copies = 1` in `<REPO>/config`. |
 | `pack`: `remaining staged`, exit code 0 | The disc packed correctly; the data that did not fit waits for the next disc. Do step 10. |
-| `restore --overwrite`: `warning: <PATH>: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
+| `restore --overwrite`: `warning: <PATH>: symlink not created: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
+| `restore`: `warning: <PATH>: a path is already here; pass --overwrite to replace it`, exit code 1 | `<RESTORE_DIR>` already holds that path. Restore into an empty directory, or add `--overwrite`. |
+| `restore`: `<PATH>: <OBJECT>: content id does not verify`, exit code 1 | The object on the disc is damaged. `restore` writes no bad data and continues with the next file. Use the second copy of the disc, or `verify --heal` when the run has FEC. |
 | `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |
 | `restore`: `missing disc(s)`, exit code 1 | The message lists each disc by uuid. Find the disc by the uuid prefix on its sleeve. Restore again with that disc included. |
 | `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |
 | `restore` or `ls`: ref `is not on the provided disc(s)` | A newer disc holds the ref. Give more discs. |
 | `is neither a snapshot id nor a known ref name` | The local cache does not know the name. Run `log` to list the names. |
+| `no snapshot given; name a ref, or a snapshot id from noahsark log`, exit code 2 | The `<SNAPSHOT>` argument is empty, often an unset shell variable. Give a ref name, or the snapshot id from the first column of `log`. |
+| `restore`: `no such disc root: <PATH>` | The first argument of `restore <DISC-ROOT> <SNAPSHOT> <RESTORE_DIR>` must be a mounted disc or an unpacked disc directory. Check the path. |
 | `log`: `roots: (none)` | The root tree is on a disc that you did not give. Give all discs, or run `rebuild-cache`. |
 | `plan`: `cache: no disc is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
 | `<DISC>`: `matches more than one disc` | Two discs carry the same `seq`. Give the uuid, or the first 8 characters of it, from the list in the message. |
