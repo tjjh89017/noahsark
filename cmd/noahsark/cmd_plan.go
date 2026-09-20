@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
+	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
 // cmdPlan implements "noahsark plan". OPERATIONS.md's "14. Restore"
@@ -81,7 +83,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		// the argument itself is wrong. Every other failure here,
 		// such as an empty cache with nothing rebuilt yet, is a
 		// run-time condition, not a bad argument.
-		if _, ok := err.(*refNotFoundError); ok {
+		if _, ok := err.(*refNotFoundError); ok || errors.Is(err, restore.ErrNoSnapshotArg) {
 			return 2
 		}
 		return 1

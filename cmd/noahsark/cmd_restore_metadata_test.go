@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,51 +44,28 @@ func TestRestoreOwnerSkippedWhenUnprivileged(t *testing.T) {
 	}
 }
 
-// TestMetadataFailureLineFormat asserts the exact warning line format
-// for one metadata_not_applied event.
-func TestMetadataFailureLineFormat(t *testing.T) {
-	f := restore.MetadataFailure{Path: "/out/a.txt", Field: "mode", Err: errors.New("permission denied")}
-	got := metadataFailureLine(f)
-	want := "noahsark: restore: warning: /out/a.txt: mode not applied: permission denied"
-	if got != want {
-		t.Fatalf("line = %q, want %q", got, want)
+// TestPrintProblemsLineFormat asserts the exact line format of the one
+// print loop: a warning for a metadata field, and a plain failure line
+// for a file the restore could not write.
+func TestPrintProblemsLineFormat(t *testing.T) {
+	rep := restore.Report{Problems: []restore.Problem{
+		{Path: "/out/a.txt", Kind: restore.KindMetadata, Err: errors.New("mode not applied: permission denied")},
+		{Path: "/out/b.bin", Kind: restore.KindFile, Err: errors.New("content id does not verify")},
+	}}
+	var stderr bytes.Buffer
+	printProblems(&stderr, rep)
+	want := "noahsark: restore: warning: /out/a.txt: mode not applied: permission denied\n" +
+		"noahsark: restore: /out/b.bin: content id does not verify\n"
+	if stderr.String() != want {
+		t.Fatalf("output = %q, want %q", stderr.String(), want)
 	}
 }
 
-// TestPrintMetadataFailuresCapsAt20 asserts that more than 20 metadata
-// failures print only the first 20 lines, folding the rest into one
-// count line, and that the function reports true whenever any failure
-// exists (the exit-code signal cmd_restore.go relies on).
-func TestPrintMetadataFailuresCapsAt20(t *testing.T) {
-	var fails []restore.MetadataFailure
-	for i := range 25 {
-		fails = append(fails, restore.MetadataFailure{
-			Path:  fmt.Sprintf("/out/f%d.txt", i),
-			Field: "times",
-			Err:   errors.New("boom"),
-		})
-	}
+// TestPrintProblemsEmpty asserts that a report with no problem prints
+// nothing.
+func TestPrintProblemsEmpty(t *testing.T) {
 	var stderr bytes.Buffer
-	loss := printMetadataFailures(&stderr, fails)
-	if !loss {
-		t.Fatal("printMetadataFailures reported no loss for 25 failures")
-	}
-	out := stderr.String()
-	if n := strings.Count(out, "not applied: boom"); n != 20 {
-		t.Fatalf("printed %d per-failure lines, want 20", n)
-	}
-	if !strings.Contains(out, "5 more metadata failure(s) not shown") {
-		t.Fatalf("output = %q, want the overflow count line", out)
-	}
-}
-
-// TestPrintMetadataFailuresEmpty asserts that no failures print nothing
-// and report no loss.
-func TestPrintMetadataFailuresEmpty(t *testing.T) {
-	var stderr bytes.Buffer
-	if printMetadataFailures(&stderr, nil) {
-		t.Fatal("printMetadataFailures reported loss for an empty list")
-	}
+	printProblems(&stderr, restore.Report{})
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}

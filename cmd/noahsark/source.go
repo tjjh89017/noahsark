@@ -46,6 +46,9 @@ func (s *cacheSource) SnapshotIDs() ([]object.ID, error) { return s.c.ListSnapsh
 // reword the message; ls, log and plan, which never name a disc here,
 // print it as returned.
 func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
+	if arg == "" {
+		return object.ID{}, restore.ErrNoSnapshotArg
+	}
 	if id, err := object.ParseID(arg); err == nil {
 		return id, nil
 	}

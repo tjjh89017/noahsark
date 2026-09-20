@@ -8,42 +8,9 @@ type Option func(*restoreOptions)
 
 // restoreOptions holds every optional restriction a restore call accepts.
 type restoreOptions struct {
-	includes           []string
-	overwrite          bool
-	knownDiscs         map[[16]byte]string
-	onUnsupported      func(path string, entryType uint8)
-	onOverwriteBlocked func(entry OverwriteBlockedEntry)
-	onMetadataFailure  func(f MetadataFailure)
-}
-
-// WithUnsupportedEntry registers fn, called once for every entry whose
-// type this build does not restore: a device node, a FIFO or a socket.
-// The restore records the entry and continues, so a later entry in the
-// walk still reaches its path.
-func WithUnsupportedEntry(fn func(path string, entryType uint8)) Option {
-	return func(o *restoreOptions) {
-		o.onUnsupported = fn
-	}
-}
-
-// WithOverwriteBlocked registers fn, called once for every path
-// --overwrite could not replace, most often a directory that still
-// holds entries. The path is left exactly as found, and the walk
-// continues into every other path.
-func WithOverwriteBlocked(fn func(entry OverwriteBlockedEntry)) Option {
-	return func(o *restoreOptions) {
-		o.onOverwriteBlocked = fn
-	}
-}
-
-// WithMetadataFailure registers fn, called once for every
-// metadata_not_applied event: a mode, times or owner field that a
-// path's Chmod, Chtimes or Chown could not apply. The restore records
-// the event and continues; the file itself was already written.
-func WithMetadataFailure(fn func(f MetadataFailure)) Option {
-	return func(o *restoreOptions) {
-		o.onMetadataFailure = fn
-	}
+	includes   []string
+	overwrite  bool
+	knownDiscs map[[16]byte]string
 }
 
 // WithInclude restricts a restore to these snapshot-relative paths, and
@@ -58,8 +25,8 @@ func WithInclude(paths []string) Option {
 
 // WithOverwrite allows a restore to replace an existing path: unlink it,
 // then create the new file. Without it, a restore that meets a path that
-// already exists leaves that path alone, counts it as skipped and never
-// opens it for truncation.
+// already exists leaves that path alone, reports it in the Report and
+// never opens it for truncation.
 func WithOverwrite(overwrite bool) Option {
 	return func(o *restoreOptions) {
 		o.overwrite = overwrite

@@ -19,13 +19,12 @@ import (
 //
 // A component that exists and is not a real directory is replaced only
 // when overwrite is requested, and only by an unlink; without
-// overwrite, ensureDir reports ok false, counts the path as skipped and
-// leaves it exactly as found. The caller then leaves that whole subtree
-// alone. With overwrite, an unlink that fails (most often a permission
+// overwrite, ensureDir reports ok false, records the path and leaves it
+// exactly as found. The caller then leaves that whole subtree alone.
+// With overwrite, an unlink that fails (most often a permission
 // problem, since the blocking path is not itself a directory here)
-// leaves the path exactly as found too, counts it as skipped and
-// reports it through wp's overwrite-blocked report, instead of
-// stopping the whole restore.
+// leaves the path exactly as found too, and records it as blocked,
+// instead of stopping the whole restore.
 func ensureDir(parent string, components []string, wp *writePolicy) (path string, ok bool, err error) {
 	path = parent
 	for _, name := range components {
@@ -43,13 +42,11 @@ func ensureDir(parent string, components []string, wp *writePolicy) (path string
 			continue
 		default:
 			if wp == nil || !wp.overwrite {
-				if wp != nil {
-					wp.skipped++
-				}
+				wp.skip(child)
 				return "", false, nil
 			}
 			if err := unlinkExisting("directory", child); err != nil {
-				wp.recordOverwriteBlocked("directory", child, err)
+				wp.blocked("directory", child, err)
 				return "", false, nil
 			}
 		}
@@ -63,12 +60,11 @@ func ensureDir(parent string, components []string, wp *writePolicy) (path string
 
 // restoreSymlink creates a symlink at path with target. An existing
 // symlink that already has the same target counts as resumed. Any other
-// existing path stays as found and counts as skipped, unless overwrite
-// is requested: then the path is unlinked first. Unlinking fails on a
+// existing path stays as found and is recorded, unless overwrite is
+// requested: then the path is unlinked first. Unlinking fails on a
 // directory that still holds entries; that failure, and any other
-// unlink failure, leaves path exactly as found, counts it as skipped
-// and reports it through wp's overwrite-blocked report. The existing
-// tree is never deleted recursively.
+// unlink failure, leaves path exactly as found and records it as
+// blocked. The existing tree is never deleted recursively.
 //
 // A symlink entry never gets Chmod or Chtimes: both would follow the
 // link and change the target, not the link itself. Only owner is
@@ -82,21 +78,17 @@ func restoreSymlink(path, target string, e format.TreeEntry, wp *writePolicy) er
 	default:
 		if fi.Mode()&os.ModeSymlink != 0 {
 			if current, err := os.Readlink(path); err == nil && current == target {
-				if wp != nil {
-					wp.resumed++
-				}
+				wp.resume()
 				applySymlinkOwner(path, e, wp)
 				return nil
 			}
 		}
 		if wp == nil || !wp.overwrite {
-			if wp != nil {
-				wp.skipped++
-			}
+			wp.skip(path)
 			return nil
 		}
 		if err := unlinkExisting("symlink", path); err != nil {
-			wp.recordOverwriteBlocked("symlink", path, err)
+			wp.blocked("symlink", path, err)
 			return nil
 		}
 	}

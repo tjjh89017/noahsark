@@ -24,29 +24,6 @@ var (
 	privileged = func() bool { return os.Geteuid() == 0 }
 )
 
-// MetadataFailure is one metadata field a restore could not apply to a
-// path it had already written: Chmod, Chtimes or a privileged Chown or
-// Lchown returned an error. Field is "mode", "times" or "owner".
-type MetadataFailure struct {
-	Path  string
-	Field string
-	Err   error
-}
-
-// recordMetadataFailure notes one metadata_not_applied event. The walk
-// continues: a metadata field that cannot be applied is a recorded
-// event, never a hard error.
-func (wp *writePolicy) recordMetadataFailure(path, field string, err error) {
-	if wp == nil {
-		return
-	}
-	f := MetadataFailure{Path: path, Field: field, Err: err}
-	wp.metadataFailures = append(wp.metadataFailures, f)
-	if wp.onMetadataFailure != nil {
-		wp.onMetadataFailure(f)
-	}
-}
-
 // applyMetadata sets mode, mtime and, when this restore is privileged,
 // owner from e. Each field is applied independently: a failure on one
 // field is recorded and does not stop the other fields from being
@@ -55,15 +32,15 @@ func (wp *writePolicy) recordMetadataFailure(path, field string, err error) {
 // --no-owner rule for a non-root restore.
 func applyMetadata(dest string, e format.TreeEntry, wp *writePolicy) {
 	if err := chmodFn(dest, os.FileMode(e.Mode&0o7777)); err != nil {
-		wp.recordMetadataFailure(dest, "mode", err)
+		wp.metadataFailed(dest, "mode", err)
 	}
 	mtime := time.Unix(e.MtimeSec, int64(e.MtimeNsec))
 	if err := chtimesFn(dest, mtime, mtime); err != nil {
-		wp.recordMetadataFailure(dest, "times", err)
+		wp.metadataFailed(dest, "times", err)
 	}
 	if privileged() {
 		if err := chownFn(dest, int(e.UID), int(e.GID)); err != nil {
-			wp.recordMetadataFailure(dest, "owner", err)
+			wp.metadataFailed(dest, "owner", err)
 		}
 	}
 }
@@ -79,6 +56,6 @@ func applySymlinkOwner(path string, e format.TreeEntry, wp *writePolicy) {
 		return
 	}
 	if err := lchownFn(path, int(e.UID), int(e.GID)); err != nil {
-		wp.recordMetadataFailure(path, "owner", err)
+		wp.metadataFailed(path, "owner", err)
 	}
 }

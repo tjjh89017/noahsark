@@ -1202,17 +1202,19 @@ snapshot id
       persist the plan; fail on a missing disc
  -> for each disc:
       detect -> read needed objects into staging/restore/
-      -> verify each object's content id (hard error on mismatch)
+      -> verify each object's content id (a mismatch fails that file)
       -> assemble every file that is complete
       -> create, write, chown, chmod, times
       -> free the staging space of that file -> eject
  -> deferred pass: directory times, in reverse depth order
- -> warnings + exit code
+ -> one report: the problem lines, then one summary line + exit code
 ```
 
-Every object's content id is verified after it is read. A mismatch is a hard
-error. Directory times are applied in a deferred pass in reverse depth order at
-the end of the restore.
+Every object's content id is verified after it is read. An object that does not
+verify fails the one file that needs it: `restore` names that file, does not
+write bad data into it, and goes on to the next file. The exit code is then 1.
+Directory times are applied in a deferred pass in reverse depth order at the
+end of the restore.
 
 ### 14.8 Cache-less restore
 
@@ -1275,15 +1277,26 @@ the shared data once, so no disc space is lost.
 
 ### 15.4 Failure policy
 
-1. Restore is strict for data and best-effort for metadata. A chunk that does
-   not verify is a hard error. A metadata field that cannot be applied is a
-   warning.
-2. `restore` prints one warning line for each field that it did not apply:
-   the path, the field (`mode`, `times` or `owner`) and the error. It prints
-   20 lines at most, then the count of the rest, then one summary line. The
-   exit code is then 1.
-3. A device node, a FIFO or a socket in the snapshot is not restored. It is
-   reported on a warning line and does not change the exit code.
+`restore` has one report. Each problem in it carries the path, a kind and the
+reason. The kinds and their effect on the exit code:
+
+| Kind | Meaning | Exit code |
+|---|---|---:|
+| existing path | The path is already there and `--overwrite` was not given. `restore` left it exactly as found. | 1 |
+| `--overwrite` could not replace | A non-empty directory stood where a file or a symlink must go. `restore` never removes a directory tree, thus it left the path as found. | 1 |
+| unsupported entry | A device node, a FIFO or a socket. This build does not restore one. | 0 |
+| metadata field | A `mode`, `times` or `owner` field that would not apply to a path that `restore` had already written. | 1 |
+| file not restored | A bad object, or a write that failed. `restore` goes on to the next file. | 1 |
+
+1. Restore is strict for data and best-effort for metadata. An object that does
+   not verify fails the one file that needs it, and never writes bad data. A
+   metadata field that cannot be applied is a warning.
+2. Every problem gets one line, naming the path and the reason. `restore`
+   prints 20 lines at most, then the count of the problems it does not name,
+   then one summary line that counts each kind.
+3. An unsupported entry alone never changes the exit code. Every other kind
+   sets exit code 1. A restore does not stop at the first problem; it walks
+   the whole snapshot and reports at the end.
 
 ### 15.5 Non-root restore
 
@@ -1321,8 +1334,8 @@ invariant with its own calls.
    open an existing path for truncation. `restore` never removes a directory
    tree recursively: when the unlink fails, most often because a non-empty
    directory stands where a symlink or a file must go, the path is left
-   exactly as found, counted as skipped, reported on a warning line, and the
-   walk continues.
+   exactly as found, reported on a warning line that names it, and the walk
+   continues.
 5. Apply directory times in the deferred pass.
 
 ### 15.7 Unstable entries
@@ -1335,14 +1348,15 @@ because the file was restored but its content is not certain.
 
 ### 15.8 Restore exit codes
 
-Exit codes:
+Exit codes. Section 15.4's table gives the kind of each problem; this is the
+same rule, read by code. There is no fourth code: a missing disc is a failure
+at run time, code 1.
 
 | Code | Meaning |
 |---:|---|
 | 0 | Everything applied. A device node, a FIFO or a socket in the snapshot alone does not change this: it is outside the scope of a restore, not a failure, and is reported on a warning line. |
-| 1 | A failure at run time: data restored with metadata loss, an existing path left alone without `--overwrite`, a path `--overwrite` could not replace because a non-empty directory stood in its way, or data restore failed outright. |
-| 2 | A usage error, or a refused option. |
-| 3 | A required disc is missing (section 16.16). |
+| 1 | A failure at run time: data restored with metadata loss, an existing path left alone without `--overwrite`, a path `--overwrite` could not replace because a non-empty directory stood in its way, a file that did not restore, or a required disc that is missing. |
+| 2 | A usage error, or a refused option. An empty or unknown `SNAPSHOT` argument is one. |
 
 ---
 
@@ -1587,8 +1601,11 @@ noahsark restore [--repo=PATH] --plan=FILE --mount=DIR [--overwrite]
                  [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
 ```
 
-Runs the restore pipeline of section 14.7. `SNAPSHOT` is a snapshot id or a ref
-name. `OUT-DIR` receives the restored tree.
+Runs the restore pipeline of section 14.7. `SNAPSHOT` is a snapshot id, as
+`log` prints it in its first column, or a ref name. `OUT-DIR` receives the
+restored tree. An empty `SNAPSHOT` is refused by name, never quoted back as an
+empty ref. In the first form, a `DISC-ROOT` that is not a directory is refused
+by name too.
 
 There are two modes.
 
@@ -1606,8 +1623,22 @@ There are two modes.
   `DISC-ROOT`, `--disc` or `--discs-dir`.
 
 `restore` leaves an existing path alone unless `--overwrite` is given. It
-prints `restored snapshot ID into OUT-DIR`, then, when they apply,
-`resumed: N file(s) already restored` and `skipped N existing path(s)`.
+reports in one form, whichever mode it ran in:
+
+```
+noahsark: restore: warning: <PATH>: <REASON>     one line per problem
+noahsark: restore: warning: N more problem(s) not shown
+restored snapshot <ID> into <OUT-DIR>
+resumed: N file(s) already restored             when any path was resumed
+not restored: N existing path(s), N unsupported entry(ies); see the warning(s) above
+```
+
+The problem lines go to stderr, the result lines to stdout. A problem line
+names the path and the reason; a path this build cannot restore reads `FIFO`,
+`socket` or `device`, never an entry type number. `restore` prints 20 problem
+lines at most, then one line with the count of the rest. The last line is one
+summary line that counts each kind of section 15.4's table; `restore` prints
+it only when it met a problem.
 
 | Option | Meaning |
 |---|---|
@@ -1625,10 +1656,11 @@ Exit: 0 when everything applied, and always for an unsupported entry (a
 device node, a FIFO or a socket): `restore` still names each one on a
 warning line, but that alone never changes the exit code. 1 on a failure at
 run time, also when `restore` left an existing path alone without
-`--overwrite`, when a metadata field was not applied, or when a required
-disc is missing: not among the given discs, or absent from the cache the
-disc-swap mode reads through; `restore` names the missing disc by uuid. 2
-for a usage error or a refused option.
+`--overwrite`, when a file did not restore, when a metadata field was not
+applied, or when a required disc is missing: not among the given discs, or
+absent from the cache the disc-swap mode reads through; `restore` names the
+missing disc by uuid. 2 for a usage error or a refused option, an empty or
+unknown `SNAPSHOT` included.
 
 ### 16.17 `rebuild-cache`
 

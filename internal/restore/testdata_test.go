@@ -158,3 +158,14 @@ func flipByte(t *testing.T, path string, off int64) {
 		t.Fatal(err)
 	}
 }
+
+// problemsOf returns every problem of kind k that rep holds.
+func problemsOf(rep Report, k Kind) []Problem {
+	var out []Problem
+	for _, p := range rep.Problems {
+		if p.Kind == k {
+			out = append(out, p)
+		}
+	}
+	return out
+}

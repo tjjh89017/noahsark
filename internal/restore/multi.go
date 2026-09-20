@@ -100,10 +100,14 @@ type multiSource struct {
 	contentToDisc  map[object.ID][16]byte
 	missingByDisc  map[[16]byte][]object.ID
 	missingUnknown []object.ID // needed but no disc could be identified
-	names          *image.NameCache
-	provided       map[[16]byte]bool   // uuids of the discs RestoreMulti was given
-	discLabels     map[[16]byte]string // every disc uuid named by any provided disc's DISCS table, with its label
-	wp             *writePolicy        // the overwrite rule for this restore, and its running resumed and skipped counts
+	// bad holds every object that a provided disc does hold, but whose
+	// bytes do not verify. Such an object is damage, not a missing
+	// disc, so it never enters the missing lists.
+	bad        map[object.ID]error
+	names      *image.NameCache
+	provided   map[[16]byte]bool   // uuids of the discs RestoreMulti was given
+	discLabels map[[16]byte]string // every disc uuid named by any provided disc's DISCS table, with its label
+	wp         *writePolicy        // the overwrite rule for this restore, and its report
 }
 
 // RestoreMulti reads snapshotID's tree from whichever of discRoots holds
@@ -116,7 +120,7 @@ type multiSource struct {
 // RestoreMulti returns a *MissingDiscError naming every needed disc and
 // every needed object once the walk finishes, instead of stopping at the
 // first miss.
-func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts ...Option) (resumed, skipped int, err error) {
+func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts ...Option) (Report, error) {
 	return RestoreMultiWithProgress(discRoots, snapshotID, outDir, nil, opts...)
 }
 
@@ -129,16 +133,16 @@ func RestoreMulti(discRoots []string, snapshotID object.ID, outDir string, opts 
 // found during that check, or during the restore itself, is reported as
 // a *MissingDiscError; a path that matches nothing in the snapshot is
 // reported as an *UnmatchedIncludeError.
-func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) (resumed, skipped int, err error) {
+func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir string, prog *progress.Reporter, opts ...Option) (Report, error) {
 	o := newRestoreOptions(opts)
 	if len(discRoots) == 0 {
-		return 0, 0, fmt.Errorf("at least one disc root is required")
+		return Report{}, fmt.Errorf("at least one disc root is required")
 	}
 	src, err := newMultiSource(discRoots)
 	if err != nil {
-		return 0, 0, err
+		return Report{}, err
 	}
-	src.wp = &writePolicy{overwrite: o.overwrite, onUnsupported: o.onUnsupported, onOverwriteBlocked: o.onOverwriteBlocked, onMetadataFailure: o.onMetadataFailure}
+	src.wp = &writePolicy{overwrite: o.overwrite}
 	for u, l := range o.knownDiscs {
 		if _, ok := src.discLabels[u]; !ok {
 			src.discLabels[u] = l
@@ -146,20 +150,20 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 	}
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return 0, 0, err
+		return src.wp.report, err
 	}
 	absOut, err := filepath.Abs(outDir)
 	if err != nil {
-		return 0, 0, err
+		return src.wp.report, err
 	}
 
 	snapRaw, _, ok := src.read(snapshotID, true)
 	if !ok {
-		return src.wp.resumed, src.wp.skipped, src.finalError()
+		return src.wp.report, src.finalError()
 	}
 	var snap format.Snapshot
 	if _, err := snap.Decode(snapRaw); err != nil {
-		return src.wp.resumed, src.wp.skipped, fmt.Errorf("snapshot %s: %w", snapshotID.TextForm(), err)
+		return src.wp.report, fmt.Errorf("snapshot %s: %w", snapshotID.TextForm(), err)
 	}
 
 	rootRaw, _, ok := src.read(object.ID(snap.RootTree), false)
@@ -168,43 +172,43 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 		if mde, isMissing := err.(*MissingDiscError); isMissing && len(mde.ByDisc) == 0 {
 			mde.RootTreeMissing = true
 		}
-		return src.wp.resumed, src.wp.skipped, err
+		return src.wp.report, err
 	}
 	var rootTree format.Tree
 	if _, err := rootTree.Decode(rootRaw); err != nil {
-		return src.wp.resumed, src.wp.skipped, fmt.Errorf("tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
+		return src.wp.report, fmt.Errorf("tree %s: %w", object.ID(snap.RootTree).TextForm(), err)
 	}
 
 	fs, err := newFilterState(o.includes)
 	if err != nil {
-		return src.wp.resumed, src.wp.skipped, err
+		return src.wp.report, err
 	}
 	if fs != nil {
 		if err := src.resolveIncludes(rootTree.Entries, fs); err != nil {
-			return src.wp.resumed, src.wp.skipped, err
+			return src.wp.report, err
 		}
 		if err := src.finalError(); err != nil {
-			return src.wp.resumed, src.wp.skipped, err
+			return src.wp.report, err
 		}
 		if unmatched := unmatchedIncludes(fs, o.includes); len(unmatched) > 0 {
-			return src.wp.resumed, src.wp.skipped, &UnmatchedIncludeError{Paths: unmatched}
+			return src.wp.report, &UnmatchedIncludeError{Paths: unmatched}
 		}
 	}
 
-	// Unlike the single-disc Restore, this does not pre-sum an expected
-	// total: summing would mean an extra read pass through src, and a
-	// miss during that pass would double-count itself into the eventual
-	// MissingDiscError. Progress here reports bytes written and
-	// throughput only, with no percentage or ETA.
+	// The walk does not pre-sum an expected total: summing would mean an
+	// extra read pass through src, and a miss during that pass would
+	// double-count itself into the eventual MissingDiscError. Progress
+	// reports bytes written and throughput only, with no percentage or
+	// ETA.
 	prog.Start("restore: bytes written", 0)
 	defer prog.Done()
 
 	for _, e := range rootTree.Entries {
 		if err := src.restoreRootEntry(absOut, e, prog, fs); err != nil {
-			return src.wp.resumed, src.wp.skipped, err
+			return src.wp.report, err
 		}
 	}
-	return src.wp.resumed, src.wp.skipped, src.finalError()
+	return src.wp.report, src.finalError()
 }
 
 // resolveIncludes checks every include path fs carries against
@@ -266,6 +270,7 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 	src := &multiSource{
 		contentToDisc: make(map[object.ID][16]byte),
 		missingByDisc: make(map[[16]byte][]object.ID),
+		bad:           make(map[object.ID]error),
 		names:         image.NewNameCache(),
 		provided:      make(map[[16]byte]bool),
 		discLabels:    make(map[[16]byte]string),
@@ -349,14 +354,19 @@ func discLabelText(row format.DiscsRow) string {
 // read looks for id directly on every provided disc root, and returns
 // its raw file bytes and decompressed, verified payload. A miss is
 // recorded (by the disc it must live on, when known) and reported false;
-// the caller decides whether it can still make progress without id.
+// the caller decides whether it can still make progress without id. An
+// object that every provided disc holds but none of them can verify is
+// recorded as damage instead, which badObject then names.
 func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, ok bool) {
+	var badErr error
 	for _, b := range src.bases {
 		path := objectPath(b.base, id, snapshot, src.names)
 		if _, err := os.Stat(path); err == nil {
-			if raw, payload, err := readVerifiedAt(path, id); err == nil {
+			raw, payload, err := readVerifiedAt(path, id)
+			if err == nil {
 				return raw, payload, true
 			}
+			badErr = err
 		}
 		// A snapshot object's canonical copy is written only to the
 		// disc that packed it, but its catalog/snapobj copy is
@@ -364,11 +374,17 @@ func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, 
 		if snapshot {
 			snapobjPath := filepath.Join(src.names.Join(b.runDir, "catalog", "snapobj"), id.TextForm())
 			if _, err := os.Stat(snapobjPath); err == nil {
-				if raw, payload, err := readVerifiedAt(snapobjPath, id); err == nil {
+				raw, payload, err := readVerifiedAt(snapobjPath, id)
+				if err == nil {
 					return raw, payload, true
 				}
+				badErr = err
 			}
 		}
+	}
+	if badErr != nil {
+		src.bad[id] = badErr
+		return nil, nil, false
 	}
 	if uuid, ok := src.contentToDisc[id]; ok {
 		src.missingByDisc[uuid] = append(src.missingByDisc[uuid], id)
@@ -378,8 +394,13 @@ func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, 
 	return nil, nil, false
 }
 
+// badObject returns why a provided disc's copy of id did not verify, or
+// nil when id was simply not on any provided disc.
+func (src *multiSource) badObject(id object.ID) error { return src.bad[id] }
+
 // finalError returns the accumulated MissingDiscError, or nil when the
-// whole walk found everything it needed.
+// whole walk found everything it needed. Damaged objects are not an
+// error here: each one already names its own path in the report.
 func (src *multiSource) finalError() error {
 	if len(src.missingByDisc) == 0 && len(src.missingUnknown) == 0 {
 		return nil
@@ -398,8 +419,11 @@ func (src *multiSource) finalError() error {
 	return &MissingDiscError{UnnamedCount: len(src.missingUnknown), Candidates: candidates}
 }
 
-// restoreRootEntry mirrors restoreRootEntry, reading through src instead
-// of one fixed base.
+// restoreRootEntry restores one entry of the synthetic root tree. Its
+// destination is the source's own absolute path, carried in the entry's
+// root-path TLV, joined under outDir; its content is the entry's own
+// directory tree, restored directly into that destination rather than
+// one level below it.
 func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState) error {
 	if e.EntryType != format.EntryTypeDirectory {
 		return fmt.Errorf("root entry %q: expected a directory", e.Name)
@@ -423,17 +447,24 @@ func (src *multiSource) restoreRootEntry(outDir string, e format.TreeEntry, prog
 	return nil
 }
 
+// restoreDirContents decodes the tree at treeID and restores every entry
+// fs leaves in scope as a child of dest, which already exists.
 func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *progress.Reporter, fs *filterState) error {
 	raw, _, ok := src.read(treeID, false)
 	if !ok {
-		// This whole subtree is unreachable without a missing disc;
-		// record it and skip it, so the rest of the tree still
-		// restores.
+		// This whole subtree is unreachable: the tree object is on a
+		// disc that was not provided, or its bytes are damaged. Both
+		// are already recorded, so skip the subtree and let the rest of
+		// the tree restore.
+		if err := src.badObject(treeID); err != nil {
+			src.wp.failed(dest, err)
+		}
 		return nil
 	}
 	var t format.Tree
 	if _, err := t.Decode(raw); err != nil {
-		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
+		src.wp.failed(dest, fmt.Errorf("tree %s: %w", treeID.TextForm(), err))
+		return nil
 	}
 	for _, e := range t.Entries {
 		childFS, include := stepInto(fs, []string{string(e.Name)})
@@ -447,11 +478,17 @@ func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *
 	return nil
 }
 
+// restoreEntry writes one tree entry as a child of dir. The caller has
+// already decided the entry is in scope; fs is only used for a directory
+// entry's own children. An entry that fails alone is recorded and the
+// walk goes on to the next entry; only a failure that stops the whole
+// walk is returned.
 func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
-		return err
+		src.wp.failed(filepath.Join(dir, name), err)
+		return nil
 	}
 	switch e.EntryType {
 	case format.EntryTypeDirectory:
@@ -465,13 +502,14 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 		applyMetadata(sub, e, src.wp)
 		return nil
 	case format.EntryTypeRegular:
-		skipped, err := src.restoreFile(child, object.ID(e.ContentID), e, prog)
+		written, err := src.restoreFile(child, object.ID(e.ContentID), e, prog)
 		if err != nil {
-			return err
+			src.wp.failed(child, err)
+			return nil
 		}
-		if skipped {
-			// The path already existed and --overwrite was not given;
-			// leave it exactly as found.
+		if !written {
+			// The path already existed, or its data is not reachable.
+			// Leave it exactly as found.
 			return nil
 		}
 		applyMetadata(child, e, src.wp)
@@ -479,20 +517,32 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 	case format.EntryTypeSymlink:
 		target, err := symlinkTarget(e)
 		if err != nil {
-			return err
+			src.wp.failed(child, err)
+			return nil
 		}
-		return restoreSymlink(child, target, e, src.wp)
+		if err := restoreSymlink(child, target, e, src.wp); err != nil {
+			src.wp.failed(child, err)
+		}
+		return nil
 	default:
-		src.wp.recordUnsupported(child, e.EntryType)
+		src.wp.unsupported(child, e.EntryType)
 		return nil
 	}
 }
 
-func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.TreeEntry, prog *progress.Reporter) (skipped bool, err error) {
+// restoreFile reassembles blobID's chunks into dest, in blob entry
+// order, verifying every chunk's content id before it writes the bytes.
+// It reports written false, and leaves dest as found, when the path
+// already exists and --overwrite was not given, or when no provided disc
+// holds the blob.
+func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.TreeEntry, prog *progress.Reporter) (written bool, err error) {
 	raw, _, ok := src.read(blobID, false)
 	if !ok {
-		// The blob itself is unreachable; record it (already done by
-		// read) and skip this file so the rest of the tree restores.
+		// The blob itself is unreachable; read has already recorded a
+		// missing disc, or badObject names the damage.
+		if err := src.badObject(blobID); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	var blob format.Blob
@@ -508,15 +558,26 @@ func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.Tree
 		return false, err
 	}
 	if skipped {
-		return true, nil
+		return false, nil
 	}
 
-	// A chunk no provided disc holds leaves the file partly written.
-	// That file stays in place: the missing-disc error already names
-	// what is needed to finish it.
-	_, err = writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
+	// A chunk no provided disc holds, or one whose bytes are damaged,
+	// leaves the file partly written. That file stays in place: the
+	// missing-disc error, or the damage recorded here, names what is
+	// needed to finish it.
+	var chunkErr error
+	complete, err := writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
 		_, payload, ok := src.read(id, false)
+		if !ok && chunkErr == nil {
+			chunkErr = src.badObject(id)
+		}
 		return payload, ok, nil
 	})
-	return false, err
+	if err != nil {
+		return false, err
+	}
+	if !complete {
+		return false, chunkErr
+	}
+	return true, nil
 }

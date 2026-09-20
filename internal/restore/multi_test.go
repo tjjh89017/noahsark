@@ -142,7 +142,7 @@ func TestRestoreMultiAcrossThreeDiscs(t *testing.T) {
 	roots := packSequence(t, stagingDir, snapID, []uint64{7_000_000, 7_000_000, 10_000_000})
 
 	outDir := t.TempDir()
-	if _, _, err := RestoreMulti(roots, snapID, outDir); err != nil {
+	if _, err := RestoreMulti(roots, snapID, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcDir, filepath.Join(outDir, srcDir))
@@ -153,7 +153,7 @@ func TestRestoreMultiCapacityOrderDoesNotMatterForResult(t *testing.T) {
 	roots := packSequence(t, stagingDir, snapID, []uint64{10_000_000, 7_000_000, 7_000_000})
 
 	outDir := t.TempDir()
-	if _, _, err := RestoreMulti(roots, snapID, outDir); err != nil {
+	if _, err := RestoreMulti(roots, snapID, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcDir, filepath.Join(outDir, srcDir))
@@ -167,7 +167,7 @@ func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 	partial := []string{roots[0], roots[2]}
 
 	outDir := t.TempDir()
-	_, _, err := RestoreMulti(partial, snapID, outDir)
+	_, err := RestoreMulti(partial, snapID, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -265,7 +265,7 @@ func TestRestoreMultiRunSeqRepeatedAcrossLineages(t *testing.T) {
 	// Disc 1 is not provided. Lineage B's disc must not be mistaken for
 	// it, although both discs hold a run 1.
 	outDir := t.TempDir()
-	_, _, err = RestoreMulti([]string{disc2Dir, disc3Dir}, snapA2, outDir)
+	_, err = RestoreMulti([]string{disc2Dir, disc3Dir}, snapA2, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -286,7 +286,7 @@ func TestRestoreMultiRunSeqRepeatedAcrossLineages(t *testing.T) {
 	// With disc 1 back, the restore finds every object on the right
 	// disc, although lineage B's disc is still in the set.
 	outDir = t.TempDir()
-	if _, _, err := RestoreMulti([]string{disc1Dir, disc2Dir, disc3Dir}, snapA2, outDir); err != nil {
+	if _, err := RestoreMulti([]string{disc1Dir, disc2Dir, disc3Dir}, snapA2, outDir); err != nil {
 		t.Fatalf("RestoreMulti: %v", err)
 	}
 	compareTrees(t, srcA, filepath.Join(outDir, srcA))
@@ -385,7 +385,7 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	// INDEX and Prereqs never reference snap1's objects, so the only
 	// way to name disc 1 is disc 2's DISCS table.
 	outDir := t.TempDir()
-	_, _, err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
+	_, err = RestoreMulti([]string{disc2Dir}, snap1, outDir)
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -499,7 +499,7 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 		{1}: "disc-one",
 		{3}: "disc-three",
 	}
-	_, _, err = RestoreMultiWithProgress([]string{disc2Dir}, snap1, outDir, nil, WithKnownDiscs(known))
+	_, err = RestoreMultiWithProgress([]string{disc2Dir}, snap1, outDir, nil, WithKnownDiscs(known))
 	if err == nil {
 		t.Fatal("expected a missing-disc error")
 	}
@@ -544,15 +544,15 @@ func TestRestoreMultiResumesMatchingSizeSkipsMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, skipped, err := RestoreMulti([]string{treeDir}, snapID, outDir)
+	rep, err := RestoreMulti([]string{treeDir}, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed != 1 {
-		t.Fatalf("resumed = %d, want 1", resumed)
+	if rep.Resumed != 1 {
+		t.Fatalf("resumed = %d, want 1", rep.Resumed)
 	}
-	if skipped != 0 {
-		t.Fatalf("skipped = %d, want 0", skipped)
+	if rep.Skipped() != 0 {
+		t.Fatalf("skipped = %d, want 0", rep.Skipped())
 	}
 
 	// A file present with the wrong size is a conflict, not a resume.
@@ -566,14 +566,14 @@ func TestRestoreMultiResumesMatchingSizeSkipsMismatch(t *testing.T) {
 	if err := os.WriteFile(target2, append(want, 'x'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	resumed, skipped, err = RestoreMulti([]string{treeDir}, snapID, outDir2)
+	rep, err = RestoreMulti([]string{treeDir}, snapID, outDir2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
-	if resumed != 0 {
-		t.Fatalf("resumed = %d, want 0", resumed)
+	if rep.Resumed != 0 {
+		t.Fatalf("resumed = %d, want 0", rep.Resumed)
 	}
 }

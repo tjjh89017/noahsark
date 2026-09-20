@@ -87,15 +87,19 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		}
 		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *noEject, *interactive, "", fs.Arg(0), *planFlag, *stagingBudgetFlag, stdout, stderr, prog)
 	}
-	// A bare two positional arguments, with --mount given, is the
-	// disc-swap mode's SNAPSHOT OUT-DIR. Without --mount, the same two
-	// arguments are ambiguous: they could equally be a DISC-ROOT
-	// SNAPSHOT for the all-discs-at-once mode with OUT-DIR left off. This
-	// build resolves that only by requiring --mount for disc-swap, so a
-	// missing OUT-DIR reports the usage line instead of silently running
-	// the wrong mode.
+	// Two positional arguments, with --mount given, are the disc-swap
+	// mode's SNAPSHOT OUT-DIR. Without --mount, the same two arguments
+	// are ambiguous: they are a DISC-ROOT SNAPSHOT with OUT-DIR left
+	// off when the first one names an existing directory, and a
+	// SNAPSHOT OUT-DIR with no disc given otherwise. Both mistakes get
+	// their own line, naming what the operator typed.
 	if !multi && fs.NArg() == 2 {
 		if *mountFlag == "" {
+			if looksLikeDiscRoot(fs.Arg(0)) {
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s is a disc root, so OUT-DIR is missing\n", fs.Arg(0))
+			} else {
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no disc given for snapshot %q; pass a DISC-ROOT, --disc, --discs-dir or --mount\n", fs.Arg(0))
+			}
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] [--no-eject] [--interactive] SNAPSHOT OUT-DIR")
 			return 2
 		}
@@ -124,6 +128,13 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR")
 			return 2
 		}
+		if !looksLikeDiscRoot(fs.Arg(0)) {
+			// The first argument of this form is always a mounted disc
+			// or an unpacked NOAHSARK tree. Name it here, so a
+			// mistyped path is not reported later as a missing object.
+			_, _ = fmt.Fprintf(stderr, "noahsark: restore: no such disc root: %s\n", fs.Arg(0))
+			return 2
+		}
 		positional = fs.Args()[1:]
 	}
 	var err error
@@ -145,116 +156,53 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	var unsupported []string
-	var blocked int
-	var metadataFailures []restore.MetadataFailure
 	opts := []restore.Option{
 		restore.WithInclude(includeFlags),
 		restore.WithOverwrite(*overwrite),
-		restore.WithUnsupportedEntry(func(path string, entryType uint8) {
-			unsupported = append(unsupported, path)
-			_, _ = fmt.Fprintln(stderr, unsupportedEntryLine(path, entryType))
-		}),
-		restore.WithOverwriteBlocked(func(entry restore.OverwriteBlockedEntry) {
-			blocked++
-			_, _ = fmt.Fprintln(stderr, overwriteBlockedLine(entry))
-		}),
-		restore.WithMetadataFailure(func(f restore.MetadataFailure) {
-			metadataFailures = append(metadataFailures, f)
-		}),
 	}
 	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
 		opts = append(opts, restore.WithKnownDiscs(known))
 	}
-	resumed, skipped, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
+	rep, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
+	printProblems(stderr, rep)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
-	metaLoss := printMetadataFailures(stderr, metadataFailures)
+	return printRestoreResult(stdout, rep, snapID, outDir)
+}
 
+// printProblems writes one warning line for every problem the report
+// holds, then one line for the problems it counted but dropped. A
+// problem that lost data is not called a warning; every other kind is.
+func printProblems(stderr io.Writer, rep restore.Report) {
+	for _, p := range rep.Problems {
+		prefix := "noahsark: restore: warning:"
+		if p.Kind == restore.KindFile {
+			prefix = "noahsark: restore:"
+		}
+		_, _ = fmt.Fprintf(stderr, "%s %s: %s\n", prefix, p.Path, p.Err)
+	}
+	if dropped := rep.Dropped(); dropped > 0 {
+		_, _ = fmt.Fprintf(stderr, "noahsark: restore: warning: %d more problem(s) not shown\n", dropped)
+	}
+}
+
+// printRestoreResult writes the result lines every restore mode ends
+// with, and returns the exit code: 1 when the restore lost data or
+// metadata, 0 otherwise.
+func printRestoreResult(stdout io.Writer, rep restore.Report, snapID object.ID, outDir string) int {
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
-	if resumed > 0 {
-		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", resumed)
+	if rep.Resumed > 0 {
+		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", rep.Resumed)
 	}
-	loss := false
-	if skipped-blocked > 0 {
-		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", skipped-blocked)
-		loss = true
+	if summary := rep.Summary(); summary != "" {
+		_, _ = fmt.Fprintln(stdout, summary)
 	}
-	if blocked > 0 {
-		_, _ = fmt.Fprint(stdout, overwriteBlockedSummaryLine(blocked))
-		loss = true
-	}
-	if len(unsupported) > 0 {
-		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(unsupported)))
-	}
-	if len(metadataFailures) > 0 {
-		_, _ = fmt.Fprint(stdout, metadataFailureSummaryLine(len(metadataFailures)))
-	}
-	if loss || metaLoss {
+	if rep.Failed() {
 		return 1
 	}
 	return 0
-}
-
-// unsupportedEntryLine names one entry the restore did not write
-// because this build does not restore its entry type. It is a
-// warning, not a failure: an unsupported entry alone never changes the
-// exit code.
-func unsupportedEntryLine(path string, entryType uint8) string {
-	return fmt.Sprintf("noahsark: restore: warning: not restored: %s (entry type %d)", path, entryType)
-}
-
-// overwriteBlockedLine names one path --overwrite could not replace.
-func overwriteBlockedLine(entry restore.OverwriteBlockedEntry) string {
-	return fmt.Sprintf("noahsark: restore: warning: %s: %s", entry.Path, entry.Reason)
-}
-
-// overwriteBlockedSummaryLine counts the paths --overwrite could not
-// replace, for the final report. --overwrite was already given, so
-// this replaces the ordinary "pass --overwrite" advice, which would be
-// wrong here.
-func overwriteBlockedSummaryLine(n int) string {
-	return fmt.Sprintf("skipped %d existing path(s); --overwrite could not replace them; see the warning(s) above\n", n)
-}
-
-// unsupportedSummaryLine counts those entries for the final report.
-func unsupportedSummaryLine(n int) string {
-	return fmt.Sprintf("not restored: %d unsupported entry(ies); a device node, FIFO or socket needs a later phase\n", n)
-}
-
-// metadataFailureLineCap is the most metadata_not_applied warning lines
-// printMetadataFailures prints one per failure; beyond it, the
-// remaining failures fold into a single count line.
-const metadataFailureLineCap = 20
-
-// metadataFailureLine names one metadata field a restore could not
-// apply, in the existing warning style.
-func metadataFailureLine(f restore.MetadataFailure) string {
-	return fmt.Sprintf("noahsark: restore: warning: %s: %s not applied: %s", f.Path, f.Field, f.Err)
-}
-
-// printMetadataFailures writes one warning line per metadata failure,
-// up to metadataFailureLineCap, folding any remaining failures into one
-// more line. It reports whether it printed anything, for the exit
-// code: a metadata failure is metadata loss (OPERATIONS.md's restore
-// exit code table, code 1).
-func printMetadataFailures(stderr io.Writer, failures []restore.MetadataFailure) bool {
-	for i, f := range failures {
-		if i >= metadataFailureLineCap {
-			_, _ = fmt.Fprintf(stderr, "noahsark: restore: warning: %d more metadata failure(s) not shown\n", len(failures)-metadataFailureLineCap)
-			break
-		}
-		_, _ = fmt.Fprintln(stderr, metadataFailureLine(f))
-	}
-	return len(failures) > 0
-}
-
-// metadataFailureSummaryLine counts the metadata fields a restore could
-// not apply, for the final report.
-func metadataFailureSummaryLine(n int) string {
-	return fmt.Sprintf("metadata not applied: %d field(s); see the warning(s) above\n", n)
 }
 
 // resolveDiscRoots builds the disc root list restore reads from: the
@@ -494,13 +442,6 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		return 2
 	}
 
-	for _, u := range m.Unsupported() {
-		_, _ = fmt.Fprintln(stderr, unsupportedEntryLine(u.Path, u.EntryType))
-	}
-	for _, b := range m.OverwriteBlocked() {
-		_, _ = fmt.Fprintln(stderr, overwriteBlockedLine(b))
-	}
-
 	if path, need, ok := m.FileExceedingBudget(stagingBudget); ok {
 		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s alone needs %d bytes of staging, above the staging budget of %d bytes; no split of one file's own chunks can honour it\n",
 			path, need, stagingBudget)
@@ -589,30 +530,10 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		return 2
 	}
 	m.Finish()
-	metaLoss := printMetadataFailures(stderr, m.MetadataFailures())
-
-	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
-	if m.Resumed() > 0 {
-		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", m.Resumed())
-	}
-	loss := false
-	blocked := len(m.OverwriteBlocked())
-	if m.Skipped()-blocked > 0 {
-		_, _ = fmt.Fprintf(stdout, "skipped %d existing path(s); pass --overwrite to replace them\n", m.Skipped()-blocked)
-		loss = true
-	}
-	if blocked > 0 {
-		_, _ = fmt.Fprint(stdout, overwriteBlockedSummaryLine(blocked))
-		loss = true
-	}
-	if paths := m.Unsupported(); len(paths) > 0 {
-		_, _ = fmt.Fprint(stdout, unsupportedSummaryLine(len(paths)))
-	}
-	if fails := m.MetadataFailures(); len(fails) > 0 {
-		_, _ = fmt.Fprint(stdout, metadataFailureSummaryLine(len(fails)))
-	}
-	if loss || metaLoss {
-		return 1
+	rep := m.Report()
+	printProblems(stderr, rep)
+	if code := printRestoreResult(stdout, rep, snapID, outDir); code != 0 {
+		return code
 	}
 	if err := removeEmptySpoolRoot(spoolRoot); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)

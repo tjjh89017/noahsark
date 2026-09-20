@@ -32,12 +32,12 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, skipped, err := Restore(treeDir, snapID, outDir)
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
 	got, err := os.ReadFile(linkPath)
 	if err != nil {
@@ -47,7 +47,7 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 		t.Fatalf("existing file at the symlink path was replaced: %q", got)
 	}
 
-	if _, _, err := Restore(treeDir, snapID, outDir, WithOverwrite(true)); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir, WithOverwrite(true)); err != nil {
 		t.Fatal(err)
 	}
 	target, err := os.Readlink(linkPath)
@@ -63,7 +63,7 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 // at the path of a symlink entry is never deleted: without
 // WithOverwrite it counts as skipped, and with WithOverwrite the
 // restore still leaves it alone, reports it through
-// WithOverwriteBlocked, and does not stop the walk.
+// the report, and does not stop the walk.
 func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -78,38 +78,36 @@ func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, skipped, err := Restore(treeDir, snapID, outDir)
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
 	if _, err := os.Stat(inside); err != nil {
 		t.Fatalf("the existing directory was deleted: %v", err)
 	}
 
-	var got []OverwriteBlockedEntry
-	_, skipped, err = Restore(treeDir, snapID, outDir, WithOverwrite(true), WithOverwriteBlocked(func(e OverwriteBlockedEntry) {
-		got = append(got, e)
-	}))
+	rep, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
 	if err != nil {
 		t.Fatalf("WithOverwrite: want no error for a non-empty directory in the way, got %v", err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
+	got := problemsOf(rep, KindBlocked)
 	if len(got) != 1 {
 		t.Fatalf("overwrite-blocked records = %v, want exactly one", got)
 	}
 	if got[0].Path != linkPath {
 		t.Fatalf("path = %q, want %q", got[0].Path, linkPath)
 	}
-	if got[0].Kind != "symlink" {
-		t.Fatalf("kind = %q, want %q", got[0].Kind, "symlink")
+	if !strings.Contains(got[0].Err.Error(), "symlink not created") {
+		t.Fatalf("problem = %q, want it to name the symlink", got[0].Err)
 	}
-	if !strings.Contains(got[0].Reason, "not empty") {
-		t.Fatalf("reason = %q, want it to name the non-empty directory", got[0].Reason)
+	if !strings.Contains(got[0].Err.Error(), "not empty") {
+		t.Fatalf("problem = %q, want it to name the non-empty directory", got[0].Err)
 	}
 	if _, err := os.Stat(inside); err != nil {
 		t.Fatalf("WithOverwrite deleted the existing directory: %v", err)
@@ -138,27 +136,25 @@ func TestRestoreKeepsDirectoryAtFilePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var got []OverwriteBlockedEntry
-	_, skipped, err := Restore(treeDir, snapID, outDir, WithOverwrite(true), WithOverwriteBlocked(func(e OverwriteBlockedEntry) {
-		got = append(got, e)
-	}))
+	rep, err := Restore(treeDir, snapID, outDir, WithOverwrite(true))
 	if err != nil {
 		t.Fatalf("WithOverwrite: want no error for a non-empty directory in the way, got %v", err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
+	got := problemsOf(rep, KindBlocked)
 	if len(got) != 1 {
 		t.Fatalf("overwrite-blocked records = %v, want exactly one", got)
 	}
 	if got[0].Path != filePath {
 		t.Fatalf("path = %q, want %q", got[0].Path, filePath)
 	}
-	if got[0].Kind != "file" {
-		t.Fatalf("kind = %q, want %q", got[0].Kind, "file")
+	if !strings.Contains(got[0].Err.Error(), "file not created") {
+		t.Fatalf("problem = %q, want it to name the file", got[0].Err)
 	}
-	if !strings.Contains(got[0].Reason, "not empty") {
-		t.Fatalf("reason = %q, want it to name the non-empty directory", got[0].Reason)
+	if !strings.Contains(got[0].Err.Error(), "not empty") {
+		t.Fatalf("problem = %q, want it to name the non-empty directory", got[0].Err)
 	}
 	if _, err := os.Stat(inside); err != nil {
 		t.Fatalf("WithOverwrite deleted the existing directory: %v", err)
@@ -194,14 +190,15 @@ func TestEnsureDirLeavesUnremovableBlockerInPlace(t *testing.T) {
 	if ok {
 		t.Fatal("ensureDir: want ok false, the blocker was not removed")
 	}
-	if wp.skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", wp.skipped)
+	if wp.report.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", wp.report.Skipped())
 	}
-	if len(wp.overwriteBlocked) != 1 {
-		t.Fatalf("overwrite-blocked records = %v, want exactly one", wp.overwriteBlocked)
+	blocked := problemsOf(wp.report, KindBlocked)
+	if len(blocked) != 1 {
+		t.Fatalf("overwrite-blocked records = %v, want exactly one", blocked)
 	}
-	if wp.overwriteBlocked[0].Kind != "directory" {
-		t.Fatalf("kind = %q, want %q", wp.overwriteBlocked[0].Kind, "directory")
+	if !strings.Contains(blocked[0].Err.Error(), "directory not created") {
+		t.Fatalf("problem = %q, want it to name the directory", blocked[0].Err)
 	}
 	if fi, err := os.Lstat(blocker); err != nil || fi.IsDir() {
 		t.Fatalf("the blocking file was removed or replaced: %v", err)
@@ -223,15 +220,15 @@ func TestRestoreResumesMatchingSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resumed, skipped, err := Restore(treeDir, snapID, outDir)
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 0 {
-		t.Fatalf("skipped = %d, want 0", skipped)
+	if rep.Skipped() != 0 {
+		t.Fatalf("skipped = %d, want 0", rep.Skipped())
 	}
-	if resumed != 1 {
-		t.Fatalf("resumed = %d, want 1", resumed)
+	if rep.Resumed != 1 {
+		t.Fatalf("resumed = %d, want 1", rep.Resumed)
 	}
 }
 
@@ -252,19 +249,19 @@ func TestRestoreDoesNotFollowSymlinkedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, skipped, err := Restore(treeDir, snapID, outDir)
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if rep.Skipped() != 1 {
+		t.Fatalf("skipped = %d, want 1", rep.Skipped())
 	}
 	assertEmptyDir(t, outside)
 	if fi, err := os.Lstat(subPath); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the symlink was replaced without WithOverwrite: %v", err)
 	}
 
-	if _, _, err := Restore(treeDir, snapID, outDir, WithOverwrite(true)); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir, WithOverwrite(true)); err != nil {
 		t.Fatal(err)
 	}
 	assertEmptyDir(t, outside)
@@ -290,7 +287,7 @@ func TestRestoreDoesNotFollowSymlinkedRootComponent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := Restore(treeDir, snapID, outDir); err != nil {
 		t.Fatal(err)
 	}
 	assertEmptyDir(t, outside)

@@ -5,10 +5,9 @@ package restore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/tjjh89017/noahsark/internal/format"
 )
 
 // TestRestoreContinuesPastUnsupportedEntry asserts that a FIFO entry
@@ -29,16 +28,12 @@ func TestRestoreContinuesPastUnsupportedEntry(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	type record struct {
-		path      string
-		entryType uint8
-	}
-	var got []record
-	_, _, err := Restore(treeDir, snapID, outDir, WithUnsupportedEntry(func(path string, entryType uint8) {
-		got = append(got, record{path, entryType})
-	}))
+	rep, err := Restore(treeDir, snapID, outDir)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
+	}
+	if rep.Failed() {
+		t.Fatal("an unsupported entry alone must not fail the restore")
 	}
 
 	root := filepath.Join(outDir, srcDir)
@@ -50,13 +45,14 @@ func TestRestoreContinuesPastUnsupportedEntry(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(root, "pipe")); !os.IsNotExist(err) {
 		t.Fatalf("the FIFO path exists after restore: %v", err)
 	}
+	got := problemsOf(rep, KindUnsupported)
 	if len(got) != 1 {
 		t.Fatalf("unsupported records = %v, want exactly one", got)
 	}
-	if got[0].entryType != format.EntryTypeFIFO {
-		t.Fatalf("entry type = %d, want %d", got[0].entryType, format.EntryTypeFIFO)
+	if !strings.Contains(got[0].Err.Error(), "FIFO") {
+		t.Fatalf("problem = %q, want it to name the FIFO", got[0].Err)
 	}
-	if got[0].path != filepath.Join(root, "pipe") {
-		t.Fatalf("path = %q, want %q", got[0].path, filepath.Join(root, "pipe"))
+	if got[0].Path != filepath.Join(root, "pipe") {
+		t.Fatalf("path = %q, want %q", got[0].Path, filepath.Join(root, "pipe"))
 	}
 }
