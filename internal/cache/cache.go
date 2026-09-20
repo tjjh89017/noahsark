@@ -9,8 +9,11 @@
 // discs are mounted. FORMAT.md's "The run index and the catalog"
 // replaced the manifest, the filter, the layout table and the catalog
 // container with one structure, INDEX. This package stores that file,
-// byte for byte, as "runs/<seq>/INDEX.bin", beside that run's own copy
-// of REFS.bin and DISCS.bin.
+// byte for byte, as "discs/<disc-uuid>/INDEX.bin", beside that disc's
+// own copy of REFS.bin and DISCS.bin. One disc holds one run, thus the
+// disc uuid identifies the run too. The key is never run_seq: the host
+// assigns that number from local state, and after a lost repository two
+// discs can carry the same number.
 //
 // The cache also holds every blob object reachable from a cached
 // snapshot, under "blobs/<id>", alongside "trees/<id>": a blob is small,
@@ -21,14 +24,16 @@
 package cache
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Directory and file names under a cache directory.
 const (
-	runsDirName      = "runs"
+	discsDirName     = "discs"
 	snapshotsDirName = "snapshots"
 	treesDirName     = "trees"
 	blobsDirName     = "blobs"
@@ -36,7 +41,7 @@ const (
 )
 
 // IndexFileName, RefsFileName and DiscsFileName are the file names
-// WriteRun writes inside one runs/<seq>/ directory.
+// WriteDisc writes inside one discs/<disc-uuid>/ directory.
 const (
 	IndexFileName = "INDEX.bin"
 	RefsFileName  = "REFS.bin"
@@ -89,9 +94,9 @@ func Open(dir string) (*Cache, error) {
 	return c, nil
 }
 
-// runDir returns the cache directory for one run's catalog copy.
-func (c *Cache) runDir(seq uint64) string {
-	return filepath.Join(c.dir, runsDirName, fmt.Sprintf("%d", seq))
+// discDir returns the cache directory for one disc's catalog copy.
+func (c *Cache) discDir(uuid [16]byte) string {
+	return filepath.Join(c.dir, discsDirName, uuidText(uuid))
 }
 
 // snapshotsDir returns the directory holding cached snapshot objects.
@@ -122,6 +127,21 @@ func (c *Cache) statePath() string {
 // standard uuid text form.
 func uuidText(u [16]byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
+}
+
+// parseUUIDText parses the hyphenated lowercase text form uuidText
+// writes. A directory name it cannot parse is not a cached disc.
+func parseUUIDText(s string) ([16]byte, bool) {
+	var u [16]byte
+	b, err := hex.DecodeString(strings.ReplaceAll(s, "-", ""))
+	if err != nil || len(b) != 16 {
+		return u, false
+	}
+	copy(u[:], b)
+	if uuidText(u) != s {
+		return u, false
+	}
+	return u, true
 }
 
 // atomicWriteFile writes data to path through a temporary file and a

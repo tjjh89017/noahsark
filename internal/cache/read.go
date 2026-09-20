@@ -1,12 +1,12 @@
 package cache
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -37,91 +37,129 @@ func (c *Cache) ListSnapshots() ([]object.ID, error) {
 	return ids, nil
 }
 
-// cachedRunSeqs returns every run_seq the cache holds a runs/<seq>/
-// directory for, ascending.
-func (c *Cache) cachedRunSeqs() ([]uint64, error) {
-	entries, err := os.ReadDir(filepath.Join(c.dir, runsDirName))
+// cachedDiscs returns the uuid of every disc the cache holds a
+// discs/<disc-uuid>/ directory for, in uuid text order. A directory
+// name that is not a uuid is not a cached disc; an older cache that
+// still holds runs/<seq>/ directories therefore reports no disc, and
+// the caller tells the operator to run pack or rebuild-cache.
+func (c *Cache) cachedDiscs() ([][16]byte, error) {
+	entries, err := os.ReadDir(filepath.Join(c.dir, discsDirName))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	seqs := make([]uint64, 0, len(entries))
+	uuids := make([][16]byte, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		seq, err := strconv.ParseUint(e.Name(), 10, 64)
-		if err != nil {
+		uuid, ok := parseUUIDText(e.Name())
+		if !ok {
 			continue
 		}
-		seqs = append(seqs, seq)
+		uuids = append(uuids, uuid)
 	}
-	slices.Sort(seqs)
-	return seqs, nil
+	slices.SortFunc(uuids, func(a, b [16]byte) int { return bytes.Compare(a[:], b[:]) })
+	return uuids, nil
 }
 
-// newestRunSeq returns the highest run_seq the cache holds a copy for.
-func (c *Cache) newestRunSeq() (uint64, error) {
-	seqs, err := c.cachedRunSeqs()
+// newestCachedDisc returns the uuid of the cached disc with the highest
+// created_sec. It takes the time from the disc's own row in the disc's
+// own cached DISCS table, the only creation time the cache holds. A
+// disc whose table names no row for itself counts as created at 0. Two
+// equal times keep the lower uuid.
+func (c *Cache) newestCachedDisc() ([16]byte, error) {
+	uuids, err := c.cachedDiscs()
 	if err != nil {
-		return 0, err
+		return [16]byte{}, err
 	}
-	if len(seqs) == 0 {
-		return 0, fmt.Errorf("cache: no run is cached yet; run pack, or rebuild-cache, first")
+	if len(uuids) == 0 {
+		return [16]byte{}, fmt.Errorf("cache: no disc is cached yet; run pack, or rebuild-cache, first")
 	}
-	return seqs[len(seqs)-1], nil
+	newest := uuids[0]
+	var newestCreated int64
+	have := false
+	for _, uuid := range uuids {
+		created := int64(0)
+		if row, found := c.ownDiscRow(uuid); found {
+			created = row.CreatedSec
+		}
+		if !have || created > newestCreated {
+			newest, newestCreated, have = uuid, created, true
+		}
+	}
+	return newest, nil
 }
 
-// IndexForRun reads and decodes the cached INDEX.bin of run seq.
-func (c *Cache) IndexForRun(seq uint64) (*format.Index, error) {
-	buf, err := os.ReadFile(filepath.Join(c.runDir(seq), IndexFileName))
+// discsTableOf reads and decodes one cached disc's own DISCS.bin.
+func (c *Cache) discsTableOf(uuid [16]byte) (*format.DiscsTable, error) {
+	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), DiscsFileName))
 	if err != nil {
-		return nil, fmt.Errorf("cache: run %d: %w", seq, err)
+		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
+	}
+	var discs format.DiscsTable
+	if _, err := discs.Decode(buf); err != nil {
+		return nil, fmt.Errorf("cache: disc %s: DISCS.bin: %w", uuidText(uuid), err)
+	}
+	return &discs, nil
+}
+
+// ownDiscRow returns uuid's own row from uuid's own cached DISCS table.
+func (c *Cache) ownDiscRow(uuid [16]byte) (format.DiscsRow, bool) {
+	discs, err := c.discsTableOf(uuid)
+	if err != nil {
+		return format.DiscsRow{}, false
+	}
+	for _, row := range discs.Rows {
+		if row.DiscUUID == uuid {
+			return row, true
+		}
+	}
+	return format.DiscsRow{}, false
+}
+
+// IndexForDisc reads and decodes the cached INDEX.bin of one disc.
+func (c *Cache) IndexForDisc(uuid [16]byte) (*format.Index, error) {
+	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), IndexFileName))
+	if err != nil {
+		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
 	}
 	var idx format.Index
 	if _, err := idx.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: run %d: INDEX.bin: %w", seq, err)
+		return nil, fmt.Errorf("cache: disc %s: INDEX.bin: %w", uuidText(uuid), err)
 	}
 	return &idx, nil
 }
 
-// Refs reads and decodes REFS.bin from the newest run the cache holds.
+// Refs reads and decodes REFS.bin from the newest disc the cache holds.
 // REFS is replicated in full on every run, so the newest cached copy
 // names every ref the cache knows.
 func (c *Cache) Refs() (*format.RefsTable, error) {
-	seq, err := c.newestRunSeq()
+	uuid, err := c.newestCachedDisc()
 	if err != nil {
 		return nil, err
 	}
-	buf, err := os.ReadFile(filepath.Join(c.runDir(seq), RefsFileName))
+	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), RefsFileName))
 	if err != nil {
-		return nil, fmt.Errorf("cache: run %d: %w", seq, err)
+		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
 	}
 	var refs format.RefsTable
 	if _, err := refs.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: run %d: REFS.bin: %w", seq, err)
+		return nil, fmt.Errorf("cache: disc %s: REFS.bin: %w", uuidText(uuid), err)
 	}
 	return &refs, nil
 }
 
-// Discs reads and decodes DISCS.bin from the newest run the cache
+// Discs reads and decodes DISCS.bin from the newest disc the cache
 // holds, the same way Refs resolves REFS.
 func (c *Cache) Discs() (*format.DiscsTable, error) {
-	seq, err := c.newestRunSeq()
+	uuid, err := c.newestCachedDisc()
 	if err != nil {
 		return nil, err
 	}
-	buf, err := os.ReadFile(filepath.Join(c.runDir(seq), DiscsFileName))
-	if err != nil {
-		return nil, fmt.Errorf("cache: run %d: %w", seq, err)
-	}
-	var discs format.DiscsTable
-	if _, err := discs.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: run %d: DISCS.bin: %w", seq, err)
-	}
-	return &discs, nil
+	return c.discsTableOf(uuid)
 }
 
 // ReadTree reads and decodes one cached tree object.

@@ -58,7 +58,7 @@ func (c *Cache) NewestSnapshotsByTime(n int) ([]object.ID, error) {
 // TrimToSnapshots deletes every cached tree and blob that is not
 // reachable from one of keep's snapshots, and reports how many objects
 // and bytes it removed, or would remove for dryRun. It never touches
-// runs/<seq>/, the snapshot objects themselves, or state.txt directly;
+// discs/<disc-uuid>/, the snapshot objects themselves, or state.txt;
 // after a real (non-dry-run) trim it recomputes every cached snapshot's
 // completeness, so a dropped snapshot's tree set is correctly reported
 // incomplete again.

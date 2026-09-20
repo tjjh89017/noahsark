@@ -22,9 +22,9 @@ import (
 // The plan groups every object the restore needs by the disc that
 // holds it, ordered by the tie-breaks of "14.1 The planner": most
 // bytes first, then the newer disc, then the lower disc_seq. An
-// object's size counts only when the run that actually stores it is
+// object's size counts only when the disc that actually stores it is
 // itself cached (cache.ObjectLocation.SizeKnown); an object known only
-// through another cached run's Prereqs table still counts toward that
+// through another cached disc's Prereqs table still counts toward that
 // disc's object count, at zero bytes.
 //
 // internal/plan holds the planner itself, so "restore" can build the
@@ -142,7 +142,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(result.Missing) > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: plan: %d object(s) have no run known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
+		_, _ = fmt.Fprintf(stderr, "noahsark: plan: %d object(s) have no disc known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
 		return 3
 	}
 	return 0
@@ -156,11 +156,12 @@ func printPlanText(stdout io.Writer, r *plan.Result, ps plan.PassSplit) {
 			d.DiscSeq, plan.UUIDText(d.DiscUUID), d.Label, len(d.Objects), d.Bytes, ps.DiscPasses[i])
 	}
 	for _, m := range r.Missing {
-		if m.RunSeq == 0 {
-			_, _ = fmt.Fprintf(stdout, "missing: %d object(s), run unknown\n", m.Objects)
+		if !m.HasDisc {
+			_, _ = fmt.Fprintf(stdout, "missing: %d object(s), disc unknown\n", m.Objects)
 			continue
 		}
-		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on run %d, disc unknown\n", m.Objects, m.RunSeq)
+		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on disc %s, no cached DISCS row names it\n",
+			m.Objects, plan.UUIDText(m.DiscUUID))
 	}
 	_, _ = fmt.Fprintf(stdout, "totals: discs=%d objects=%d bytes=%d passes=%d peak_staging_bytes=%d\n",
 		len(r.Discs), r.TotalObjects, r.TotalBytes, ps.Total, ps.PeakBytes)
@@ -168,25 +169,25 @@ func printPlanText(stdout io.Writer, r *plan.Result, ps plan.PassSplit) {
 
 // planDiscJSON is one disc of the JSON plan's discs array, the subset
 // of OPERATIONS.md "14.4 The plan file"'s discs[] fields this build
-// knows: order, disc_uuid, disc_seq, label, runs, objects_to_read,
+// knows: order, disc_uuid, disc_seq, label, objects_to_read,
 // bytes_to_read and pass, added here for the staging budget's split.
 type planDiscJSON struct {
-	Order         int      `json:"order"`
-	DiscUUID      string   `json:"disc_uuid"`
-	DiscSeq       uint64   `json:"disc_seq"`
-	Label         string   `json:"label"`
-	Runs          []uint64 `json:"runs"`
-	ObjectsToRead int      `json:"objects_to_read"`
-	BytesToRead   uint64   `json:"bytes_to_read"`
-	Passes        int      `json:"passes"`
+	Order         int    `json:"order"`
+	DiscUUID      string `json:"disc_uuid"`
+	DiscSeq       uint64 `json:"disc_seq"`
+	Label         string `json:"label"`
+	ObjectsToRead int    `json:"objects_to_read"`
+	BytesToRead   uint64 `json:"bytes_to_read"`
+	Passes        int    `json:"passes"`
 }
 
-// planMissingJSON is one missing_discs entry: run_seq when the object's
-// run is known but no cached DISCS row names its disc, 0 when no
-// cached run's INDEX names the object's run at all.
+// planMissingJSON is one missing_discs entry: the disc uuid when a
+// cached INDEX names the disc that holds the object but no cached DISCS
+// row describes that disc, empty when no cached INDEX names the disc at
+// all.
 type planMissingJSON struct {
-	RunSeq  uint64 `json:"run_seq"`
-	Objects int    `json:"objects"`
+	DiscUUID string `json:"disc_uuid"`
+	Objects  int    `json:"objects"`
 }
 
 // planDocument is the JSON plan --out writes: OPERATIONS.md "14.4 The
@@ -217,7 +218,6 @@ func buildPlanDocument(repoUUID [16]byte, snapID object.ID, includes []string, r
 			DiscUUID:      plan.UUIDText(d.DiscUUID),
 			DiscSeq:       d.DiscSeq,
 			Label:         d.Label,
-			Runs:          d.Runs,
 			ObjectsToRead: len(d.Objects),
 			BytesToRead:   d.Bytes,
 			Passes:        ps.DiscPasses[i],
@@ -225,7 +225,11 @@ func buildPlanDocument(repoUUID [16]byte, snapID object.ID, includes []string, r
 	}
 	missing := make([]planMissingJSON, len(r.Missing))
 	for i, m := range r.Missing {
-		missing[i] = planMissingJSON{RunSeq: m.RunSeq, Objects: m.Objects}
+		uuid := ""
+		if m.HasDisc {
+			uuid = plan.UUIDText(m.DiscUUID)
+		}
+		missing[i] = planMissingJSON{DiscUUID: uuid, Objects: m.Objects}
 	}
 	return planDocument{
 		Format:           "noahsark-restore-plan",

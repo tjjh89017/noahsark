@@ -173,7 +173,7 @@ The layout below is one conforming layout.
 
 | Item | Content |
 |---|---|
-| `runs/<seq>/INDEX.bin`, `REFS.bin`, `DISCS.bin` | Byte copies of the index and the catalog of run `seq`. `pack` writes them for the run it packs. `rebuild-cache` writes them from a disc. FORMAT.md's "The run index and the catalog" defines the three files. |
+| `discs/<disc-uuid>/INDEX.bin`, `REFS.bin`, `DISCS.bin` | Byte copies of the index and the catalog of the disc with this uuid. One disc holds one run, thus the disc uuid identifies the run too. The key is the disc uuid, never `run_seq`: the host assigns `run_seq` from local state, and after a lost repository two discs can carry the same number. `pack` writes the three files for the disc it packs. `rebuild-cache` writes them from a disc. FORMAT.md's "The run index and the catalog" defines the three files. |
 | `snapshots/<id>` | A byte copy of every cached snapshot object. |
 | `trees/<id>`, `blobs/<id>` | A byte copy of every tree object and every blob object reachable from a cached snapshot: from staging when `pack` writes it, from the objects of a disc when `rebuild-cache` writes it. |
 | `state.txt` | Per snapshot id, whether its tree set is complete in the cache. |
@@ -1151,7 +1151,6 @@ The plan is one JSON object with these fields.
 | `discs[].disc_uuid` | string | The disc. |
 | `discs[].disc_seq` | integer | 0-based. |
 | `discs[].label` | string | On-disc label. |
-| `discs[].runs` | array of integers | The `run_seq` values to read on this disc. |
 | `discs[].bytes_to_read`, `discs[].objects_to_read` | integer | Counts. |
 | `missing_discs` | array of objects | `disc_uuid`, `disc_seq`, `label`, `objects` (integer). Non-empty means the plan failed. |
 
@@ -1539,6 +1538,10 @@ cache only, and it takes no disc. `SNAPSHOT` is a snapshot id or a ref name.
 The printed plan lists each disc that the restore needs: uuid, `disc_seq`,
 label, objects and bytes to read.
 
+An object the plan cannot place is reported on a `missing:` line. The line
+names the disc uuid when a cached INDEX names the disc that holds the object.
+It says `disc unknown` when no cached INDEX names that disc.
+
 | Option | Meaning |
 |---|---|
 | `--include` | Plan only this snapshot-relative path. When it names a directory, plan everything below it. Repeatable. |
@@ -1548,7 +1551,7 @@ label, objects and bytes to read.
 Exit: 0 when the plan accounts for every object. 1 on a failure at run time.
 2 for a usage error, or when one file alone needs more staging than the
 budget. 3 when the cache is incomplete for the snapshot, or when an object
-has no run the cache knows.
+has no disc the cache knows.
 
 ### 16.16 `restore`
 
@@ -1641,8 +1644,9 @@ noahsark gc [--repo=PATH] [--dry-run] [--keep-snapshots=N]
 ```
 
 Deletes staging objects that are GC-ELIGIBLE, under the rules of section 4.5.
-It leaves an object alone, and reports it, when the run that holds the object
-is not in the local cache.
+It leaves an object alone, and reports it, when the disc that holds the object
+is not in the local cache. It confirms the object in the cached INDEX of that
+one disc, found by the disc uuid of the object's own state record.
 
 `gc` holds an object whose verify count is below `gc.min_verified_copies`,
 default 2. It prints one line for each disc that holds objects back:
@@ -1655,7 +1659,7 @@ this count; `gc.min_verified_copies` is the only control.
 
 | Option | Meaning |
 |---|---|
-| `--dry-run` | Print the totals that `gc` would delete, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
+| `--dry-run` | Print the totals that `gc` would delete, one line for each disc, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
 | `--keep-snapshots` | Keep the cached trees and blobs that only the newest N snapshots reach, and drop the rest. Default `cache.snapshot_depth`. 0 means no limit. `rebuild-cache` brings dropped data back. |
 | `--force-after` | Shorten the retention for this run only. It does not change the verify count rule. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 | `--yes` | Skip the confirmation of `--force-after`, for a script. Without `--yes`, `gc --force-after` refuses when standard input is not a terminal. |
@@ -1917,7 +1921,7 @@ Command-specific meanings that narrow the common set:
 | `commit` | 1 | Some files could not be read, or were unstable. |
 | `pack` | 1 | Objects stay STAGED after the run, or nothing was STAGED at all. |
 | `verify` | 1 | The check or the heal failed, or the repository does not know the disc. |
-| `plan`, `ls`, `log`, `disc` | 3 | A required object is missing: the cache is incomplete for the snapshot, an object has no run the cache knows, or a required disc was not given. |
+| `plan`, `ls`, `log`, `disc` | 3 | A required object is missing: the cache is incomplete for the snapshot, an object has no disc the cache knows, or a required disc was not given. |
 | `restore` | 1 | Data restore failed at run time, an existing path was left alone without `--overwrite`, or a metadata field was not applied. |
 | `restore` | 3 | A required disc is missing, named by uuid. |
 | `rebuild-cache` | 3 | No usable disc was given. |
