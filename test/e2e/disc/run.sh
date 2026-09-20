@@ -4,10 +4,13 @@
 # (loop mount) and udftools (mkudffs). See lib.sh for the shared setup
 # and assert.sh for the shared assertions.
 #
-# Usage: run.sh SCENARIO [MEDIA] [ORDER]
+# Usage: run.sh SCENARIO [MEDIA] [ORDER] [EXTRAS]
 #   SCENARIO  media | corrupt-heal | corrupt-parity | corrupt-max |
-#             corrupt-over | cli | iso | chain | chain-small | lowmem |
-#             incremental | rebuild
+#             corrupt-over | fec | cli | iso | chain | chain-small |
+#             lowmem | incremental | rebuild
+#             fec runs corrupt-heal, corrupt-parity, corrupt-max and
+#             corrupt-over in sequence, in one process: the CI matrix
+#             folds the four corrupt-* cells into this one.
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
 #             fixture at dvd+r's real sector counts. lowmem ignores it
@@ -15,6 +18,11 @@
 #             process memory limit the caller (the e2e action) applied.
 #   ORDER     dvd-bd25-bd10 | bd25-bd10-dvd; required for chain and
 #             chain-small, unused by every other scenario
+#   EXTRAS    a comma-separated list of extra scenarios to run, in
+#             order, after SCENARIO finishes, in the same process: the
+#             CI matrix folds cli and iso into the media/dvd+r cell this
+#             way. Only cli and iso are valid extras. Empty for every
+#             other cell.
 set -euo pipefail
 
 HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
@@ -335,10 +343,29 @@ scenario_media() {
 	log "media/$media PASS"
 }
 
+# run_extras EXTRAS runs a comma-separated list of extra scenarios, in
+# order, after the cell's primary scenario. See this file's usage
+# comment for which scenario names are valid extras.
+run_extras() {
+	local extras="$1"
+	[ -n "$extras" ] || return 0
+	local extra
+	IFS=',' read -ra extra_list <<<"$extras"
+	for extra in "${extra_list[@]}"; do
+		case "$extra" in
+		cli) scenario_cli ;;
+		iso) scenario_iso ;;
+		"") ;;
+		*) fail "unknown extra scenario: $extra" ;;
+		esac
+	done
+}
+
 main() {
-	local scenario="${1:?usage: run.sh SCENARIO [MEDIA] [ORDER]}"
+	local scenario="${1:?usage: run.sh SCENARIO [MEDIA] [ORDER] [EXTRAS]}"
 	local media="${2:-}"
 	local order="${3:-}"
+	local extras="${4:-}"
 	case "$scenario" in
 	media)
 		[ -n "$media" ] || fail "the media scenario needs a MEDIA argument"
@@ -348,6 +375,15 @@ main() {
 	corrupt-parity) scenario_corrupt_parity ;;
 	corrupt-max) scenario_corrupt_max ;;
 	corrupt-over) scenario_corrupt_over ;;
+	fec)
+		# One cell, four corrupt-and-heal checks in sequence: FEC is
+		# optional and off by default, so this whole cell exists only to
+		# cover that path when a run does turn it on.
+		scenario_corrupt_heal
+		scenario_corrupt_parity
+		scenario_corrupt_max
+		scenario_corrupt_over
+		;;
 	cli) scenario_cli ;;
 	iso) scenario_iso ;;
 	chain)
@@ -370,6 +406,8 @@ main() {
 	rebuild) scenario_rebuild ;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac
+
+	run_extras "$extras"
 }
 
 main "$@"

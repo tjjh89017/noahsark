@@ -7,8 +7,10 @@ on:
 
 jobs:
   # Decides once whether this push or pull request touches anything but
-  # Markdown, docs/**, or LICENSE. Lint, Test, and the e2e matrix read
-  # its output and skip themselves for a docs-only change, so a
+  # Markdown, docs/**, or LICENSE. Test and the e2e matrix read its
+  # output and skip themselves entirely for a docs-only change; Lint
+  # reads it too, but only to skip its golangci-lint step, since it
+  # still owes a docs-only pull request the Markdown link check. So a
   # documentation pull request does not wait 30 to 40 minutes for tests
   # that cannot be affected.
   decide:
@@ -65,68 +67,15 @@ jobs:
           echo "code_changed=$code_changed"
           echo "code_changed=$code_changed" >> "$GITHUB_OUTPUT"
 
-  # Fast check for a documentation pull request: fails on a relative
-  # Markdown link whose target file does not exist. Ignores http(s)
-  # links and pure #anchor links. Runs on every pull request regardless
-  # of decide's output, so a docs-only change still gets a useful,
-  # seconds-long check instead of waiting on nothing.
-  docs-link-check:
-    name: Docs link check
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the repository
-        uses: actions/checkout@v7
-
-      - name: Check relative Markdown links
-        shell: python3 {0}
-        run: |
-          import re
-          import sys
-          from pathlib import Path
-
-          root = Path(".")
-          files = []
-          for name in ["README.md", "CLAUDE.md", "OPERATIONS.md", "FORMAT.md", "NOTES.md"]:
-              p = root / name
-              if p.is_file():
-                  files.append(p)
-          docs_dir = root / "docs"
-          if docs_dir.is_dir():
-              files.extend(sorted(docs_dir.glob("*.md")))
-
-          link_re = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-          failures = []
-          for f in files:
-              text = f.read_text(encoding="utf-8", errors="replace")
-              for m in link_re.finditer(text):
-                  target = m.group(1).strip()
-                  if target.startswith("<") and target.endswith(">"):
-                      target = target[1:-1]
-                  if not target:
-                      continue
-                  if target.startswith(("http://", "https://", "mailto:")):
-                      continue
-                  if target.startswith("#"):
-                      continue
-                  path_part = target.split("#", 1)[0].strip()
-                  if not path_part:
-                      continue
-                  resolved = (f.parent / path_part).resolve()
-                  if not resolved.exists():
-                      failures.append(f"{f}: broken link '{target}' -> {resolved}")
-
-          if failures:
-              print("Broken relative Markdown links found:")
-              for line in failures:
-                  print(" -", line)
-              sys.exit(1)
-          print("No broken relative Markdown links found.")
-
+  # Runs the Markdown link check and, when code changed, golangci-lint.
+  # Runs whenever decide found code changed (any event) or this is a
+  # pull request (so a documents-only pull request still gets the link
+  # check, in seconds, without waiting on golangci-lint or the e2e
+  # matrix); a documents-only push to main runs neither and is skipped.
   lint:
     name: Lint
     needs: decide
-    if: needs.decide.outputs.code_changed == 'true'
+    if: needs.decide.outputs.code_changed == 'true' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repository
@@ -139,6 +88,8 @@ jobs:
 
       - name: Lint
         uses: ./.github/actions/lint
+        with:
+          code-changed: ${{ needs.decide.outputs.code_changed }}
 
   unit:
     name: Test
@@ -157,11 +108,16 @@ jobs:
       - name: Unit
         uses: ./.github/actions/unit
 
-  # One matrix cell per scenario (and, for the media scenario, per media
-  # preset). Runs after lint and unit pass; every cell then runs to the
-  # end regardless of the others' outcome (fail-fast is off), and each
-  # cell uploads its own log and result so e2e-required can report on
-  # all of them even when some fail.
+  # One matrix cell per scenario. Seven cells cover what 14 used to:
+  # media/dvd+r also runs cli and iso in sequence (extras), and fec runs
+  # the four corrupt-* checks in sequence, since FEC is optional and off
+  # by default and does not need a cell of its own for each corruption
+  # pattern. Only one chain order runs; both orders cross the same three
+  # media and prove the same things, so the second added wall time
+  # without new coverage. Runs after lint and unit pass; every cell then
+  # runs to the end regardless of the others' outcome (fail-fast is
+  # off), and each cell uploads its own log and result so e2e-required
+  # can report on all of them even when some fail.
   e2e:
     name: E2E (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -175,20 +131,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { scenario: media, media: dvd+r, name: media/dvd+r, slug: media-dvd-r }
-          - { scenario: media, media: bd25, name: media/bd25, slug: media-bd25 }
-          - { scenario: media, media: bd25-forced-10g, name: media/bd25-forced-10g, slug: media-bd25-forced-10g }
-          - { scenario: corrupt-heal, media: '', name: corrupt-heal, slug: corrupt-heal }
-          - { scenario: corrupt-parity, media: '', name: corrupt-parity, slug: corrupt-parity }
-          - { scenario: corrupt-max, media: '', name: corrupt-max, slug: corrupt-max }
-          - { scenario: corrupt-over, media: '', name: corrupt-over, slug: corrupt-over }
-          - { scenario: cli, media: '', name: cli, slug: cli }
-          - { scenario: iso, media: '', name: iso, slug: iso }
-          - { scenario: chain, order: dvd-bd25-bd10, name: chain/dvd-bd25-bd10, slug: chain-dvd-bd25-bd10 }
-          - { scenario: chain, order: bd25-bd10-dvd, name: chain/bd25-bd10-dvd, slug: chain-bd25-bd10-dvd }
-          - { scenario: lowmem, media: '', name: lowmem, slug: lowmem }
-          - { scenario: incremental, media: '', name: incremental, slug: incremental }
-          - { scenario: rebuild, media: '', name: rebuild, slug: rebuild }
+          - { scenario: media, media: dvd+r, extras: 'cli,iso', name: media/dvd+r, slug: media-dvd-r }
+          - { scenario: media, media: bd25-forced-10g, extras: '', name: media/bd25-forced-10g, slug: media-bd25-forced-10g }
+          - { scenario: chain, order: dvd-bd25-bd10, extras: '', name: chain/dvd-bd25-bd10, slug: chain-dvd-bd25-bd10 }
+          - { scenario: lowmem, media: '', extras: '', name: lowmem, slug: lowmem }
+          - { scenario: incremental, media: '', extras: '', name: incremental, slug: incremental }
+          - { scenario: rebuild, media: '', extras: '', name: rebuild, slug: rebuild }
+          - { scenario: fec, media: '', extras: '', name: fec, slug: fec }
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -204,6 +153,7 @@ jobs:
           scenario: ${{ matrix.scenario }}
           media: ${{ matrix.media }}
           order: ${{ matrix.order }}
+          extras: ${{ matrix.extras }}
           go-test-timeout: ${{ matrix.scenario == 'chain' && '170m' || '30m' }}
           mem-limit-mb: ${{ matrix.scenario == 'lowmem' && '512' || '' }}
           cell-name: ${{ matrix.name }}

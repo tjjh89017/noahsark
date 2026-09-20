@@ -33,6 +33,7 @@ var scenarios = map[string]bool{
 	"corrupt-parity": true,
 	"corrupt-max":    true,
 	"corrupt-over":   true,
+	"fec":            true,
 	"cli":            true,
 	"iso":            true,
 	"chain":          true,
@@ -41,7 +42,7 @@ var scenarios = map[string]bool{
 	"rebuild":        true,
 }
 
-func requireHarness(t *testing.T) (scenario, media, order string) {
+func requireHarness(t *testing.T) (scenario, media, order, extras string) {
 	t.Helper()
 	if os.Getenv("NOAHSARK_E2E") != "1" {
 		t.Skip("set NOAHSARK_E2E=1 to run the disc e2e suite")
@@ -52,6 +53,7 @@ func requireHarness(t *testing.T) (scenario, media, order string) {
 	scenario = os.Getenv("NOAHSARK_E2E_SCENARIO")
 	media = os.Getenv("NOAHSARK_E2E_MEDIA")
 	order = os.Getenv("NOAHSARK_E2E_ORDER")
+	extras = os.Getenv("NOAHSARK_E2E_EXTRAS")
 	if scenario == "" {
 		t.Fatal("NOAHSARK_E2E_SCENARIO is required when NOAHSARK_E2E=1")
 	}
@@ -72,19 +74,20 @@ func requireHarness(t *testing.T) (scenario, media, order string) {
 			t.Skipf("%s not in PATH", bin)
 		}
 	}
-	return scenario, media, order
+	return scenario, media, order, extras
 }
 
 // TestDisc runs the scenario named by NOAHSARK_E2E_SCENARIO (and, for
 // the media scenario, the media preset named by NOAHSARK_E2E_MEDIA, or
-// for the chain scenario, the disc order named by NOAHSARK_E2E_ORDER)
-// through run.sh. run.sh carries the scenario logic; this test is the
-// harness's skip guard and its entry point from `go test`.
+// for the chain scenario, the disc order named by NOAHSARK_E2E_ORDER,
+// plus any extra scenarios named by NOAHSARK_E2E_EXTRAS) through
+// run.sh. run.sh carries the scenario logic; this test is the harness's
+// skip guard and its entry point from `go test`.
 func TestDisc(t *testing.T) {
-	scenario, media, order := requireHarness(t)
+	scenario, media, order, extras := requireHarness(t)
 
-	if err := runScenario(scenario, media, order); err != nil {
-		t.Fatalf("scenario %s (media %q, order %q) failed: %v", scenario, media, order, err)
+	if err := runScenario(scenario, media, order, extras); err != nil {
+		t.Fatalf("scenario %s (media %q, order %q, extras %q) failed: %v", scenario, media, order, extras, err)
 	}
 }
 
@@ -162,15 +165,16 @@ func TestNoUnsafeBinPipelines(t *testing.T) {
 // TestChainSmall runs the chain scenario at a small, fast fixture size,
 // with tiny forced capacities in place of the real media presets, so
 // the chain flow gets exercised on every push without an hours-long
-// full-size run. It rides in the cli cell instead of its own matrix
-// entry: it only runs when that cell's NOAHSARK_E2E_SCENARIO is "cli".
+// full-size run. It rides in the media/dvd+r cell instead of its own
+// matrix entry: it only runs when that cell's NOAHSARK_E2E_SCENARIO is
+// "media" at media preset "dvd+r", the smallest and fastest cell.
 func TestChainSmall(t *testing.T) {
-	scenario, _, _ := requireHarness(t)
-	if scenario != "cli" {
-		t.Skip("chain-small rides in the cli e2e cell")
+	scenario, media, _, _ := requireHarness(t)
+	if scenario != "media" || media != "dvd+r" {
+		t.Skip("chain-small rides in the media/dvd+r e2e cell")
 	}
 
-	if err := runScenario("chain-small", "", "dvd-bd25-bd10"); err != nil {
+	if err := runScenario("chain-small", "", "dvd-bd25-bd10", ""); err != nil {
 		t.Fatalf("chain-small failed: %v", err)
 	}
 }
