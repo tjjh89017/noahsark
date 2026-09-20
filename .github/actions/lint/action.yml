@@ -1,12 +1,69 @@
 name: 'Lint'
 description: >
-  Installs the latest golangci-lint release and runs it against
-  .golangci.yml at the repository root. Every workflow that lints Go
-  code calls this action instead of repeating its steps.
+  Checks relative Markdown links, then, when code changed, installs the
+  latest golangci-lint release and runs it against .golangci.yml at the
+  repository root. Every workflow that lints calls this action instead
+  of repeating its steps. The link check always runs, so a documents-only
+  pull request still gets it even though the ci.yml Lint job skips
+  golangci-lint for that change.
+inputs:
+  code-changed:
+    description: >
+      'true' runs golangci-lint after the link check; 'false' (a
+      documents-only change) runs the link check alone.
+    required: false
+    default: 'true'
 runs:
   using: 'composite'
   steps:
+    - name: Check relative Markdown links
+      if: github.event_name == 'pull_request'
+      shell: python3 {0}
+      run: |
+        import re
+        import sys
+        from pathlib import Path
+
+        root = Path(".")
+        files = []
+        for name in ["README.md", "CLAUDE.md", "OPERATIONS.md", "FORMAT.md", "NOTES.md"]:
+            p = root / name
+            if p.is_file():
+                files.append(p)
+        docs_dir = root / "docs"
+        if docs_dir.is_dir():
+            files.extend(sorted(docs_dir.glob("*.md")))
+
+        link_re = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+        failures = []
+        for f in files:
+            text = f.read_text(encoding="utf-8", errors="replace")
+            for m in link_re.finditer(text):
+                target = m.group(1).strip()
+                if target.startswith("<") and target.endswith(">"):
+                    target = target[1:-1]
+                if not target:
+                    continue
+                if target.startswith(("http://", "https://", "mailto:")):
+                    continue
+                if target.startswith("#"):
+                    continue
+                path_part = target.split("#", 1)[0].strip()
+                if not path_part:
+                    continue
+                resolved = (f.parent / path_part).resolve()
+                if not resolved.exists():
+                    failures.append(f"{f}: broken link '{target}' -> {resolved}")
+
+        if failures:
+            print("Broken relative Markdown links found:")
+            for line in failures:
+                print(" -", line)
+            sys.exit(1)
+        print("No broken relative Markdown links found.")
+
     - name: golangci-lint
+      if: inputs.code-changed == 'true'
       uses: golangci/golangci-lint-action@v9
       with:
         version: latest

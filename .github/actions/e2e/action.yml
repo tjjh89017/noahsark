@@ -19,6 +19,14 @@ inputs:
     description: 'NOAHSARK_E2E_ORDER value; empty for a scenario that does not read it'
     required: false
     default: ''
+  extras:
+    description: >
+      NOAHSARK_E2E_EXTRAS value: a comma-separated list of extra
+      scenarios run.sh runs in sequence after the primary scenario, e.g.
+      'cli,iso' folded into the media/dvd+r cell. Empty for a cell with
+      no extras.
+    required: false
+    default: ''
   go-test-timeout:
     description: 'go test -timeout value; the chain scenario needs far longer than every other cell'
     required: false
@@ -95,6 +103,7 @@ runs:
         NOAHSARK_E2E_SCENARIO: ${{ inputs.scenario }}
         NOAHSARK_E2E_MEDIA: ${{ inputs.media }}
         NOAHSARK_E2E_ORDER: ${{ inputs.order }}
+        NOAHSARK_E2E_EXTRAS: ${{ inputs.extras }}
         CELL_NAME: ${{ inputs.cell-name }}
       run: |
         mkdir -p "$RUNNER_TEMP/e2e-result"
@@ -107,6 +116,7 @@ runs:
             NOAHSARK_E2E_SCENARIO="$NOAHSARK_E2E_SCENARIO" \
             NOAHSARK_E2E_MEDIA="$NOAHSARK_E2E_MEDIA" \
             NOAHSARK_E2E_ORDER="$NOAHSARK_E2E_ORDER" \
+            NOAHSARK_E2E_EXTRAS="$NOAHSARK_E2E_EXTRAS" \
             NOAHSARK_E2E_TOOLDIR="$RUNNER_TEMP/e2e-tools" \
             NOAHSARK_E2E_BIN="$RUNNER_TEMP/e2e-tools/noahsark" \
             go test ./test/e2e/disc -v -count=1 -timeout "${{ inputs.go-test-timeout }}")
@@ -141,9 +151,16 @@ runs:
           esac
         }
 
+        # tee's own stdout goes to the runner's log capture pipe, which
+        # can hiccup under load; --output-error=warn makes tee warn and
+        # keep reading on a write error there instead of exiting. Without
+        # it, a dead tee closes its stdin, and the go test process (and,
+        # through it, the sudo'd noahsark binary it drives) inherits a
+        # broken pipe on fd 1 and can die of SIGPIPE (exit 141) on its
+        # next write.
         start=$(date +%s)
         status=pass
-        if ! run_wrapped "${GOTEST_CMD[@]}" 2>&1 | tee "$LOG"; then
+        if ! run_wrapped "${GOTEST_CMD[@]}" 2>&1 | tee --output-error=warn "$LOG"; then
           status=fail
         fi
 
@@ -154,7 +171,7 @@ runs:
           MEMTEST_CMD=(env "PATH=$PATH" \
               GOCACHE=/tmp/noahsark-e2e-gocache GOMODCACHE=/tmp/noahsark-e2e-gomodcache \
               go test ./internal/image/... ./internal/restore/... -run MemoryBounded -v -count=1 -timeout 15m)
-          if ! run_wrapped "${MEMTEST_CMD[@]}" 2>&1 | tee -a "$LOG"; then
+          if ! run_wrapped "${MEMTEST_CMD[@]}" 2>&1 | tee --output-error=warn -a "$LOG"; then
             status=fail
           fi
         fi
