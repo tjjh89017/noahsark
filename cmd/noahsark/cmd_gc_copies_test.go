@@ -132,8 +132,8 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out = runCmd(t, "gc", "--repo="+repo)
-	if code != 1 {
-		t.Fatalf("gc: exit %d, want 1 (nothing eligible): %s", code, out)
+	if code != 0 {
+		t.Fatalf("gc: exit %d, want 0 (nothing eligible): %s", code, out)
 	}
 	if !strings.Contains(out, "1 of 2 copies verified") {
 		t.Fatalf("gc output %q, want the held line", out)
@@ -226,8 +226,8 @@ func TestGCForceAfterDoesNotBypassTheVerifyCount(t *testing.T) {
 	}
 	setGCStdin(t, strings.NewReader("y\n"))
 	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0s")
-	if code != 1 {
-		t.Fatalf("gc --force-after=0s: exit %d, want 1 (nothing eligible): %s", code, out)
+	if code != 0 {
+		t.Fatalf("gc --force-after=0s: exit %d, want 0 (nothing eligible): %s", code, out)
 	}
 	if !strings.Contains(out, "1 of 2 copies verified") {
 		t.Fatalf("gc --force-after output %q, want the held line", out)

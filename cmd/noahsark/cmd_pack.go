@@ -86,7 +86,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
-	lk, code, ok := lockExclusive("pack", repoDir, cfg.LockTimeout, stderr)
+	lk, code, ok := lockRepo("pack", repoDir, stderr)
 	if !ok {
 		return code
 	}
@@ -255,9 +255,12 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	printNextSteps(stdout, repoDir, absOut, imageCapacityArg, uuidText(discUUID), *closeDisc)
 
+	// Objects left STAGED after a successful pack are not a failure: the
+	// disc was packed correctly, and the leftover simply waits for the
+	// next disc. This line is how the operator learns to run pack again.
 	if result.RemainingObjects > 0 {
-		_, _ = fmt.Fprintf(stdout, "remaining staged: %d objects, %d bytes\n", result.RemainingObjects, result.RemainingBytes)
-		return 1
+		_, _ = fmt.Fprintf(stdout, "remaining staged: %d objects, %d bytes; pack again for the next disc\n", result.RemainingObjects, result.RemainingBytes)
+		return 0
 	}
 	_, _ = fmt.Fprintln(stdout, "remaining staged: 0 objects, 0 bytes")
 	return 0

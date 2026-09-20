@@ -101,8 +101,8 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 
 	code, out = runCmd(t, "ls", "--repo="+repo, "--recursive", snapID)
-	if code != 3 {
-		t.Fatalf("ls: exit %d, want 3: %s", code, out)
+	if code != 1 {
+		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "not complete in the cache") || !strings.Contains(out, "rebuild-cache") {
 		t.Fatalf("ls output %q does not report an incomplete cache", out)

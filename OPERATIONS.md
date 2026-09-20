@@ -519,28 +519,27 @@ local state. The rules below are the requirement. The system calls named in
 them are **informative**; they are the Linux way to meet the rule.
 
 1. **Repository lock.** `<repo>/lock` is the lock file. A command that writes
-   the state log, the staging store, the ledgers or the config takes an
-   exclusive advisory lock on it before it reads the state log, and holds it
-   until it exits. Those commands are `init`, `commit`, `pack`, `gc`,
-   `disc burned`, `rebuild-cache`, the disc-swap mode of `restore`, and
+   the state log, the staging store, the ledgers or the config takes a
+   non-blocking exclusive advisory lock on it before it reads the state log,
+   and holds it until it exits. Those commands are `init`, `commit`, `pack`,
+   `gc`, `disc burned`, `rebuild-cache`, the disc-swap mode of `restore`, and
    `verify` when it has a repository.
-2. **Shared lock.** A read-only command takes a shared lock while it reads the
-   state log. Those commands are `plan`, `ls`, `log` and `disc list`.
-3. A command that reads only disc roots takes no lock: `verify` with no
-   repository, `restore` with disc roots, `ls` and `log` with disc roots, and
-   `image build`.
-4. A command that cannot get its lock waits `repo.lock_timeout` seconds and
-   then exits with code 2, with a message that names the lock file and the
-   holder's pid. The holder writes its pid into the file. The default is 0:
-   fail at once.
-5. There is no separate cache lock and no drive lock. The repository lock
+2. A read-only command takes no lock: `plan`, `ls`, `log`, `disc list`,
+   `verify` with no repository, `restore` with disc roots, and `image build`.
+3. A command that cannot get its lock fails at once: it exits with code 1,
+   with a message that names the lock file and says that another noahsark
+   command runs on this repository. It never waits.
+4. There is no separate cache lock and no drive lock. The repository lock
    guards the cache, and the tool opens no drive for writing.
-6. Locks are per repository.
-7. The state log is appended under the exclusive lock only. A reader under a
-   shared lock replays the log to the last valid record and ignores a partial
-   tail.
+5. Locks are per repository.
+6. The state log is appended under the exclusive lock only. A read-only
+   command that opens the state log while a write is in progress replays it
+   to the last valid record and ignores a partial tail, the same as any
+   other torn tail, but it never truncates the file: only the exclusive
+   holder of a repository ever writes to `state.db`, so a read-only open
+   must leave a tail it cannot yet tell from a crash exactly as it found it.
 
-The locks are advisory. They are not a security boundary.
+The lock is advisory. It is not a security boundary.
 
 ---
 
@@ -1448,8 +1447,8 @@ lists the planned options.
 
 Exit: 0 on success, also when the tree is unchanged and no snapshot was
 written. 1 on a failure at run time, also when some files could not be read or
-were unstable, and the snapshot is committed all the same. 2 for a usage
-error, a refused option, or a repository lock held.
+were unstable and the snapshot is committed all the same, or when the
+repository lock is held. 2 for a usage error or a refused option.
 
 The report lists every unstable path and says which branch was taken.
 
@@ -1495,10 +1494,11 @@ redundancy.
 
 Section 8.9 lists the planned option.
 
-Exit: 0 on success, with nothing left STAGED. 1 on a failure at run time,
-also when objects stay STAGED for the next disc, or nothing was STAGED. 2 for
-a usage error, a refused option, an `--out` directory that holds files, or a
-capacity too small for the run.
+Exit: 0 on success, whether or not objects stay STAGED for the next disc:
+that is not a failure, the disc was packed correctly, and the `remaining
+staged:` line says how much waits. 1 on a failure at run time, also when
+nothing was STAGED to pack. 2 for a usage error, a refused option, an
+`--out` directory that holds files, or a capacity too small for the run.
 
 ### 16.12 `verify`
 
@@ -1568,10 +1568,11 @@ It says `disc unknown` when no cached INDEX names that disc.
 | `--out` | Write the JSON plan to this file. `restore --plan` reads it. |
 | `--staging-budget` | Peak staging allowed. Overrides `restore.staging_budget`. The value takes the unit suffixes of `pack --capacity`. |
 
-Exit: 0 when the plan accounts for every object. 1 on a failure at run time.
-2 for a usage error, or when one file alone needs more staging than the
-budget. 3 when the cache is incomplete for the snapshot, or when an object
-has no disc the cache knows.
+Exit: 0 when the plan accounts for every object. 1 on a failure at run time,
+also when the cache is incomplete for the snapshot, when an object has no
+disc the cache knows, or when nothing is cached yet. 2 for a usage error, an
+unknown snapshot id or ref name, or when one file alone needs more staging
+than the budget.
 
 ### 16.16 `restore`
 
@@ -1620,12 +1621,14 @@ prints `restored snapshot ID into OUT-DIR`, then, when they apply,
 | `--no-eject` | Do not eject after each disc. |
 | `--overwrite` | Unlink an existing path first and then create it. |
 
-Exit: 0 when everything applied. 1 on a failure at run time, also when
-`restore` left an existing path alone without `--overwrite`, or when a
-metadata field was not applied. 2 for a usage error or a refused option. 3
-when a required disc is missing: not among the given discs, or absent from
-the cache the disc-swap mode reads through; `restore` names the missing disc
-by uuid.
+Exit: 0 when everything applied, and always for an unsupported entry (a
+device node, a FIFO or a socket): `restore` still names each one on a
+warning line, but that alone never changes the exit code. 1 on a failure at
+run time, also when `restore` left an existing path alone without
+`--overwrite`, when a metadata field was not applied, or when a required
+disc is missing: not among the given discs, or absent from the cache the
+disc-swap mode reads through; `restore` names the missing disc by uuid. 2
+for a usage error or a refused option.
 
 ### 16.17 `rebuild-cache`
 
@@ -1655,8 +1658,8 @@ line for each such disc.
 | `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
 
 Exit: 0 on success. 1 on a failure at run time, also when the rebuild is
-partial, or when the given discs do not share one `repo_uuid`. 2 on a usage
-error. 3 when no usable disc was given.
+partial, when the given discs do not share one `repo_uuid`, or when no
+usable disc was given. 2 on a usage error.
 
 ### 16.20 `gc`
 
@@ -1682,13 +1685,11 @@ this count; `gc.min_verified_copies` is the only control.
 | `--dry-run` | Print the totals that `gc` would delete, one line for each disc, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
 | `--force-after` | Shorten the retention for this run only. It does not change the verify count rule. It requires a confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` on standard error and deletes only on `y` or `yes`. Any other answer, an empty line and a closed standard input all mean no. A script answers with a pipe: `echo y \| noahsark gc --force-after=1h`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 
-Exit: 0 on success, and always for `--dry-run`. 1 when nothing was eligible.
-2 on any other failure at run time, on a usage error, and when the
-`--force-after` confirmation was refused or not possible. `gc` is the one
-command that departs from the shared convention of section 19: it uses code
-2 for a run-time failure instead of code 1, and reserves code 1 for the
-"nothing was eligible" outcome, so a script can tell that apart from a real
-failure without parsing output.
+Exit: 0 on success, always for `--dry-run`, and when nothing was eligible;
+"nothing eligible" is not a failure. 1 on a failure at run time, also when a
+staged file could not be unlinked, naming its path and the error, and when
+the `--force-after` confirmation was refused or not possible. 2 on a usage
+error.
 
 ### 16.21 `ls`
 
@@ -1717,9 +1718,9 @@ An `UNSTABLE` entry is marked with `!` in the first column, and with
 `"unstable": true` under `--json`. Every other line has a space in the first
 column.
 
-Exit: 0 on success. 1 on a failure at run time. 2 on a usage error. 3 when a
-needed tree object is unavailable: the cache is incomplete for the snapshot,
-or a required disc was not given.
+Exit: 0 on success. 1 on a failure at run time, also when a needed tree
+object is unavailable: the cache is incomplete for the snapshot, or a
+required disc was not given. 2 on a usage error.
 
 ### 16.22 `log`
 
@@ -1744,8 +1745,9 @@ the discs.
 | `--json` | Print JSON. |
 | `--limit` | Print at most N entries. 0 means no limit. |
 
-Exit: 0 on success. 1 on a failure at run time. 2 on a usage error. 3 when
-the cache is incomplete for the snapshot, or a required disc was not given.
+Exit: 0 on success. 1 on a failure at run time, also when the cache is
+incomplete for the snapshot, or a required disc was not given. 2 on a usage
+error.
 
 ### 16.23 `disc`
 
@@ -1822,10 +1824,10 @@ A build must refuse an unknown key with a clear message that names the key.
 The build reads these keys: `repo.uuid`, `staging.dir`, `sources.root`,
 `commit.restat_after_read`, `commit.retry_unstable`, `fec.scheme`, `cache.dir`,
 `cache.format_version`, `restore.staging_budget`,
-`staging.retain_after_clean`, `gc.min_verified_copies` and
-`repo.lock_timeout`. It refuses each other
-key of the tables below. Those keys name the values that the build holds as
-constants. The second pass of GitHub issue #26 decides which of them stay.
+`staging.retain_after_clean` and `gc.min_verified_copies`. It refuses each
+other key of the tables below. Those keys name the values that the build
+holds as constants. The second pass of GitHub issue #26 decides which of
+them stay.
 
 A key whose "changes disc bytes" column says no is tuning: it changes speed,
 memory or waiting time only, it affects no byte that reaches a disc, and its
@@ -1891,7 +1893,6 @@ Every key appears exactly once, in exactly one table below.
 | `commit.checksum` | boolean | false | no | Always rehash. Equivalent to `--checksum` on every commit. Planned, not built (section 7.10). |
 | `commit.restat_after_read` | boolean | true | no | In-flight change detection. Never set it false on a live source. |
 | `commit.retry_unstable` | integer | 1 | no | Re-reads of an unstable file before the rule of section 7.6 applies. |
-| `repo.lock_timeout` | integer | 0 | no | Seconds to wait for the repository lock. 0 means fail at once. |
 
 ### 17.12 Staging and cache
 
@@ -1913,39 +1914,18 @@ Every key appears exactly once, in exactly one table below.
 
 ## 19. Exit code registry
 
-This is the one registry of exit codes.
-
-Common exit codes:
+This is the one registry of exit codes. Every command uses exactly these
+three codes; there is no per-command special code and no fourth code.
 
 | Code | Meaning |
 |---:|---|
-| 0 | Success. |
-| 1 | A failure at run time, or a partial success that still needs the operator's attention. |
-| 2 | A usage error: a bad option, a bad argument, or an unknown command or option. |
-| 3 | A required disc or object is missing. |
+| 0 | Success. A partial outcome that needed no operator action, such as `gc` finding nothing eligible, is still success. |
+| 1 | A failure at run time: a read or write failed, a required disc or object is missing, a repository lock is held, or a partial success still needs the operator's attention (an unstable file, a skipped restore path, a metadata field not applied). |
+| 2 | A usage error: a bad option, a bad argument, a bad config value, or an unknown command. |
 
-Every command follows this convention, with one exception: `gc` uses code 2
-for an ordinary failure at run time and keeps code 1 for its own "nothing was
-eligible" outcome, so a script can tell that apart from a real failure
-without parsing output (the `gc` entry of the CLI reference gives the reason). The exit line of each
-command in the CLI reference gives its own codes under this convention.
-
-Command-specific meanings that narrow the common set:
-
-| Command | Code | Meaning |
-|---|---:|---|
-| `init` | 2 | The directory already holds a repository. |
-| `commit` | 1 | Some files could not be read, or were unstable. |
-| `pack` | 1 | Objects stay STAGED after the run, or nothing was STAGED at all. |
-| `verify` | 1 | The check or the heal failed, or the repository does not know the disc. |
-| `plan`, `ls`, `log`, `disc` | 3 | A required object is missing: the cache is incomplete for the snapshot, an object has no disc the cache knows, or a required disc was not given. |
-| `restore` | 1 | Data restore failed at run time, an existing path was left alone without `--overwrite`, or a metadata field was not applied. |
-| `restore` | 3 | A required disc is missing, named by uuid. |
-| `rebuild-cache` | 3 | No usable disc was given. |
-| `rebuild-cache` | 1 | The rebuild is partial, or the given discs do not share one `repo_uuid`. |
-| `gc` | 1 | Nothing was eligible. `gc --dry-run` always exits with code 0. |
-| `gc` | 2 | Any other failure at run time, a usage error, or the `--force-after` confirmation refused or not possible. |
-| `disc` | 2 | A `DISC` argument matches no disc, or more than one disc. |
+The exit line of each command in the CLI reference states which of its own
+conditions fall under code 1 and which fall under code 2; no command departs
+from this table.
 
 Section 15.8 gives the restore metadata exit codes, which are the same set.
 

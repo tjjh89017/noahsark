@@ -117,8 +117,8 @@ func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
 
 	setGCStdin(t, strings.NewReader(""))
 	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h")
-	if code != 2 {
-		t.Fatalf("gc --force-after=1h (empty stdin): exit %d, want 2: %s", code, out)
+	if code != 1 {
+		t.Fatalf("gc --force-after=1h (empty stdin): exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "not confirmed") {
 		t.Fatalf("gc output %q missing the not-confirmed message", out)

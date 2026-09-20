@@ -59,12 +59,6 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	lk, code, ok := lockShared("plan", repoDir, cfg.LockTimeout, stderr)
-	if !ok {
-		return code
-	}
-	defer releaseLock(lk)
-
 	stagingBudget := cfg.RestoreStagingBudget
 	if *stagingBudgetFlag != "" {
 		stagingBudget, err = parseByteSize(*stagingBudgetFlag)
@@ -83,13 +77,20 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	snapID, err := src.ParseSnapshotArg(fs.Arg(0))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
-		return 2
+		// A name matching no snapshot id and no ref is a usage error:
+		// the argument itself is wrong. Every other failure here,
+		// such as an empty cache with nothing rebuilt yet, is a
+		// run-time condition, not a bad argument.
+		if _, ok := err.(*refNotFoundError); ok {
+			return 2
+		}
+		return 1
 	}
 
 	if err := c.CheckComplete(snapID); err != nil {
 		if ie, ok := err.(*cache.IncompleteError); ok {
 			_, _ = fmt.Fprintln(stderr, formatIncompleteError("plan", ie))
-			return 3
+			return 1
 		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: plan:", err)
 		return 1
@@ -143,7 +144,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 
 	if len(result.Missing) > 0 {
 		_, _ = fmt.Fprintf(stderr, "noahsark: plan: %d object(s) have no disc known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
-		return 3
+		return 1
 	}
 	return 0
 }

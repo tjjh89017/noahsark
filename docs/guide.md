@@ -515,10 +515,10 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
 | `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --disc=<MOUNT>`. |
 | `gc`: `C of 2 copies verified; N object(s) held` | Only one copy passed `verify`. Burn and verify the second copy (step 8), then run `gc` again. With one copy only, set `gc.min_verified_copies = 1` in `<REPO>/config`. |
-| `pack`: `remaining staged`, exit code 1 | The data did not fit. Do step 10. |
+| `pack`: `remaining staged`, exit code 0 | The disc packed correctly; the data that did not fit waits for the next disc. Do step 10. |
 | `restore --overwrite`: `warning: <PATH>: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
 | `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |
-| `restore`: `missing disc(s)`, exit code 3 | The message lists each disc by uuid. Find the disc by the uuid prefix on its sleeve. Restore again with that disc included. |
+| `restore`: `missing disc(s)`, exit code 1 | The message lists each disc by uuid. Find the disc by the uuid prefix on its sleeve. Restore again with that disc included. |
 | `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |
 | `restore` or `ls`: ref `is not on the provided disc(s)` | A newer disc holds the ref. Give more discs. |
@@ -527,4 +527,4 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `plan`: `cache: no disc is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
 | `<DISC>`: `matches more than one disc` | Two discs carry the same `seq`. Give the uuid, or the first 8 characters of it, from the list in the message. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
-| `repository lock <REPO>/lock is held by pid <PID>` | Wait for the other noahsark command to end. |
+| `repository lock <REPO>/lock is held; another noahsark command runs on this repository`, exit code 1 | Wait for the other noahsark command to end, then run the command again. |

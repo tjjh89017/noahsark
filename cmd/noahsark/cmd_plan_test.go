@@ -211,8 +211,8 @@ func TestPlanMissingDisc(t *testing.T) {
 	}
 
 	code, out := runCmd(t, "plan", "--repo="+repo, snapID)
-	if code != 3 {
-		t.Fatalf("plan: exit %d, want 3: %s", code, out)
+	if code != 1 {
+		t.Fatalf("plan: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "missing:") {
 		t.Fatalf("plan output %q does not report a missing group", out)

@@ -130,10 +130,11 @@ func TestGCRetentionGate(t *testing.T) {
 		t.Fatalf("staging/objects has %d files after gc, had %d before; want fewer", after1, before1)
 	}
 
-	// A second gc run finds nothing left to do.
+	// A second gc run finds nothing left to do; nothing eligible is
+	// success, not a failure.
 	code, out = runCmd(t, "gc", "--repo="+repo)
-	if code != 1 {
-		t.Fatalf("gc (second run): exit %d, want 1: %s", code, out)
+	if code != 0 {
+		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
 	}
 }
 
@@ -212,8 +213,8 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 
 	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
 	code, out := runCmd(t, "gc", "--repo="+repo)
-	if code != 1 {
-		t.Fatalf("gc: exit %d, want 1: %s", code, out)
+	if code != 0 {
+		t.Fatalf("gc: exit %d, want 0: %s", code, out)
 	}
 	if !strings.Contains(out, "skipped") {
 		t.Fatalf("gc output %q missing the skipped line", out)
@@ -372,8 +373,12 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	}
 
 	gcRemove = func(string) error { return errors.New("injected unlink failure") }
-	if code, out := runCmd(t, "gc", "--repo="+repo); code == 0 {
-		t.Fatalf("gc with a failing unlink: exit 0, want non-zero (nothing freed): %s", out)
+	code, out := runCmd(t, "gc", "--repo="+repo)
+	if code != 1 {
+		t.Fatalf("gc with a failing unlink: exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "injected unlink failure") {
+		t.Fatalf("gc with a failing unlink output %q, want the unlink error named", out)
 	}
 	if n, err := countFiles(objDir); err != nil || n != staged {
 		t.Fatalf("staging/objects has %d file(s), %v; want the %d orphans left behind", n, err, staged)
@@ -386,7 +391,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	}
 
 	gcRemove = oldRemove
-	code, out := runCmd(t, "gc", "--repo="+repo)
+	code, out = runCmd(t, "gc", "--repo="+repo)
 	if code != 0 {
 		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
 	}

@@ -47,7 +47,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
-	lk, code, ok := lockExclusive("commit", repoDir, cfg.LockTimeout, stderr)
+	lk, code, ok := lockRepo("commit", repoDir, stderr)
 	if !ok {
 		return code
 	}

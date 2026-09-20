@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/repolock"
 )
@@ -13,30 +12,29 @@ import (
 // TestGCFailsFastWhenRepoLockHeld checks bug 1: gc must refuse to run
 // while another command holds the repository's exclusive lock, instead
 // of replaying a state log another process may change underneath it.
-// It asserts the clear message and the exit code OPERATIONS.md's
-// concurrency and locking rules give a command that cannot get its
-// lock.
+// It asserts the clear message and the exit code a held lock gives: a
+// failure at run time, not a usage error.
 func TestGCFailsFastWhenRepoLockHeld(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	held, err := repolock.AcquireExclusive(repo, 0)
+	held, err := repolock.Acquire(repo)
 	if err != nil {
 		t.Fatalf("hold lock: %v", err)
 	}
 	defer func() { _ = held.Release() }()
 
 	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
-	if code != 2 {
-		t.Fatalf("gc while locked: exit %d, want 2: %s", code, out)
+	if code != 1 {
+		t.Fatalf("gc while locked: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "repository lock") {
 		t.Fatalf("gc while locked output %q, want it to name the repository lock", out)
 	}
-	if !strings.Contains(out, "wait for the other noahsark command to end") {
-		t.Fatalf("gc while locked output %q, want the wait-for-the-other-command message", out)
+	if !strings.Contains(out, "another noahsark command runs on this repository") {
+		t.Fatalf("gc while locked output %q, want the other-command message", out)
 	}
 }
 
@@ -54,15 +52,15 @@ func TestPackFailsFastWhenRepoLockHeld(t *testing.T) {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	held, err := repolock.AcquireExclusive(repo, 0)
+	held, err := repolock.Acquire(repo)
 	if err != nil {
 		t.Fatalf("hold lock: %v", err)
 	}
 	defer func() { _ = held.Release() }()
 
 	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
-	if code != 2 {
-		t.Fatalf("pack while locked: exit %d, want 2: %s", code, out)
+	if code != 1 {
+		t.Fatalf("pack while locked: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "repository lock") {
 		t.Fatalf("pack while locked output %q, want it to name the repository lock", out)
@@ -81,11 +79,32 @@ func TestRepoLockFreeAfterGC(t *testing.T) {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 
-	lk, err := repolock.AcquireExclusive(repo, 0)
+	lk, err := repolock.Acquire(repo)
 	if err != nil {
 		t.Fatalf("acquire after gc: %v, want the lock free", err)
 	}
 	_ = lk.Release()
+}
+
+// TestDiscListRunsWhileRepoLockHeld checks that a read-only command
+// takes no lock: disc list must still run, and must not report the
+// held exclusive lock, while a writer holds it.
+func TestDiscListRunsWhileRepoLockHeld(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	held, err := repolock.Acquire(repo)
+	if err != nil {
+		t.Fatalf("hold lock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	code, out := runCmd(t, "disc", "list", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("disc list while a writer holds the lock: exit %d, want 0: %s", code, out)
+	}
 }
 
 // TestGCWarnsOnTruncatedStateLog checks bug 3: a command that opens a
@@ -126,11 +145,9 @@ func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 }
 
 // TestRebuildCacheFailsFastWhenRepoLockHeld checks that rebuild-cache
-// takes the repository's exclusive lock, not the shared lock
-// OPERATIONS.md's own list would suggest: rebuild-cache writes the
-// state log and the disc and ref ledgers, and this build has no
-// separate cache lock, so it must not run alongside another
-// state-writing command, or another rebuild-cache.
+// takes the repository's exclusive lock: rebuild-cache writes the state
+// log and the disc and ref ledgers, so it must not run alongside
+// another state-writing command, or another rebuild-cache.
 func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -146,42 +163,17 @@ func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	held, err := repolock.AcquireExclusive(repo, 0)
+	held, err := repolock.Acquire(repo)
 	if err != nil {
 		t.Fatalf("hold lock: %v", err)
 	}
 	defer func() { _ = held.Release() }()
 
 	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
-	if code != 2 {
-		t.Fatalf("rebuild-cache while locked: exit %d, want 2: %s", code, out)
+	if code != 1 {
+		t.Fatalf("rebuild-cache while locked: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "repository lock") {
 		t.Fatalf("rebuild-cache while locked output %q, want it to name the repository lock", out)
-	}
-}
-
-// TestGCWaitsForRepoLockTimeout checks that repo.lock_timeout makes gc
-// wait for a competing holder to release, instead of failing at once,
-// matching the config key's role.
-func TestGCWaitsForRepoLockTimeout(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	appendConfigLine(t, repo, "repo.lock_timeout = 2")
-
-	held, err := repolock.AcquireExclusive(repo, 0)
-	if err != nil {
-		t.Fatalf("hold lock: %v", err)
-	}
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		_ = held.Release()
-	}()
-
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
-	if code != 0 {
-		t.Fatalf("gc with repo.lock_timeout: exit %d, want 0 once the holder released: %s", code, out)
 	}
 }

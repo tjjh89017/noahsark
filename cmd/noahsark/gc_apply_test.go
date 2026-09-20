@@ -31,12 +31,15 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 		needsRecord: true,
 	}}
 
-	deleted, bytesFreed := gcApplyStagingObjects(l, objs, false)
+	deleted, bytesFreed, failures := gcApplyStagingObjects(l, objs, false)
 	if deleted != 0 {
 		t.Fatalf("deleted = %d, want 0: an already-gone file frees nothing this run", deleted)
 	}
 	if bytesFreed != 0 {
 		t.Fatalf("bytesFreed = %d, want 0", bytesFreed)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures = %v, want none: an already-gone file is not a failure", failures)
 	}
 
 	rec, ok := l.Get(id)
@@ -66,11 +69,14 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 
 	objs := []gcObj{{id: id, path: path, size: 7, needsRecord: true}}
 
-	deleted, bytesFreed := gcApplyStagingObjects(l, objs, false)
+	deleted, bytesFreed, failures := gcApplyStagingObjects(l, objs, false)
 	if deleted != 1 {
 		t.Fatalf("deleted = %d, want 1", deleted)
 	}
 	if bytesFreed != 7 {
 		t.Fatalf("bytesFreed = %d, want 7", bytesFreed)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("failures = %v, want none", failures)
 	}
 }

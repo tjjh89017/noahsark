@@ -63,13 +63,12 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
+		// pack exits 0 whether or not objects stay STAGED for the next
+		// disc: leftover staged data is not a failure, the disc was
+		// packed correctly.
 		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir)
-		wantCode := 1
-		if i == len(capacities)-1 {
-			wantCode = 0
-		}
-		if code != wantCode {
-			t.Fatalf("pack %d: exit %d, want %d: %s", i, code, wantCode, out)
+		if code != 0 {
+			t.Fatalf("pack %d: exit %d, want 0: %s", i, code, out)
 		}
 		if !strings.Contains(out, "remaining staged:") {
 			t.Fatalf("pack %d: output %q missing the remaining-staged report", i, out)
@@ -124,8 +123,8 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	restoredDir := filepath.Join(work, "restored")
 	args := []string{"restore", "--disc=" + discRoots[0], "--disc=" + discRoots[2], snapID, restoredDir}
 	code, out = runCmd(t, args...)
-	if code != 3 {
-		t.Fatalf("restore: exit %d, want 3: %s", code, out)
+	if code != 1 {
+		t.Fatalf("restore: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "missing disc") {
 		t.Fatalf("restore output %q does not name a missing disc", out)

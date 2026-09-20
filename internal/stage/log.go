@@ -171,7 +171,27 @@ func (l *Log) Truncated() (truncated bool, ignoredBytes int64) {
 // tail, because good records follow it. Open returns an error there and
 // changes nothing, so no command silently drops the good records behind
 // the damage.
+//
+// Only a command that holds the repository's exclusive lock calls Open:
+// nothing else appends to state.db while it runs, so cutting a torn
+// tail here can never race a concurrent append. A command with no such
+// lock must call OpenReadOnly instead.
 func Open(stagingDir string) (*Log, error) {
+	return open(stagingDir, true)
+}
+
+// OpenReadOnly reads and replays stagingDir's state.db the same way Open
+// does, for a command that holds no exclusive lock on the repository. A
+// writer may be appending to the file at the same time, so a torn tail
+// found here is left on disk untouched: OpenReadOnly still drops it from
+// the replayed state and reports it through Truncated, but it never
+// writes to state.db, and so can never cut off a record a concurrent
+// writer has not finished appending.
+func OpenReadOnly(stagingDir string) (*Log, error) {
+	return open(stagingDir, false)
+}
+
+func open(stagingDir string, truncateTornTail bool) (*Log, error) {
 	l := &Log{
 		path:    filepath.Join(stagingDir, stateFileName),
 		current: make(map[object.ID]Record),
@@ -210,8 +230,10 @@ func Open(stagingDir string) (*Log, error) {
 	if validLen != int64(len(data)) {
 		l.truncated = true
 		l.ignoredBytes = int64(len(data)) - validLen
-		if err := os.Truncate(l.path, validLen); err != nil {
-			return nil, fmt.Errorf("stage: %w", err)
+		if truncateTornTail {
+			if err := os.Truncate(l.path, validLen); err != nil {
+				return nil, fmt.Errorf("stage: %w", err)
+			}
 		}
 	}
 	return l, nil

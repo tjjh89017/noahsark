@@ -6,32 +6,28 @@ import (
 	"time"
 )
 
-// TestAcquireExclusiveFailsFastWhenHeld holds the lock, then checks that
-// a second exclusive acquire with a zero timeout fails at once with a
-// message naming the lock file and the holder's pid, matching
-// OPERATIONS.md's "a command that cannot get its lock ... exits ...
-// with a message that names the lock file and the holder's pid" rule.
-func TestAcquireExclusiveFailsFastWhenHeld(t *testing.T) {
+// TestAcquireFailsFastWhenHeld holds the lock, then checks that a second
+// exclusive acquire fails at once with a message naming the lock file,
+// matching the rule that a held lock is a failure at run time, not a
+// wait.
+func TestAcquireFailsFastWhenHeld(t *testing.T) {
 	dir := t.TempDir()
-	held, err := AcquireExclusive(dir, 0)
+	held, err := Acquire(dir)
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 	defer func() { _ = held.Release() }()
 
 	start := time.Now()
-	_, err = AcquireExclusive(dir, 0)
+	_, err = Acquire(dir)
 	if err == nil {
 		t.Fatal("second acquire: want an error while the first holds the lock")
 	}
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
-		t.Fatalf("second acquire took %v; a zero timeout must fail at once", elapsed)
+		t.Fatalf("second acquire took %v; it must fail at once", elapsed)
 	}
 	if !strings.Contains(err.Error(), "lock") {
 		t.Errorf("error %q does not name the lock file", err)
-	}
-	if !strings.Contains(err.Error(), "pid") {
-		t.Errorf("error %q does not name the holder's pid", err)
 	}
 }
 
@@ -40,7 +36,7 @@ func TestAcquireExclusiveFailsFastWhenHeld(t *testing.T) {
 // took it.
 func TestLockFreeAfterRelease(t *testing.T) {
 	dir := t.TempDir()
-	held, err := AcquireExclusive(dir, 0)
+	held, err := Acquire(dir)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -48,71 +44,39 @@ func TestLockFreeAfterRelease(t *testing.T) {
 		t.Fatalf("release: %v", err)
 	}
 
-	again, err := AcquireExclusive(dir, 0)
+	again, err := Acquire(dir)
 	if err != nil {
 		t.Fatalf("acquire after release: %v", err)
 	}
 	defer func() { _ = again.Release() }()
 }
 
-// TestAcquireExclusiveWaitsForTimeout checks that a nonzero timeout
-// retries until the holder releases, instead of failing at once.
-func TestAcquireExclusiveWaitsForTimeout(t *testing.T) {
+// TestLockFreeAfterProcessEnd checks that a second open file
+// description on the same lock file, standing in for a second process
+// the way the kernel sees it, can take the lock once the first one
+// closes: the kernel releases an flock the instant its holder's last
+// file descriptor closes, even without an explicit Release call, which
+// is what makes the lock safe across a crash.
+func TestLockFreeAfterProcessEnd(t *testing.T) {
 	dir := t.TempDir()
-	held, err := AcquireExclusive(dir, 0)
+	held, err := Acquire(dir)
 	if err != nil {
-		t.Fatalf("first acquire: %v", err)
+		t.Fatalf("acquire: %v", err)
 	}
 
-	released := make(chan struct{})
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = held.Release()
-		close(released)
-	}()
+	if _, err := Acquire(dir); err == nil {
+		t.Fatal("second acquire: want an error while the first holds the lock")
+	}
 
-	start := time.Now()
-	second, err := AcquireExclusive(dir, time.Second)
+	// Closing the file descriptor, not calling Release, is what stands
+	// in for the holding process ending: the kernel drops the flock.
+	if err := held.f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	again, err := Acquire(dir)
 	if err != nil {
-		t.Fatalf("second acquire: %v", err)
+		t.Fatalf("acquire after the holder's file closed: %v", err)
 	}
-	defer func() { _ = second.Release() }()
-	<-released
-	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
-		t.Fatalf("second acquire returned after %v; it should have waited for the release", elapsed)
-	}
-}
-
-// TestSharedLocksCoexist checks that two shared locks can both be held
-// at once, matching a read-only command never blocking another
-// read-only command.
-func TestSharedLocksCoexist(t *testing.T) {
-	dir := t.TempDir()
-	a, err := AcquireShared(dir, 0)
-	if err != nil {
-		t.Fatalf("first shared acquire: %v", err)
-	}
-	defer func() { _ = a.Release() }()
-
-	b, err := AcquireShared(dir, 0)
-	if err != nil {
-		t.Fatalf("second shared acquire: %v", err)
-	}
-	defer func() { _ = b.Release() }()
-}
-
-// TestExclusiveWaitsForShared checks that an exclusive acquire fails
-// fast while a shared lock is held, matching a state-writing command
-// never running alongside a read-only one.
-func TestExclusiveWaitsForShared(t *testing.T) {
-	dir := t.TempDir()
-	shared, err := AcquireShared(dir, 0)
-	if err != nil {
-		t.Fatalf("shared acquire: %v", err)
-	}
-	defer func() { _ = shared.Release() }()
-
-	if _, err := AcquireExclusive(dir, 0); err == nil {
-		t.Fatal("exclusive acquire: want an error while a shared lock is held")
-	}
+	defer func() { _ = again.Release() }()
 }
