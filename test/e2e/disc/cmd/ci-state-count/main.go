@@ -1,6 +1,6 @@
 // Command ci-state-count is CI-only tooling, not a NoahsArk command
 // surface. It opens a repository's staging state log and prints the
-// number of objects whose current state is Packed, so a shell scenario
+// number of objects the log places on some disc, so a shell scenario
 // can compare it against a disc's own INDEX object count after
 // rebuild-cache.
 //
@@ -26,5 +26,5 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "ci-state-count:", err)
 		os.Exit(1)
 	}
-	fmt.Println(log.CountState(stage.Packed))
+	fmt.Println(log.CountOnDisc())
 }

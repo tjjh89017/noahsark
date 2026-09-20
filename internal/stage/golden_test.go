@@ -26,25 +26,31 @@ func fillDisc(b byte) [16]byte {
 	return d
 }
 
+// goldenCleanSec is a fixed clean time for the golden records, so the
+// checked-in bytes never depend on the clock.
+const goldenCleanSec = int64(1700000000)
+
 // goldenRecords is one record per state, plus one Staged record per
 // reason code, in a fixed order matching
 // testdata/state_records_golden.bin. The two Clean records are the two
-// verifies of the two identical discs, and the GC-ELIGIBLE and DELETED
-// records carry that count forward.
+// verifies of the two identical discs; the second one keeps the clean
+// time of the first, and the ON-DISC record carries both forward. The
+// last record is the ON-DISC record rebuild-cache writes: a disc holds
+// the object, and no verify has happened here.
 func goldenRecords() []Record {
 	discA := fillDisc(0xAA)
 	return []Record{
 		{Sequence: 1, ContentID: fillID(0x11), State: Staged},
 		{Sequence: 2, ContentID: fillID(0x22), State: Packed, RunSeq: 7, DiscUUID: discA},
 		{Sequence: 3, ContentID: fillID(0x22), State: Burned, RunSeq: 7, DiscUUID: discA},
-		{Sequence: 4, ContentID: fillID(0x22), State: Clean, RunSeq: 7, DiscUUID: discA, VerifyCount: 1},
-		{Sequence: 5, ContentID: fillID(0x22), State: Clean, RunSeq: 7, DiscUUID: discA, VerifyCount: 2},
-		{Sequence: 6, ContentID: fillID(0x22), State: GCEligible, RunSeq: 7, DiscUUID: discA, VerifyCount: 2},
-		{Sequence: 7, ContentID: fillID(0x22), State: Deleted, RunSeq: 7, DiscUUID: discA, VerifyCount: 2},
-		{Sequence: 8, ContentID: fillID(0x33), State: Staged, Reason: ReasonBurnFailed},
-		{Sequence: 9, ContentID: fillID(0x44), State: Packed, RunSeq: 9, DiscUUID: fillDisc(0xBB), Reason: ReasonVerifyFailed},
-		{Sequence: 10, ContentID: fillID(0x55), State: Staged, Reason: ReasonHealed},
-		{Sequence: 11, ContentID: fillID(0x66), State: Staged, Reason: ReasonDuplicateLocality},
+		{Sequence: 4, ContentID: fillID(0x22), State: Clean, RunSeq: 7, DiscUUID: discA, VerifyCount: 1, CleanSec: goldenCleanSec},
+		{Sequence: 5, ContentID: fillID(0x22), State: Clean, RunSeq: 7, DiscUUID: discA, VerifyCount: 2, CleanSec: goldenCleanSec},
+		{Sequence: 6, ContentID: fillID(0x22), State: OnDiscOnly, RunSeq: 7, DiscUUID: discA, VerifyCount: 2, CleanSec: goldenCleanSec},
+		{Sequence: 7, ContentID: fillID(0x33), State: Staged, Reason: ReasonBurnFailed},
+		{Sequence: 8, ContentID: fillID(0x44), State: Packed, RunSeq: 9, DiscUUID: fillDisc(0xBB), Reason: ReasonVerifyFailed},
+		{Sequence: 9, ContentID: fillID(0x55), State: Staged, Reason: ReasonHealed},
+		{Sequence: 10, ContentID: fillID(0x66), State: Staged, Reason: ReasonDuplicateLocality},
+		{Sequence: 11, ContentID: fillID(0x77), State: OnDiscOnly, RunSeq: 3, DiscUUID: fillDisc(0xCC)},
 	}
 }
 

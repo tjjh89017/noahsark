@@ -1,15 +1,12 @@
 // Package stage implements the staging state machine: an object is
 // STAGED after commit, PACKED once a run includes it, BURNED once that
 // run has been written to a disc, CLEAN once a read-back verify has
-// checked it, GC-ELIGIBLE once it has stayed CLEAN for the retention
-// period, and DELETED once gc has freed its bytes.
+// checked it, and ON-DISC once a disc alone holds it and staging holds
+// no file for it.
 //
-// Reading: OPERATIONS.md's staging state machine names the states and
-// the transitions but gives no byte layout for the state log. This
-// package picks the simplest deterministic layout: a fixed-width,
-// append-only record, CRC-32C checked, so a reader can replay it and
-// stop cleanly at a truncated tail. See docs/decisions.md, "4. Staging
-// state machine".
+// The state log is a fixed-width, append-only file. Each record carries
+// a CRC-32C, so a reader replays it and stops cleanly at a torn tail.
+// See docs/decisions.md, "4. Staging state machine".
 package stage
 
 import (
@@ -38,22 +35,22 @@ const (
 	// Clean is an object's state once a read-back verify of the disc
 	// that holds it has checked out.
 	Clean State = 4
-	// GCEligible is an object's state once it has stayed Clean for at
-	// least staging.retain_after_clean.
-	GCEligible State = 5
-	// Deleted is an object's state once gc has freed its staging bytes.
-	Deleted State = 6
+	// OnDiscOnly is an object's state once a disc alone holds it. gc
+	// records it before it unlinks the staged file, and rebuild-cache
+	// records it for every object it reads from a disc's own catalog.
+	// It is terminal: the object needs no staging file any more.
+	OnDiscOnly State = 5
 )
 
 // OnDisc reports whether an object in this state already has its data
-// written to some disc. Packed, Burned, Clean, GCEligible, and Deleted
-// all name an object a disc holds; only Staged does not. A caller asking
-// "is this object already on a disc" must use this, not a direct
-// comparison against Packed, so pack never copies or rebinds an object
-// a disc already holds.
+// written to some disc. Packed, Burned, Clean and OnDiscOnly all name an
+// object a disc holds; only Staged does not. A caller asking "is this
+// object already on a disc" must use this, not a direct comparison
+// against Packed, so pack never copies or rebinds an object a disc
+// already holds.
 func (s State) OnDisc() bool {
 	switch s {
-	case Packed, Burned, Clean, GCEligible, Deleted:
+	case Packed, Burned, Clean, OnDiscOnly:
 		return true
 	default:
 		return false
@@ -82,8 +79,8 @@ const (
 
 // recordLen is the fixed size of one state.db record: sequence (8),
 // content id (32), state (1), run_seq (8), disc_uuid (16), reason (1),
-// verify_count (1), crc32c (4).
-const recordLen = 8 + 32 + 1 + 8 + 16 + 1 + 1 + 4
+// verify_count (1), clean_sec (8), crc32c (4).
+const recordLen = 8 + 32 + 1 + 8 + 16 + 1 + 1 + 8 + 4
 
 // maxVerifyCount is the largest value VerifyCount holds. A further
 // verify keeps the count there instead of wrapping to zero.
@@ -93,22 +90,10 @@ const maxVerifyCount = 255
 // matching OPERATIONS.md's staging store layout.
 const stateFileName = "state.db"
 
-// cleanTimeFileName is the clean time companion log's file name inside
-// a staging directory. The state.db record has no timestamp field, so
-// this package records a Clean transition's wall time in a second,
-// append-only file instead: content id (32), unix nanoseconds (8),
-// crc32c (4), one record per Clean transition. A reader replays it the
-// same way it replays state.db, and the newest record per content id is
-// that object's clean time.
-const cleanTimeFileName = "clean_times.db"
-
-// cleanTimeRecordLen is the fixed size of one clean_times.db record.
-const cleanTimeRecordLen = 32 + 8 + 4
-
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Record is one state.db record: an object's state as of Sequence, and,
-// for a Packed record, the run and disc that hold it.
+// for a Packed record or a later one, the run and disc that hold it.
 type Record struct {
 	Sequence  uint64
 	ContentID object.ID
@@ -121,6 +106,11 @@ type Record struct {
 	// the staged bytes stay until the second identical disc passes
 	// verify.
 	VerifyCount uint8
+	// CleanSec is the unix time of the first successful verify, and 0
+	// before that verify. Every later record carries it forward, so the
+	// retention period counts from the first verify and a second verify
+	// never restarts it.
+	CleanSec int64
 }
 
 func (r *Record) encode(buf []byte) {
@@ -131,12 +121,13 @@ func (r *Record) encode(buf []byte) {
 	copy(buf[49:65], r.DiscUUID[:])
 	buf[65] = byte(r.Reason)
 	buf[66] = r.VerifyCount
-	crc := crc32.Checksum(buf[0:67], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[67:71], crc)
+	binary.LittleEndian.PutUint64(buf[67:75], uint64(r.CleanSec))
+	crc := crc32.Checksum(buf[0:75], crc32cTable)
+	binary.LittleEndian.PutUint32(buf[75:79], crc)
 }
 
-// decode reads one record from buf, which must be exactly recordLen
-// bytes, and reports whether its CRC checks out.
+// decodeRecord reads one record from buf, which must be exactly
+// recordLen bytes, and reports whether its CRC checks out.
 func decodeRecord(buf []byte) (Record, bool) {
 	var r Record
 	r.Sequence = binary.LittleEndian.Uint64(buf[0:8])
@@ -146,106 +137,84 @@ func decodeRecord(buf []byte) (Record, bool) {
 	copy(r.DiscUUID[:], buf[49:65])
 	r.Reason = Reason(buf[65])
 	r.VerifyCount = buf[66]
-	crc := binary.LittleEndian.Uint32(buf[67:71])
-	ok := crc == crc32.Checksum(buf[0:67], crc32cTable)
+	r.CleanSec = int64(binary.LittleEndian.Uint64(buf[67:75]))
+	crc := binary.LittleEndian.Uint32(buf[75:79])
+	ok := crc == crc32.Checksum(buf[0:75], crc32cTable)
 	return r, ok
 }
 
-// tailState is one companion file's replay outcome: whether replay
-// stopped at a bad CRC before reaching the end of the file, and how far
-// short of the end it stopped. A writer that appends to this file must
-// first cut off that torn tail (fixTornTail), so a new, good record
-// never lands past bytes replay will always stop before and so never
-// reach.
-type tailState struct {
-	validLen     int64
+// Log is one repository's staging state log: the replayed current state
+// of every object it has seen, plus the file new records append to.
+type Log struct {
+	path         string
+	current      map[object.ID]Record
+	nextSeq      uint64
 	truncated    bool
 	ignoredBytes int64
-	fixed        bool
 }
 
-// Log is one repository's staging state log: the replayed current state
-// of every object it has seen, plus the open file new records append to.
-type Log struct {
-	path      string
-	current   map[object.ID]Record
-	nextSeq   uint64
-	stateTail tailState
-
-	cleanPath string
-	cleanAt   map[object.ID]time.Time
-	cleanTail tailState
-}
-
-// Truncated reports whether Open's replay of state.db stopped at a bad
-// CRC before reaching the file's end, and how many trailing bytes it
-// ignored. OPERATIONS.md requires the tool to report a truncated log;
-// every command that opens the log checks this and prints that warning.
+// Truncated reports whether Open cut a torn tail off the state log, and
+// how many bytes it cut. Every command that opens the log checks this
+// and prints one warning.
 func (l *Log) Truncated() (truncated bool, ignoredBytes int64) {
-	return l.stateTail.truncated, l.stateTail.ignoredBytes
+	return l.truncated, l.ignoredBytes
 }
 
 // Open reads and replays stagingDir's state.db, if one exists, and
 // returns a Log ready to query and append to. A missing file is an empty
-// log, matching a fresh repository. A record with a bad CRC ends the
-// replay; records after it are ignored, matching a crash during an
-// append.
+// log, matching a fresh repository.
+//
+// Open applies one torn-tail rule. A partial record at the end, or a
+// last record with a bad CRC, is what a crash during an append leaves:
+// Open cuts the file back to the last good record and reports the cut
+// through Truncated. A bad record anywhere else is damage, not a torn
+// tail, because good records follow it. Open returns an error there and
+// changes nothing, so no command silently drops the good records behind
+// the damage.
 func Open(stagingDir string) (*Log, error) {
 	l := &Log{
-		path:      filepath.Join(stagingDir, stateFileName),
-		current:   make(map[object.ID]Record),
-		nextSeq:   1,
-		cleanPath: filepath.Join(stagingDir, cleanTimeFileName),
-		cleanAt:   make(map[object.ID]time.Time),
+		path:    filepath.Join(stagingDir, stateFileName),
+		current: make(map[object.ID]Record),
+		nextSeq: 1,
 	}
 	data, err := os.ReadFile(l.path)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if os.IsNotExist(err) {
+			return l, nil
+		}
+		return nil, fmt.Errorf("stage: %w", err)
+	}
+
+	full := len(data) / recordLen
+	recs := make([]Record, 0, full)
+	for i := range full {
+		off := i * recordLen
+		rec, ok := decodeRecord(data[off : off+recordLen])
+		if !ok {
+			if i != full-1 {
+				return nil, fmt.Errorf("stage: %s: record %d of %d has a bad CRC; the log is damaged", l.path, i+1, full)
+			}
+			break
+		}
+		recs = append(recs, rec)
+	}
+
+	for _, rec := range recs {
+		l.current[rec.ContentID] = rec
+		if rec.Sequence >= l.nextSeq {
+			l.nextSeq = rec.Sequence + 1
+		}
+	}
+
+	validLen := int64(len(recs) * recordLen)
+	if validLen != int64(len(data)) {
+		l.truncated = true
+		l.ignoredBytes = int64(len(data)) - validLen
+		if err := os.Truncate(l.path, validLen); err != nil {
 			return nil, fmt.Errorf("stage: %w", err)
 		}
-	} else {
-		off := 0
-		for ; off+recordLen <= len(data); off += recordLen {
-			rec, ok := decodeRecord(data[off : off+recordLen])
-			if !ok {
-				break
-			}
-			l.current[rec.ContentID] = rec
-			if rec.Sequence >= l.nextSeq {
-				l.nextSeq = rec.Sequence + 1
-			}
-		}
-		l.stateTail.validLen = int64(off)
-		if off < len(data) {
-			l.stateTail.truncated = true
-			l.stateTail.ignoredBytes = int64(len(data) - off)
-		}
-	}
-	if err := l.loadCleanTimes(); err != nil {
-		return nil, err
 	}
 	return l, nil
-}
-
-// fixTornTail cuts path back to tail.validLen when Open found a torn
-// tail past the last valid record it replayed, so the append that
-// follows lands right after the newest record replay can actually
-// reach, instead of after garbage no replay will ever get past. It does
-// nothing once it has already fixed this Log's own view of path, and
-// nothing at all when Open found no torn tail.
-func fixTornTail(path string, tail *tailState) error {
-	if tail.fixed {
-		return nil
-	}
-	tail.fixed = true
-	if !tail.truncated {
-		return nil
-	}
-	if err := os.Truncate(path, tail.validLen); err != nil {
-		return fmt.Errorf("stage: %w", err)
-	}
-	tail.truncated = false
-	return nil
 }
 
 // Get returns the current record for id and whether one exists. An id
@@ -271,27 +240,19 @@ func (l *Log) MarkPacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
 	return l.append(Record{ContentID: id, State: Packed, RunSeq: runSeq, DiscUUID: discUUID})
 }
 
-// EnsurePacked appends a Packed record for id, naming runSeq and
-// discUUID, unless id's current record already carries that exact run
-// and disc, or the object has already moved past Packed. A disc's own
-// catalog only ever says an object was packed onto it; replaying that
-// catalog through rebuild-cache must never undo progress a verify or a
-// gc already recorded, so a record already Burned, Clean, GCEligible or
-// Deleted is left as it is. This also makes repeated rebuilding from the
-// same discs idempotent: it never grows the log when nothing has
-// changed.
-func (l *Log) EnsurePacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
-	if rec, ok := l.current[id]; ok {
-		switch rec.State {
-		case Packed:
-			if rec.RunSeq == runSeq && rec.DiscUUID == discUUID {
-				return nil
-			}
-		case Burned, Clean, GCEligible, Deleted:
-			return nil
-		}
+// EnsureOnDisc appends an OnDiscOnly record for id, naming the run and
+// disc that hold it, unless the log already has a record for id.
+// rebuild-cache is the only caller: it reads a disc's own catalog into a
+// repository whose staging is empty, so the objects of that disc need no
+// staging file and no further burn or verify. An object the log already
+// knows keeps its own state, because that state says more than a disc
+// catalog can. A repeat rebuild from the same discs therefore appends
+// nothing.
+func (l *Log) EnsureOnDisc(id object.ID, runSeq uint64, discUUID [16]byte) error {
+	if _, ok := l.current[id]; ok {
+		return nil
 	}
-	return l.MarkPacked(id, runSeq, discUUID)
+	return l.appendRecord(Record{ContentID: id, State: OnDiscOnly, RunSeq: runSeq, DiscUUID: discUUID}, false)
 }
 
 // CountState returns the number of distinct objects whose current state
@@ -300,6 +261,18 @@ func (l *Log) CountState(state State) int {
 	n := 0
 	for _, rec := range l.current {
 		if rec.State == state {
+			n++
+		}
+	}
+	return n
+}
+
+// CountOnDisc returns the number of distinct objects the log places on
+// some disc, whatever their state.
+func (l *Log) CountOnDisc() int {
+	n := 0
+	for _, rec := range l.current {
+		if rec.State.OnDisc() {
 			n++
 		}
 	}
@@ -363,7 +336,7 @@ func (l *Log) CountByDiscInState(state State) map[[16]byte]int {
 
 // OnDiscCountByDisc returns, for every disc uuid the log has an on-disc
 // record for, the number of distinct objects the log currently places
-// on that disc: Packed, Burned, Clean, GCEligible, or Deleted.
+// on that disc.
 func (l *Log) OnDiscCountByDisc() map[[16]byte]int {
 	counts := make(map[[16]byte]int)
 	for _, rec := range l.current {
@@ -388,7 +361,7 @@ func (l *Log) MarkBurned(id object.ID, runSeq uint64, discUUID [16]byte) error {
 // verifies the second identical disc that way, and the count is what
 // tells gc that both copies are readable.
 //
-// The clean time is recorded once, at the first verify, so the retention
+// The clean time is set once, at the first verify, so the retention
 // period counts from the first verify and a later verify never restarts
 // it.
 func (l *Log) MarkVerified(id object.ID) error {
@@ -399,13 +372,10 @@ func (l *Log) MarkVerified(id object.ID) error {
 	if rec.VerifyCount < maxVerifyCount {
 		rec.VerifyCount++
 	}
-	if err := l.append(rec); err != nil {
-		return err
+	if rec.CleanSec == 0 {
+		rec.CleanSec = time.Now().Unix()
 	}
-	if _, ok := l.cleanAt[id]; ok {
-		return nil
-	}
-	return l.recordCleanTime(id, time.Now())
+	return l.append(rec)
 }
 
 // MarkVerifyFailed appends a Packed record for id with ReasonVerifyFailed,
@@ -432,45 +402,34 @@ func (l *Log) MarkBurnUndone(id object.ID) error {
 	return l.append(rec)
 }
 
-// MarkGCEligible appends a GCEligible record for id, carrying forward
-// its current run and disc. gc calls this once an object has stayed
-// Clean for at least staging.retain_after_clean, and then deletes the
-// object's staging file. The record is therefore written durably: it
-// must be on the disc before the bytes it accounts for go away.
-func (l *Log) MarkGCEligible(id object.ID) error {
+// MarkOnDisc appends an OnDiscOnly record for id, carrying forward its
+// current run, disc, verify count and clean time. gc calls it for a
+// CLEAN object it is about to free, and then unlinks the staged file.
+// The record is flushed to stable storage before it counts as written:
+// it must be on the disk before the bytes it accounts for go away.
+func (l *Log) MarkOnDisc(id object.ID) error {
 	rec := l.current[id]
 	rec.ContentID = id
-	rec.State = GCEligible
+	rec.State = OnDiscOnly
 	rec.Reason = ReasonNormal
 	return l.appendRecord(rec, true)
 }
 
-// MarkDeleted appends a Deleted record for id, carrying forward its
-// current run and disc. gc calls this once it has freed the object's
-// staging bytes.
-func (l *Log) MarkDeleted(id object.ID) error {
-	rec := l.current[id]
-	rec.ContentID = id
-	rec.State = Deleted
-	rec.Reason = ReasonNormal
-	return l.append(rec)
-}
-
-// CleanTime returns the time id last transitioned to Clean, and whether
-// the clean time companion log has a record for it.
+// CleanTime returns the time id first passed verify, and whether it has
+// passed one at all.
 func (l *Log) CleanTime(id object.ID) (time.Time, bool) {
-	t, ok := l.cleanAt[id]
-	return t, ok
+	rec, ok := l.current[id]
+	if !ok || rec.CleanSec == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(rec.CleanSec, 0), true
 }
 
 // FedDiscs reports whether the state log holds a current on-disc record
-// (Packed, Burned, Clean, GCEligible or Deleted) naming discUUID as the
-// disc that holds it. rebuild-cache calls EnsurePacked for every object
-// of a disc's own catalog before asking this, and Pack always refuses to
-// create a run with no objects ("nothing to pack: no staged object
-// remains"), so every disc that was ever packed leaves at least one such
-// record; there is no disc that is fed and yet leaves the state log
-// empty for it.
+// naming discUUID as the disc that holds it. rebuild-cache records every
+// object of a disc's own catalog before asking this, and pack always
+// refuses to create a run with no objects, so every disc that was ever
+// packed leaves at least one such record.
 func (l *Log) FedDiscs(discUUID [16]byte) bool {
 	for _, rec := range l.current {
 		if rec.State.OnDisc() && rec.DiscUUID == discUUID {
@@ -490,8 +449,8 @@ type appendCloser interface {
 }
 
 // openAppend opens path for appending, creating it and its parent
-// directory as needed. Tests replace it to inject a Close failure a
-// record's writer must still surface.
+// directory as needed. Tests replace it to check that a durable append
+// flushes before it closes, and that a Close failure reaches the caller.
 var openAppend = func(path string) (appendCloser, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -502,29 +461,17 @@ var openAppend = func(path string) (appendCloser, error) {
 // writeRecord appends buf to path and reports whether it reached the
 // operating system. A record is not written until Close succeeds: a
 // buffered write can still be sitting in memory when Write returns, so
-// both of state.db's appenders (append, recordCleanTime) go through this
-// one helper, and neither may treat a record as written, or update its
-// own in-memory state, until writeRecord itself returns nil.
+// no caller may treat a record as written, or update its own in-memory
+// state, until writeRecord returns nil.
 //
-// It does not flush the record to the disc. Commit writes one record
-// per object, and a sync per object would dominate its cost; a lost
-// tail there only replays as an object still STAGED, which the next
-// pack heals. A caller that is about to destroy what the record
-// describes must use writeRecordDurable instead.
-func writeRecord(path string, buf []byte) error {
-	return writeRecordTo(path, buf, false)
-}
-
-// writeRecordDurable is writeRecord, plus a flush to stable storage
-// before the close. gc deletes a staged object's bytes only after its
-// GC-ELIGIBLE record is durable: without the flush, a crash could take
-// the record away and leave the bytes gone, an object the log still
-// calls CLEAN with nothing behind it.
-func writeRecordDurable(path string, buf []byte) error {
-	return writeRecordTo(path, buf, true)
-}
-
-func writeRecordTo(path string, buf []byte, durable bool) error {
+// A durable write also flushes the record to the disk. gc unlinks a
+// staged object's bytes only after its ON-DISC record is durable:
+// without the flush, a crash could take the record away and leave the
+// bytes gone, an object the log still calls CLEAN with nothing behind
+// it. No other append flushes, because commit writes one record per
+// object and a flush per object would set its pace; a lost tail there
+// only replays as an object still STAGED, which the next pack heals.
+func writeRecord(path string, buf []byte, durable bool) error {
 	f, err := openAppend(path)
 	if err != nil {
 		return fmt.Errorf("stage: %w", err)
@@ -552,78 +499,18 @@ func (l *Log) append(rec Record) error {
 }
 
 // appendRecord writes one record to state.db and updates the replayed
-// state. A durable record is flushed to the disc before it counts as
+// state. A durable record is flushed to the disk before it counts as
 // written.
 func (l *Log) appendRecord(rec Record, durable bool) error {
-	if err := fixTornTail(l.path, &l.stateTail); err != nil {
-		return err
-	}
-
 	rec.Sequence = l.nextSeq
 	buf := make([]byte, recordLen)
 	rec.encode(buf)
 
-	write := writeRecord
-	if durable {
-		write = writeRecordDurable
-	}
-	if err := write(l.path, buf); err != nil {
+	if err := writeRecord(l.path, buf, durable); err != nil {
 		return err
 	}
 
 	l.current[rec.ContentID] = rec
 	l.nextSeq++
-	return nil
-}
-
-// loadCleanTimes reads and replays the clean time companion log, if one
-// exists. A record with a bad CRC ends the replay, matching state.db's
-// own truncated-tail rule.
-func (l *Log) loadCleanTimes() error {
-	data, err := os.ReadFile(l.cleanPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stage: %w", err)
-	}
-	off := 0
-	for ; off+cleanTimeRecordLen <= len(data); off += cleanTimeRecordLen {
-		rec := data[off : off+cleanTimeRecordLen]
-		crc := binary.LittleEndian.Uint32(rec[40:44])
-		if crc != crc32.Checksum(rec[0:40], crc32cTable) {
-			break
-		}
-		var id object.ID
-		copy(id[:], rec[0:32])
-		nanos := int64(binary.LittleEndian.Uint64(rec[32:40]))
-		l.cleanAt[id] = time.Unix(0, nanos)
-	}
-	l.cleanTail.validLen = int64(off)
-	if off < len(data) {
-		l.cleanTail.truncated = true
-		l.cleanTail.ignoredBytes = int64(len(data) - off)
-	}
-	return nil
-}
-
-// recordCleanTime appends one record to the clean time companion log
-// and updates the in-memory record MarkVerified and CleanTime share.
-func (l *Log) recordCleanTime(id object.ID, when time.Time) error {
-	if err := fixTornTail(l.cleanPath, &l.cleanTail); err != nil {
-		return err
-	}
-
-	buf := make([]byte, cleanTimeRecordLen)
-	copy(buf[0:32], id[:])
-	binary.LittleEndian.PutUint64(buf[32:40], uint64(when.UnixNano()))
-	crc := crc32.Checksum(buf[0:40], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[40:44], crc)
-
-	if err := writeRecord(l.cleanPath, buf); err != nil {
-		return err
-	}
-
-	l.cleanAt[id] = when
 	return nil
 }

@@ -563,29 +563,38 @@ is never something to paper over.
 
 ## 4. Staging state machine
 
-OPERATIONS.md names the states (STAGED, PACKED, BURNED, CLEAN,
-GC-ELIGIBLE, DELETED) and the transitions, and gives `state.db` an
-append-only role, but no byte layout.
+There are five states: STAGED, PACKED, BURNED, CLEAN and ON-DISC.
+ON-DISC is the last one. It means a disc holds the object and staging
+holds no file for it. `gc` records it before it unlinks a staged file,
+and `rebuild-cache` records it for every object it reads from a disc's
+own catalog. One state covers both, because both say the same thing:
+the bytes are on a disc and nowhere else here. A separate DELETED state
+would say no more, and a rebuilt object was never deleted.
 
-`internal/stage` picks the simplest deterministic record: fixed-width,
-71 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
-verify_count, crc32c), append-only, one record per transition. The
-`verify_count` byte counts the successful verifies of the object, so
-`gc` can hold the staged bytes until `gc.min_verified_copies` copies
-read back. A reader replays from
-the start and stops at the first record whose CRC fails, exactly
-matching the "truncated log" rule; a record after a bad one is ignored.
-The newest record per content id, by file order (equivalently by
+`internal/stage` uses the simplest deterministic record: fixed-width,
+79 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
+verify_count, clean_sec, crc32c), append-only, one record per
+transition. OPERATIONS.md's state log record table gives the same
+layout. The `verify_count` byte counts the successful verifies of the
+object, so `gc` can hold the staged bytes until
+`gc.min_verified_copies` copies read back. `clean_sec` is the unix time
+of the first verify; every later record copies the value forward, so
+the retention counts from the first verify and a second verify never
+restarts it. One file carries it all: there is no companion file. The
+newest record per content id, by file order (equivalently by
 `sequence`), is that object's current state. `EnsureStaged` never
 overwrites an existing record, so a re-commit of already-packed content
-can never resurrect it to STAGED. The record still carries no
-timestamp, so a CLEAN transition's wall time goes into a second,
-append-only companion file, `clean_times.db` (content id, unix
-nanoseconds, crc32c), replayed the same way. Only the first verify
-writes that time, so the retention period counts from the first verify
-and a second verify never restarts it. `disc burned`'s own moment
-is not recorded anywhere: nothing in this build ever reads it back, so
-there is no `burn_times.db` companion file.
+can never resurrect it to STAGED. `disc burned`'s own moment is not
+recorded: nothing in this build ever reads it back.
+
+The torn-tail rule runs one time, at open. A partial record at the end
+of the file, or a last record with a bad CRC, is a crash during an
+append: `Open` cuts the file back to the last good record and reports
+the cut, and every command prints one warning for it. A bad record with
+good records after it is damage: `Open` reports an error, names the
+record and changes no byte, because dropping good records without
+saying so would hide a real fault. Cutting at open, rather than before
+the next append, removes the whole append-time repair path.
 
 `cmd_commit` calls `internal/image.CollectReachable` after a commit and
 marks every object it returns STAGED, rather than having `Writer` itself
@@ -631,25 +640,22 @@ disc already fully CLEAN, or one still fully PACKED, has nothing to
 report there. A verify against a tree whose disc uuid the ledger has
 never seen at all, or run with no `--repo`, changes no staging state.
 
-`gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]`
-implements section 4.5's GC rules: a CLEAN object becomes GC-ELIGIBLE
-once `staging.retain_after_clean` has passed since its CLEAN time, and
-only a GC-ELIGIBLE object is ever deleted, after confirming its
-presence in the cached INDEX of the run the state log says holds it; an
-object whose run is not cached is left alone and reported separately,
-never deleted on trust. The GC-ELIGIBLE record goes to the disc before
-the staged file is removed: that one append syncs before it closes, so
-a crash can never take the record away and leave the bytes gone. No
-other append syncs, because `commit` writes one record per object and a
-sync per object would set its pace; a lost tail there only replays as
-an object still STAGED, which the next `pack` heals. OPERATIONS.md's own CLI reference (16.20) gives
-`gc` only `--dry-run` and `--force-after`; this build adds
-`--keep-snapshots` alongside them, since 17.12 already says `gc`
-applies `cache.snapshot_depth`, and `--keep-snapshots` is that same
-knob as a one-off override: it keeps the cached trees and blobs
-reachable from only the newest N snapshots and drops the rest,
-recomputing every cached snapshot's completeness afterward so `ls`
-reports a dropped snapshot's cache copy incomplete again.
+`gc [--dry-run] [--force-after=DURATION]` implements the GC rules: it
+frees the staged file of a CLEAN object once
+`staging.retain_after_clean` has passed since its clean time, after
+confirming the object's presence in the cached INDEX of the disc the
+state log says holds it; an object whose disc is not cached is left
+alone and reported separately, never deleted on trust. The ON-DISC
+record goes to the disk before the staged file is unlinked: that one
+append syncs before it closes, so a crash can never take the record
+away and leave the bytes gone. A crash the other way round leaves an
+orphan, a staged file whose object is already ON-DISC, and the next
+`gc` run frees it. No other append syncs, because `commit` writes one
+record per object and a sync per object would set its pace; a lost tail
+there only replays as an object still STAGED, which the next `pack`
+heals. `gc` never trims the local cache: the cache is an accelerator,
+it costs little, and `rebuild-cache` is the only tool needed to get it
+back.
 
 `--force-after=DURATION` substitutes DURATION for
 `staging.retain_after_clean` for this one run, using the same duration
@@ -660,13 +666,11 @@ shared with the ordinary path), then, unless `--dry-run` was also
 given, prints the confirmation OPERATIONS.md's CLI reference names,
 `delete N object(s), B bytes? [y/N]`, on stderr and reads one line from
 stdin. `--dry-run` skips the confirmation outright: it changes nothing
-either way, so there is nothing for the operator to approve. A `--yes`
-flag skips the confirmation for a real run too, for a scripted or cron
-`gc --force-after`; without `--yes`, a stdin that is not a terminal
-(the same character-device check `internal/progress` already uses for
-its own terminal detection) is refused rather than silently deleting
-under a shortened retention, since a killed or redirected session must
-never read an empty line as consent. Answering anything but `y` or
+either way, so there is nothing for the operator to approve. There is
+no flag to skip the confirmation: a script pipes the answer in
+(`echo y | noahsark gc --force-after=1h`), which is one explicit act,
+and a killed session with no stdin reads an empty line and deletes
+nothing. Answering anything but `y` or
 `yes` deletes nothing and exits 2, the same code as the refusal, since
 both leave `gc` having done nothing the operator did not ask for.
 
@@ -682,8 +686,8 @@ its run is not cached prints that separate line instead, since
 "nothing is eligible" would misstate why nothing was deleted). A real
 `gc` run keeps exit 1 for that case, matching OPERATIONS.md.
 
-A staging object at PACKED, BURNED, CLEAN, GC-ELIGIBLE, or DELETED all
-name an object a disc already holds; only STAGED does not.
+A staging object at PACKED, BURNED, CLEAN or ON-DISC all name an
+object a disc already holds; only STAGED does not.
 `stage.State.OnDisc()` names this test once, so `pack`'s two "is this
 object already on a disc" checks, `cmd_commit`'s `Known` callback, and
 `disc list`'s on-disc object count all agree with each other. Before

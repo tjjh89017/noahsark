@@ -261,8 +261,15 @@ Expected result, one line for each disc:
 ```
 
 `packed=0` shows that the disc is burned and verified. `verified=2/2`
-shows that both copies passed `verify`. After `gc` deletes the staged
-objects, `clean` also goes to 0. This is normal.
+shows that both copies passed `verify`. After `gc` frees the staged
+files, the line becomes:
+
+```
+330db42b-893f-388c-6565-0eec93b1841b  seq=0  label="2026-09-14 run1"  ...  objects=7  on disc only
+```
+
+`on disc only` means the disc holds every object and staging holds no
+file for them. This is normal, and it is what a rebuilt disc shows too.
 
 Write on each sleeve: the first 8 characters of the uuid, the `seq`, the
 label, the date, and `A` or `B`. Store copy B in a different building.
@@ -419,10 +426,12 @@ Verify the second copy (step 8), then run `gc` again.
 
 - `--force-after=<DURATION>`, for example `1h`, shortens the retention
   for one run. It does not pass by the verify count. It asks for
-  confirmation. Add `--yes` in a script.
-- `--keep-snapshots=<N>` also trims the local cache to the newest N
-  snapshots. By default, `gc` does not trim the cache.
-  `rebuild-cache` restores trimmed data.
+  confirmation. In a script, pipe the answer in:
+  `echo y | noahsark gc --repo=<REPO> --force-after=1h`.
+- `gc` never trims the local cache.
+- `gc` records an object ON-DISC, and flushes that record, before it
+  unlinks the staged file. If the machine stops between the two, the
+  next `gc` frees the file that was left behind.
 - Do not delete files in `<REPO>/staging` by hand.
 
 See OPERATIONS.md, "Staging state machine".
@@ -457,10 +466,12 @@ the true newest disc was never fed, the next `pack` reuses its `seq`.
 That is a cosmetic duplicate only: the tool finds a disc by its uuid.
 Give the uuid, or a uuid prefix, when two discs share a `seq`.
 
-Then, for each disc, do steps 6 and 7 again. The rebuilt state does not
-know that a disc was burned or verified. Add `sources.root = <SOURCE>`
-to `<REPO>/config`, or give `<SOURCE>` on each `commit`. A commit that
-was not packed before the loss is gone. Commit again.
+A rebuilt disc comes back as ON-DISC: the disc holds its objects, and
+staging holds no file for them. Do not run steps 6 and 7 again for such
+a disc. `disc list` prints `on disc only` for it. Add
+`sources.root = <SOURCE>` to `<REPO>/config`, or give `<SOURCE>` on each
+`commit`. A commit that was not packed before the loss is gone. Commit
+again.
 
 ### A disc is lost or bad
 
@@ -512,7 +523,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |
 | `restore` or `ls`: ref `is not on the provided disc(s)` | A newer disc holds the ref. Give more discs. |
 | `is neither a snapshot id nor a known ref name` | The local cache does not know the name. Run `log` to list the names. |
-| `log`: `roots: (none)` | The root tree is on a disc that you did not give, or `gc` trimmed it from the cache. Give all discs, or run `rebuild-cache`. |
+| `log`: `roots: (none)` | The root tree is on a disc that you did not give. Give all discs, or run `rebuild-cache`. |
 | `plan`: `cache: no disc is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
 | `<DISC>`: `matches more than one disc` | Two discs carry the same `seq`. Give the uuid, or the first 8 characters of it, from the list in the message. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |

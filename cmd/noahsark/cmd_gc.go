@@ -23,31 +23,25 @@ import (
 var gcClock = time.Now
 
 // gcStdin is where gc's --force-after confirmation reads the operator's
-// answer from. Tests replace it with a pipe.
+// answer from. Tests replace it with a pipe, and a script answers it
+// with a pipe too.
 var gcStdin io.Reader = os.Stdin
 
-// gcStdinIsTerminal reports whether gc's real stdin is a terminal. Tests
-// replace this to exercise the confirmation prompt without a real
-// terminal attached.
-var gcStdinIsTerminal = func() bool {
-	return isTerminal(os.Stdin)
-}
+// gcRemove unlinks one staged file. Tests replace it to fail the unlink
+// after the durable record, and so to check that the next gc run frees
+// the orphan the crash left behind.
+var gcRemove = os.Remove
 
-// cmdGC implements "noahsark gc". OPERATIONS.md's own CLI reference
-// (16.20) gives gc only --dry-run and --force-after; this build adds
-// --keep-snapshots, an explicit override of cache.snapshot_depth
-// (17.12), since 2.4's local cache layout and 4.5's GC rules both
-// describe trimming the cache as part of gc's job, and a config key
-// alone would leave no way to try a different depth without editing the
-// repository. See docs/decisions.md, "4. Staging state machine".
+// cmdGC implements "noahsark gc". It frees the staging bytes of an
+// object that two verified copies already hold, and nothing else: the
+// local cache is never trimmed. See docs/decisions.md, "4. Staging
+// state machine".
 func cmdGC(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]",
-		"Delete GC-ELIGIBLE staging objects and trim the local cache.", stderr)
+	fs := newFlagSet("noahsark gc [--dry-run] [--force-after=DURATION]",
+		"Delete the staged files of objects that verified discs hold.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	dryRun := fs.Bool("dry-run", false, "print what would be deleted, and free nothing")
-	keepSnapshots := fs.Int("keep-snapshots", -1, "keep cache trees and blobs reachable from only the newest N snapshots; default cache.snapshot_depth")
 	forceAfter := fs.String("force-after", "", "shorten retention to this duration for this run only, ignoring staging.retain_after_clean; it does not pass by gc.min_verified_copies; requires confirmation")
-	yes := fs.Bool("yes", false, "skip --force-after's interactive confirmation")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -55,11 +49,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]")
-		return 2
-	}
-	if *keepSnapshots < -1 {
-		_, _ = fmt.Fprintln(stderr, "noahsark: gc: --keep-snapshots must not be negative")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--force-after=DURATION]")
 		return 2
 	}
 	retainAfterCleanOverride := time.Duration(-1)
@@ -70,14 +60,6 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		retainAfterCleanOverride = d
-	}
-	// Refuse a non-interactive --force-after before anything else runs,
-	// including the eligibility scan: whether any object turns out to
-	// be eligible must never change whether this confirmation is
-	// required.
-	if retainAfterCleanOverride >= 0 && !*dryRun && !*yes && !gcStdinIsTerminal() {
-		_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after needs an interactive confirmation; stdin is not a terminal, pass --yes")
-		return 2
 	}
 
 	repoDir, err := discoverRepo(*repoFlag)
@@ -127,26 +109,13 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 
 	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, retainAfterClean, cfg.MinVerifiedCopies, gcClock())
+	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
 	if retainAfterCleanOverride >= 0 && !*dryRun && len(candidates) > 0 {
-		if code, ok := confirmForceAfter(candidates, *yes, stdout, stderr); !ok {
+		if code, ok := confirmForceAfter(candidates, stdout, stderr); !ok {
 			return code
 		}
 	}
 	objDeleted, objBytes := gcApplyStagingObjects(stageLog, candidates, *dryRun)
-
-	depth := cfg.CacheSnapshotDepth
-	if *keepSnapshots >= 0 {
-		depth = *keepSnapshots
-	}
-	var treesDeleted int
-	var treesBytes uint64
-	if depth > 0 {
-		treesDeleted, treesBytes, err = gcTrimCache(c, depth, *dryRun)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-			return 2
-		}
-	}
 
 	verb := "deleted"
 	if *dryRun {
@@ -157,12 +126,11 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		printDryRunGroupSummary(candidates, stdout)
 	}
 	printHeldForCopies(stdout, stageLog, cfg.MinVerifiedCopies)
-	_, _ = fmt.Fprintf(stdout, "gc: cache: %s %d tree(s)/blob(s), %d bytes\n", verb, treesDeleted, treesBytes)
 	if uncached > 0 {
 		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncached)
 	}
 
-	if objDeleted == 0 && treesDeleted == 0 {
+	if objDeleted == 0 {
 		if *dryRun {
 			if uncached == 0 {
 				printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean, cfg.MinVerifiedCopies)
@@ -188,7 +156,7 @@ func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean ti
 }
 
 // earliestEligibleAt returns the earliest time some CLEAN object reaches
-// retainAfterClean and becomes GC-ELIGIBLE, and whether the staging log
+// retainAfterClean and gc may free it, and whether the staging log
 // holds any CLEAN object to measure that from. An object with fewer than
 // minCopies verifies has no such date yet: only another verify, not the
 // passing of time, can free it.
@@ -212,20 +180,13 @@ func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, minCopies 
 	return earliest, found
 }
 
-// gcCandidates returns every object id eligible for deletion: already
-// GC-ELIGIBLE, or CLEAN for at least retainAfterClean as of now. An
-// object with fewer than minCopies successful verifies is never a
-// candidate: two identical discs are the redundancy, so the staged bytes
-// stay until the second copy has been read back. It does not itself
-// change any state; the caller promotes CLEAN to GC-ELIGIBLE only when
-// it is not a dry run.
+// gcCandidates returns every object id eligible for deletion: CLEAN for
+// at least retainAfterClean as of now. An object with fewer than
+// minCopies successful verifies is never a candidate: two identical
+// discs are the redundancy, so the staged bytes stay until the second
+// copy has been read back. It changes no state itself.
 func gcCandidates(l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) []object.ID {
 	var ids []object.ID
-	for _, id := range l.IDsInState(stage.GCEligible) {
-		if hasVerifiedCopies(l, id, minCopies) {
-			ids = append(ids, id)
-		}
-	}
 	for _, id := range l.IDsInState(stage.Clean) {
 		if !hasVerifiedCopies(l, id, minCopies) {
 			continue
@@ -291,14 +252,14 @@ func printHeldForCopies(stdout io.Writer, l *stage.Log, minCopies int) {
 
 // gcObj is one staging object gc's rules allow deleting: its id, the
 // path to its staged file, the size to report and free, the disc it
-// belongs to, and whether it must still be promoted from CLEAN to
-// GC-ELIGIBLE before a real (non-dry-run) delete.
+// belongs to, and whether gc must still record it ON-DISC before it
+// unlinks the file. An orphan left by a crash already has that record.
 type gcObj struct {
-	id       object.ID
-	path     string
-	size     uint64
-	discUUID [16]byte
-	wasClean bool
+	id          object.ID
+	path        string
+	size        uint64
+	discUUID    [16]byte
+	needsRecord bool
 }
 
 // gcPlanStagingObjects lists every staging object gc's rules allow
@@ -330,9 +291,34 @@ func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retai
 		if fi, err := os.Stat(path); err == nil {
 			size = uint64(fi.Size())
 		}
-		objs = append(objs, gcObj{id: id, path: path, size: size, discUUID: rec.DiscUUID, wasClean: rec.State == stage.Clean})
+		objs = append(objs, gcObj{id: id, path: path, size: size, discUUID: rec.DiscUUID, needsRecord: true})
 	}
 	return objs, uncached
+}
+
+// gcOrphans lists every ON-DISC object whose staged file is still on the
+// disk. gc writes the ON-DISC record, flushes it, and only then unlinks
+// the file, so a crash between the two leaves exactly this: a file with
+// no owner. The durable record already proves a disc holds the object,
+// thus the next gc run frees the file with no further check.
+func gcOrphans(l *stage.Log, stagingDir string) []gcObj {
+	var objs []gcObj
+	for _, id := range l.IDsInState(stage.OnDiscOnly) {
+		rec, ok := l.Get(id)
+		if !ok {
+			continue
+		}
+		for _, kind := range []format.ObjectKind{format.ObjectKindChunk, format.ObjectKindSnapshot} {
+			path := image.StagedPath(stagingDir, id, kind)
+			fi, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			objs = append(objs, gcObj{id: id, path: path, size: uint64(fi.Size()), discUUID: rec.DiscUUID})
+		}
+	}
+	sort.Slice(objs, func(i, j int) bool { return objs[i].path < objs[j].path })
+	return objs
 }
 
 // gcApplyStagingObjects deletes (or, under dryRun, reports) every object
@@ -347,16 +333,17 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int
 			continue
 		}
 
-		if o.wasClean {
-			if err := l.MarkGCEligible(o.id); err != nil {
+		// The record goes to the disk first. A crash after it and before
+		// the unlink leaves an orphan file the next run frees; a crash
+		// the other way round would leave an object the log calls CLEAN
+		// with no bytes behind it.
+		if o.needsRecord {
+			if err := l.MarkOnDisc(o.id); err != nil {
 				continue
 			}
 		}
-		removeErr := os.Remove(o.path)
+		removeErr := gcRemove(o.path)
 		if removeErr != nil && !os.IsNotExist(removeErr) {
-			continue
-		}
-		if err := l.MarkDeleted(o.id); err != nil {
 			continue
 		}
 		// A file already gone (IsNotExist) frees nothing this run: count
@@ -407,19 +394,12 @@ func gcTotalBytes(objs []gcObj) uint64 {
 }
 
 // confirmForceAfter asks the operator to confirm a --force-after delete
-// on stderr, reading the answer from gcStdin, unless yes is already
-// given. It refuses outright when gc's stdin is not a terminal and yes
-// was not given: a killed or scripted session must not silently delete
-// under a shortened retention. It reports ok=false, with the exit code
-// to return, when the run should stop instead of deleting.
-func confirmForceAfter(objs []gcObj, yes bool, stdout, stderr io.Writer) (exitCode int, ok bool) {
-	if yes {
-		return 0, true
-	}
-	if !gcStdinIsTerminal() {
-		_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after needs an interactive confirmation; stdin is not a terminal, pass --yes")
-		return 2, false
-	}
+// on stderr, and reads the answer from gcStdin. A closed or empty stdin
+// answers no, thus a killed session never deletes under a shortened
+// retention. A script answers with a pipe: "echo y | noahsark gc
+// --force-after=1h". It reports ok=false, with the exit code to return,
+// when the run must stop instead of deleting.
+func confirmForceAfter(objs []gcObj, stdout, stderr io.Writer) (exitCode int, ok bool) {
 	_, _ = fmt.Fprintf(stderr, "delete %d object(s), %d bytes? [y/N] ", len(objs), gcTotalBytes(objs))
 	scanner := bufio.NewScanner(gcStdin)
 	answer := ""
@@ -443,16 +423,4 @@ func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, b
 		}
 	}
 	return format.IndexObjectRecord{}, false
-}
-
-// gcTrimCache keeps only the trees and blobs reachable from the newest
-// keep cached snapshots, and deletes the rest, reporting how many
-// objects and bytes it removed. Every discs/<disc-uuid>/ catalog copy
-// and every snapshot object are always kept.
-func gcTrimCache(c *cache.Cache, keep int, dryRun bool) (int, uint64, error) {
-	newest, err := c.NewestSnapshotsByTime(keep)
-	if err != nil {
-		return 0, 0, err
-	}
-	return c.TrimToSnapshots(newest, dryRun)
 }

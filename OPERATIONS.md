@@ -219,8 +219,8 @@ objects to PACKED. `image build` makes the UDF image. The operator burns the
 image with the printed `growisofs` line, then runs `disc burned`, and the
 objects move to BURNED. The operator mounts the disc. `verify` reads every
 object back and compares, and the objects move to CLEAN. The retention timer
-then starts, and GC may delete the objects once they are GC-ELIGIBLE. GC never
-deletes an object that is not CLEAN.
+then starts, and `gc` may free the staged files once it has passed. `gc` frees
+the staged file of a CLEAN object only.
 
 **Restore.**
 
@@ -243,11 +243,10 @@ Every structure in this section lives on the host. None of its bytes reaches a
 disc. Every integer is little-endian, and every CRC is CRC-32C, with the
 parameters of FORMAT.md's "The format rules".
 
-### 3.1 State log header
+### 3.1 Log container header
 
-`<staging>/state.db` holds the staging state log.
-
-The log is append-only. It has a container header and fixed-width records.
+The local ref log carries this header. The state log carries no header:
+it is records alone, from byte 0.
 
 Header:
 
@@ -270,28 +269,29 @@ Header:
 
 ### 3.2 State log record
 
-Record, 96 bytes:
+`<staging>/state.db` holds the staging state log. It is append-only. It has
+no header. It is a whole number of fixed-width records, each 79 bytes:
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 0 | 32 | u8[32] | `content_id` | The object. |
-| 32 | 8 | i64 | `time_sec` | When the transition happened. For a BURNED record this is the **actual burn time**, and it is the only place the archive records it: no on-disc structure can, because every on-disc structure that would hold it is final and hashed before the burn (FORMAT.md's "Run header"). |
-| 40 | 4 | u32 | `time_nsec` | Nanoseconds. |
-| 44 | 1 | u8 | `state` | 1 STAGED, 2 PACKED, 3 BURNED, 4 CLEAN, 5 GC-ELIGIBLE, 6 DELETED. |
-| 45 | 1 | u8 | `kind` | Object kind registry. |
-| 46 | 1 | u8 | `reason` | 0 normal, 1 burn failed, 2 verify failed, 3 healed, 4 duplicate for locality. |
-| 47 | 1 | u8 | `compression` | Compression id. |
-| 48 | 8 | u64 | `stored_len` | Bytes stored. |
-| 56 | 8 | u64 | `run_seq` | The run, when the state is PACKED or later. 0 otherwise. |
-| 64 | 16 | u8[16] | `disc_uuid` | The disc, when known. All zero otherwise. |
-| 80 | 8 | u64 | `sequence` | Monotonic record number. |
-| 88 | 4 | u32 | `reserved_u32` | Zero. |
-| 92 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 91. |
+| 0 | 8 | u64 | `sequence` | Monotonic record number. It starts at 1. |
+| 8 | 32 | u8[32] | `content_id` | The object. |
+| 40 | 1 | u8 | `state` | 1 STAGED, 2 PACKED, 3 BURNED, 4 CLEAN, 5 ON-DISC. |
+| 41 | 8 | u64 | `run_seq` | The run, when the state is PACKED or later. 0 otherwise. It is a label; the disc uuid is the key. |
+| 49 | 16 | u8[16] | `disc_uuid` | The disc, when known. All zero otherwise. |
+| 65 | 1 | u8 | `reason` | 0 normal, 1 burn failed, 2 verify failed, 3 healed, 4 duplicate for locality. |
+| 66 | 1 | u8 | `verify_count` | Successful verifies of the object. It stops at 255. |
+| 67 | 8 | i64 | `clean_sec` | Unix time of the **first** successful verify. 0 before that verify. Every later record carries the value forward. |
+| 75 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 74. |
+
+The record holds no object kind, length or transition time. The run index
+holds the kind and the length. The burn time is not recorded: nothing reads
+it back.
 
 ### 3.3 Local ref log record
 
 **The local ref log.** `<repo>/refs.bin` is an append-only log with the
-header of the state log (section 3.1), magic `"NALR"`, `record_size` 128,
+container header of section 3.1, magic `"NALR"`, `record_size` 128,
 and these records:
 
 | Offset | Size | Type | Name | Meaning |
@@ -302,8 +302,7 @@ and these records:
 | 112 | 12 | u8[12] | `reserved` | Zero. |
 | 124 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 123. |
 
-The container header is the state log header of section 3.1 with `magic`
-`"NALR"` and `record_size` 128. Section 5.1 gives the resolution rules. A
+Section 5.1 gives the resolution rules. A
 record with `run_seq` 0 exists only here, never on a disc.
 
 ### 3.5 Cache index
@@ -320,7 +319,7 @@ A local index is an accelerator; the discs answer every question without it.
 
 ### 4.1 States and transitions
 
-The object states are STAGED, PACKED, BURNED, CLEAN, GC-ELIGIBLE and DELETED.
+The object states are STAGED, PACKED, BURNED, CLEAN and ON-DISC.
 
 ```
         commit
@@ -341,17 +340,20 @@ The object states are STAGED, PACKED, BURNED, CLEAN, GC-ELIGIBLE and DELETED.
                                                      | CLEAN  |
                                                      +--------+
                                                           |
-                                   retention timer passed |
+                                        gc, once the        |
+                                        retention timer     |
+                                        has passed          |
                          (staging.retain_after_clean, default 7 days)
                                                           v
                                                   +---------------+
-                                                  | GC-ELIGIBLE   |
+                                                  |    ON-DISC    |
                                                   +---------------+
-                                                          |
-                                                      gc  |
-                                                          v
-                                                       deleted
 ```
+
+ON-DISC means a disc holds the object and staging holds no file for it. It
+is the last state. `gc` records it before it unlinks the staged file.
+`rebuild-cache` records it for every object it reads from a disc's own
+catalog, because such an object was never staged here.
 
 There are exactly two arrows back, and both go from BURNED to PACKED: a failed
 `verify`, and `disc burned --undo`. The packed disc root and the image stay on
@@ -369,8 +371,8 @@ this way, and `gc` frees an object only at `gc.min_verified_copies` verifies.
 2. Each object counts its successful verifies. A successful `verify` of a
    BURNED object moves it to CLEAN and sets the count to 1. A successful
    `verify` of an object that is already CLEAN keeps it CLEAN and adds 1 to
-   the count. The count stops at 255. A GC-ELIGIBLE record and a DELETED
-   record carry the count forward.
+   the count. The count stops at 255. The ON-DISC record carries the count
+   forward.
 3. The clean time is the time of the first successful verify. A later verify
    does not change it. Thus the retention period counts from the first verify.
 4. The two identical copies of a disc carry the same disc uuid. The tool
@@ -380,7 +382,8 @@ this way, and `gc` frees an object only at `gc.min_verified_copies` verifies.
    the only transition from PACKED to BURNED. The operator runs it after the
    burn. `verify` never moves a PACKED object: a disc root that passes
    `verify` can be an image that no one burned.
-6. GC never deletes an object that is not CLEAN.
+6. `gc` frees the staged file of a CLEAN object only. It also frees an
+   orphan: a staged file whose object is already ON-DISC.
 7. GC is a separate command. The operator runs it manually.
 8. `disc burned --undo` moves the BURNED objects of a disc back to PACKED,
    with reason 1, after a bad burn. It refuses a disc that has a CLEAN object.
@@ -390,10 +393,12 @@ this way, and `gc` frees an object only at `gc.min_verified_copies` verifies.
    its count. The disc root and the image of the run stay on the local disk,
    thus the operator burns the same image on a new disc and verifies it.
 10. `commit` is the only entry point. A new object enters the machine at
-    STAGED. `rebuild-cache` records the objects of a fed disc as
-    PACKED.
+    STAGED. `rebuild-cache` records the objects of a fed disc as ON-DISC,
+    and leaves an object the log already knows at its own state. An ON-DISC
+    object needs no `disc burned` and no `verify`: the burn already
+    happened, and staging holds nothing to protect.
 11. The state log is authoritative only for objects that are not yet CLEAN.
-    Everything about a CLEAN object is derivable from the discs.
+    Everything about a CLEAN or ON-DISC object is derivable from the discs.
 12. There is no transition from PACKED back to STAGED. `verify --heal` repairs
     a disc root and writes no staged object.
 
@@ -405,16 +410,20 @@ The current state of an object is the newest record for that id, by
 A writer may compact the log by rewriting it with only the newest record per
 id, but only after every CLEAN object has been dropped.
 
-A record with a bad CRC ends the replay. Records after it are ignored, and the
-tool reports a truncated log. That is the correct behaviour after a crash
-during an append.
+There is one torn-tail rule, and it runs at open. A partial record at the end
+of the file, or a last record with a bad CRC, is what a crash during an
+append leaves. The tool cuts the file back to the last good record, prints
+one warning, and goes on. The next append then lands where a replay can
+reach it.
 
-An object with no record after a truncated replay is treated as STAGED.
+A bad record anywhere else is damage, not a torn tail, because good records
+follow it. The tool reports an error, names the record, changes no byte of
+the file, and stops. It never drops the good records behind the damage
+without saying so.
 
 Each append to the state log reports an error from the write or from the
-close of the log file. The command then stops and does not act on that record.
-The tool reports a torn tail as a warning and truncates it before the next
-append.
+close of the log file. The command then stops and does not act on that
+record.
 
 ### 4.4 What a partial `pack` leaves behind
 
@@ -432,25 +441,30 @@ deletes the part-written directory and runs `pack` again.
 
 ### 4.5 GC rules
 
-1. An object may be deleted only in state GC-ELIGIBLE.
-2. An object reaches GC-ELIGIBLE only after `staging.retain_after_clean` has
+1. `gc` frees the staged file of a CLEAN object only.
+2. `gc` frees it only after `staging.retain_after_clean` has
    passed since it first reached CLEAN.
-3. An object reaches GC-ELIGIBLE only when its verify count is at least
+3. `gc` frees it only when its verify count is at least
    `gc.min_verified_copies`, default 2. Two identical discs are the
    redundancy, thus `gc` holds the staged data until the second copy passes
    `verify`. `--force-after` shortens the retention period only. It never
    passes by this count. An operator who keeps one copy only sets
    `gc.min_verified_copies = 1`.
-4. GC must confirm, before every delete, that the object is present in at least
-   one run whose verification passed. The confirmation is an exact lookup in
-   the cached `INDEX.bin` of that run. `gc` leaves an object alone, and
-   reports it, when the cache does not hold the INDEX of the run.
+4. `gc` must confirm, before it frees a CLEAN object, that the object is
+   present in at least one run whose verification passed. The confirmation is
+   an exact lookup in the cached `INDEX.bin` of that run, found by the disc
+   uuid of the object's own record. `gc` leaves an object alone, and reports
+   it, when the cache does not hold that INDEX. An orphan needs no
+   confirmation: its own ON-DISC record already carries the answer.
 5. `gc --dry-run` prints what it would delete and how many bytes it would free.
-6. `gc` syncs the GC-ELIGIBLE record to disk before it deletes the staged
-   file, then marks the object DELETED. A sync error stops `gc` before the
-   delete, so a crash can never take the record away and leave the staged
-   file gone.
-7. `gc` prints one line for each disc that holds objects back, in the dry run
+6. `gc` writes the ON-DISC record and flushes it to the disk before it
+   unlinks the staged file. A flush error stops `gc` before the unlink, so a
+   crash can never take the record away and leave the staged file gone. A
+   crash between the two leaves an orphan: a staged file whose object is
+   already ON-DISC. The next `gc` run unlinks such an orphan. `gc` never
+   unlinks before the record is durable.
+7. `gc` never trims the local cache.
+8. `gc` prints one line for each disc that holds objects back, in the dry run
    and in the real run:
    `gc: disc UUID: C of N copies verified; K object(s) held; verify the second copy`.
 
@@ -1626,8 +1640,10 @@ lost repository. It merges into the state that exists. With one drive, the
 operator runs it one time for each disc, in any order. Two discs that carry the
 same sequence number are accepted: the disc uuid tells them apart.
 
-The rebuilt state does not know that a disc was burned or verified. The
-operator runs `disc burned` and `verify` again for each disc.
+`rebuild-cache` records the objects of a fed disc as ON-DISC: the disc holds
+them, and staging holds no file for them. Do not run `disc burned` or
+`verify` again for such a disc. There is nothing left in staging for them to
+protect.
 
 It prints `rebuild-cache: ok` when every disc that the fed discs name was fed.
 Otherwise it prints one `rebuild is partial: disc UUID (LABEL) not fed yet`
@@ -1645,11 +1661,10 @@ error. 3 when no usable disc was given.
 ### 16.20 `gc`
 
 ```
-noahsark gc [--repo=PATH] [--dry-run] [--keep-snapshots=N]
-            [--force-after=DURATION] [--yes]
+noahsark gc [--repo=PATH] [--dry-run] [--force-after=DURATION]
 ```
 
-Deletes staging objects that are GC-ELIGIBLE, under the rules of section 4.5.
+Frees the staged files of CLEAN objects, under the GC rules.
 It leaves an object alone, and reports it, when the disc that holds the object
 is not in the local cache. It confirms the object in the cached INDEX of that
 one disc, found by the disc uuid of the object's own state record.
@@ -1660,15 +1675,12 @@ default 2. It prints one line for each disc that holds objects back:
 It prints that line in the dry run and in the real run. No option passes by
 this count; `gc.min_verified_copies` is the only control.
 
-`gc` never trims the local cache by default. It trims the cache only when
-`--keep-snapshots` is given, or when `cache.snapshot_depth` is above 0.
+`gc` never trims the local cache.
 
 | Option | Meaning |
 |---|---|
 | `--dry-run` | Print the totals that `gc` would delete, one line for each disc, and delete nothing. When nothing is eligible, print `gc: nothing is eligible yet` and the earliest date at which an object becomes eligible. It asks for no confirmation. |
-| `--keep-snapshots` | Keep the cached trees and blobs that only the newest N snapshots reach, and drop the rest. Default `cache.snapshot_depth`. 0 means no limit. `rebuild-cache` brings dropped data back. |
-| `--force-after` | Shorten the retention for this run only. It does not change the verify count rule. It requires an interactive confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` and deletes only on `y` or `yes`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
-| `--yes` | Skip the confirmation of `--force-after`, for a script. Without `--yes`, `gc --force-after` refuses when standard input is not a terminal. |
+| `--force-after` | Shorten the retention for this run only. It does not change the verify count rule. It requires a confirmation: `gc` prints `delete N object(s), B bytes? [y/N]` on standard error and deletes only on `y` or `yes`. Any other answer, an empty line and a closed standard input all mean no. A script answers with a pipe: `echo y \| noahsark gc --force-after=1h`. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 
 Exit: 0 on success, and always for `--dry-run`. 1 when nothing was eligible.
 2 on any other failure at run time, on a usage error, and when the
@@ -1809,7 +1821,7 @@ A build must refuse an unknown key with a clear message that names the key.
 
 The build reads these keys: `repo.uuid`, `staging.dir`, `sources.root`,
 `commit.restat_after_read`, `commit.retry_unstable`, `fec.scheme`, `cache.dir`,
-`cache.format_version`, `cache.snapshot_depth`, `restore.staging_budget`,
+`cache.format_version`, `restore.staging_budget`,
 `staging.retain_after_clean`, `gc.min_verified_copies` and
 `repo.lock_timeout`. It refuses each other
 key of the tables below. Those keys name the values that the build holds as
@@ -1890,7 +1902,6 @@ Every key appears exactly once, in exactly one table below.
 | `gc.min_verified_copies` | integer | 2 | no | Successful verifies an object needs before `gc` may delete it. The default holds the staged data until the second identical disc passes `verify`. A value below 1 is a config error. An operator who keeps one copy only sets 1. |
 | `cache.dir` | path | see section 2.4 | no | Local cache location. |
 | `cache.format_version` | integer | 1 | no | Delete and rebuild on a mismatch. |
-| `cache.snapshot_depth` | integer | 0 | no | How many of the newest snapshots the cache keeps trees for; 0 means unlimited, and `gc` then trims nothing from the cache. `gc` applies it. `gc --keep-snapshots` overrides it for one run. |
 
 ### 17.13 Restore
 
@@ -1958,8 +1969,8 @@ same image.
 | 4 | The two copies of a disc are lost | `restore` with the other discs restores what they hold and names each object that it cannot find. Then `commit` the source into a new repository. |
 | 5 | The newest disc is lost | Each other disc carries the catalog as of its own burn. `restore`, `ls` and `log` work with the discs that remain. |
 | 6 | The local cache is lost or wrong | `rebuild-cache`, one time for each disc. |
-| 7 | The repository directory is lost | `rebuild-cache --repo=<new>`, one time for each disc. Do not run `init` first. Then `disc burned` and `verify` for each disc. |
-| 8 | The state log is truncated by a crash | The tool replays up to the bad record, reports the torn tail and truncates it before the next append. Run the interrupted command again. |
+| 7 | The repository directory is lost | `rebuild-cache --repo=<new>`, one time for each disc. Do not run `init` first. The discs come back as ON-DISC; no `disc burned` and no `verify` follow. |
+| 8 | The state log is truncated by a crash | At open, the tool cuts the torn tail, prints one warning and goes on. Run the interrupted command again. A bad record in the middle of the log is damage, not a torn tail: the tool reports it as an error and changes nothing. |
 | 9 | `pack` stops: a staged object fails its content id check, or a sync error occurs | `pack` records nothing, and the sequence numbers stay free. For a corrupt staged object, run `commit` again. Delete the part-written `--out` directory. Run `pack` again. |
 | 10 | A sync error in `gc` | `gc` stops before the delete. Run `gc` again. |
 | 11 | A file changes while `commit` reads it | The parent entry is reused, or the new content is stored with the `UNSTABLE` flag. `commit` reports the path. Run `commit` again later. |

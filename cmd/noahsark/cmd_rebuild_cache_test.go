@@ -41,7 +41,7 @@ func TestRebuildCacheFromDiscRestoresState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("image.Read: %v", err)
 	}
-	wantPacked := len(rr.Index.Objects)
+	wantOnDisc := len(rr.Index.Objects)
 
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
@@ -60,8 +60,8 @@ func TestRebuildCacheFromDiscRestoresState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stage.Open: %v", err)
 	}
-	if got := log.CountState(stage.Packed); got != wantPacked {
-		t.Fatalf("packed count = %d, want %d (disc INDEX object count)", got, wantPacked)
+	if got := log.CountState(stage.OnDiscOnly); got != wantOnDisc {
+		t.Fatalf("on-disc-only count = %d, want %d (disc INDEX object count)", got, wantOnDisc)
 	}
 
 	if id, err := resolveRef(repo, "BASE"); err != nil || id.TextForm() != snapID {
@@ -154,8 +154,11 @@ func TestRebuildCacheWordingDoesNotClaimClean(t *testing.T) {
 	if strings.Contains(out, "recorded packed:") {
 		t.Fatalf("rebuild-cache output %q uses the old wording, which would claim CLEAN objects are PACKED", out)
 	}
-	if !strings.Contains(out, "already past packed") {
-		t.Fatalf("rebuild-cache output %q missing a count of objects already past packed", out)
+	if !strings.Contains(out, "already known") {
+		t.Fatalf("rebuild-cache output %q missing a count of objects the log already knew", out)
+	}
+	if !strings.Contains(out, "objects recorded: 0 on disc") {
+		t.Fatalf("rebuild-cache output %q recorded an object the log already knew", out)
 	}
 }
 
@@ -552,7 +555,9 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 // shared number is a label, and the disc uuid keys every lookup. A
 // `disc burned` by the shared number is refused as ambiguous, and the
 // same command with a uuid prefix works. A verify marks the objects of
-// its own disc only, and every snapshot restores byte for byte.
+// its own disc only, and every snapshot restores byte for byte. A disc
+// that came back from its own catalog holds no staged object, thus no
+// verify moves it.
 func TestRebuildCacheAcceptsAReintroducedLostDisc(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -637,12 +642,20 @@ func TestRebuildCacheAcceptsAReintroducedLostDisc(t *testing.T) {
 		}
 	}
 
-	// Each verify must mark the objects of its own disc only. Verify one
-	// disc, then read the clean counts of all three back.
+	// Discs one and two came back from their own catalogs: staging holds
+	// no file for them, so they are on disc only and no verify can mark
+	// them CLEAN. Disc three was packed here, thus a verify of disc
+	// three, and only disc three, marks objects CLEAN.
 	roots := map[string]string{"one": discOne, "two": discTwoLost, "three": discThree}
-	verified := discs[byLabel(t, discs, "two")]
-	if code, out := runCmd(t, "verify", "--repo="+repo, roots["two"]); code != 0 {
-		t.Fatalf("verify disc two: exit %d: %s", code, out)
+	for _, label := range []string{"one", "two"} {
+		d := discs[byLabel(t, discs, label)]
+		if d.OnDiscOnlyObjects == 0 || d.OnDiscOnlyObjects != d.OnDiscObjects {
+			t.Fatalf("disc %s (%s): %d of %d objects on disc only, want all of them", d.UUID, d.Label, d.OnDiscOnlyObjects, d.OnDiscObjects)
+		}
+	}
+	verified := discs[byLabel(t, discs, "three")]
+	if code, out := runCmd(t, "verify", "--repo="+repo, roots["three"]); code != 0 {
+		t.Fatalf("verify disc three: exit %d: %s", code, out)
 	}
 	for _, d := range discListRows(t, repo) {
 		if d.UUID == verified.UUID {
@@ -652,7 +665,7 @@ func TestRebuildCacheAcceptsAReintroducedLostDisc(t *testing.T) {
 			continue
 		}
 		if d.CleanObjects != 0 {
-			t.Fatalf("disc %s (%s) has %d clean object(s); the verify of disc two marked another disc", d.UUID, d.Label, d.CleanObjects)
+			t.Fatalf("disc %s (%s) has %d clean object(s); the verify of disc three marked another disc", d.UUID, d.Label, d.CleanObjects)
 		}
 	}
 
@@ -680,10 +693,12 @@ func TestRebuildCacheAcceptsAReintroducedLostDisc(t *testing.T) {
 
 // discListRow is one row of "disc list --json", as the tests read it.
 type discListRow struct {
-	UUID         string `json:"uuid"`
-	Seq          uint64 `json:"seq"`
-	Label        string `json:"label"`
-	CleanObjects int    `json:"clean_objects"`
+	UUID              string `json:"uuid"`
+	Seq               uint64 `json:"seq"`
+	Label             string `json:"label"`
+	CleanObjects      int    `json:"clean_objects"`
+	OnDiscObjects     int    `json:"on_disc_objects"`
+	OnDiscOnlyObjects int    `json:"on_disc_only_objects"`
 }
 
 // discListRows runs "disc list --json" and returns its rows.

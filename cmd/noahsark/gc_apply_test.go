@@ -11,7 +11,7 @@ import (
 // TestGCApplyStagingObjectsSkipsAlreadyGoneFile checks that a gcObj
 // whose staged file does not exist frees no bytes and is not counted
 // deleted: only an object gc actually removed counts, even though the
-// state log still moves it on to Deleted.
+// state log still moves it on to ON-DISC.
 func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 	dir := t.TempDir()
 	l, err := stage.Open(dir)
@@ -25,9 +25,10 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 	}
 
 	objs := []gcObj{{
-		id:   id,
-		path: filepath.Join(dir, "objects", "no", "such-file"),
-		size: 1234,
+		id:          id,
+		path:        filepath.Join(dir, "objects", "no", "such-file"),
+		size:        1234,
+		needsRecord: true,
 	}}
 
 	deleted, bytesFreed := gcApplyStagingObjects(l, objs, false)
@@ -39,8 +40,8 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 	}
 
 	rec, ok := l.Get(id)
-	if !ok || rec.State != stage.Deleted {
-		t.Fatalf("got %+v, %v, want Deleted: the state machine still moves on", rec, ok)
+	if !ok || rec.State != stage.OnDiscOnly {
+		t.Fatalf("got %+v, %v, want OnDiscOnly: the state machine still moves on", rec, ok)
 	}
 }
 
@@ -63,7 +64,7 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	objs := []gcObj{{id: id, path: path, size: 7}}
+	objs := []gcObj{{id: id, path: path, size: 7, needsRecord: true}}
 
 	deleted, bytesFreed := gcApplyStagingObjects(l, objs, false)
 	if deleted != 1 {
