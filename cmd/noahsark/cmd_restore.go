@@ -37,13 +37,6 @@ var restoreStdin io.Reader = os.Stdin
 // insert the next one. This is the single-drive path; see
 // docs/decisions.md.
 func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	if refuseLaterPhaseFlags("restore", args, stderr) {
-		return 2
-	}
-	if refuseNotYetImplementedFlags("restore", args, stderr) {
-		return 2
-	}
-
 	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR\n"+
 		"       noahsark restore [--include=PATH]... [--overwrite] --mount=DIR [--no-eject] [--interactive] [--staging-budget=SIZE] SNAPSHOT OUT-DIR\n"+
 		"       noahsark restore --plan=FILE --mount=DIR [--overwrite] [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR",

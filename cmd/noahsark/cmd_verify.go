@@ -15,8 +15,8 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdVerify implements "noahsark verify --image=PATH". A drive mount
-// needs root, which this build never assumes, so --image here names a
+// cmdVerify implements "noahsark verify DISC-ROOT". A drive mount needs
+// root, which this build never assumes, so DISC-ROOT here names a
 // mounted disc path or an unpacked NOAHSARK tree, the same root
 // image.Read and restore.Heal already accept, instead of OPERATIONS.md's
 // raw image file plus --mapfile. See docs/decisions.md,
@@ -36,14 +36,9 @@ import (
 // verify moves any object still at BURNED back to PACKED, with the
 // verify-failed reason.
 func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	if refuseNotYetImplementedFlags("verify", args, stderr) {
-		return 2
-	}
-
-	fs := newFlagSet("noahsark verify [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]",
-		"Read a disc tree back and check it, optionally healing it first. DISC-ROOT and --image name the same thing; give only one.", stderr)
+	fs := newFlagSet("noahsark verify [--repo=DIR] [--heal] [--out=DIR] DISC-ROOT",
+		"Read a disc tree back and check it, optionally healing it first.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory, to update its staging state on a burned disc")
-	imagePath := fs.String("image", "", "mounted disc path or unpacked NOAHSARK tree")
 	heal := fs.Bool("heal", false, "repair the disc with Reed-Solomon parity before reporting")
 	healOut := fs.String("out", "", "heal into this directory instead of in place")
 	if err := fs.Parse(args); err != nil {
@@ -52,25 +47,15 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	if checkPositionalsForFlags("verify", fs, stderr) {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]")
+	if fs.NArg() != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] [--heal] [--out=DIR] DISC-ROOT")
 		return 2
 	}
-	if fs.NArg() == 1 && *imagePath != "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: verify: give DISC-ROOT or --image, not both")
-		return 2
-	}
-	if fs.NArg() == 1 {
-		*imagePath = fs.Arg(0)
-	}
-	if *imagePath == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] (--image=PATH | DISC-ROOT) [--heal] [--out=DIR]")
-		return 2
-	}
+	imagePath := fs.Arg(0)
 
-	target := *imagePath
+	target := imagePath
 	if *heal {
-		reports, err := restore.HealWithProgress(*imagePath, *healOut, prog)
+		reports, err := restore.HealWithProgress(imagePath, *healOut, prog)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
 			return 1
@@ -107,7 +92,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, stdout, stderr)
 		if notInRepo {
 			releaseLock(lk)
-			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark rebuild-cache --from-disc --disc=%s to add it\n",
+			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark rebuild-cache --disc=%s to add it\n",
 				uuidText(ident.DiscUUID), ident.Label, repoDir, target)
 			return 1
 		}

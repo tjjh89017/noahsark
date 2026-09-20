@@ -401,7 +401,7 @@ on a failure.
   for one run. It asks for confirmation. Add `--yes` in a script.
 - `--keep-snapshots=<N>` also trims the local cache to the newest N
   snapshots. By default, `gc` does not trim the cache.
-  `rebuild-cache --from-disc` restores trimmed data.
+  `rebuild-cache` restores trimmed data.
 - Do not delete files in `<REPO>/staging` by hand.
 
 See OPERATIONS.md, "Staging state machine".
@@ -416,13 +416,13 @@ No burned data is lost. Rebuild the state before the next pack.
 Otherwise `pack` writes all objects again. Do not run `init` first.
 
 ```sh
-noahsark rebuild-cache --from-disc --repo=<REPO> --discs-dir=<DISCS_DIR>
+noahsark rebuild-cache --repo=<REPO> --discs-dir=<DISCS_DIR>
 ```
 
 With one drive, run the command one time for each disc, in any order:
 
 ```sh
-noahsark rebuild-cache --from-disc --repo=<REPO> --disc=<MOUNT>
+noahsark rebuild-cache --repo=<REPO> --disc=<MOUNT>
 ```
 
 Expected result: `rebuild-cache: ok`, exit code 0. The message
@@ -482,7 +482,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `growisofs`: `media is not recognized as recordable DVD` | Load a blank BD-R, DVD+R or DVD-R. |
 | `image build` refuses the `mkudffs` version | Upgrade `udftools` to 2.3 or later, or burn the directory (step 5, alternative). |
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
-| `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --from-disc --disc=<MOUNT>`. |
+| `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `rebuild-cache --disc=<MOUNT>`. |
 | `pack`: `remaining staged`, exit code 1 | The data did not fit. Do step 10. |
 | `restore --overwrite`: `warning: <PATH>: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
 | `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |
@@ -491,7 +491,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |
 | `restore` or `ls`: ref `is not on the provided disc(s)` | A newer disc holds the ref. Give more discs. |
 | `is neither a snapshot id nor a known ref name` | The local cache does not know the name. Run `log` to list the names. |
-| `log`: `roots: (none)` | The root tree is on a disc that you did not give, or `gc` trimmed it from the cache. Give all discs, or run `rebuild-cache --from-disc`. |
-| `plan`: `cache: no run is cached yet` | Run `rebuild-cache --from-disc` with a disc, then plan again. |
+| `log`: `roots: (none)` | The root tree is on a disc that you did not give, or `gc` trimmed it from the cache. Give all discs, or run `rebuild-cache`. |
+| `plan`: `cache: no run is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
 | `repository lock <REPO>/lock is held by pid <PID>` | Wait for the other noahsark command to end. |

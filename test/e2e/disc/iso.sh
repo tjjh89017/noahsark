@@ -131,7 +131,7 @@ iso_plain_level4_check() {
 	fi
 	log "iso: plain level 4 image folded the root to: $root_name"
 
-	"$BIN" verify --image="$plain_mnt"
+	"$BIN" verify "$plain_mnt"
 	assert_listing_matches "$plain_mnt" "$work"
 
 	"$BIN" restore "$plain_mnt" "$snap" "$plain_restored"
@@ -164,7 +164,7 @@ iso_joliet_negative_check() {
 	truncated="$(awk 'length($0) != 68 { print; exit }' <<<"$listing")"
 
 	local verify_code=0
-	"$BIN" verify --image="$joliet_mnt" >"$work/joliet-verify.log" 2>&1
+	"$BIN" verify "$joliet_mnt" >"$work/joliet-verify.log" 2>&1
 	verify_code=$?
 	set -e
 
@@ -227,7 +227,7 @@ scenario_iso() {
 	iso_assert_object_names "$mnt" "$tree"
 	iso_assert_fixed_files "$mnt" "$tree"
 
-	"$BIN" verify --image="$mnt"
+	"$BIN" verify "$mnt"
 	assert_listing_matches "$mnt" "$work"
 
 	t0=$(date +%s)

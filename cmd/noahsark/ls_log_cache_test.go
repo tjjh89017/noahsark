@@ -96,7 +96,7 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 
 	lastDisc := discRoots[len(discRoots)-1]
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+lastDisc); code == 2 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+lastDisc); code == 2 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
 
@@ -104,7 +104,7 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	if code != 3 {
 		t.Fatalf("ls: exit %d, want 3: %s", code, out)
 	}
-	if !strings.Contains(out, "not complete in the cache") || !strings.Contains(out, "rebuild-cache --from-disc") {
+	if !strings.Contains(out, "not complete in the cache") || !strings.Contains(out, "rebuild-cache") {
 		t.Fatalf("ls output %q does not report an incomplete cache", out)
 	}
 }

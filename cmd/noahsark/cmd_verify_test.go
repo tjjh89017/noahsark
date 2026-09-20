@@ -80,7 +80,7 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 0 {
 		t.Fatalf("verify (unburned): exit %d: %s", code, out)
 	}
@@ -129,7 +129,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 		t.Fatalf("disc burned output %q did not mark objects burned", out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 0 {
 		t.Fatalf("verify (burned): exit %d: %s", code, out)
 	}
@@ -143,7 +143,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	// A second verify of the same disc is idempotent: every object is
 	// already CLEAN, so nothing more is marked, and the CLEAN line does
 	// not print at all, since no object was BURNED this time.
-	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 0 {
 		t.Fatalf("verify (mounted, second pass): exit %d: %s", code, out)
 	}
@@ -188,7 +188,7 @@ func TestDiscBurnedUndo(t *testing.T) {
 		t.Fatalf("disc burned --undo output %q did not return objects to packed", out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 0 {
 		t.Fatalf("verify (after undo): exit %d: %s", code, out)
 	}
@@ -224,7 +224,7 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mounted); code != 0 {
+	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 
@@ -238,7 +238,7 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 
 	// Nothing changed: a following verify still reports every object
 	// CLEAN, not reset to PACKED.
-	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 0 {
 		t.Fatalf("verify (after refused undo): exit %d: %s", code, out)
 	}
@@ -385,7 +385,7 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	chunkPath := findAChunkFile(t, base)
 	flipByte(t, chunkPath, 70) // inside the payload, past the header
 
-	code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 1 {
 		t.Fatalf("verify (corrupt): exit %d, want 1: %s", code, out)
 	}
@@ -402,7 +402,7 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 		t.Fatalf("disc burned (again): exit %d: %s", code, out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted)
+	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
 	if code != 0 {
 		t.Fatalf("verify (repaired): exit %d: %s", code, out)
 	}
@@ -438,7 +438,7 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 
 	// repoA's ledger has never seen this disc uuid: verify refuses
 	// rather than silently reporting ok against the wrong repository.
-	code, out := runCmd(t, "verify", "--repo="+repoA, "--image="+mounted)
+	code, out := runCmd(t, "verify", "--repo="+repoA, mounted)
 	if code != 1 {
 		t.Fatalf("verify: exit %d, want 1: %s", code, out)
 	}
@@ -453,9 +453,8 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	}
 }
 
-// TestVerifyAcceptsPositionalDiscRoot checks that a bare DISC-ROOT
-// works exactly like --image=DISC-ROOT, and that giving both is
-// refused rather than silently picking one.
+// TestVerifyAcceptsPositionalDiscRoot checks that verify takes exactly
+// one DISC-ROOT positional argument, and refuses two.
 func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -483,11 +482,8 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 		t.Fatalf("verify DISC-ROOT output %q missing verify: ok", out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, "--image="+mounted, mounted)
+	code, out = runCmd(t, "verify", "--repo="+repo, mounted, mounted)
 	if code != 2 {
-		t.Fatalf("verify DISC-ROOT and --image together: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "not both") {
-		t.Fatalf("verify DISC-ROOT and --image together output %q missing the not-both refusal", out)
+		t.Fatalf("verify with two DISC-ROOT arguments: exit %d, want 2: %s", code, out)
 	}
 }

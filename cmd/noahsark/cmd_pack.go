@@ -20,20 +20,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// mediaTypes maps a --media name to its FORMAT.md registry value.
-// media_type is informational only and never gates reading or writing.
-var mediaTypes = map[string]format.MediaType{
-	"BD-R-SL-25":  format.MediaTypeBDRSL25GB,
-	"BD-R-DL-50":  format.MediaTypeBDRDL50GB,
-	"BD-R-XL-100": format.MediaTypeBDRXL100GB,
-	"BD-R-XL-128": format.MediaTypeBDRXL128GB,
-	"DVD+R-SL":    format.MediaTypeDVDPlusRSL,
-	"DVD-R-SL":    format.MediaTypeDVDMinusRSL,
-}
-
 // mediaPresetAliases maps a --capacity preset name to the media type a
-// pack built with that preset should record. --media accepts the same
-// names, case insensitive.
+// pack built with that preset records in DISC.bin's media_type field,
+// case insensitive.
 var mediaPresetAliases = map[string]format.MediaType{
 	"bd25":  format.MediaTypeBDRSL25GB,
 	"bd50":  format.MediaTypeBDRDL50GB,
@@ -43,27 +32,15 @@ var mediaPresetAliases = map[string]format.MediaType{
 	"dvd-r": format.MediaTypeDVDMinusRSL,
 }
 
-// resolveMediaType picks the media type a pack records. An explicit
-// --media value is matched first against the registry names of
-// mediaTypes, then against a capacity preset name (case insensitive).
-// With no --media, the media type is derived from the matching
-// --capacity preset; media_type is informational (FORMAT.md's media
-// type registry), so every preset, BD or DVD, has an entry and none is
-// ever refused on that basis.
-func resolveMediaType(mediaGiven bool, media, capacityStr string) (format.MediaType, error) {
-	if mediaGiven {
-		if mt, ok := mediaTypes[strings.ToUpper(media)]; ok {
-			return mt, nil
-		}
-		if mt, ok := mediaPresetAliases[strings.ToLower(media)]; ok {
-			return mt, nil
-		}
-		return 0, fmt.Errorf("unknown media type %q", media)
-	}
+// discMediaType picks the media type a pack records: the type of the
+// --capacity preset when capacityStr names one, else the BD-R-SL-25
+// default. media_type is informational only (FORMAT.md's media type
+// registry) and never gates reading or writing.
+func discMediaType(capacityStr string) format.MediaType {
 	if mt, ok := mediaPresetAliases[strings.ToLower(capacityStr)]; ok {
-		return mt, nil
+		return mt
 	}
-	return mediaTypes["BD-R-SL-25"], nil
+	return format.MediaTypeBDRSL25GB
 }
 
 // cmdPack implements "noahsark pack". It reduces OPERATIONS.md's pack
@@ -74,14 +51,7 @@ func resolveMediaType(mediaGiven bool, media, capacityStr string) (format.MediaT
 // forward every pending ref, falling back to LATEST only when that
 // leaves nothing. See docs/decisions.md, "16. CLI reference".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	if refuseLaterPhaseFlags("pack", args, stderr) {
-		return 2
-	}
-	if refuseNotYetImplementedFlags("pack", args, stderr) {
-		return 2
-	}
-
-	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--physical-capacity=N] [--label=TEXT] [--media=NAME] [--out=DIR] [--fec | --no-fec] [--close]",
+	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--physical-capacity=N] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close]",
 		"Pack staged objects into the next run.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
@@ -90,7 +60,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); required")
 	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity (sectors, a preset, or a byte size); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
 	label := fs.String("label", "", "human label for the disc")
-	media := fs.String("media", "", "media type: a FORMAT.md registry name (e.g. BD-R-SL-25), or a --capacity preset name (bd25, bd50, bd100, bd128, dvd+r, dvd-r); default derived from --capacity, else BD-R-SL-25")
 	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <repo>/staging/plans/<disc uuid>/tree")
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
 	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
@@ -142,11 +111,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		}
 	}
 
-	mediaType, err := resolveMediaType(*media != "", *media, *capacityStr)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 2
-	}
+	mediaType := discMediaType(*capacityStr)
 
 	snapIDs := []string(snapshotFlags)
 	if *ref != "" && len(snapIDs) > 0 {
@@ -344,7 +309,7 @@ func printNextSteps(stdout io.Writer, repoDir, treeDir, capacityArg, discUUID st
 	_, _ = fmt.Fprintf(stdout, "  growisofs -speed=%d -use-the-force-luke=%s,tty %s-Z %s=%s\n",
 		burnerDefaultSpeed, spareMode, dvdCompat, burnerDefaultDevice, imagePath)
 	_, _ = fmt.Fprintf(stdout, "  noahsark disc burned --repo=%s %s\n", repoDir, discUUID)
-	_, _ = fmt.Fprintf(stdout, "  noahsark verify --repo=%s --image=<mount point>\n", repoDir)
+	_, _ = fmt.Fprintf(stdout, "  noahsark verify --repo=%s <mount point>\n", repoDir)
 }
 
 // dirIsEmptyOrMissing reports whether path does not exist yet, or exists

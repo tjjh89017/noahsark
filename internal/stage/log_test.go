@@ -581,35 +581,6 @@ func TestBurnUndoReturnsBurnedToPacked(t *testing.T) {
 	}
 }
 
-func TestBurnTime(t *testing.T) {
-	dir := t.TempDir()
-	l, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	discUUID := [16]byte{0x34}
-
-	if _, ok := l.BurnTime(discUUID); ok {
-		t.Fatal("BurnTime reported a time before RecordBurnTime ran")
-	}
-	if err := l.RecordBurnTime(discUUID); err != nil {
-		t.Fatal(err)
-	}
-	burnedAt, ok := l.BurnTime(discUUID)
-	if !ok || burnedAt.IsZero() {
-		t.Fatalf("BurnTime after RecordBurnTime: got %v, %v", burnedAt, ok)
-	}
-
-	l2, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	burnedAt2, ok := l2.BurnTime(discUUID)
-	if !ok || !burnedAt2.Equal(burnedAt) {
-		t.Fatalf("reopened BurnTime: got %v, %v, want %v", burnedAt2, ok, burnedAt)
-	}
-}
-
 // TestStateOnDisc checks that OnDisc names every state a disc already
 // holds an object's data for: Packed, Burned, Clean, GCEligible and
 // Deleted, and only those.

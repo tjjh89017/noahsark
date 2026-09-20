@@ -41,11 +41,10 @@ var gcStdinIsTerminal = func() bool {
 // alone would leave no way to try a different depth without editing the
 // repository. See docs/decisions.md, "4. Staging state machine".
 func cmdGC(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark gc [--dry-run] [--verbose] [--keep-snapshots=N] [--force-after=DURATION] [--yes]",
+	fs := newFlagSet("noahsark gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]",
 		"Delete GC-ELIGIBLE staging objects and trim the local cache.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	dryRun := fs.Bool("dry-run", false, "print what would be deleted, and free nothing")
-	verbose := fs.Bool("verbose", false, "with --dry-run, print one \"would delete\" line per object instead of a summary")
 	keepSnapshots := fs.Int("keep-snapshots", -1, "keep cache trees and blobs reachable from only the newest N snapshots; default cache.snapshot_depth")
 	forceAfter := fs.String("force-after", "", "shorten retention to this duration for this run only, ignoring staging.retain_after_clean; requires confirmation")
 	yes := fs.Bool("yes", false, "skip --force-after's interactive confirmation")
@@ -56,7 +55,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--verbose] [--keep-snapshots=N] [--force-after=DURATION] [--yes]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--keep-snapshots=N] [--force-after=DURATION] [--yes]")
 		return 2
 	}
 	if *keepSnapshots < -1 {
@@ -133,7 +132,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 	}
-	objDeleted, objBytes := gcApplyStagingObjects(stageLog, candidates, *dryRun, *verbose, stdout)
+	objDeleted, objBytes := gcApplyStagingObjects(stageLog, candidates, *dryRun)
 
 	depth := cfg.CacheSnapshotDepth
 	if *keepSnapshots >= 0 {
@@ -154,7 +153,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		verb = "would delete"
 	}
 	_, _ = fmt.Fprintf(stdout, "gc: staging: %s %d object(s), %d bytes\n", verb, objDeleted, objBytes)
-	if *dryRun && !*verbose {
+	if *dryRun {
 		printDryRunGroupSummary(candidates, stdout)
 	}
 	_, _ = fmt.Fprintf(stdout, "gc: cache: %s %d tree(s)/blob(s), %d bytes\n", verb, treesDeleted, treesBytes)
@@ -271,15 +270,12 @@ func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retai
 }
 
 // gcApplyStagingObjects deletes (or, under dryRun, reports) every object
-// gcPlanStagingObjects listed. Under dryRun, verbose prints one "would
-// delete" line per object; without it, gcApplyStagingObjects prints
-// nothing per object at all, leaving the summary to printDryRunSummary.
-func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun, verbose bool, stdout io.Writer) (deleted int, bytesFreed uint64) {
+// gcPlanStagingObjects listed. Under dryRun, gcApplyStagingObjects
+// prints nothing per object, leaving the report to
+// printDryRunGroupSummary's per-run summary.
+func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int, bytesFreed uint64) {
 	for _, o := range objs {
 		if dryRun {
-			if verbose {
-				_, _ = fmt.Fprintf(stdout, "would delete %s (%d bytes, run %d)\n", o.id.TextForm(), o.size, o.runSeq)
-			}
 			deleted++
 			bytesFreed += o.size
 			continue
@@ -309,9 +305,7 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun, verbose bool, std
 
 // printDryRunGroupSummary prints one line per run_seq objs groups by,
 // each with that run's own eligible object count and bytes, in
-// ascending run_seq order. It is gc --dry-run's default report, in
-// place of a "would delete" line per object; --verbose prints those
-// instead, through gcApplyStagingObjects.
+// ascending run_seq order. It is gc --dry-run's whole report.
 func printDryRunGroupSummary(objs []gcObj, stdout io.Writer) {
 	type group struct {
 		objects int

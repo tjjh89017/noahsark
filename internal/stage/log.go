@@ -101,30 +101,6 @@ const cleanTimeFileName = "clean_times.db"
 // cleanTimeRecordLen is the fixed size of one clean_times.db record.
 const cleanTimeRecordLen = 32 + 8 + 4
 
-// burnTimeFileName is the burn time companion log's file name inside a
-// staging directory. Burning happens per disc, not per object, and the
-// ledger row this build keeps (image.LoadDiscsLedger) is the same
-// struct as the on-disc DISCS row, which carries no burn time field, so
-// this build never writes one there. Instead it records the moment
-// "disc burned" ran for a disc uuid in this second, append-only file:
-// disc uuid (16), unix nanoseconds (8), crc32c (4), replayed the same
-// way state.db is.
-const burnTimeFileName = "burn_times.db"
-
-// burnTimeRecordLen is the fixed size of one burn_times.db record.
-const burnTimeRecordLen = 16 + 8 + 4
-
-// fedDiscFileName is the fed-disc companion log's file name inside a
-// staging directory. rebuild-cache replays one disc's own catalog at a
-// time, and a disc's DISCS table can name a sibling disc it never read
-// itself. This file records only the discs rebuild-cache actually fed:
-// disc uuid (16), crc32c (4), one record per disc fed, across every
-// rebuild-cache call this repository has ever run.
-const fedDiscFileName = "fed_discs.db"
-
-// fedDiscRecordLen is the fixed size of one fed_discs.db record.
-const fedDiscRecordLen = 16 + 4
-
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Record is one state.db record: an object's state as of Sequence, and,
@@ -188,14 +164,6 @@ type Log struct {
 	cleanPath string
 	cleanAt   map[object.ID]time.Time
 	cleanTail tailState
-
-	burnPath string
-	burnAt   map[[16]byte]time.Time
-	burnTail tailState
-
-	fedPath  string
-	fedDiscs map[[16]byte]bool
-	fedTail  tailState
 }
 
 // Truncated reports whether Open's replay of state.db stopped at a bad
@@ -218,10 +186,6 @@ func Open(stagingDir string) (*Log, error) {
 		nextSeq:   1,
 		cleanPath: filepath.Join(stagingDir, cleanTimeFileName),
 		cleanAt:   make(map[object.ID]time.Time),
-		burnPath:  filepath.Join(stagingDir, burnTimeFileName),
-		burnAt:    make(map[[16]byte]time.Time),
-		fedPath:   filepath.Join(stagingDir, fedDiscFileName),
-		fedDiscs:  make(map[[16]byte]bool),
 	}
 	data, err := os.ReadFile(l.path)
 	if err != nil {
@@ -247,12 +211,6 @@ func Open(stagingDir string) (*Log, error) {
 		}
 	}
 	if err := l.loadCleanTimes(); err != nil {
-		return nil, err
-	}
-	if err := l.loadBurnTimes(); err != nil {
-		return nil, err
-	}
-	if err := l.loadFedDiscs(); err != nil {
 		return nil, err
 	}
 	return l, nil
@@ -465,123 +423,21 @@ func (l *Log) CleanTime(id object.ID) (time.Time, bool) {
 	return t, ok
 }
 
-// RecordBurnTime appends a record to the burn time companion log,
-// naming when "disc burned" ran for discUUID.
-func (l *Log) RecordBurnTime(discUUID [16]byte) error {
-	if err := fixTornTail(l.burnPath, &l.burnTail); err != nil {
-		return err
-	}
-
-	buf := make([]byte, burnTimeRecordLen)
-	copy(buf[0:16], discUUID[:])
-	binary.LittleEndian.PutUint64(buf[16:24], uint64(time.Now().UnixNano()))
-	crc := crc32.Checksum(buf[0:24], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[24:28], crc)
-
-	if err := writeRecord(l.burnPath, buf); err != nil {
-		return err
-	}
-
-	l.burnAt[discUUID] = time.Unix(0, int64(binary.LittleEndian.Uint64(buf[16:24])))
-	return nil
-}
-
-// BurnTime returns the time "disc burned" last ran for discUUID, and
-// whether the burn time companion log has a record for it.
-func (l *Log) BurnTime(discUUID [16]byte) (time.Time, bool) {
-	t, ok := l.burnAt[discUUID]
-	return t, ok
-}
-
-// loadBurnTimes reads and replays the burn time companion log, if one
-// exists. A record with a bad CRC ends the replay, matching state.db's
-// own truncated-tail rule.
-func (l *Log) loadBurnTimes() error {
-	data, err := os.ReadFile(l.burnPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stage: %w", err)
-	}
-	off := 0
-	for ; off+burnTimeRecordLen <= len(data); off += burnTimeRecordLen {
-		rec := data[off : off+burnTimeRecordLen]
-		crc := binary.LittleEndian.Uint32(rec[24:28])
-		if crc != crc32.Checksum(rec[0:24], crc32cTable) {
-			break
-		}
-		var discUUID [16]byte
-		copy(discUUID[:], rec[0:16])
-		nanos := int64(binary.LittleEndian.Uint64(rec[16:24]))
-		l.burnAt[discUUID] = time.Unix(0, nanos)
-	}
-	l.burnTail.validLen = int64(off)
-	if off < len(data) {
-		l.burnTail.truncated = true
-		l.burnTail.ignoredBytes = int64(len(data) - off)
-	}
-	return nil
-}
-
-// RecordFedDisc appends discUUID to the fed-disc companion log, unless
-// it is already recorded. rebuild-cache calls this once for every disc
-// whose own catalog it replayed this call, so FedDiscs answers "was this
-// disc itself ever fed", not "does some ledger row merely name it".
-func (l *Log) RecordFedDisc(discUUID [16]byte) error {
-	if l.fedDiscs[discUUID] {
-		return nil
-	}
-	if err := fixTornTail(l.fedPath, &l.fedTail); err != nil {
-		return err
-	}
-	buf := make([]byte, fedDiscRecordLen)
-	copy(buf[0:16], discUUID[:])
-	crc := crc32.Checksum(buf[0:16], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[16:20], crc)
-
-	if err := writeRecord(l.fedPath, buf); err != nil {
-		return err
-	}
-
-	l.fedDiscs[discUUID] = true
-	return nil
-}
-
-// FedDiscs reports whether discUUID's own catalog has ever been
-// replayed by a rebuild-cache call against this repository.
+// FedDiscs reports whether the state log holds a current on-disc record
+// (Packed, Burned, Clean, GCEligible or Deleted) naming discUUID as the
+// disc that holds it. rebuild-cache calls EnsurePacked for every object
+// of a disc's own catalog before asking this, and Pack always refuses to
+// create a run with no objects ("nothing to pack: no staged object
+// remains"), so every disc that was ever packed leaves at least one such
+// record; there is no disc that is fed and yet leaves the state log
+// empty for it.
 func (l *Log) FedDiscs(discUUID [16]byte) bool {
-	return l.fedDiscs[discUUID]
-}
-
-// loadFedDiscs reads and replays the fed-disc companion log, if one
-// exists. A record with a bad CRC ends the replay, matching state.db's
-// own truncated-tail rule.
-func (l *Log) loadFedDiscs() error {
-	data, err := os.ReadFile(l.fedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	for _, rec := range l.current {
+		if rec.State.OnDisc() && rec.DiscUUID == discUUID {
+			return true
 		}
-		return fmt.Errorf("stage: %w", err)
 	}
-	off := 0
-	for ; off+fedDiscRecordLen <= len(data); off += fedDiscRecordLen {
-		rec := data[off : off+fedDiscRecordLen]
-		crc := binary.LittleEndian.Uint32(rec[16:20])
-		if crc != crc32.Checksum(rec[0:16], crc32cTable) {
-			break
-		}
-		var discUUID [16]byte
-		copy(discUUID[:], rec[0:16])
-		l.fedDiscs[discUUID] = true
-	}
-	l.fedTail.validLen = int64(off)
-	if off < len(data) {
-		l.fedTail.truncated = true
-		l.fedTail.ignoredBytes = int64(len(data) - off)
-	}
-	return nil
+	return false
 }
 
 // appendCloser is the file-like value openAppend returns: enough to
@@ -606,10 +462,9 @@ var openAppend = func(path string) (appendCloser, error) {
 // writeRecord appends buf to path and reports whether it reached the
 // operating system. A record is not written until Close succeeds: a
 // buffered write can still be sitting in memory when Write returns, so
-// every one of state.db's four appenders (append, recordCleanTime,
-// RecordBurnTime, RecordFedDisc) goes through this one helper, and none
-// of them may treat a record as written, or update its own in-memory
-// state, until writeRecord itself returns nil.
+// both of state.db's appenders (append, recordCleanTime) go through this
+// one helper, and neither may treat a record as written, or update its
+// own in-memory state, until writeRecord itself returns nil.
 //
 // It does not flush the record to the disc. Commit writes one record
 // per object, and a sync per object would dominate its cost; a lost

@@ -2,11 +2,11 @@
 # The rebuild-cache e2e scenario: sourced by run.sh. Proves a lost
 # repository directory is fully recoverable from discs alone: log, ls
 # and restore already work with no repository, and rebuild-cache
-# --from-disc restores the state log, the disc ledger and the refs, so a
-# later pack dedups against what the discs already hold instead of
-# burning everything again. See run.sh for the shared scenario dispatch
-# and lib.sh for build_binary, mount_populate and the media_* helpers,
-# and chain.sh for chain_assert_missing_disc.
+# restores the state log, the disc ledger and the refs, so a later pack
+# dedups against what the discs already hold instead of burning
+# everything again. See run.sh for the shared scenario dispatch and
+# lib.sh for build_binary, mount_populate and the media_* helpers, and
+# chain.sh for chain_assert_missing_disc.
 set -euo pipefail
 
 # REBUILD_BASE_BYTES and REBUILD_ADD_BYTES size the base fixture and the
@@ -51,7 +51,7 @@ scenario_rebuild() {
 
 	sudo "$BIN" image build --out="$image1" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree1"
 	mount_populate "$image1" "$tree1" "$mnt1"
-	"$BIN" verify --image="$mnt1"
+	"$BIN" verify "$mnt1"
 
 	# Losing the whole repository directory: config, staging objects and
 	# the state log all go together, the same way the incremental
@@ -97,9 +97,9 @@ scenario_rebuild() {
 	assert_dirs_equal "$restored_dir$one_dir" "$one_dir"
 	log "rebuild: --include restore of one file and one directory matches"
 
-	# rebuild-cache --from-disc with disc 1 alone: exit 0, and the state
+	# rebuild-cache with disc 1 alone: exit 0, and the state
 	# log's packed count must equal disc 1's own INDEX object count.
-	"$BIN" rebuild-cache --from-disc --repo="$repo" --disc="$mnt1"
+	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1"
 	local index_count1 packed_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
 	packed_count1="$(run_tool ci-state-count "$repo/staging")"
@@ -139,7 +139,7 @@ scenario_rebuild() {
 	sudo "$BIN" image build --out="$image2" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree2"
 	mount_populate "$image2" "$tree2" "$mnt2"
 	local verify_out2
-	verify_out2="$("$BIN" verify --image="$mnt2")"
+	verify_out2="$("$BIN" verify "$mnt2")"
 	echo "$verify_out2"
 	if ! echo "$verify_out2" | grep -qE 'discs: 2$'; then
 		fail "rebuild: disc 2's DISCS table does not record 2 discs (expected disc 1 as a prerequisite)"
@@ -156,7 +156,7 @@ scenario_rebuild() {
 
 	# rebuild-cache again, with both discs: exit 0, same packed count as
 	# after the first rebuild plus disc 2's own new objects.
-	"$BIN" rebuild-cache --from-disc --repo="$repo" --disc="$mnt1" --disc="$mnt2"
+	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1" --disc="$mnt2"
 	local index_count2 packed_count2 want_count2
 	index_count2="$(run_tool ci-index-count "$mnt2")"
 	packed_count2="$(run_tool ci-state-count "$repo/staging")"
@@ -166,7 +166,7 @@ scenario_rebuild() {
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
-	"$BIN" rebuild-cache --from-disc --repo="$repo" --disc="$mnt1" --disc="$mnt2"
+	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1" --disc="$mnt2"
 	local packed_count3
 	packed_count3="$(run_tool ci-state-count "$repo/staging")"
 	if [ "$packed_count3" != "$packed_count2" ]; then
@@ -180,7 +180,7 @@ scenario_rebuild() {
 	uuid1="$(run_tool ci-disc-uuid "$mnt1")"
 	local rebuild_out rebuild_code
 	set +e
-	rebuild_out="$("$BIN" rebuild-cache --from-disc --repo="$repo" --disc="$mnt2" 2>&1)"
+	rebuild_out="$("$BIN" rebuild-cache --repo="$repo" --disc="$mnt2" 2>&1)"
 	rebuild_code=$?
 	set -e
 	echo "$rebuild_out"

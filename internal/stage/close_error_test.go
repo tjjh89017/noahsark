@@ -90,46 +90,6 @@ func TestAppendSurfacesCloseErrorAndKeepsStateConsistent(t *testing.T) {
 	}
 }
 
-// TestRecordBurnTimeSurfacesCloseError checks the burn time companion
-// appender the same way.
-func TestRecordBurnTimeSurfacesCloseError(t *testing.T) {
-	dir := t.TempDir()
-	l, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var discUUID [16]byte
-	copy(discUUID[:], "0123456789abcdef")
-
-	withFailingClose(t)
-	if err := l.RecordBurnTime(discUUID); !errors.Is(err, errInjectedClose) {
-		t.Fatalf("RecordBurnTime error = %v, want it to wrap %v", err, errInjectedClose)
-	}
-	if _, ok := l.BurnTime(discUUID); ok {
-		t.Fatal("a burn time whose Close failed must not be recorded")
-	}
-}
-
-// TestRecordFedDiscSurfacesCloseError checks the fed-disc companion
-// appender the same way.
-func TestRecordFedDiscSurfacesCloseError(t *testing.T) {
-	dir := t.TempDir()
-	l, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var discUUID [16]byte
-	copy(discUUID[:], "fedcba9876543210")
-
-	withFailingClose(t)
-	if err := l.RecordFedDisc(discUUID); !errors.Is(err, errInjectedClose) {
-		t.Fatalf("RecordFedDisc error = %v, want it to wrap %v", err, errInjectedClose)
-	}
-	if l.FedDiscs(discUUID) {
-		t.Fatal("a fed-disc record whose Close failed must not be recorded")
-	}
-}
-
 // TestMarkCleanSurfacesCloseError checks recordCleanTime, reached
 // through MarkClean, the same way. It injects the Close failure only on
 // clean_times.db, so state.db's own Burned-to-Clean record still writes

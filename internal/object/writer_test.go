@@ -205,11 +205,48 @@ func TestEveryObjectDecodesAndItsIDMatchesItsFileName(t *testing.T) {
 	verifyAllObjectsValid(t, staging)
 }
 
+// decodeObject reads the CommonHeader at the start of buf and decodes the
+// chunk, blob, tree, or snapshot it names. It is a test-only stand-in for
+// scanning an object file of unknown kind.
+func decodeObject(buf []byte) (any, error) {
+	var h format.CommonHeader
+	if err := h.Decode(buf); err != nil {
+		return nil, err
+	}
+	switch h.MagicKind {
+	case format.MagicChunk:
+		var v format.Chunk
+		if _, err := v.Decode(buf); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	case format.MagicBlob:
+		var v format.Blob
+		if _, err := v.Decode(buf); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	case format.MagicTree:
+		var v format.Tree
+		if _, err := v.Decode(buf); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	case format.MagicSnapshot:
+		var v format.Snapshot
+		if _, err := v.Decode(buf); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	default:
+		return nil, format.ErrBadMagic
+	}
+}
+
 // verifyAllObjectsValid decodes every object and snapshot file under
-// staging through format.Dispatch and checks that recomputing its
-// content id from the decoded value reproduces the file name. It fails
-// the test on the first object that does not decode or whose id does not
-// match.
+// staging and checks that recomputing its content id from the decoded
+// value reproduces the file name. It fails the test on the first object
+// that does not decode or whose id does not match.
 func verifyAllObjectsValid(t *testing.T, staging string) {
 	t.Helper()
 	for _, rel := range listFiles(t, staging) {
@@ -218,9 +255,9 @@ func verifyAllObjectsValid(t *testing.T, staging string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		v, _, err := format.Dispatch(buf)
+		v, err := decodeObject(buf)
 		if err != nil {
-			t.Fatalf("%s: Dispatch: %v", rel, err)
+			t.Fatalf("%s: decode: %v", rel, err)
 		}
 		got, err := recomputeID(v)
 		if err != nil {
@@ -259,7 +296,7 @@ func loadTree(t *testing.T, staging string, id ID) *format.Tree {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, _, err := format.Dispatch(buf)
+	v, err := decodeObject(buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +314,7 @@ func loadSnapshot(t *testing.T, staging string, id ID) *format.Snapshot {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, _, err := format.Dispatch(buf)
+	v, err := decodeObject(buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,9 +625,8 @@ func TestCommitNoMessageWritesNoMeta(t *testing.T) {
 // TestCommitRewritesATruncatedExistingObject pre-places a 0-byte file
 // under the exact name a chunk's content id would use, standing in for
 // a staged object a prior crash left truncated. Commit must not accept
-// it as an existing valid object: it must detect the mismatch, rewrite
-// the file with the real encoded bytes, and report the id in
-// Summary.Rewritten.
+// it as an existing valid object: a size mismatch alone must make it
+// rewrite the file with the real encoded bytes.
 func TestCommitRewritesATruncatedExistingObject(t *testing.T) {
 	src := t.TempDir()
 	content := "content of a"
@@ -608,13 +644,9 @@ func TestCommitRewritesATruncatedExistingObject(t *testing.T) {
 
 	w := NewWriter(staging)
 	w.Now = fixedClock
-	_, sum, err := w.Commit(src)
+	_, _, err := w.Commit(src)
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	if len(sum.Rewritten) != 1 || sum.Rewritten[0] != id {
-		t.Fatalf("Summary.Rewritten = %v, want exactly one entry for %s", sum.Rewritten, id.TextForm())
 	}
 
 	fi, err := os.Stat(objPath)

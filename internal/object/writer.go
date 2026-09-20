@@ -71,11 +71,6 @@ type Summary struct {
 	// OnDisc reported as already on a disc never gets a staging file to
 	// walk into.
 	Reachable []ID
-	// Rewritten lists every object id whose staging file already existed
-	// under the right name but did not hold the right bytes (for
-	// example a file truncated by a prior crash). The writer rewrote it
-	// in place; the caller should warn about each one.
-	Rewritten []ID
 }
 
 // UnstablePath names one path the in-flight change detection flagged, and
@@ -446,14 +441,11 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 	if _, err := c.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, mismatched, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, err := writeObjectFile(w.objectPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
-	if mismatched {
-		sum.Rewritten = append(sum.Rewritten, id)
-	}
 	return id, nil
 }
 
@@ -490,14 +482,11 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	if _, err := b.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, mismatched, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, err := writeObjectFile(w.objectPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
-	if mismatched {
-		sum.Rewritten = append(sum.Rewritten, id)
-	}
 	return id, nil
 }
 
@@ -529,14 +518,11 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	if _, err := t.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, mismatched, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, err := writeObjectFile(w.objectPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
-	if mismatched {
-		sum.Rewritten = append(sum.Rewritten, id)
-	}
 	return id, nil
 }
 
@@ -581,14 +567,11 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	if _, err := s.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, mismatched, err := writeObjectFile(w.snapshotPath(id), buf)
+	isNew, err := writeObjectFile(w.snapshotPath(id), buf)
 	if err != nil {
 		return ID{}, err
 	}
 	w.countObject(sum, id, isNew)
-	if mismatched {
-		sum.Rewritten = append(sum.Rewritten, id)
-	}
 	return id, nil
 }
 
@@ -632,85 +615,44 @@ func commonHeader(kind format.Magic, headerLen int) format.CommonHeader {
 
 // writeObjectFile writes data to path through a temp file and a rename,
 // so a crash leaves no partial object. When an object with this name
-// already exists, its bytes are compared against data, size first and
-// then content, before it is trusted: two objects sharing a content id
-// share identical bytes, so a real match needs no write. A file that
-// exists under the right name but does not hold the same bytes (for
-// example truncated by a prior crash) is corrupt; writeObjectFile
-// rewrites it through the same temp-file-and-rename path and reports
-// mismatched, so the caller can warn the operator by the object's id.
-func writeObjectFile(path string, data []byte) (isNew bool, mismatched bool, err error) {
+// already exists and its size matches data, it is trusted without a
+// write: two objects sharing a content id share identical bytes, and
+// pack checks every object's content id before placing it onto a run,
+// the real guard against a corrupt staging file. A file that exists
+// under the right name but a different size (for example truncated by a
+// prior crash) is rewritten through the same temp-file-and-rename path.
+func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 	if fi, statErr := os.Stat(path); statErr == nil {
-		same, cmpErr := existingObjectMatches(path, fi, data)
-		if cmpErr != nil {
-			return false, false, cmpErr
+		if fi.Size() == int64(len(data)) {
+			return false, nil
 		}
-		if same {
-			return false, false, nil
-		}
-		mismatched = true
 	} else if !os.IsNotExist(statErr) {
-		return false, false, statErr
+		return false, statErr
 	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, mismatched, err
+		return false, err
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
-		return false, mismatched, err
+		return false, err
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return false, mismatched, err
+		return false, err
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		return false, mismatched, err
+		return false, err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
-		return false, mismatched, err
-	}
-	return true, mismatched, nil
-}
-
-// existingObjectMatches reports whether the file at path, whose
-// os.Stat result is fi, holds exactly data. The size is compared first;
-// only a size match reads the file, in fixed-size chunks against the
-// data already held in memory, so comparing one object never holds a
-// second full copy of a large payload.
-func existingObjectMatches(path string, fi os.FileInfo, data []byte) (bool, error) {
-	if fi.Size() != int64(len(data)) {
-		return false, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
 		return false, err
 	}
-	defer func() { _ = f.Close() }()
-
-	buf := make([]byte, 64*1024)
-	var offset int
-	for offset < len(data) {
-		n, err := f.Read(buf)
-		if n > 0 {
-			if !bytes.Equal(buf[:n], data[offset:offset+n]) {
-				return false, nil
-			}
-			offset += n
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, err
-		}
-	}
-	return offset == len(data), nil
+	return true, nil
 }
 
 // countObject adds id to sum as new or existing. id counts as existing

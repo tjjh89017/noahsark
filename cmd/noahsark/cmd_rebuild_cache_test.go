@@ -47,7 +47,7 @@ func TestRebuildCacheFromDiscRestoresState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out = runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir)
+	code, out = runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
 	if code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
@@ -90,7 +90,7 @@ func TestRebuildCacheIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache #1: exit %d: %s", code, out)
 	}
 	cfg, err := readConfig(configPath(repo))
@@ -103,7 +103,7 @@ func TestRebuildCacheIsIdempotent(t *testing.T) {
 	}
 	count1 := log1.CountState(stage.Packed)
 
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache #2: exit %d: %s", code, out)
 	}
 	log2, err := stage.Open(cfg.StagingDir)
@@ -143,11 +143,11 @@ func TestRebuildCacheWordingDoesNotClaimClean(t *testing.T) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+treeDir); code != 0 {
+	if code, out := runCmd(t, "verify", "--repo="+repo, treeDir); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir)
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
 	if code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
@@ -197,7 +197,7 @@ func TestRebuildCachePartialNamesMissingDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discRoots[len(discRoots)-1])
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+discRoots[len(discRoots)-1])
 	if code != 1 {
 		t.Fatalf("rebuild-cache: exit %d, want 1: %s", code, out)
 	}
@@ -243,7 +243,7 @@ func TestRebuildCachePartialUntilEveryDiscFed(t *testing.T) {
 	// Feed only the newest disc: its own DISCS table names the earlier
 	// two, but neither was itself read. The rebuild must be partial.
 	newest := discRoots[len(discRoots)-1]
-	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+newest)
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+newest)
 	if code != 1 {
 		t.Fatalf("rebuild-cache (newest only): exit %d, want 1: %s", code, out)
 	}
@@ -256,7 +256,7 @@ func TestRebuildCachePartialUntilEveryDiscFed(t *testing.T) {
 
 	// Feed the remaining two discs: now every disc named in DISCS has
 	// itself been fed, and the rebuild must say ok.
-	code, out = runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo,
+	code, out = runCmd(t, "rebuild-cache", "--repo="+repo,
 		"--disc="+discRoots[0], "--disc="+discRoots[1])
 	if code != 0 {
 		t.Fatalf("rebuild-cache (remaining two): exit %d, want 0: %s", code, out)
@@ -276,7 +276,7 @@ func TestRebuildCacheNoUsableDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+empty)
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+empty)
 	if code != 3 {
 		t.Fatalf("exit %d, want 3: %s", code, out)
 	}
@@ -334,7 +334,7 @@ func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
 
@@ -344,34 +344,6 @@ func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
 	}
 	if got := newObjectsFromCommit(t, out); got != 0 {
 		t.Fatalf("new objects = %d, want 0: %s", got, out)
-	}
-}
-
-// TestRebuildCacheRequiresFromDisc asserts rebuild-cache refuses to run
-// without --from-disc: this build keeps no cache to rebuild otherwise.
-func TestRebuildCacheRequiresFromDisc(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+work)
-	if code != 2 {
-		t.Fatalf("exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "--from-disc") {
-		t.Fatalf("output %q does not mention --from-disc", out)
-	}
-}
-
-// TestRebuildCacheRefusesLevel2And3 asserts a clear refusal naming the
-// missing object cache, not a generic flag error.
-func TestRebuildCacheRefusesLevel2And3(t *testing.T) {
-	for _, level := range []string{"2", "3"} {
-		code, out := runCmd(t, "rebuild-cache", "--from-disc", "--level="+level, "--disc=/nowhere")
-		if code != 2 {
-			t.Fatalf("level %s: exit %d, want 2: %s", level, code, out)
-		}
-		if !strings.Contains(out, "no object cache") {
-			t.Fatalf("level %s: output %q does not explain the missing cache", level, out)
-		}
 	}
 }
 
@@ -440,7 +412,7 @@ func TestRebuildCacheOneDiscAtATimeMergesLedger(t *testing.T) {
 			var lastCode int
 			var lastOut string
 			for _, i := range order.seq {
-				lastCode, lastOut = runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discRoots[i])
+				lastCode, lastOut = runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+discRoots[i])
 			}
 			if lastCode != 0 {
 				t.Fatalf("last rebuild-cache call: exit %d, want 0: %s", lastCode, lastOut)
@@ -496,7 +468,7 @@ func TestRebuildCacheKeepsUnpackedRef(t *testing.T) {
 		t.Fatalf("commit X: exit %d: %s", code, out)
 	}
 
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
 
@@ -546,7 +518,7 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
 
@@ -596,7 +568,7 @@ func TestRebuildCacheWarnsSeqContinuesFromNewestFed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir)
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
 	if code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
@@ -648,7 +620,7 @@ func TestRebuildCacheRefusesAReintroducedLostDisc(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discOne); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+discOne); code != 0 {
 		t.Fatalf("rebuild-cache (disc one only): exit %d: %s", code, out)
 	}
 
@@ -667,7 +639,7 @@ func TestRebuildCacheRefusesAReintroducedLostDisc(t *testing.T) {
 
 	// The "lost" second disc turns up after all. Feeding it now must be
 	// refused: its run_seq and disc_seq are already the third disc's.
-	code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+discTwoLost)
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+discTwoLost)
 	if code != 1 {
 		t.Fatalf("rebuild-cache (reintroduced disc two): exit %d, want 1: %s", code, out)
 	}

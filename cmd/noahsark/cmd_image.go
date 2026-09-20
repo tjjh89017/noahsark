@@ -29,10 +29,6 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		_, _ = fmt.Fprintf(stderr, "noahsark: image %s is not available in Phase 1; only \"image build\" is\n", args[0])
 		return 2
 	}
-	if refuseNotYetImplementedFlags("image build", args[1:], stderr) {
-		return 2
-	}
-
 	fs := newFlagSet("noahsark image build --out=FILE --capacity=N [--force] TREE-DIR",
 		"Build a disc image from a packed tree directory.", stderr)
 	out := fs.String("out", "", "output image path")
