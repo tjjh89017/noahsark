@@ -84,6 +84,26 @@ func TestResolveDiscArgAmbiguousPrefix(t *testing.T) {
 	}
 }
 
+// TestResolveDiscArgAmbiguousSeq gives two discs the same disc_seq, as
+// a lost repository does. The decimal argument must be refused, and the
+// refusal must name each uuid in full, so the operator can give a uuid
+// or a uuid prefix instead.
+func TestResolveDiscArgAmbiguousSeq(t *testing.T) {
+	rows := []format.DiscsRow{discArgRow(1, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
+	_, err := resolveDiscArg(rows, "1")
+	if err == nil {
+		t.Fatal("resolveDiscArg(1): expected an ambiguous-match error")
+	}
+	if !strings.Contains(err.Error(), "more than one disc") {
+		t.Fatalf("error = %q, want the ambiguous-match wording", err)
+	}
+	for _, row := range rows {
+		if !strings.Contains(err.Error(), uuidText(row.DiscUUID)) {
+			t.Fatalf("error = %q, does not name uuid %s", err, uuidText(row.DiscUUID))
+		}
+	}
+}
+
 func TestResolveDiscArgDuplicateLabel(t *testing.T) {
 	rows := []format.DiscsRow{discArgRow(0, "spare", 0xaa), discArgRow(1, "spare", 0xbb)}
 	_, err := resolveDiscArg(rows, "spare")

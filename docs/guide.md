@@ -452,11 +452,10 @@ names a disc that you must still feed. An old disc does not know the
 newer discs. Thus compare `noahsark disc list --repo=<REPO>` with your
 disc record before you trust `ok`.
 
-Feed every disc, the newest one included, before you `pack` again. On
-`ok`, `rebuild-cache` warns on stderr which disc it treats as the
-newest fed and which `run_seq` and `disc_seq` the next `pack` assigns.
-If the true newest disc was never fed, `pack` reuses its numbers; if
-that disc is lost for good, the disc uuid still tells the two runs apart.
+Feed every disc, the newest one included, before you `pack` again. If
+the true newest disc was never fed, the next `pack` reuses its `seq`.
+That is a cosmetic duplicate only: the tool finds a disc by its uuid.
+Give the uuid, or a uuid prefix, when two discs share a `seq`.
 
 Then, for each disc, do steps 6 and 7 again. The rebuilt state does not
 know that a disc was burned or verified. Add `sources.root = <SOURCE>`
@@ -515,5 +514,6 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `is neither a snapshot id nor a known ref name` | The local cache does not know the name. Run `log` to list the names. |
 | `log`: `roots: (none)` | The root tree is on a disc that you did not give, or `gc` trimmed it from the cache. Give all discs, or run `rebuild-cache`. |
 | `plan`: `cache: no disc is cached yet` | Run `rebuild-cache` with a disc, then plan again. |
+| `<DISC>`: `matches more than one disc` | Two discs carry the same `seq`. Give the uuid, or the first 8 characters of it, from the list in the message. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
 | `repository lock <REPO>/lock is held by pid <PID>` | Wait for the other noahsark command to end. |
