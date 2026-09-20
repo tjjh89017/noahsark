@@ -1,6 +1,8 @@
 package image
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strings"
 	"testing"
@@ -40,20 +42,19 @@ func fencedBlock(t *testing.T, formatMD, heading string) string {
 	return rest[:close+1]
 }
 
-// TestFormatTxtMatchesFormatMD checks that the embedded FORMAT.txt bytes
-// are exactly the Appendix A fenced text in FORMAT.md. FORMAT.txt is
-// fixed, normative text; a writer copies it byte for byte.
-func TestFormatTxtMatchesFormatMD(t *testing.T) {
-	formatMD, err := os.ReadFile("../../FORMAT.md")
-	if err != nil {
-		t.Fatal(err)
+// TestFormatTxtIsPinned checks the byte length and the SHA-256 digest of
+// the embedded FORMAT.txt. internal/image/format.txt is the normative
+// source of the on-disc text, so a change to it changes disc bytes and
+// must be deliberate.
+func TestFormatTxtIsPinned(t *testing.T) {
+	const wantLen = 21718
+	const wantSHA256 = "ed64d4fc7e673f568d67e83148cd1b572bb7b3fa2f46e651b33f69f4f754ad8c"
+	if len(FormatTxt) != wantLen {
+		t.Fatalf("FORMAT.txt: want %d bytes, got %d", wantLen, len(FormatTxt))
 	}
-	want := fencedBlock(t, string(formatMD), "## Appendix A. FORMAT.txt, format major 1 minor 0")
-	if want != string(FormatTxt) {
-		t.Fatal("internal/image/format.txt is out of date with FORMAT.md's Appendix A")
-	}
-	if len(FormatTxt) != 21718 {
-		t.Fatalf("FORMAT.txt: want 21718 bytes, got %d", len(FormatTxt))
+	sum := sha256.Sum256(FormatTxt)
+	if got := hex.EncodeToString(sum[:]); got != wantSHA256 {
+		t.Fatalf("FORMAT.txt: want SHA-256 %s, got %s", wantSHA256, got)
 	}
 }
 
