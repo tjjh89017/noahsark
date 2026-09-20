@@ -238,7 +238,7 @@ func TestPlanEmptyCacheNamesTheFix(t *testing.T) {
 	if !strings.Contains(out, "no run is cached yet") {
 		t.Fatalf("plan (empty cache) output %q missing \"no run is cached yet\"", out)
 	}
-	if !strings.Contains(out, "rebuild-cache --from-disc") {
-		t.Fatalf("plan (empty cache) output %q missing the fix, rebuild-cache --from-disc", out)
+	if !strings.Contains(out, "rebuild-cache") {
+		t.Fatalf("plan (empty cache) output %q missing the fix, rebuild-cache", out)
 	}
 }

@@ -137,7 +137,7 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
 

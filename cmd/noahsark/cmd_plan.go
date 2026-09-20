@@ -30,10 +30,6 @@ import (
 // internal/plan holds the planner itself, so "restore" can build the
 // same plan and read discs in the order it names.
 func cmdPlan(args []string, stdout, stderr io.Writer) int {
-	if refuseNotYetImplementedFlags("plan", args, stderr) {
-		return 2
-	}
-
 	fs := newFlagSet("noahsark plan [--include=PATH]... [--out=FILE] [--staging-budget=SIZE] SNAPSHOT",
 		"Compute a restore plan from the local cache: which discs a restore of SNAPSHOT would need, and what each holds.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")

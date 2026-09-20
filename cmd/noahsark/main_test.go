@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -74,7 +72,7 @@ func TestFullSequence(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	if code, out := runCmd(t, "verify", "--image="+treeDir); code != 0 {
+	if code, out := runCmd(t, "verify", treeDir); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 
@@ -124,30 +122,25 @@ func compareTrees(t *testing.T, got, want string) {
 	}
 }
 
-// TestLaterPhaseFlagRefused asserts that a later-phase flag is refused
-// with a message naming the flag and the phase, and exit code 2, before
-// any repository lookup happens.
-func TestLaterPhaseFlagRefused(t *testing.T) {
-	code, out := runCmd(t, "commit", "--from=/nowhere", "/nowhere")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
-	}
-	want := "noahsark: commit: --from is a Phase 2 option; not available in Phase 1"
-	if !strings.Contains(out, want) {
-		t.Fatalf("output = %q, want it to contain %q", out, want)
-	}
-}
-
-// TestLaterPhaseCommandRefused asserts that a whole later-phase command
-// name is refused the same way.
-func TestLaterPhaseCommandRefused(t *testing.T) {
+// TestUnknownCommandRefused asserts that an unrecognized command name
+// exits 2 with a message naming it, matching an unknown flag's exit
+// code.
+func TestUnknownCommandRefused(t *testing.T) {
 	code, out := runCmd(t, "sync", "/nowhere")
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
 	}
-	want := "noahsark: sync is a Phase 2 command; this build implements Phase 1"
-	if !strings.Contains(out, want) {
-		t.Fatalf("output = %q, want it to contain %q", out, want)
+	if !strings.Contains(out, `unknown command "sync"`) {
+		t.Fatalf("output = %q, want it to name the unknown command", out)
+	}
+}
+
+// TestUnknownFlagRefused asserts that a flag no command defines exits 2,
+// not the process crashing or a silent success.
+func TestUnknownFlagRefused(t *testing.T) {
+	code, _ := runCmd(t, "commit", "--no-such-flag", "/nowhere")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
 	}
 }
 
@@ -300,99 +293,9 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 	}
 }
 
-// TestTopLevelUsageListsEveryFlag asserts that every flag a command's own
-// "-h" output defines also appears on that command's line, or lines, in
-// the top-level "--help" summary. It catches the summary going stale when
-// a command gains a flag, the bug this test was added to guard against.
-func TestTopLevelUsageListsEveryFlag(t *testing.T) {
-	_, topText := runCmd(t, "--help")
-
-	// alwaysOptional names flags every top-level line may leave out:
-	// --repo is accepted almost everywhere and is only spelled out where
-	// its meaning differs (verify); --disc and --discs-dir are explained
-	// once, in the paragraph under the command list, instead of being
-	// repeated on every disc-reading command's line.
-	alwaysOptional := map[string]bool{
-		"repo":      true,
-		"disc":      true,
-		"discs-dir": true,
-	}
-
-	cases := []struct {
-		args    []string // invoked with a trailing "-h"
-		topLine string   // the top-level line's prefix, as it appears indented
-	}{
-		{[]string{"init"}, "  init"},
-		{[]string{"commit"}, "  commit"},
-		{[]string{"pack"}, "  pack"},
-		{[]string{"image", "build"}, "  image build"},
-		{[]string{"verify"}, "  verify"},
-		{[]string{"restore"}, "  restore"},
-		{[]string{"ls"}, "  ls"},
-		{[]string{"log"}, "  log"},
-		{[]string{"plan"}, "  plan"},
-		{[]string{"rebuild-cache"}, "  rebuild-cache"},
-		{[]string{"disc", "list"}, "  disc list"},
-		{[]string{"disc", "burned"}, "  disc burned"},
-		{[]string{"gc"}, "  gc"},
-	}
-
-	flagNamePattern := regexp.MustCompile(`(?m)^  -(\S+)`)
-
-	for _, c := range cases {
-		args := append(append([]string{}, c.args...), "-h")
-		_, cmdHelp := runCmd(t, args...)
-		matches := flagNamePattern.FindAllStringSubmatch(cmdHelp, -1)
-
-		lineJoinPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(c.topLine) + `\b.*$`)
-		lines := lineJoinPattern.FindAllString(topText, -1)
-		if len(lines) == 0 {
-			t.Fatalf("%s: no top-level line found for prefix %q", strings.Join(c.args, " "), c.topLine)
-		}
-		block := strings.Join(lines, "\n")
-
-		for _, m := range matches {
-			name := m[1]
-			if alwaysOptional[name] {
-				continue
-			}
-			if !strings.Contains(block, "-"+name) {
-				t.Errorf("%s: top-level usage is missing --%s\nblock:\n%s", strings.Join(c.args, " "), name, block)
-			}
-		}
-	}
-}
-
-// TestNotYetImplementedFlagsRefused asserts, for every command and flag
-// notYetImplementedFlags names, that the flag is refused with the clear
-// "not in this build yet" message and exit code 2, not the raw flag
-// package error, no matter what else is on the command line.
-func TestNotYetImplementedFlagsRefused(t *testing.T) {
-	for cmd, flags := range notYetImplementedFlags {
-		for flagName := range flags {
-			t.Run(cmd+" "+flagName, func(t *testing.T) {
-				args := append(strings.Fields(cmd), flagName)
-				code, out := runCmd(t, args...)
-				if code != 2 {
-					t.Fatalf("%s: exit code = %d, want 2; output: %s", strings.Join(args, " "), code, out)
-				}
-				want := fmt.Sprintf("noahsark: %s: flag %s is not in this build yet", cmd, flagName)
-				if !strings.Contains(out, want) {
-					t.Fatalf("output = %q, want it to contain %q", out, want)
-				}
-				if strings.Contains(out, "flag provided but not defined") {
-					t.Fatalf("output = %q, want no raw flag package error", out)
-				}
-			})
-		}
-	}
-}
-
 // TestProgressFlags checks commit's progress line is off by default in a
-// test process (stderr is not a terminal), forced on by --progress,
-// forced off by --no-progress and --quiet even when --progress is not
-// given, and that --progress and --no-progress together is a usage
-// error.
+// test process (stderr is not a terminal), and forced off by
+// --no-progress and --quiet.
 func TestProgressFlags(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -405,19 +308,11 @@ func TestProgressFlags(t *testing.T) {
 		t.Fatalf("default (non-terminal stderr): exit %d, expected no commit progress line, got %q", code, out)
 	}
 
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--progress", src); code != 0 || !strings.Contains(out, "commit:") {
-		t.Fatalf("--progress: exit %d, expected a commit progress line, got %q", code, out)
-	}
-
 	if code, out := runCmd(t, "commit", "--repo="+repo, "--no-progress", src); code != 0 || strings.Contains(out, "commit:") {
 		t.Fatalf("--no-progress: exit %d, expected no commit progress line, got %q", code, out)
 	}
 
 	if code, out := runCmd(t, "commit", "--repo="+repo, "--quiet", src); code != 0 || strings.Contains(out, "commit:") {
 		t.Fatalf("--quiet: exit %d, expected no commit progress line, got %q", code, out)
-	}
-
-	if code, _ := runCmd(t, "commit", "--repo="+repo, "--progress", "--no-progress", src); code != 2 {
-		t.Fatalf("--progress --no-progress: exit %d, want 2", code)
 	}
 }

@@ -21,17 +21,13 @@ import (
 // no local cache and no catalog: the repository directory holds only the
 // state log, the disc ledger and the refs, and every one of those is
 // exactly what a disc's own INDEX, DISCS and REFS tables already carry.
-// So level 1, the only level this build supports, is a straight replay
-// of every provided disc's tables into a fresh or existing repository
-// directory. See docs/decisions.md, "16. CLI reference" and
-// "2.5 Cache rebuild levels".
+// rebuild-cache is a straight replay of every provided disc's tables
+// into a fresh or existing repository directory. See docs/decisions.md,
+// "16. CLI reference".
 func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark rebuild-cache --from-disc [--disc=ROOT]... [--discs-dir=DIR] [--level=1] [--snapshot=ID]",
+	fs := newFlagSet("noahsark rebuild-cache [--disc=ROOT]... [--discs-dir=DIR]",
 		"Rebuild the local repository state from one or more discs.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory to create or use")
-	level := fs.Int("level", 1, "cache rebuild level: 1, 2 or 3")
-	snapshot := fs.String("snapshot", "", "snapshot level 2 would cover; accepted and unused, since level 1 rebuilds every object regardless")
-	fromDisc := fs.Bool("from-disc", false, "read from disc; required, since this build keeps no cache to check freshness against")
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to rebuild from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
@@ -40,21 +36,6 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	}
 	if checkPositionalsForFlags("rebuild-cache", fs, stderr) {
 		return 2
-	}
-
-	if *level != 1 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: rebuild-cache: --level=%d is not available: this build keeps no object cache, only the repository state log, the disc ledger and the refs, and rebuilding those needs nothing past level 1\n", *level)
-		return 2
-	}
-	if !*fromDisc {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: --from-disc is required; rebuild-cache reads every disc to rebuild the local cache")
-		return 2
-	}
-	if *snapshot != "" {
-		if _, err := parseSnapshotID(*snapshot); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: --snapshot:", err)
-			return 2
-		}
 	}
 
 	discRoots, err := resolveDiscRoots(discFlags, *discsDir, fs.Args())
@@ -107,7 +88,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	// among the shared-lock, read-only commands on the repository lock,
 	// alongside its own exclusive lock on the cache directory. This
 	// build has no cache lock, and rebuild-cache does write the state
-	// log (EnsurePacked, RecordFedDisc) and the disc and ref ledgers, so
+	// log (EnsurePacked) and the disc and ref ledgers, so
 	// it takes the repository's exclusive lock instead: the repository
 	// lock is the only lock this build has to keep those writes safe
 	// against a concurrent reader or another writer.
@@ -185,14 +166,6 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 				packedObjects++
 			}
 		}
-		// This disc's own catalog was just replayed above: record it as
-		// fed, not merely named by some other disc's copy of its DISCS
-		// row. This is the set the final "ok means every disc known is
-		// fed" check reads.
-		if err := stageLog.RecordFedDisc(rr.Disc.DiscUUID); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
-			return 1
-		}
 	}
 
 	discRows := mergeDiscsRows(results, existingDiscs.Rows)
@@ -221,7 +194,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "rebuild-cache: level 1, %d disc(s) read, repo %s\n", len(results), repoDir)
+	_, _ = fmt.Fprintf(stdout, "rebuild-cache: %d disc(s) read, repo %s\n", len(results), repoDir)
 	_, _ = fmt.Fprintf(stdout, "objects recorded: %d packed, %d already past packed (clean or burned)\n", packedObjects, alreadyPastPacked)
 	_, _ = fmt.Fprintf(stdout, "discs known: %d, refs restored: %d\n", len(discRows), len(refs))
 

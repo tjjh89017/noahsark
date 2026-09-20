@@ -152,7 +152,7 @@ func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--from-disc", "--disc="+treeDir)
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
 	if code != 2 {
 		t.Fatalf("rebuild-cache while locked: exit %d, want 2: %s", code, out)
 	}

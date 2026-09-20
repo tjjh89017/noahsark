@@ -130,7 +130,7 @@ func TestDiscListUsedSectorsSurviveRebuildCache(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "rebuild-cache", "--from-disc", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
 		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
 	}
 

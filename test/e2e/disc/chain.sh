@@ -155,7 +155,7 @@ chain_pack_one() {
 	# Unmount whether verify passes or fails: a failure must not leave
 	# the mount busy for the runner's own cleanup.
 	set +e
-	"$BIN" verify --image="$mnt"
+	"$BIN" verify "$mnt"
 	code=$?
 	set -e
 	umount_if_mounted "$mnt"

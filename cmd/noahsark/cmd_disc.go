@@ -144,12 +144,6 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 			}
 			_, _ = fmt.Fprintf(stdout, "disc %d %s: marked burned, %d objects\n", row.DiscSeq, label, n)
 		}
-		if !*undo {
-			if err := stageLog.RecordBurnTime(discUUID); err != nil {
-				_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
-				return 1
-			}
-		}
 	}
 	return 0
 }

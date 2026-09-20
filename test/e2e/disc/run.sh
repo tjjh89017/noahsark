@@ -218,7 +218,7 @@ scenario_cli() {
 
 	mount_populate "$image" "$tree" "$mnt"
 	assert_listing_matches "$mnt" "$work"
-	"$BIN" verify --image="$mnt"
+	"$BIN" verify "$mnt"
 	"$BIN" restore "$mnt" "$snap" "$restored"
 	assert_dirs_equal "$restored$src" "$src"
 	umount_if_mounted "$mnt"
@@ -323,7 +323,7 @@ scenario_media() {
 
 	mount_populate "$image" "$tree" "$mnt"
 	local verify_out
-	verify_out="$("$BIN" verify --image="$mnt")"
+	verify_out="$("$BIN" verify "$mnt")"
 	echo "$verify_out"
 	if [ "$media" = "bd25-forced-10g" ]; then
 		echo "$verify_out" | grep -qE 'forced 5242880 sectors, capacity_is_forced=1' \

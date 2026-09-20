@@ -42,7 +42,7 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mounted); code != 0 {
+	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 }
@@ -127,10 +127,9 @@ func TestGCRetentionGate(t *testing.T) {
 	}
 }
 
-// TestGCDryRunDefaultIsASummary checks that gc --dry-run, without
-// --verbose, prints no per-object "would delete" line, only the
-// staging totals and one grouped line per run; --verbose restores the
-// old per-object listing.
+// TestGCDryRunDefaultIsASummary checks that gc --dry-run prints no
+// per-object "would delete" line, only the staging totals and one
+// grouped line per run.
 func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	oldClock := gcClock
 	defer func() { gcClock = oldClock }()
@@ -157,17 +156,6 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	}
 	if !strings.Contains(out, "would delete: run ") {
 		t.Fatalf("gc --dry-run output %q missing the grouped run summary line", out)
-	}
-	if strings.Contains(out, "bytes, run ") {
-		t.Fatalf("gc --dry-run output %q printed a per-object line, want the summary only", out)
-	}
-
-	code, out = runCmd(t, "gc", "--repo="+repo, "--dry-run", "--verbose")
-	if code != 0 {
-		t.Fatalf("gc --dry-run --verbose: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "bytes, run ") {
-		t.Fatalf("gc --dry-run --verbose output %q missing a per-object line", out)
 	}
 }
 
@@ -216,7 +204,7 @@ func TestGCTrimsCacheToNewestSnapshots(t *testing.T) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discA); code != 0 {
 		t.Fatalf("disc burned 1: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mountedA); code != 0 {
+	if code, out := runCmd(t, "verify", "--repo="+repo, mountedA); code != 0 {
 		t.Fatalf("verify 1: exit %d: %s", code, out)
 	}
 
@@ -239,7 +227,7 @@ func TestGCTrimsCacheToNewestSnapshots(t *testing.T) {
 	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discB); code != 0 {
 		t.Fatalf("disc burned 2: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, "--image="+mountedB); code != 0 {
+	if code, out := runCmd(t, "verify", "--repo="+repo, mountedB); code != 0 {
 		t.Fatalf("verify 2: exit %d: %s", code, out)
 	}
 

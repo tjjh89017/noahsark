@@ -60,7 +60,7 @@ scenario_incremental() {
 	sudo "$BIN" image build --out="$image1" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree1"
 	mount_populate "$image1" "$tree1" "$mnt1"
 	local verify_out1
-	verify_out1="$("$BIN" verify --image="$mnt1")"
+	verify_out1="$("$BIN" verify "$mnt1")"
 	echo "$verify_out1"
 	if ! echo "$verify_out1" | grep -qE 'discs: 1$'; then
 		fail "incremental: disc 1's DISCS table does not record exactly 1 disc"
@@ -106,7 +106,7 @@ scenario_incremental() {
 	sudo "$BIN" image build --out="$image2" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree2"
 	mount_populate "$image2" "$tree2" "$mnt2"
 	local verify_out2
-	verify_out2="$("$BIN" verify --image="$mnt2")"
+	verify_out2="$("$BIN" verify "$mnt2")"
 	echo "$verify_out2"
 	if ! echo "$verify_out2" | grep -qE 'discs: 2$'; then
 		fail "incremental: disc 2's DISCS table does not record 2 discs (expected disc 1 as a prerequisite)"

@@ -61,36 +61,8 @@ type repoConfig struct {
 	LockTimeout time.Duration
 }
 
-// laterPhaseConfigKeys names later-phase config keys from OPERATIONS.md's
-// configuration reference that a hand-edited config file might carry.
-// The phase named is the one OPERATIONS.md tags the key with.
-var laterPhaseConfigKeys = map[string]string{
-	"fs.append_variant":              "Phase 2",
-	"disc.min_spare_ratio":           "Phase 2",
-	"disc.allow_raw_append":          "Phase 2",
-	"fec.disc_close_parity":          "Phase 3",
-	"fec.group_size":                 "Phase 3",
-	"commit.copy_first":              "Phase 2",
-	"sync.rsync_path":                "Phase 2",
-	"sync.rsync_args":                "Phase 2",
-	"sync.mirror_dir":                "Phase 2",
-	"sync.clear_after_commit":        "Phase 2",
-	"metadata.atime":                 "Phase 2",
-	"metadata.btime":                 "Phase 2",
-	"metadata.xattr":                 "Phase 2",
-	"metadata.acl":                   "Phase 2",
-	"metadata.windows":               "Phase 2",
-	"consolidate.max_plan_discs":     "Phase 3",
-	"consolidate.max_spread_ratio":   "Phase 3",
-	"consolidate.max_restore_hours":  "Phase 3",
-	"consolidate.max_disc_age":       "Phase 3",
-	"commitbundle.dir":               "Backlog",
-	"commitbundle.keep_after_import": "Backlog",
-	"commitbundle.catalog_max_age":   "Backlog",
-}
-
 // knownConfigKeys names every key this build reads. A key present in the
-// file that is neither here nor in laterPhaseConfigKeys is unknown.
+// file that is not here is unknown.
 var knownConfigKeys = map[string]bool{
 	"repo.uuid":                  true,
 	"staging.dir":                true,
@@ -182,14 +154,8 @@ func readConfig(path string) (repoConfig, error) {
 		key := strings.TrimSpace(rawKey)
 		value := strings.TrimSpace(rawValue)
 
-		if key == "disc.force_capacity" {
-			return repoConfig{}, fmt.Errorf("config: disc.force_capacity is no longer a config key; pass pack --capacity instead")
-		}
-		if phase, ok := laterPhaseConfigKeys[key]; ok {
-			return repoConfig{}, fmt.Errorf("config: %s is a %s key; not available in Phase 1", key, phase)
-		}
 		if !knownConfigKeys[key] {
-			return repoConfig{}, fmt.Errorf("config: unknown key %s", key)
+			return repoConfig{}, fmt.Errorf("config: unknown key %s in %s", key, path)
 		}
 
 		switch key {

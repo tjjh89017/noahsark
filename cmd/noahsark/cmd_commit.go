@@ -20,13 +20,6 @@ var newWriter = object.NewWriter
 // need a config or state layer this build does not have. See
 // docs/decisions.md, "16. CLI reference".
 func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	if refuseLaterPhaseFlags("commit", args, stderr) {
-		return 2
-	}
-	if refuseNotYetImplementedFlags("commit", args, stderr) {
-		return 2
-	}
-
 	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]",
 		"Commit a source directory tree as a new snapshot.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
@@ -115,9 +108,6 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
-	for _, id := range sum.Rewritten {
-		_, _ = fmt.Fprintf(stdout, "warning: object %s was staged but corrupt; rewritten\n", id.TextForm())
-	}
 	for _, u := range sum.Unstable {
 		_, _ = fmt.Fprintf(stdout, "unstable %s branch=%s\n", u.Path, u.Branch)
 	}

@@ -23,10 +23,6 @@ import (
 // Writer.Commit takes one source directory. See docs/decisions.md,
 // "16. CLI reference".
 func cmdInit(args []string, stdout, stderr io.Writer) int {
-	if refuseNotYetImplementedFlags("init", args, stderr) {
-		return 2
-	}
-
 	fs := newFlagSet("noahsark init [--repo=PATH] [--source=PATH]",
 		"Create a new, empty repository directory.", stderr)
 	repoPath := fs.String("repo", ".", "repository directory to create")

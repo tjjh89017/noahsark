@@ -231,9 +231,9 @@ Small files may be embedded in-ICB by the UDF driver. The writer does not
 pad and sets no mount option. NoahsArk works at the file level and never
 depends on how a filesystem stores a file. A disc whose filesystem cannot
 be mounted counts as lost. Recovery by carving is not a supported
-operation, even though a carving reader exists in `internal/format`. This
-differs from the sector-boundary rule in FORMAT.md; the user will decide
-on a FORMAT.md change.
+operation; this build keeps no carving reader. This differs from the
+sector-boundary rule in FORMAT.md; the user will decide on a FORMAT.md
+change.
 
 ## 10.1 Profile 0 image build: how the volume is populated
 
@@ -277,29 +277,26 @@ come before a command's positional arguments; one placed after is
 refused by name (`flags must come before positional arguments`)
 instead of being silently read back as a positional string, since
 Go's own `flag` package stops parsing flags at the first positional
-argument. `--progress`, `--no-progress` and `--quiet`/`-q` are accepted
-by every command, before or after the command name, and control the
-progress line long-running commands write to stderr; progress is on by
-default only when the real process stderr is a terminal.
+argument. `--no-progress` and `--quiet`/`-q` are accepted by every
+command, before or after the command name, and turn off the progress
+line long-running commands write to stderr; progress is on by default
+only when the real process stderr is a terminal.
 
-A command name OPERATIONS.md defines that belongs to a later phase
-(`sync`, `append`, `close`, `watch`, `consolidate`, `reindex`,
-`catalog`, `import`) is refused by name, naming its phase, exit 2. A
-Phase 1 command name OPERATIONS.md defines that this build simply does
-not implement yet (`burn`, `scrub`, `health`) is refused
-the same way, saying it is not in this build yet, exit 2. The same two
-distinctions apply to individual flags and config keys: a later-phase
-flag or key is refused naming its phase; a Phase 1 flag or key this
-build does not implement yet is refused saying so, rather than either
-one failing with the raw, unhelpful error the `flag` package or the
-config loader would otherwise give.
+A command name this build does not implement, and a flag no command
+defines, are both refused by the standard library's own `flag` package
+and command dispatch, exit code 2; neither carries a table naming a
+phase or a "not yet in this build" reason, since a build that does not
+implement a command or a flag says so the same way regardless of why.
+An unknown config key is refused with one generic message naming the
+key and the config file.
 
-`init` accepts `--repo` and `--source`. `--hash`, `--chunker`,
-`--fs-profile` and `--preset` choose among alternatives the fixed
-decisions already collapse to one value; `--repo-uuid`,
-`--next-run-seq`, `--next-disc-seq` and `--scan-discs` recover
-sequence numbers from existing discs, which no multi-disc state exists
-yet to scan. `init` writes a flat `key = value` config file, the
+`init` accepts `--repo` and `--source`. Every other OPERATIONS.md
+`init` flag (`--hash`, `--chunker`, `--fs-profile`, `--preset`,
+`--repo-uuid`, `--next-run-seq`, `--next-disc-seq`, `--scan-discs`) is
+not defined, so passing one is a plain usage error naming the flag:
+the fixed decisions already collapse the first four to one value, and
+the sequence-recovery flags have no multi-disc state yet to scan.
+`init` writes a flat `key = value` config file, the
 simplest format the standard library parses without a third-party
 dependency, holding `repo.uuid`, `staging.dir` (section 17.1 and
 17.5), and, when `--source` is given, `sources.root` (section 17.9):
@@ -323,14 +320,14 @@ stored on the snapshot). With no source path on the command line,
 on the command line overrides it; neither present is a usage error
 naming both ways to supply one. More than one source path on the
 command line is still refused, matching the single root this build
-stores and commits. `--from` and `--copy-first` are Phase 2 and
-refused by name; `--out` and `--catalog` are Backlog and refused by
-name. `--checksum`/`--full-scan`, `--force`, `--source`,
-`--source-root`, `--exclude`, `--one-file-system`, `--source-type` and
-`--retry-unstable` are Phase 1 but need the quick check, metadata
-TLVs, or exclude rules `internal/object`'s `Writer` does not implement
-(see the "6.14 Snapshot" entry above); they are not defined, so passing
-one is a plain usage error naming the flag. `commit`'s own `--source`
+stores and commits. Every other OPERATIONS.md `commit` flag (`--from`,
+`--copy-first`, `--out`, `--catalog`, `--checksum`/`--full-scan`,
+`--force`, `--source`, `--source-root`, `--exclude`,
+`--one-file-system`, `--source-type`, `--retry-unstable`) is not
+defined, so passing one is a plain usage error naming the flag: the
+quick check, metadata TLVs, and exclude rules they need do not exist
+in `internal/object`'s `Writer` (see the "6.14 Snapshot" entry above).
+`commit`'s own `--source`
 flag (a filesystem snapshot mount) is unrelated to `init --source`,
 which only seeds the config; the two are never confused because they
 belong to different commands. Commit records the new
@@ -386,11 +383,12 @@ means continuing an existing disc, Phase 2 append, which
 `--extra-reserve`, `--preset`, `--now` and `--dry-run` are not defined,
 since `Build` has no such options.
 
-`--label` sets the disc's on-disc label text. `--media` names a
-FORMAT.md media type registry entry, or a `--capacity` preset name
-(`bd25`, `bd50`, `bd100`, `bd128`, `dvd+r`, `dvd-r`); when omitted, it
-is derived from the matching `--capacity` preset, else defaults to
-`BD-R-SL-25`. `--out` sets the packed tree directory; it defaults to
+`--label` sets the disc's on-disc label text. `pack` has no `--media`
+flag: the media type DISC.bin records is always derived, the type of
+the matching `--capacity` preset, else `BD-R-SL-25`; a byte-size or
+raw-sector `--capacity` never names a real medium to record, so there
+was never a case where an explicit `--media` chose something the
+preset derivation could not. `--out` sets the packed tree directory; it defaults to
 `<repo>/staging/plans/<disc uuid>/tree` and is refused when it already
 holds files, so `pack` never overwrites another run's tree by
 accident. `--fec` and `--no-fec` override `fec.scheme` for one pack and
@@ -420,15 +418,18 @@ image and prints the exact `sudo noahsark image build ...` line to run
 instead, rather than leaving an unpopulated image behind or silently
 elevating itself.
 
-`verify --image=PATH` repurposes `--image` to mean a mounted disc path
-or an unpacked NOAHSARK tree, the root `internal/image`'s `Read` and
-`internal/restore`'s `Heal` already accept, rather than a raw image
-file plus `--mapfile`: mounting an image file needs root, which
-`verify` never assumes, so it takes an already-mounted path (or a
-plain packed tree, for testing with no mount at all) instead of
-mounting one itself. `--level`, `--drive`, `--report`, `--disc` and
-`--run` are not defined, since no drive or repository state exists for
-them to select among.
+`verify DISC-ROOT` takes a mounted disc path or an unpacked NOAHSARK
+tree positionally, the root `internal/image`'s `Read` and
+`internal/restore`'s `Heal` already accept, rather than OPERATIONS.md's
+raw image file plus `--mapfile` and `--image`: mounting an image file
+needs root, which `verify` never assumes, so it takes an
+already-mounted path (or a plain packed tree, for testing with no
+mount at all) instead of mounting one itself, and takes exactly one,
+so there is no separate `--image` form of the same argument to keep in
+sync. `--out` stays, since `--heal --out=DIR` needs it to write the
+healed copy somewhere other than in place. `--level`, `--drive`,
+`--report`, `--disc`, `--run` and `--mapfile` are not defined, since no
+drive or repository state exists for them to select among.
 
 `restore` takes `DISC-ROOT SNAPSHOT OUT-DIR` positionally, in place of
 OPERATIONS.md's `restore SNAPSHOT TARGET`, because resolving `SNAPSHOT`
@@ -577,11 +578,9 @@ overwrites an existing record, so a re-commit of already-packed content
 can never resurrect it to STAGED. The record still carries no
 timestamp, so a CLEAN transition's wall time goes into a second,
 append-only companion file, `clean_times.db` (content id, unix
-nanoseconds, crc32c), replayed the same way. Burning happens per disc,
-not per object, and the disc ledger row this build keeps is the same
-struct as an on-disc DISCS row, which has no burn time field either, so
-a third companion file, `burn_times.db` (disc uuid, unix nanoseconds,
-crc32c), records when `disc burned` ran for a disc.
+nanoseconds, crc32c), replayed the same way. `disc burned`'s own moment
+is not recorded anywhere: nothing in this build ever reads it back, so
+there is no `burn_times.db` companion file.
 
 `cmd_commit` calls `internal/image.CollectReachable` after a commit and
 marks every object it returns STAGED, rather than having `Writer` itself
@@ -1046,13 +1045,13 @@ already applies to `image build`, and to `ls` and `log` reading
 straight from a disc instead of the cache. `plan`, `ls`, `log` and
 `disc list` take the shared lock, matching the read-only list
 OPERATIONS.md names; none of them ever reaches an appender
-(`internal/stage`'s `append`, `recordCleanTime`, `RecordBurnTime` or
-`RecordFedDisc`), so a shared lock is enough to keep them safe.
+(`internal/stage`'s `append` or `recordCleanTime`), so a shared lock is
+enough to keep them safe.
 
 `rebuild-cache` is on OPERATIONS.md's shared-lock list, alongside its
 own exclusive lock on the cache directory. This build takes the
 exclusive repository lock for it instead: it writes the state log
-(`EnsurePacked`, `RecordFedDisc`) and the disc and ref ledgers, and this
+(`EnsurePacked`) and the disc and ref ledgers, and this
 build has no cache lock, so the repository lock is the only lock it has
 to keep those writes safe against a concurrent reader (`plan`, `ls`,
 `log`, `disc list`) or another writer (a second `rebuild-cache`, or

@@ -62,22 +62,6 @@ func TestInitHelpTextIsPlain(t *testing.T) {
 	}
 }
 
-// TestCommitDryRunNotYetInBuild asserts that a documented but
-// unimplemented commit flag is refused with a clear message and exit 2,
-// not the raw flag package error.
-func TestCommitDryRunNotYetInBuild(t *testing.T) {
-	code, out := runCmd(t, "commit", "--dry-run", "/nowhere")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
-	}
-	if !strings.Contains(out, "noahsark: commit: flag --dry-run is not in this build yet") {
-		t.Fatalf("output = %q, want the not-in-this-build message", out)
-	}
-	if strings.Contains(out, "flag provided but not defined") {
-		t.Fatalf("output = %q, want no raw flag package error", out)
-	}
-}
-
 // TestCommitMessageFlag asserts that -m accepts a commit message.
 func TestCommitMessageFlag(t *testing.T) {
 	work := t.TempDir()
@@ -88,23 +72,6 @@ func TestCommitMessageFlag(t *testing.T) {
 	}
 	if code, out := runCmd(t, "commit", "--repo="+repo, "-m", "hello world", src); code != 0 {
 		t.Fatalf("commit -m: exit %d: %s", code, out)
-	}
-}
-
-// TestMissingPhase1CommandRefused asserts that a Phase 1 command
-// OPERATIONS.md documents but this build does not implement (burn) is
-// refused with a clear message and exit 2, not "unknown command".
-func TestMissingPhase1CommandRefused(t *testing.T) {
-	code, out := runCmd(t, "burn", "--run=1", "--print")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
-	}
-	want := "noahsark: burn is not in this build yet"
-	if !strings.Contains(out, want) {
-		t.Fatalf("output = %q, want it to contain %q", out, want)
-	}
-	if strings.Contains(out, "unknown command") {
-		t.Fatalf("output = %q, want no \"unknown command\"", out)
 	}
 }
 
