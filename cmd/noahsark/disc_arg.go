@@ -10,8 +10,7 @@ import (
 )
 
 // discArgCandidate is one disc a resolveDiscArg refusal lists: enough to
-// print "seq  label  uuid-prefix", and, on a match, the disc's own
-// uuid.
+// print "seq  label  uuid", and, on a match, the disc's own uuid.
 type discArgCandidate struct {
 	Seq   uint64
 	Label string
@@ -78,7 +77,9 @@ func uuidHex(d [16]byte) string {
 // resolveDiscArg resolves arg, a command-line disc argument, against
 // repo's disc list, in this order:
 //
-//  1. A decimal integer of 7 digits or fewer: match disc_seq.
+//  1. A decimal integer of 7 digits or fewer: match disc_seq, accepted
+//     only when exactly one disc matches. Two discs can carry the same
+//     disc_seq after a lost repository.
 //  2. A full uuid, 32 hex characters with or without hyphens: exact
 //     match.
 //  3. 8 or more hex characters: a uuid prefix, accepted only when
@@ -93,10 +94,17 @@ func resolveDiscArg(rows []format.DiscsRow, arg string) ([16]byte, error) {
 
 	if isDecimal(arg) {
 		seq, _ := strconv.ParseUint(arg, 10, 64)
+		var matches []discArgCandidate
 		for _, d := range discs {
 			if d.Seq == seq {
-				return d.UUID, nil
+				matches = append(matches, d)
 			}
+		}
+		if len(matches) == 1 {
+			return matches[0].UUID, nil
+		}
+		if len(matches) > 1 {
+			return [16]byte{}, refuseDiscArgAmbiguous(arg, matches)
 		}
 		return [16]byte{}, refuseDiscArgNoMatch(arg, discs)
 	}
@@ -147,24 +155,25 @@ func resolveDiscArg(rows []format.DiscsRow, arg string) ([16]byte, error) {
 
 // refuseDiscArgNoMatch builds the error resolveDiscArg returns when arg
 // matched no disc, listing every disc in the repository, one per line,
-// as "seq  label  uuid-prefix".
+// as "seq  label  uuid".
 func refuseDiscArgNoMatch(arg string, discs []discArgCandidate) error {
 	return fmt.Errorf("%q matches no disc in this repository's disc list; labels must match exactly%s", arg, candidateLines(discs))
 }
 
 // refuseDiscArgAmbiguous builds the error resolveDiscArg returns when
 // arg matched more than one disc, listing every match, one per line, as
-// "seq  label  uuid-prefix".
+// "seq  label  uuid".
 func refuseDiscArgAmbiguous(arg string, matches []discArgCandidate) error {
-	return fmt.Errorf("%q matches more than one disc; use the seq or the full uuid:%s", arg, candidateLines(matches))
+	return fmt.Errorf("%q matches more than one disc; use the uuid, or a uuid prefix:%s", arg, candidateLines(matches))
 }
 
-// candidateLines renders one "\n  seq  label  uuid-prefix" line per
-// candidate.
+// candidateLines renders one "\n  seq  label  uuid" line per candidate.
+// The uuid is whole: two discs can share a seq, and the operator needs
+// the uuid, or a prefix of it, to name one of them.
 func candidateLines(candidates []discArgCandidate) string {
 	var b strings.Builder
 	for _, d := range candidates {
-		fmt.Fprintf(&b, "\n  %d  %s  %s", d.Seq, d.Label, uuidHex(d.UUID)[:8])
+		fmt.Fprintf(&b, "\n  %d  %s  %s", d.Seq, d.Label, uuidText(d.UUID))
 	}
 	return b.String()
 }

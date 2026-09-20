@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-var discListLineRe = regexp.MustCompile(`^([0-9a-f-]{36})  seq=(\d+)  label="([^"]*)"  capacity=(\d+)  used=(\d+)  runs=(\d+)  objects=(\d+)  packed=(\d+)  clean=(\d+)  verified=(\d+)/(\d+)$`)
+var discListLineRe = regexp.MustCompile(`^([0-9a-f-]{36})  seq=(\d+)  label="([^"]*)"  capacity=(\d+)  used=(\d+)  objects=(\d+)  packed=(\d+)  clean=(\d+)  verified=(\d+)/(\d+)$`)
 
 // TestDiscListReportsPackedDiscs packs one disc and checks that
-// "disc list" prints its uuid, seq, label, capacity, used bytes, run
-// count and packed object count, plus the staged line.
+// "disc list" prints its uuid, seq, label, capacity, used bytes and
+// packed object count, plus the staged line.
 func TestDiscListReportsPackedDiscs(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -54,11 +54,8 @@ func TestDiscListReportsPackedDiscs(t *testing.T) {
 	if m[5] == "0" {
 		t.Fatalf("used = %q, want nonzero after a pack", m[5])
 	}
-	if m[6] != "1" {
-		t.Fatalf("runs = %q, want 1", m[6])
-	}
-	if m[7] == "0" {
-		t.Fatalf("objects = %q, want nonzero after a pack", m[7])
+	if m[6] == "0" {
+		t.Fatalf("objects = %q, want nonzero after a pack", m[6])
 	}
 	if lines[1] != "staged: 0 objects, 0 bytes" {
 		t.Fatalf("staged line = %q, want \"staged: 0 objects, 0 bytes\"", lines[1])

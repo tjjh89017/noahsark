@@ -120,68 +120,65 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 			return 2
 		}
-		rows := discRowsForUUID(ledger.Rows, discUUID)
+		row := newestDiscRow(ledger.Rows, discUUID)
+		label := labelText(row.Label[:row.LabelLen])
 
 		if *undo {
-			if n := countInStateAcrossRuns(stageLog, stage.Clean, discUUID, rows); n > 0 {
+			if n := countInState(stageLog, stage.Clean, discUUID); n > 0 {
 				_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: disc %s is verified (CLEAN) and cannot be returned to packed\n", uuidText(discUUID))
 				return 1
 			}
+			n := undoDiscBurn(stageLog, discUUID)
+			_, _ = fmt.Fprintf(stdout, "disc %d %s: undo: returned to packed, %d objects\n", row.DiscSeq, label, n)
+			continue
 		}
 
-		for _, row := range rows {
-			label := labelText(row.Label[:row.LabelLen])
-			if *undo {
-				n := undoBurnForRun(stageLog, discUUID, row.RunSeq)
-				_, _ = fmt.Fprintf(stdout, "disc %d %s: undo: returned to packed, %d objects\n",
-					row.DiscSeq, label, n)
-				continue
-			}
-			n := markBurnedForRun(stageLog, discUUID, row.RunSeq)
-			if n == 0 {
-				_, _ = fmt.Fprintf(stdout, "disc %d %s: already burned, 0 objects to mark\n", row.DiscSeq, label)
-				continue
-			}
-			_, _ = fmt.Fprintf(stdout, "disc %d %s: marked burned, %d objects\n", row.DiscSeq, label, n)
+		n := markDiscBurned(stageLog, discUUID)
+		if n == 0 {
+			_, _ = fmt.Fprintf(stdout, "disc %d %s: already burned, 0 objects to mark\n", row.DiscSeq, label)
+			continue
 		}
+		_, _ = fmt.Fprintf(stdout, "disc %d %s: marked burned, %d objects\n", row.DiscSeq, label, n)
 	}
 	return 0
 }
 
-// discRowsForUUID returns every ledger row for discUUID.
-func discRowsForUUID(rows []format.DiscsRow, discUUID [16]byte) []format.DiscsRow {
-	var out []format.DiscsRow
+// newestDiscRow returns the last ledger row for discUUID, the row whose
+// seq and label the output prints.
+func newestDiscRow(rows []format.DiscsRow, discUUID [16]byte) format.DiscsRow {
+	var out format.DiscsRow
 	for _, r := range rows {
 		if r.DiscUUID == discUUID {
-			out = append(out, r)
+			out = r
 		}
 	}
 	return out
 }
 
-// markBurnedForRun moves every object of run runSeq on disc discUUID
-// that is at PACKED to BURNED, and reports how many objects it moved.
-func markBurnedForRun(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
+// markDiscBurned moves every object of disc discUUID that is at PACKED
+// to BURNED, and reports how many objects it moved. The burned record
+// carries the run_seq the packed record already held.
+func markDiscBurned(l *stage.Log, discUUID [16]byte) int {
 	n := 0
 	for _, id := range l.IDsInState(stage.Packed) {
 		rec, ok := l.Get(id)
-		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+		if !ok || rec.DiscUUID != discUUID {
 			continue
 		}
-		if err := l.MarkBurned(id, runSeq, discUUID); err == nil {
+		if err := l.MarkBurned(id, rec.RunSeq, discUUID); err == nil {
 			n++
 		}
 	}
 	return n
 }
 
-// undoBurnForRun moves every object of run runSeq on disc discUUID that
-// is at BURNED back to PACKED, and reports how many objects it moved.
-func undoBurnForRun(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
+// undoDiscBurn moves every object of disc discUUID that is at BURNED
+// back to PACKED, and reports how many objects it moved.
+func undoDiscBurn(l *stage.Log, discUUID [16]byte) int {
 	n := 0
 	for _, id := range l.IDsInState(stage.Burned) {
 		rec, ok := l.Get(id)
-		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+		if !ok || rec.DiscUUID != discUUID {
 			continue
 		}
 		if err := l.MarkBurnUndone(id); err == nil {
@@ -191,16 +188,7 @@ func undoBurnForRun(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
 	return n
 }
 
-// countInStateAcrossRuns sums countInState over every one of rows' runs.
-func countInStateAcrossRuns(l *stage.Log, state stage.State, discUUID [16]byte, rows []format.DiscsRow) int {
-	n := 0
-	for _, row := range rows {
-		n += countInState(l, state, discUUID, row.RunSeq)
-	}
-	return n
-}
-
-// discSummary is one disc's row in "disc list": every run the ledger
+// discSummary is one disc's row in "disc list": every row the ledger
 // records for a disc_uuid, folded into a single line.
 type discSummary struct {
 	UUID          string `json:"uuid"`
@@ -208,7 +196,6 @@ type discSummary struct {
 	Label         string `json:"label"`
 	CapacityBytes uint64 `json:"capacity_bytes"`
 	UsedBytes     uint64 `json:"used_bytes"`
-	Runs          int    `json:"runs"`
 	OnDiscObjects int    `json:"on_disc_objects"`
 	PackedObjects int    `json:"packed_objects"`
 	CleanObjects  int    `json:"clean_objects"`
@@ -298,8 +285,8 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 	}
 
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "%s  seq=%d  label=%q  capacity=%d  used=%d  runs=%d  objects=%d  packed=%d  clean=%d  verified=%d/%d\n",
-			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.Runs, d.OnDiscObjects, d.PackedObjects, d.CleanObjects,
+		_, _ = fmt.Fprintf(stdout, "%s  seq=%d  label=%q  capacity=%d  used=%d  objects=%d  packed=%d  clean=%d  verified=%d/%d\n",
+			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.OnDiscObjects, d.PackedObjects, d.CleanObjects,
 			d.VerifiedCopies, d.MinCopies)
 	}
 	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
@@ -309,7 +296,7 @@ func cmdDiscList(args []string, stdout, stderr io.Writer) int {
 // summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
 // ascending disc_seq order, and folds each disc's rows into one
 // discSummary: the label and forced capacity of its newest run, the sum
-// of used_sectors across every run, the run count, the disc's on-disc,
+// of used_sectors across every run, the disc's on-disc,
 // packed, and clean object counts, and its verify count against
 // minCopies.
 func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByDisc map[[16]byte]int, verifiedByDisc map[[16]byte]uint8, minCopies int) []discSummary {
@@ -340,7 +327,6 @@ func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByD
 			Label:          labelText(newest.Label[:newest.LabelLen]),
 			CapacityBytes:  newest.CapacityForcedSectors * image.SectorSize,
 			UsedBytes:      usedSectors * image.SectorSize,
-			Runs:           len(discRows),
 			OnDiscObjects:  onDiscByDisc[newest.DiscUUID],
 			PackedObjects:  packedByDisc[newest.DiscUUID],
 			CleanObjects:   cleanByDisc[newest.DiscUUID],

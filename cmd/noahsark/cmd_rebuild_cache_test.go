@@ -544,73 +544,42 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 	}
 }
 
-// TestRebuildCacheWarnsSeqContinuesFromNewestFed asserts the stderr
-// warning rebuild-cache prints once it exits ok: it names the newest
-// disc actually fed, and the run_seq and disc_seq the next pack will
-// assign.
-func TestRebuildCacheWarnsSeqContinuesFromNewestFed(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=disc-one", "--out="+treeDir); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-
-	if err := os.RemoveAll(repo); err != nil {
-		t.Fatal(err)
-	}
-
-	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
-	if code != 0 {
-		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "disc-one") {
-		t.Fatalf("output %q does not name the fed disc's label", out)
-	}
-	if !strings.Contains(out, "run_seq 2, disc_seq 1") {
-		t.Fatalf("output %q does not state the next pack's numbers", out)
-	}
-	if !strings.Contains(out, "feed every disc") {
-		t.Fatalf("output %q does not tell the operator to feed every disc", out)
-	}
-}
-
-// TestRebuildCacheRefusesAReintroducedLostDisc packs two discs, loses
+// TestRebuildCacheAcceptsAReintroducedLostDisc packs two discs, loses
 // the repository together with the second (newer) disc, rebuilds from
-// the first disc alone, and packs a third disc: this repeats case A's
-// experiment and lands the third disc on the same run_seq and disc_seq
-// the lost second disc once had. It then feeds the lost second disc
-// back in and asserts rebuild-cache refuses, naming both disc uuids,
-// and leaves the ledger untouched, rather than silently letting two
-// discs share one sequence number.
-func TestRebuildCacheRefusesAReintroducedLostDisc(t *testing.T) {
+// the first disc alone, and packs a third disc: the third disc takes
+// the run_seq and disc_seq the lost second disc already holds. The lost
+// disc then turns up and is fed late. rebuild-cache must accept it: the
+// shared number is a label, and the disc uuid keys every lookup. A
+// `disc burned` by the shared number is refused as ambiguous, and the
+// same command with a uuid prefix works. A verify marks the objects of
+// its own disc only, and every snapshot restores byte for byte.
+func TestRebuildCacheAcceptsAReintroducedLostDisc(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
+	src1 := writeFixtureSource(t)
 
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
+	code, out := runCmd(t, "commit", "--repo="+repo, src1)
+	if code != 0 {
+		t.Fatalf("commit 1: exit %d: %s", code, out)
 	}
+	snap1 := snapshotIDFromCommit(t, out)
 	discOne := filepath.Join(work, "disc-one")
 	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=one", "--out="+discOne); code != 0 {
 		t.Fatalf("pack 1: exit %d: %s", code, out)
 	}
 
 	src2 := writeFixtureSource(t)
-	if code, out := runCmd(t, "commit", "--repo="+repo, src2); code != 0 {
+	if err := os.WriteFile(filepath.Join(src2, "two.txt"), []byte("content of the second source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCmd(t, "commit", "--repo="+repo, src2)
+	if code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
+	snap2 := snapshotIDFromCommit(t, out)
 	discTwoLost := filepath.Join(work, "disc-two-lost")
 	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=two", "--out="+discTwoLost); code != 0 {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
@@ -625,31 +594,124 @@ func TestRebuildCacheRefusesAReintroducedLostDisc(t *testing.T) {
 	}
 
 	src3 := writeFixtureSource(t)
-	if code, out := runCmd(t, "commit", "--repo="+repo, src3); code != 0 {
+	if err := os.WriteFile(filepath.Join(src3, "three.txt"), []byte("content of the third source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCmd(t, "commit", "--repo="+repo, src3)
+	if code != 0 {
 		t.Fatalf("commit 3: exit %d: %s", code, out)
 	}
+	snap3 := snapshotIDFromCommit(t, out)
 	discThree := filepath.Join(work, "disc-three")
 	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=three", "--out="+discThree); code != 0 {
 		t.Fatalf("pack 3: exit %d: %s", code, out)
 	}
 
-	if got := discListUUIDCount(t, repo); got != 2 {
-		t.Fatalf("discs known before the reintroduced disc = %d, want 2", got)
+	// The "lost" second disc turns up after all. Its numbers are the
+	// third disc's numbers; the feed must still be accepted.
+	code, out = runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+discTwoLost)
+	if code != 0 {
+		t.Fatalf("rebuild-cache (reintroduced disc two): exit %d, want 0: %s", code, out)
+	}
+	discs := discListRows(t, repo)
+	if len(discs) != 3 {
+		t.Fatalf("disc list reports %d disc(s), want 3: %v", len(discs), discs)
 	}
 
-	// The "lost" second disc turns up after all. Feeding it now must be
-	// refused: its run_seq and disc_seq are already the third disc's.
-	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+discTwoLost)
-	if code != 1 {
-		t.Fatalf("rebuild-cache (reintroduced disc two): exit %d, want 1: %s", code, out)
-	}
-	if !strings.Contains(out, "share a sequence number") {
-		t.Fatalf("output %q does not refuse over a shared sequence number", out)
+	shared := discs[byLabel(t, discs, "two")].Seq
+	if other := discs[byLabel(t, discs, "three")].Seq; other != shared {
+		t.Fatalf("disc two seq %d and disc three seq %d differ; the test needs the shared number", shared, other)
 	}
 
-	if got := discListUUIDCount(t, repo); got != 2 {
-		t.Fatalf("discs known after the refused rebuild = %d, want 2 (unchanged)", got)
+	code, out = runCmd(t, "disc", "burned", "--repo="+repo, fmt.Sprint(shared))
+	if code != 2 {
+		t.Fatalf("disc burned %d: exit %d, want 2: %s", shared, code, out)
 	}
+	if !strings.Contains(out, "matches more than one disc") {
+		t.Fatalf("disc burned %d output %q does not refuse the shared number as ambiguous", shared, out)
+	}
+
+	for _, d := range discs {
+		if code, out := runCmd(t, "disc", "burned", "--repo="+repo, d.UUID[:8]); code != 0 {
+			t.Fatalf("disc burned %s: exit %d: %s", d.UUID[:8], code, out)
+		}
+	}
+
+	// Each verify must mark the objects of its own disc only. Verify one
+	// disc, then read the clean counts of all three back.
+	roots := map[string]string{"one": discOne, "two": discTwoLost, "three": discThree}
+	verified := discs[byLabel(t, discs, "two")]
+	if code, out := runCmd(t, "verify", "--repo="+repo, roots["two"]); code != 0 {
+		t.Fatalf("verify disc two: exit %d: %s", code, out)
+	}
+	for _, d := range discListRows(t, repo) {
+		if d.UUID == verified.UUID {
+			if d.CleanObjects == 0 {
+				t.Fatalf("disc %s (%s) has 0 clean objects after its own verify", d.UUID, d.Label)
+			}
+			continue
+		}
+		if d.CleanObjects != 0 {
+			t.Fatalf("disc %s (%s) has %d clean object(s); the verify of disc two marked another disc", d.UUID, d.Label, d.CleanObjects)
+		}
+	}
+
+	for _, d := range discs {
+		if d.UUID == verified.UUID {
+			continue
+		}
+		if code, out := runCmd(t, "verify", "--repo="+repo, roots[d.Label]); code != 0 {
+			t.Fatalf("verify disc %s: exit %d: %s", d.Label, code, out)
+		}
+	}
+
+	for i, pair := range []struct {
+		snap string
+		src  string
+	}{{snap1, src1}, {snap2, src2}, {snap3, src3}} {
+		outDir := filepath.Join(work, fmt.Sprintf("restored-%d", i))
+		code, out := runCmd(t, "restore", "--disc="+discOne, "--disc="+discTwoLost, "--disc="+discThree, pair.snap, outDir)
+		if code != 0 {
+			t.Fatalf("restore %s: exit %d: %s", pair.snap, code, out)
+		}
+		compareTrees(t, filepath.Join(outDir, pair.src), pair.src)
+	}
+}
+
+// discListRow is one row of "disc list --json", as the tests read it.
+type discListRow struct {
+	UUID         string `json:"uuid"`
+	Seq          uint64 `json:"seq"`
+	Label        string `json:"label"`
+	CleanObjects int    `json:"clean_objects"`
+}
+
+// discListRows runs "disc list --json" and returns its rows.
+func discListRows(t *testing.T, repo string) []discListRow {
+	t.Helper()
+	code, out := runCmd(t, "disc", "list", "--repo="+repo, "--json")
+	if code != 0 {
+		t.Fatalf("disc list: exit %d: %s", code, out)
+	}
+	var listed struct {
+		Discs []discListRow `json:"discs"`
+	}
+	if err := json.Unmarshal([]byte(out), &listed); err != nil {
+		t.Fatalf("disc list output: %v: %s", err, out)
+	}
+	return listed.Discs
+}
+
+// byLabel returns the index of the one row with this label.
+func byLabel(t *testing.T, rows []discListRow, label string) int {
+	t.Helper()
+	for i, r := range rows {
+		if r.Label == label {
+			return i
+		}
+	}
+	t.Fatalf("no disc labelled %q in %v", label, rows)
+	return 0
 }
 
 // TestRebuildCacheRepeatTwoDiscFeedIsAccepted feeds two discs together

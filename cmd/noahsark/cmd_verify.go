@@ -32,8 +32,8 @@ import (
 // that records a burn; verify only ever reads that state. When --repo
 // resolves to a repository, and DISC.bin's uuid matches a row in that
 // repository's disc ledger, a successful verify moves every BURNED
-// object of the newest run to CLEAN, adds 1 to the verify count of every
-// CLEAN object of that run, and warns when a PACKED object of that run
+// object of that disc to CLEAN, adds 1 to the verify count of every
+// CLEAN object of that disc, and warns when a PACKED object of that disc
 // remains, naming the `disc burned` command to run. The second identical
 // disc raises that count, and gc waits for it. A failed verify moves any
 // object still at BURNED back to PACKED, with the verify-failed reason,
@@ -124,20 +124,18 @@ func labelText(b []byte) string {
 	return string(b)
 }
 
-// discIdentity is DISC.bin's uuid and the newest run's run_seq and disc
-// uuid, read straight off target without running the full object and
-// FEC checks a verify performs. It lets a failed verify still resolve
-// which run to move back to PACKED.
+// discIdentity is DISC.bin's uuid and label, read straight off target
+// without running the full object and FEC checks a verify performs. It
+// lets a failed verify still resolve which disc to move back to PACKED.
 type discIdentity struct {
 	DiscUUID [16]byte
-	RunSeq   uint64
 	Label    string
 }
 
 // identifyDiscAndRun reads DISC.bin and the newest run's RUN.bin under
-// target, and reports the disc and run identity, and whether both were
+// target, and reports the disc identity, and whether both were
 // readable. A read failure here is not itself a verify failure; it only
-// means the caller cannot resolve a run to move back to PACKED.
+// means the caller cannot treat target as a burned disc.
 func identifyDiscAndRun(target string) (discIdentity, bool) {
 	names := image.NewNameCache()
 	base, err := image.FindNoahsark(target, names)
@@ -168,7 +166,7 @@ func identifyDiscAndRun(target string) (discIdentity, bool) {
 	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
 		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
 	}
-	return discIdentity{DiscUUID: disc.DiscUUID, RunSeq: run.RunSeq, Label: label}, true
+	return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, true
 }
 
 // applyVerifyOutcome updates repoDir's staging state and disc ledger for
@@ -212,19 +210,19 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	warnIfTruncated("verify", stageLog, stderr)
 
 	if verifyErr != nil {
-		n := markVerifyFailed(stageLog, ident.DiscUUID, ident.RunSeq)
+		n := markVerifyFailed(stageLog, ident.DiscUUID)
 		_, _ = fmt.Fprintf(stdout, "verify: disc %s failed; returned %d object(s) from BURNED to PACKED\n", uuidText(ident.DiscUUID), n)
 		return "", false
 	}
 
-	n, err := markVerifyClean(stageLog, ident.DiscUUID, ident.RunSeq)
+	n, err := markVerifyClean(stageLog, ident.DiscUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return "", false
 	}
-	count, haveClean := runVerifyCount(stageLog, ident.DiscUUID, ident.RunSeq)
+	count, haveClean := discVerifyCount(stageLog, ident.DiscUUID)
 	if haveClean {
-		if err := recordLedgerVerify(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq); err != nil {
+		if err := recordLedgerVerify(cfg.StagingDir, repoUUID, ident.DiscUUID); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		}
 		if err := cacheRunFromDisc(cfg, repoUUID, target); err != nil {
@@ -232,17 +230,17 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		}
 	}
 	if n > 0 {
-		_, _ = fmt.Fprintf(stdout, "verify: marked %d object(s) CLEAN (disc %s, run %d)\n", n, uuidText(ident.DiscUUID), ident.RunSeq)
+		_, _ = fmt.Fprintf(stdout, "verify: marked %d object(s) CLEAN (disc %s)\n", n, uuidText(ident.DiscUUID))
 	}
 	if haveClean {
 		_, _ = fmt.Fprintln(stdout, verifyCountLine(count, cfg.MinVerifiedCopies))
 	}
 
-	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID, ident.RunSeq)
+	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID)
 	if stillPacked == 0 {
 		return "", false
 	}
-	row, found := ledgerRow(cfg.StagingDir, repoUUID, ident.DiscUUID, ident.RunSeq)
+	row, found := ledgerRow(cfg.StagingDir, repoUUID, ident.DiscUUID)
 	discSeq := uint64(0)
 	if found {
 		discSeq = row.DiscSeq
@@ -271,44 +269,44 @@ func ledgerHasDiscUUID(stagingDir string, repoUUID, discUUID [16]byte) bool {
 	return false
 }
 
-// ledgerRow returns stagingDir's ledger row for discUUID and runSeq.
-func ledgerRow(stagingDir string, repoUUID, discUUID [16]byte, runSeq uint64) (format.DiscsRow, bool) {
+// ledgerRow returns stagingDir's ledger row for discUUID.
+func ledgerRow(stagingDir string, repoUUID, discUUID [16]byte) (format.DiscsRow, bool) {
 	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
 	if err != nil {
 		return format.DiscsRow{}, false
 	}
 	for _, row := range ledger.Rows {
-		if row.DiscUUID == discUUID && row.RunSeq == runSeq {
+		if row.DiscUUID == discUUID {
 			return row, true
 		}
 	}
 	return format.DiscsRow{}, false
 }
 
-// countInState counts the objects of run runSeq on disc discUUID that
-// are currently in state.
-func countInState(l *stage.Log, state stage.State, discUUID [16]byte, runSeq uint64) int {
+// countInState counts the objects of disc discUUID that are currently
+// in state.
+func countInState(l *stage.Log, state stage.State, discUUID [16]byte) int {
 	n := 0
 	for _, id := range l.IDsInState(state) {
 		rec, ok := l.Get(id)
-		if ok && rec.RunSeq == runSeq && rec.DiscUUID == discUUID {
+		if ok && rec.DiscUUID == discUUID {
 			n++
 		}
 	}
 	return n
 }
 
-// markVerifyClean moves every object of run runSeq on disc discUUID
-// that is at BURNED to CLEAN with verify count 1, and adds 1 to the
-// verify count of every object of that run that is already CLEAN. It
-// reports how many objects it moved from BURNED. The operator verifies
-// the second identical disc this way: the disc uuid is the same, so the
-// count of the run, not the state, is what says both copies read back.
-// A PACKED object of the same run is left untouched: verify never marks
-// anything BURNED itself, only `disc burned` does.
-func markVerifyClean(l *stage.Log, discUUID [16]byte, runSeq uint64) (int, error) {
-	burned := idsOfRunInState(l, stage.Burned, discUUID, runSeq)
-	alreadyClean := idsOfRunInState(l, stage.Clean, discUUID, runSeq)
+// markVerifyClean moves every object of disc discUUID that is at
+// BURNED to CLEAN with verify count 1, and adds 1 to the verify count
+// of every object of that disc that is already CLEAN. It reports how
+// many objects it moved from BURNED. The operator verifies the second
+// identical disc this way: the disc uuid is the same, so the count, not
+// the state, is what says both copies read back. A PACKED object of the
+// same disc is left untouched: verify never marks anything BURNED
+// itself, only `disc burned` does.
+func markVerifyClean(l *stage.Log, discUUID [16]byte) (int, error) {
+	burned := idsOfDiscInState(l, stage.Burned, discUUID)
+	alreadyClean := idsOfDiscInState(l, stage.Clean, discUUID)
 	for _, id := range append(burned, alreadyClean...) {
 		if err := l.MarkVerified(id); err != nil {
 			return 0, err
@@ -317,13 +315,13 @@ func markVerifyClean(l *stage.Log, discUUID [16]byte, runSeq uint64) (int, error
 	return len(burned), nil
 }
 
-// idsOfRunInState returns the ids of the objects of run runSeq on disc
-// discUUID that are currently in state.
-func idsOfRunInState(l *stage.Log, state stage.State, discUUID [16]byte, runSeq uint64) []object.ID {
+// idsOfDiscInState returns the ids of the objects of disc discUUID that
+// are currently in state.
+func idsOfDiscInState(l *stage.Log, state stage.State, discUUID [16]byte) []object.ID {
 	var ids []object.ID
 	for _, id := range l.IDsInState(state) {
 		rec, ok := l.Get(id)
-		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+		if !ok || rec.DiscUUID != discUUID {
 			continue
 		}
 		ids = append(ids, id)
@@ -331,13 +329,13 @@ func idsOfRunInState(l *stage.Log, state stage.State, discUUID [16]byte, runSeq 
 	return ids
 }
 
-// runVerifyCount returns the lowest verify count of the CLEAN objects of
-// run runSeq on disc discUUID, and whether the run has a CLEAN object at
-// all. gc acts on the lowest count, so verify reports the same one.
-func runVerifyCount(l *stage.Log, discUUID [16]byte, runSeq uint64) (uint8, bool) {
+// discVerifyCount returns the lowest verify count of the CLEAN objects
+// of disc discUUID, and whether the disc has a CLEAN object at all. gc
+// acts on the lowest count, so verify reports the same one.
+func discVerifyCount(l *stage.Log, discUUID [16]byte) (uint8, bool) {
 	var lowest uint8
 	found := false
-	for _, id := range idsOfRunInState(l, stage.Clean, discUUID, runSeq) {
+	for _, id := range idsOfDiscInState(l, stage.Clean, discUUID) {
 		rec, ok := l.Get(id)
 		if !ok {
 			continue
@@ -359,14 +357,14 @@ func verifyCountLine(count uint8, minCopies int) string {
 	return fmt.Sprintf("verify: %d of %d copies verified", count, minCopies)
 }
 
-// markVerifyFailed moves every object of run runSeq on disc discUUID
-// that is still only at BURNED back to PACKED, with the verify-failed
-// reason, and reports how many objects it moved.
-func markVerifyFailed(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
+// markVerifyFailed moves every object of disc discUUID that is still
+// only at BURNED back to PACKED, with the verify-failed reason, and
+// reports how many objects it moved.
+func markVerifyFailed(l *stage.Log, discUUID [16]byte) int {
 	n := 0
 	for _, id := range l.IDsInState(stage.Burned) {
 		rec, ok := l.Get(id)
-		if !ok || rec.RunSeq != runSeq || rec.DiscUUID != discUUID {
+		if !ok || rec.DiscUUID != discUUID {
 			continue
 		}
 		if err := l.MarkVerifyFailed(id); err == nil {
@@ -377,18 +375,18 @@ func markVerifyFailed(l *stage.Log, discUUID [16]byte, runSeq uint64) int {
 }
 
 // recordLedgerVerify sets LastVerifySec to now on the disc ledger row
-// for runSeq, and writes the ledger back. OPERATIONS.md's local cache
+// for discUUID, and writes the ledger back. OPERATIONS.md's local cache
 // layout also allows a health log; this build reuses the ledger row's
 // own LastVerifySec field instead of adding a second file for the same
 // fact.
-func recordLedgerVerify(stagingDir string, repoUUID, discUUID [16]byte, runSeq uint64) error {
+func recordLedgerVerify(stagingDir string, repoUUID, discUUID [16]byte) error {
 	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
 	if err != nil {
 		return err
 	}
 	found := false
 	for i := range ledger.Rows {
-		if ledger.Rows[i].RunSeq == runSeq && ledger.Rows[i].DiscUUID == discUUID {
+		if ledger.Rows[i].DiscUUID == discUUID {
 			ledger.Rows[i].LastVerifySec = time.Now().Unix()
 			found = true
 		}

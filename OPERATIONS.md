@@ -966,6 +966,11 @@ recorded. The build uses these states.
 A disc is good or is discarded. A disc that fails `verify` is discarded, and
 the operator burns the same image on a new disc.
 
+`run_seq` and `disc_seq` are labels for the human. The host assigns them from
+local state, thus after a lost repository two discs can carry the same number.
+The tool finds a disc by its uuid. One disc holds one run, thus the disc uuid
+identifies the run too.
+
 ### 12.2 Close policy
 
 A disc is never closed by default. There is no config key for the close
@@ -1368,7 +1373,8 @@ The config key `cache.dir` moves the cache.
 A `DISC` argument names one disc of the repository. It is the `disc_seq`, the
 full uuid, a uuid prefix, or the exact label. A command refuses a value that
 matches no disc, and a value that matches more than one disc. The refusal
-lists the candidates.
+lists the candidates. Two discs can carry the same `disc_seq`; the operator
+then gives the uuid, or a uuid prefix, in place of the number.
 
 A `DISC-ROOT` argument, a `--disc=ROOT` option and a `--mount=DIR` option name
 a directory: the mount point of a disc, or a copy of a disc root.
@@ -1617,8 +1623,8 @@ Rebuilds the local cache from discs. It also rebuilds the repository state
 that the discs can prove: the config, the disc list, the refs and the state
 log. It creates the repository directory when it is absent, thus it recovers a
 lost repository. It merges into the state that exists. With one drive, the
-operator runs it one time for each disc, in any order. It refuses a disc whose
-sequence numbers collide with a different disc that the repository holds.
+operator runs it one time for each disc, in any order. Two discs that carry the
+same sequence number are accepted: the disc uuid tells them apart.
 
 The rebuilt state does not know that a disc was burned or verified. The
 operator runs `disc burned` and `verify` again for each disc.
@@ -1739,7 +1745,7 @@ noahsark disc burned [--repo=PATH] [--undo] DISC [DISC...]
 Give the options after the subcommand.
 
 `list` prints one line for each disc: uuid, `seq`, `label`, `capacity`, `used`,
-`runs`, `objects`, `packed`, `clean` and `verified`. `packed` counts the
+`objects`, `packed`, `clean` and `verified`. `packed` counts the
 objects of the disc that are PACKED, and `clean` counts the objects that are
 CLEAN. `verified` prints `C/N`: `C` is the lowest verify count of the CLEAN
 objects of the disc, and `N` is `gc.min_verified_copies`. `C` is 0 when the

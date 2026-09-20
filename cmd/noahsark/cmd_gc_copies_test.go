@@ -85,11 +85,11 @@ func discListCounts(t *testing.T, repo string) (clean int, verified string) {
 	if m == nil {
 		t.Fatalf("disc line %q does not match the expected column order", line)
 	}
-	n, err := strconv.Atoi(m[9])
+	n, err := strconv.Atoi(m[8])
 	if err != nil {
-		t.Fatalf("clean count %q: %v", m[9], err)
+		t.Fatalf("clean count %q: %v", m[8], err)
 	}
-	return n, m[10] + "/" + m[11]
+	return n, m[9] + "/" + m[10]
 }
 
 // TestGCHoldsObjectsUntilTheSecondVerify checks that one verify is not
