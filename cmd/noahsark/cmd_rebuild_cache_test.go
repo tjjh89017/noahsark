@@ -651,3 +651,62 @@ func TestRebuildCacheRefusesAReintroducedLostDisc(t *testing.T) {
 		t.Fatalf("discs known after the refused rebuild = %d, want 2 (unchanged)", got)
 	}
 }
+
+// TestRebuildCacheRepeatTwoDiscFeedIsAccepted feeds two discs together
+// in one rebuild-cache call, then repeats that exact same call: both
+// calls must exit 0 and say ok. A disc named in a call's own --disc
+// flags is fed by that call, whether or not it was ever fed before;
+// this must never be refused as though a different disc were reusing
+// its run_seq and disc_seq.
+func TestRebuildCacheRepeatTwoDiscFeedIsAccepted(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=BASE", src); code != 0 {
+		t.Fatalf("commit BASE: exit %d: %s", code, out)
+	}
+	tree1 := filepath.Join(work, "tree1")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=BASE", "--out="+tree1); code != 0 {
+		t.Fatalf("pack 1: exit %d: %s", code, out)
+	}
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+tree1); code != 0 {
+		t.Fatalf("rebuild-cache (disc 1 alone): exit %d: %s", code, out)
+	}
+
+	if err := os.WriteFile(filepath.Join(src, "c.txt"), []byte("content of c, added for NEXT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=NEXT", src); code != 0 {
+		t.Fatalf("commit NEXT: exit %d: %s", code, out)
+	}
+	tree2 := filepath.Join(work, "tree2")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=NEXT", "--out="+tree2); code != 0 {
+		t.Fatalf("pack 2: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+tree1, "--disc="+tree2)
+	if code != 0 {
+		t.Fatalf("rebuild-cache (2-disc #1): exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "rebuild-cache: ok") {
+		t.Fatalf("2-disc #1 output %q does not say ok", out)
+	}
+
+	code, out = runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+tree1, "--disc="+tree2)
+	if code != 0 {
+		t.Fatalf("rebuild-cache (2-disc #2, repeat): exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "rebuild-cache: ok") {
+		t.Fatalf("repeat 2-disc output %q does not say ok", out)
+	}
+	if strings.Contains(out, "not fed yet") {
+		t.Fatalf("repeat 2-disc output %q wrongly reports a disc not fed", out)
+	}
+}
