@@ -77,6 +77,24 @@ func TestBlobGolden(t *testing.T) {
 	}
 }
 
+func TestBlobDecodeIgnoresReservedByte(t *testing.T) {
+	golden := readGolden(t, "blob.golden")
+	buf := append([]byte(nil), golden...)
+	buf[CommonHeaderLen+ObjectHeaderLen+21] = 0xFF // the body's reserved byte
+
+	var got Blob
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved byte: %v", err)
+	}
+	if got.Reserved[0] != 0xFF {
+		t.Fatalf("reserved byte not preserved: %v", got.Reserved)
+	}
+	b := testBlob()
+	if got.EntryCount != b.EntryCount || got.TotalSize != b.TotalSize {
+		t.Fatalf("body mismatch: got %+v, want %+v", got, b)
+	}
+}
+
 func TestBlobDecodeRejectsShort(t *testing.T) {
 	golden := readGolden(t, "blob.golden")
 	var b Blob

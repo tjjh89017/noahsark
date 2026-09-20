@@ -80,6 +80,24 @@ func TestSnapshotGolden(t *testing.T) {
 	}
 }
 
+func TestSnapshotDecodeIgnoresReservedByte(t *testing.T) {
+	golden := readGolden(t, "snapshot.golden")
+	buf := append([]byte(nil), golden...)
+	buf[CommonHeaderLen+ObjectHeaderLen+111] = 0xFF // the body's reserved_u8
+
+	var got Snapshot
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved byte: %v", err)
+	}
+	if got.ReservedU8 != 0xFF {
+		t.Fatalf("reserved byte not preserved: 0x%02x", got.ReservedU8)
+	}
+	s := testSnapshot()
+	if got.Generation != s.Generation || got.TotalSize != s.TotalSize {
+		t.Fatalf("body mismatch: got %+v, want %+v", got, s)
+	}
+}
+
 func TestSnapshotDecodeRejectsBadMagic(t *testing.T) {
 	golden := readGolden(t, "snapshot.golden")
 	buf := append([]byte(nil), golden...)

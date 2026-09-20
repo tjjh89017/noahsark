@@ -114,6 +114,52 @@ func TestTreeGolden(t *testing.T) {
 	}
 }
 
+func TestTreeDecodeIgnoresReservedField(t *testing.T) {
+	golden := readGolden(t, "tree.golden")
+	buf := append([]byte(nil), golden...)
+	buf[CommonHeaderLen+ObjectHeaderLen+4] = 0xFF // the body's reserved_u32
+
+	var got Tree
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved field: %v", err)
+	}
+	if got.ReservedU32 == 0 {
+		t.Fatalf("reserved field not preserved: %d", got.ReservedU32)
+	}
+	tr := testTree()
+	if got.EntryCount != tr.EntryCount {
+		t.Fatalf("body mismatch: got %+v, want %+v", got, tr)
+	}
+}
+
+func TestTreeEntryDecodeIgnoresPaddingBytes(t *testing.T) {
+	e := TreeEntry{
+		EntryType: EntryTypeRegular,
+		Mode:      0o644,
+		Name:      []byte("f"),
+		ContentID: [32]byte{1, 2, 3},
+	}
+	buf := make([]byte, e.EncodedLen())
+	if _, err := e.Encode(buf); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// The name is one byte, so the alignment padding before the content
+	// area, offset 113 to 119, is nonzero here.
+	buf[113] = 0xFF
+
+	var got TreeEntry
+	n, err := got.Decode(buf)
+	if err != nil {
+		t.Fatalf("decode nonzero padding byte: %v", err)
+	}
+	if n != len(buf) {
+		t.Fatalf("decode read %d bytes, want %d", n, len(buf))
+	}
+	if got.ContentID != e.ContentID || string(got.Name) != string(e.Name) {
+		t.Fatalf("decoded mismatch: got %+v, want %+v", got, e)
+	}
+}
+
 func TestTreeDecodeRejectsShort(t *testing.T) {
 	golden := readGolden(t, "tree.golden")
 	var tr Tree

@@ -97,7 +97,8 @@ func (r *Run) Encode(buf []byte) error {
 }
 
 // Decode reads a Run from buf. It rejects a short buffer, a magic_kind
-// mismatch, a nonzero reserved field, and a header_crc32c mismatch.
+// mismatch, and a header_crc32c mismatch. It does not interpret a reserved
+// field or padding byte.
 func (r *Run) Decode(buf []byte) error {
 	if len(buf) < RunLen {
 		return ErrShort
@@ -122,13 +123,7 @@ func (r *Run) Decode(buf []byte) error {
 	r.RunKind = RunKind(buf[89])
 	r.RunFlags = buf[90]
 	r.ReservedU8 = buf[91]
-	if r.ReservedU8 != 0 {
-		return ErrReserved
-	}
 	r.ReservedU32a = binary.LittleEndian.Uint32(buf[92:96])
-	if r.ReservedU32a != 0 {
-		return ErrReserved
-	}
 	r.IndexBytes = binary.LittleEndian.Uint64(buf[96:104])
 	copy(r.IndexHash[:], buf[104:136])
 	r.StreamBytes = binary.LittleEndian.Uint64(buf[136:144])
@@ -139,24 +134,11 @@ func (r *Run) Decode(buf []byte) error {
 	r.DiscObjectCount = binary.LittleEndian.Uint64(buf[192:200])
 	r.DiscRunIndex = binary.LittleEndian.Uint32(buf[200:204])
 	r.ReservedU32b = binary.LittleEndian.Uint32(buf[204:208])
-	if r.ReservedU32b != 0 {
-		return ErrReserved
-	}
 	copy(r.Reserved[:], buf[208:504])
-	for _, b := range r.Reserved {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
 	r.HeaderCRC32C = binary.LittleEndian.Uint32(buf[504:508])
 	if crc32c(buf[0:504]) != r.HeaderCRC32C {
 		return ErrCRC
 	}
 	copy(r.ReservedFinal[:], buf[508:512])
-	for _, b := range r.ReservedFinal {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
 	return nil
 }

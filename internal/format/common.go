@@ -19,16 +19,3 @@ const objectHeaderCRCOffset = CommonHeaderLen + 24
 func align8(n int) int {
 	return (n + 7) &^ 7
 }
-
-// checkZero reports ErrReserved when buf[from:to] holds a nonzero byte.
-func checkZero(buf []byte, from, to int) error {
-	if from >= to {
-		return nil
-	}
-	for _, b := range buf[from:to] {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
-	return nil
-}

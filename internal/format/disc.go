@@ -70,7 +70,8 @@ func (d *Disc) Encode(buf []byte) error {
 }
 
 // Decode reads a Disc from buf. It rejects a short buffer, a magic_kind
-// mismatch, a nonzero reserved field, and a super_crc32c mismatch.
+// mismatch, and a super_crc32c mismatch. It does not interpret a reserved
+// field.
 func (d *Disc) Decode(buf []byte) error {
 	if len(buf) < DiscLen {
 		return ErrShort
@@ -96,24 +97,11 @@ func (d *Disc) Decode(buf []byte) error {
 	d.CapacityIsForced = buf[139]
 	d.Sealed = buf[140]
 	copy(d.ReservedU8[:], buf[141:144])
-	for _, b := range d.ReservedU8 {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
 	d.LabelLen = binary.LittleEndian.Uint32(buf[144:148])
 	copy(d.Label[:], buf[148:212])
 	d.ToolVersion = binary.LittleEndian.Uint32(buf[212:216])
 	d.ReservedU32 = binary.LittleEndian.Uint32(buf[216:220])
-	if d.ReservedU32 != 0 {
-		return ErrReserved
-	}
 	copy(d.Reserved[:], buf[220:2044])
-	for _, b := range d.Reserved {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
 	d.SuperCRC32C = binary.LittleEndian.Uint32(buf[2044:2048])
 	if crc32c(buf[0:2044]) != d.SuperCRC32C {
 		return ErrCRC

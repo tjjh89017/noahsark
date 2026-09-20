@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func snapshotIDN(n int) [32]byte {
 	var h [32]byte
@@ -69,6 +72,28 @@ func TestRefsTableGolden(t *testing.T) {
 		if r.ReservedU8 != 0 {
 			t.Errorf("record %d reserved_u8 not zero: %d", i, r.ReservedU8)
 		}
+	}
+}
+
+func TestRefsTableDecodeIgnoresReservedFields(t *testing.T) {
+	golden := readGolden(t, "refs.golden")
+	buf := append([]byte(nil), golden...)
+	buf[60] = 0xFF               // the table's reserved field
+	buf[RefsHeaderLen+47] = 0xFF // the first record's reserved_u8
+
+	total := len(buf)
+	binary.LittleEndian.PutUint32(buf[64:68], crc32c(buf[RefsHeaderLen:total]))
+	binary.LittleEndian.PutUint32(buf[68:72], crc32c(buf[0:68]))
+
+	var got RefsTable
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved fields: %v", err)
+	}
+	if got.Reserved[0] != 0xFF {
+		t.Fatalf("table reserved byte not preserved: %x", got.Reserved)
+	}
+	if got.Records[0].ReservedU8 != 0xFF {
+		t.Fatalf("record reserved_u8 not preserved: %x", got.Records[0].ReservedU8)
 	}
 }
 

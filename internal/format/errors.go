@@ -11,9 +11,6 @@ var ErrShort = errors.New("format: buffer too short")
 // ErrVersion reports an unknown version_major.
 var ErrVersion = errors.New("format: unsupported version_major")
 
-// ErrReserved reports a reserved field or padding byte that is not zero.
-var ErrReserved = errors.New("format: reserved field not zero")
-
 // ErrCRC reports a CRC-32C field that does not match its covered bytes.
 var ErrCRC = errors.New("format: crc mismatch")
 

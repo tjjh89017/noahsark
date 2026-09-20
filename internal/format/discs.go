@@ -61,7 +61,7 @@ func (r *DiscsRow) encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[168:176], r.CapacityForcedSectors)
 }
 
-func (r *DiscsRow) decode(buf []byte) error {
+func (r *DiscsRow) decode(buf []byte) {
 	r.RunSeq = binary.LittleEndian.Uint64(buf[0:8])
 	r.DiscSeq = binary.LittleEndian.Uint64(buf[8:16])
 	copy(r.DiscUUID[:], buf[16:32])
@@ -78,10 +78,6 @@ func (r *DiscsRow) decode(buf []byte) error {
 	r.StateFlags = buf[166]
 	r.Reserved = buf[167]
 	r.CapacityForcedSectors = binary.LittleEndian.Uint64(buf[168:176])
-	if r.Reserved != 0 {
-		return ErrReserved
-	}
-	return nil
 }
 
 // DiscsTable is DISCS, one row per run that was burned. It carries every
@@ -142,8 +138,8 @@ func (t *DiscsTable) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a DiscsTable from buf and returns the number of bytes
-// read. It rejects a short buffer, a magic_kind mismatch, a nonzero
-// reserved field, and a CRC mismatch.
+// read. It rejects a short buffer, a magic_kind mismatch, and a CRC
+// mismatch. It does not interpret a reserved field.
 func (t *DiscsTable) Decode(buf []byte) (int, error) {
 	if len(buf) < DiscsHeaderLen {
 		return 0, ErrShort
@@ -164,9 +160,6 @@ func (t *DiscsTable) Decode(buf []byte) (int, error) {
 	digestLen := buf[59]
 	var reserved [4]byte
 	copy(reserved[:], buf[60:64])
-	if reserved != ([4]byte{}) {
-		return 0, ErrReserved
-	}
 	bodyCRC := binary.LittleEndian.Uint32(buf[64:68])
 	headerCRC := binary.LittleEndian.Uint32(buf[68:72])
 
@@ -185,9 +178,7 @@ func (t *DiscsTable) Decode(buf []byte) (int, error) {
 	off := DiscsHeaderLen
 	rows := make([]DiscsRow, recordCount)
 	for i := range rows {
-		if err := rows[i].decode(buf[off : off+DiscsRowLen]); err != nil {
-			return 0, err
-		}
+		rows[i].decode(buf[off : off+DiscsRowLen])
 		off += DiscsRowLen
 	}
 

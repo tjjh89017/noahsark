@@ -47,12 +47,20 @@ func TestTLVDecodeRejectsShort(t *testing.T) {
 	}
 }
 
-func TestTLVDecodeRejectsNonzeroPadding(t *testing.T) {
+func TestTLVDecodeIgnoresNonzeroPadding(t *testing.T) {
 	golden := readGolden(t, "tlv.golden")
 	buf := append([]byte(nil), golden...)
 	buf[len(buf)-1] = 1
-	var tlv TLV
-	if _, err := tlv.Decode(buf); err != ErrReserved {
-		t.Fatalf("decode nonzero padding: got %v, want %v", err, ErrReserved)
+	tlv := testTLV()
+	var got TLV
+	n, err := got.Decode(buf)
+	if err != nil {
+		t.Fatalf("decode nonzero padding: %v", err)
+	}
+	if n != len(buf) {
+		t.Fatalf("decode read %d bytes, want %d", n, len(buf))
+	}
+	if got.Type != tlv.Type || got.Flags != tlv.Flags || string(got.Payload) != string(tlv.Payload) {
+		t.Fatalf("decoded mismatch: got %+v, want %+v", got, tlv)
 	}
 }

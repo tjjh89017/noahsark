@@ -37,7 +37,7 @@ func (r *RefRecord) encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[88:96], r.RunSeq)
 }
 
-func (r *RefRecord) decode(buf []byte) error {
+func (r *RefRecord) decode(buf []byte) {
 	copy(r.SnapshotID[:], buf[0:32])
 	r.TimeSec = int64(binary.LittleEndian.Uint64(buf[32:40]))
 	r.TimeNsec = binary.LittleEndian.Uint32(buf[40:44])
@@ -46,10 +46,6 @@ func (r *RefRecord) decode(buf []byte) error {
 	r.ReservedU8 = buf[47]
 	copy(r.Name[:], buf[48:88])
 	r.RunSeq = binary.LittleEndian.Uint64(buf[88:96])
-	if r.ReservedU8 != 0 {
-		return ErrReserved
-	}
-	return nil
 }
 
 // RefsTable is REFS, the repository-wide table of named pointers to
@@ -109,8 +105,8 @@ func (t *RefsTable) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a RefsTable from buf and returns the number of bytes
-// read. It rejects a short buffer, a magic_kind mismatch, a nonzero
-// reserved field, and a CRC mismatch.
+// read. It rejects a short buffer, a magic_kind mismatch, and a CRC
+// mismatch. It does not interpret a reserved field.
 func (t *RefsTable) Decode(buf []byte) (int, error) {
 	if len(buf) < RefsHeaderLen {
 		return 0, ErrShort
@@ -131,9 +127,6 @@ func (t *RefsTable) Decode(buf []byte) (int, error) {
 	digestLen := buf[59]
 	var reserved [4]byte
 	copy(reserved[:], buf[60:64])
-	if reserved != ([4]byte{}) {
-		return 0, ErrReserved
-	}
 	bodyCRC := binary.LittleEndian.Uint32(buf[64:68])
 	headerCRC := binary.LittleEndian.Uint32(buf[68:72])
 
@@ -152,9 +145,7 @@ func (t *RefsTable) Decode(buf []byte) (int, error) {
 	off := RefsHeaderLen
 	records := make([]RefRecord, recordCount)
 	for i := range records {
-		if err := records[i].decode(buf[off : off+RefRecordLen]); err != nil {
-			return 0, err
-		}
+		records[i].decode(buf[off : off+RefRecordLen])
 		off += RefRecordLen
 	}
 

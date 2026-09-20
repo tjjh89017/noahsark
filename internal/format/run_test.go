@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func testRun() Run {
 	r := Run{
@@ -78,6 +81,24 @@ func TestRunGolden(t *testing.T) {
 		if b != 0 {
 			t.Errorf("reserved_final[%d] not zero: 0x%02x", i, b)
 		}
+	}
+}
+
+func TestRunDecodeIgnoresReservedByte(t *testing.T) {
+	golden := readGolden(t, "run.golden")
+	buf := append([]byte(nil), golden...)
+	buf[208] = 0xFF
+	binary.LittleEndian.PutUint32(buf[504:508], crc32c(buf[0:504]))
+
+	var got Run
+	if err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved byte: %v", err)
+	}
+	want := testRun()
+	want.Reserved[0] = 0xFF
+	want.HeaderCRC32C = crc32c(buf[0:504])
+	if got != want {
+		t.Fatalf("decoded run mismatch: got %+v, want %+v", got, want)
 	}
 }
 

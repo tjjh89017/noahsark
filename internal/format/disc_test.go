@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func testDisc() Disc {
 	d := Disc{
@@ -65,6 +68,24 @@ func TestDiscGolden(t *testing.T) {
 		if b != 0 {
 			t.Errorf("reserved[%d] not zero: 0x%02x", i, b)
 		}
+	}
+}
+
+func TestDiscDecodeIgnoresReservedByte(t *testing.T) {
+	golden := readGolden(t, "disc.golden")
+	buf := append([]byte(nil), golden...)
+	buf[220] = 0xFF
+	binary.LittleEndian.PutUint32(buf[2044:2048], crc32c(buf[0:2044]))
+
+	var got Disc
+	if err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved byte: %v", err)
+	}
+	want := testDisc()
+	want.Reserved[0] = 0xFF
+	want.SuperCRC32C = crc32c(buf[0:2044])
+	if got != want {
+		t.Fatalf("decoded disc mismatch: got %+v, want %+v", got, want)
 	}
 }
 
