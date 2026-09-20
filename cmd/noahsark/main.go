@@ -1,8 +1,6 @@
-// Command noahsark is the NoahsArk command-line tool. This build
-// implements the Phase 1 subset of OPERATIONS.md's CLI reference: init,
-// commit, pack, image build, verify, restore, ls, log, plan,
-// rebuild-cache, disc list and gc. Every other command name, and every
-// flag or config key of a later phase, is refused.
+// Command noahsark is the NoahsArk command-line tool. OPERATIONS.md's CLI
+// reference lists its commands. An unknown command name or flag is a usage
+// error.
 package main
 
 import (
@@ -21,7 +19,7 @@ func main() {
 
 // run executes one command and returns the process exit code: 0 for
 // success, 1 for a failure the command reports cleanly, 2 for a usage
-// error, including a refused later-phase name.
+// error.
 func run(args []string, stdout, stderr io.Writer) int {
 	args, prog, err := extractProgressFlags(args, stderr)
 	if err != nil {
