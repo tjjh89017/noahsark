@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func fileHashN(n int) [32]byte {
 	var h [32]byte
@@ -97,6 +100,50 @@ func TestIndexGolden(t *testing.T) {
 		if o.Reserved1 != 0 || o.Reserved2 != 0 {
 			t.Errorf("object row %d reserved not zero: %d %d", i, o.Reserved1, o.Reserved2)
 		}
+	}
+}
+
+func TestIndexDecodeIgnoresReservedByte(t *testing.T) {
+	golden := readGolden(t, "index.golden")
+	buf := append([]byte(nil), golden...)
+	buf[60] = 0xFF
+	binary.LittleEndian.PutUint32(buf[76:80], crc32c(buf[0:76]))
+
+	var got Index
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved byte: %v", err)
+	}
+	idx := testIndex()
+	if got.RunSeq != idx.RunSeq || got.FileCount != idx.FileCount ||
+		got.ObjectCount != idx.ObjectCount || got.PrereqCount != idx.PrereqCount {
+		t.Fatalf("decoded fixed fields mismatch: got %+v", got)
+	}
+	if got.Reserved[0] != 0xFF {
+		t.Fatalf("reserved byte not preserved: %x", got.Reserved)
+	}
+}
+
+func TestIndexDecodeIgnoresReservedRecordFields(t *testing.T) {
+	golden := readGolden(t, "index.golden")
+	buf := append([]byte(nil), golden...)
+	fileRow := IndexHeaderLen
+	buf[fileRow+41] = 0xFF // a Files row's reserved byte
+	objectRow := IndexHeaderLen + 2*IndexFileRecordLen
+	binary.LittleEndian.PutUint32(buf[objectRow+36:objectRow+40], 0xFFFFFFFF) // an Objects row's reserved1
+
+	total := len(buf)
+	binary.LittleEndian.PutUint32(buf[72:76], crc32c(buf[IndexHeaderLen:total]))
+	binary.LittleEndian.PutUint32(buf[76:80], crc32c(buf[0:76]))
+
+	var got Index
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved record fields: %v", err)
+	}
+	if got.Files[0].Reserved[0] != 0xFF {
+		t.Fatalf("file row reserved byte not preserved: %x", got.Files[0].Reserved)
+	}
+	if got.Objects[0].Reserved1 != 0xFFFFFFFF {
+		t.Fatalf("object row reserved1 not preserved: %x", got.Objects[0].Reserved1)
 	}
 }
 

@@ -50,17 +50,11 @@ func (r *IndexFileRecord) encode(buf []byte) {
 	copy(buf[41:48], r.Reserved[:])
 }
 
-func (r *IndexFileRecord) decode(buf []byte) error {
+func (r *IndexFileRecord) decode(buf []byte) {
 	copy(r.FileHash[:], buf[0:32])
 	r.ByteLen = binary.LittleEndian.Uint64(buf[32:40])
 	r.Role = buf[40]
 	copy(r.Reserved[:], buf[41:48])
-	for _, b := range r.Reserved {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
-	return nil
 }
 
 // IndexObjectRecord is one row of the Objects table, 72 bytes.
@@ -103,9 +97,6 @@ func (r *IndexObjectRecord) decode(buf []byte) error {
 	r.Reserved2 = binary.LittleEndian.Uint32(buf[68:72])
 	if r.Kind < ObjectKindChunk || r.Kind > ObjectKindSnapshot {
 		return ErrObjectKind
-	}
-	if r.Reserved1 != 0 || r.Reserved2 != 0 {
-		return ErrReserved
 	}
 	return nil
 }
@@ -210,8 +201,9 @@ func (idx *Index) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads an Index from buf and returns the number of bytes read.
-// It rejects a short buffer, a magic_kind mismatch, a nonzero reserved
-// field, a CRC mismatch, and an Objects row whose kind is outside 1 to 4.
+// It rejects a short buffer, a magic_kind mismatch, a CRC mismatch, and an
+// Objects row whose kind is outside 1 to 4. It does not interpret a
+// reserved field.
 func (idx *Index) Decode(buf []byte) (int, error) {
 	if len(buf) < IndexHeaderLen {
 		return 0, ErrShort
@@ -235,9 +227,6 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	digestLen := buf[59]
 	var reserved [4]byte
 	copy(reserved[:], buf[60:64])
-	if reserved != ([4]byte{}) {
-		return 0, ErrReserved
-	}
 	containerLen := binary.LittleEndian.Uint64(buf[64:72])
 	bodyCRC := binary.LittleEndian.Uint32(buf[72:76])
 	headerCRC := binary.LittleEndian.Uint32(buf[76:80])
@@ -260,9 +249,7 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	off := IndexHeaderLen
 	files := make([]IndexFileRecord, fileCount)
 	for i := range files {
-		if err := files[i].decode(buf[off : off+IndexFileRecordLen]); err != nil {
-			return 0, err
-		}
+		files[i].decode(buf[off : off+IndexFileRecordLen])
 		off += IndexFileRecordLen
 	}
 	objects := make([]IndexObjectRecord, objectCount)

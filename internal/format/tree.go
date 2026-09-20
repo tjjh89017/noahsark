@@ -188,8 +188,9 @@ func (e *TreeEntry) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads one TreeEntry from buf and returns the number of bytes
-// read. It rejects a short buffer, an invalid name, a nonzero reserved
-// byte, an unknown critical TLV, and a TLV area out of canonical order.
+// read. It rejects a short buffer, an invalid name, an unknown critical
+// TLV, and a TLV area out of canonical order. It does not interpret a
+// padding byte between the entry's variable areas.
 func (e *TreeEntry) Decode(buf []byte) (int, error) {
 	if len(buf) < TreeEntryHeaderLen {
 		return 0, ErrShort
@@ -237,17 +238,12 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 		return 0, err
 	}
 
-	last := nameOff + nameLen
 	var contentID [32]byte
 	if contentLen > 0 {
 		if contentLen != 32 || contentOff+contentLen > entryLen {
 			return 0, ErrBadField
 		}
-		if err := checkZero(buf, last, contentOff); err != nil {
-			return 0, err
-		}
 		copy(contentID[:], buf[contentOff:contentOff+contentLen])
-		last = contentOff + contentLen
 	} else if contentOff != 0 {
 		return 0, ErrBadField
 	}
@@ -256,9 +252,6 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 	if extLen > 0 {
 		if extOff+extLen > entryLen {
 			return 0, ErrBadField
-		}
-		if err := checkZero(buf, last, extOff); err != nil {
-			return 0, err
 		}
 		p := extOff
 		end := extOff + extLen
@@ -286,13 +279,8 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 			prev = &prevCopy
 			p += n
 		}
-		last = extOff + extLen
 	} else if extOff != 0 {
 		return 0, ErrBadField
-	}
-
-	if err := checkZero(buf, last, entryLen); err != nil {
-		return 0, err
 	}
 
 	e.EntryType = entryType
@@ -388,9 +376,9 @@ func (t *Tree) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Tree from buf and returns the number of bytes read. It
-// rejects a short buffer, a magic_kind mismatch, a header_crc32c
-// mismatch, a nonzero reserved field, and tree entries not in ascending
-// canonical order.
+// rejects a short buffer, a magic_kind mismatch, a header_crc32c mismatch,
+// and tree entries not in ascending canonical order. It does not interpret
+// a reserved field.
 func (t *Tree) Decode(buf []byte) (int, error) {
 	if len(buf) < treeFixedLen {
 		return 0, ErrShort
@@ -412,9 +400,6 @@ func (t *Tree) Decode(buf []byte) (int, error) {
 
 	entryCount := binary.LittleEndian.Uint32(buf[off : off+4])
 	reservedU32 := binary.LittleEndian.Uint32(buf[off+4 : off+8])
-	if reservedU32 != 0 {
-		return 0, ErrReserved
-	}
 
 	t.EntryCount = entryCount
 	t.ReservedU32 = reservedU32

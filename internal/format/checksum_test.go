@@ -46,6 +46,30 @@ func TestChecksumRecordGolden(t *testing.T) {
 	}
 }
 
+func TestChecksumRecordDecodeIgnoresReservedFields(t *testing.T) {
+	golden := readGolden(t, "checksum.golden")
+	buf := append([]byte(nil), golden...)
+	buf[checksumHeaderLen+3*ChecksumDigestSize] = 0xFF   // past digestCount, inside the digests area
+	buf[checksumHeaderLen+ChecksumDigestsAreaLen] = 0xFF // the trailing reserved area
+
+	var got ChecksumRecord
+	if err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved fields: %v", err)
+	}
+	r := testChecksumRecord()
+	if got.StripeIndex != r.StripeIndex || got.DigestCount != r.DigestCount {
+		t.Fatalf("decoded fields mismatch: got %+v, want %+v", got, r)
+	}
+	for i := range r.Digests {
+		if got.Digests[i] != r.Digests[i] {
+			t.Errorf("digest %d mismatch: got %x, want %x", i, got.Digests[i], r.Digests[i])
+		}
+	}
+	if got.Reserved[0] != 0xFF {
+		t.Fatalf("reserved byte not preserved: %x", got.Reserved)
+	}
+}
+
 func TestChecksumRecordDecodeRejectsShort(t *testing.T) {
 	golden := readGolden(t, "checksum.golden")
 	var r ChecksumRecord

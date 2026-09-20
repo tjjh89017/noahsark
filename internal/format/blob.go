@@ -79,8 +79,8 @@ func (b *Blob) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Blob from buf and returns the number of bytes read. It
-// rejects a short buffer, a magic_kind mismatch, a header_crc32c
-// mismatch, a nonzero reserved byte, and a level above 1.
+// rejects a short buffer, a magic_kind mismatch, a header_crc32c mismatch,
+// and a level above 1. It does not interpret a reserved byte.
 func (b *Blob) Decode(buf []byte) (int, error) {
 	if len(buf) < blobFixedLen {
 		return 0, ErrShort
@@ -107,9 +107,6 @@ func (b *Blob) Decode(buf []byte) (int, error) {
 	b.DigestLen = buf[off+19]
 	b.Level = buf[off+20]
 	copy(b.Reserved[:], buf[off+21:off+24])
-	if b.Reserved != ([3]byte{}) {
-		return 0, ErrReserved
-	}
 	if b.Level > 1 {
 		return 0, ErrBadField
 	}

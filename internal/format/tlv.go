@@ -90,7 +90,7 @@ func (t *TLV) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads one TLV from buf and returns the number of bytes read. It
-// rejects a short buffer and a nonzero padding byte.
+// rejects a short buffer. It does not interpret a padding byte.
 func (t *TLV) Decode(buf []byte) (int, error) {
 	if len(buf) < TLVHeaderLen {
 		return 0, ErrShort
@@ -99,9 +99,6 @@ func (t *TLV) Decode(buf []byte) (int, error) {
 	n := align8(TLVHeaderLen + int(payloadLen))
 	if len(buf) < n {
 		return 0, ErrShort
-	}
-	if err := checkZero(buf, TLVHeaderLen+int(payloadLen), n); err != nil {
-		return 0, err
 	}
 	t.Type = binary.LittleEndian.Uint16(buf[0:2])
 	t.Flags = binary.LittleEndian.Uint16(buf[2:4])

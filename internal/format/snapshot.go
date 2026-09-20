@@ -77,7 +77,7 @@ func (m *SnapshotMeta) Encode(buf []byte) error {
 }
 
 // Decode reads one metadata record from the start of buf and returns the
-// number of bytes it consumed, padding included. It rejects a nonzero
+// number of bytes it consumed, padding included. It does not interpret a
 // padding byte.
 func (m *SnapshotMeta) Decode(buf []byte) (int, error) {
 	if len(buf) < 8 {
@@ -92,11 +92,6 @@ func (m *SnapshotMeta) Decode(buf []byte) (int, error) {
 	}
 	if len(buf) < total {
 		return 0, ErrShort
-	}
-	for i := 8 + int(valueLen); i < total; i++ {
-		if buf[i] != 0 {
-			return 0, ErrReserved
-		}
 	}
 	m.Tag = SnapshotMetaTag(tag)
 	m.Flags = flags
@@ -183,8 +178,8 @@ func (s *Snapshot) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Snapshot from the start of buf and returns the number of
-// bytes it consumed. It rejects a short buffer, a magic_kind mismatch, a
-// header_crc32c mismatch, and a nonzero reserved field.
+// bytes it consumed. It rejects a short buffer, a magic_kind mismatch, and
+// a header_crc32c mismatch. It does not interpret a reserved field.
 func (s *Snapshot) Decode(buf []byte) (int, error) {
 	if len(buf) < CommonHeaderLen+ObjectHeaderLen+SnapshotFixedLen {
 		return 0, ErrShort
@@ -217,9 +212,6 @@ func (s *Snapshot) Decode(buf []byte) (int, error) {
 	s.SourceFlags = body[109]
 	s.ParentHashAlgo = HashAlgo(body[110])
 	s.ReservedU8 = body[111]
-	if s.ReservedU8 != 0 {
-		return 0, ErrReserved
-	}
 
 	off := CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen
 	s.Meta = make([]SnapshotMeta, 0, s.MetaCount)

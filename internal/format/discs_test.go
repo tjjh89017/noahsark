@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func discUUIDN(n int) [16]byte {
 	var h [16]byte
@@ -91,6 +94,28 @@ func TestDiscsTableGolden(t *testing.T) {
 		if r.Reserved != 0 {
 			t.Errorf("row %d reserved not zero: %d", i, r.Reserved)
 		}
+	}
+}
+
+func TestDiscsTableDecodeIgnoresReservedFields(t *testing.T) {
+	golden := readGolden(t, "discs.golden")
+	buf := append([]byte(nil), golden...)
+	buf[60] = 0xFF                 // the table's reserved field
+	buf[DiscsHeaderLen+167] = 0xFF // the first row's reserved byte
+
+	total := len(buf)
+	binary.LittleEndian.PutUint32(buf[64:68], crc32c(buf[DiscsHeaderLen:total]))
+	binary.LittleEndian.PutUint32(buf[68:72], crc32c(buf[0:68]))
+
+	var got DiscsTable
+	if _, err := got.Decode(buf); err != nil {
+		t.Fatalf("decode nonzero reserved fields: %v", err)
+	}
+	if got.Reserved[0] != 0xFF {
+		t.Fatalf("table reserved byte not preserved: %x", got.Reserved)
+	}
+	if got.Rows[0].Reserved != 0xFF {
+		t.Fatalf("row reserved byte not preserved: %x", got.Rows[0].Reserved)
 	}
 }
 

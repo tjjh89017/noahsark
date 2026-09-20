@@ -68,8 +68,8 @@ func (r *ChecksumRecord) Encode(buf []byte) error {
 }
 
 // Decode reads a ChecksumRecord from buf. It rejects a short buffer, a
-// magic_kind mismatch, a header_crc32c mismatch, and a nonzero reserved
-// byte.
+// magic_kind mismatch, and a header_crc32c mismatch. It does not interpret
+// a reserved byte or the unused tail of the digests area.
 func (r *ChecksumRecord) Decode(buf []byte) error {
 	if len(buf) < ChecksumRecordLen {
 		return ErrShort
@@ -99,17 +99,7 @@ func (r *ChecksumRecord) Decode(buf []byte) error {
 	for i := range r.Digests {
 		copy(r.Digests[i][:], digests[i*ChecksumDigestSize:(i+1)*ChecksumDigestSize])
 	}
-	for _, b := range digests[digestCount*ChecksumDigestSize:] {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
 
 	copy(r.Reserved[:], buf[checksumHeaderLen+ChecksumDigestsAreaLen:ChecksumRecordLen])
-	for _, b := range r.Reserved {
-		if b != 0 {
-			return ErrReserved
-		}
-	}
 	return nil
 }
