@@ -46,6 +46,7 @@ convenience; the copy is never the definition.
    - [2.18 Rejected and superseded alternatives](#218-rejected-and-superseded-alternatives)
    - [2.19 Design changes from the superseded design](#219-design-changes-from-the-superseded-design)
    - [2.20 Deferred designs](#220-deferred-designs)
+   - [2.21 Later ideas](#221-later-ideas)
 3. [Open judgement calls](#3-open-judgement-calls)
 4. [Evidence and research](#4-evidence-and-research)
    - [4.1 Why true UDF multi-session is not possible](#41-why-true-udf-multi-session-is-not-possible)
@@ -165,7 +166,7 @@ Tier-2 burners are surveyed in section 2.7.
 
 ### 1.4 Priorities
 
-OPERATIONS.md section 1 rule 1.8 is the rule: the priorities are ordered, and a
+OPERATIONS.md's "Scope and conventions" holds the rule: the priorities are ordered, and a
 conflict between two of them is resolved by that order. The list below is a
 copy for convenience and is never the definition.
 
@@ -1515,6 +1516,61 @@ content-defined, over a hash of the entry name; the split threshold is
 frozen once chosen; and a tree that uses slices sets a `required_feat` bit,
 so an old reader refuses it instead of misreading it.
 
+### 2.21 Later ideas
+
+OPERATIONS.md described these features in full before the simplification of
+GitHub issue #26. None of them is built, and OPERATIONS.md no longer carries
+them. A later idea differs from a deferred design: nothing keeps it scheduled,
+and the user decides each one before any work starts. The tool is a simple
+backup tool for one person: commit, pack one run on one disc, burn two
+identical copies, verify, store, restore. Each idea below must show that it
+is worth its complexity against that model.
+
+**Append and close.** A later `pack` adds a run to an open disc through
+Pseudo-OverWrite, and a `close` command writes a closing run with
+`-dvd-compat`. It uses the space that a run leaves on a disc. It is not built
+because an append brings the hard problems: the spare area can run out, the
+directory blocks of the filesystem move, the tool needs an image mirror with a
+block diff or a kernel write mount, and a raw append mode for a disc with no
+spare area left. One run on one disc needs none of this, and a blank disc is
+cheap.
+
+**Consolidation and locality capping.** The packer writes a chunk again, under
+ranked caps, so that a snapshot needs few older discs for a restore. A
+`consolidate` command writes a new, self-contained disc set when a restore
+plan touches too many discs. It is not built because it tunes a library of
+hundreds of discs with six knobs and four presets. The build packs a prefix of
+a path-ordered walk. The remedy for a wide restore plan is a new repository
+and a new disc set, as the operator guide states.
+
+**Scrub schedule and health report.** A `scrub` command verifies the discs
+that an age schedule selects, and a `health` command reports the
+Reed-Solomon margin, the drive error counters and a re-burn forecast for each
+disc. It is not built because FEC is off by default, thus the margin does not
+exist for most discs, and because one rule in the guide replaces the schedule:
+verify each disc one time each year. A disc is good or is discarded.
+
+**Remote and mirror sources.** A `sync` command pulls the change set of a
+remote source into a local mirror with `rsync`, and `commit` reads the mirror.
+Commit also tunes the quick check for an NFS or SMB source: no ctime, an mtime
+slack, a periodic full rehash, and source flags in the snapshot. A `watch`
+daemon records changed paths. It is not built because the user has one local
+source. A read-only filesystem snapshot, or a plain `rsync` to a local
+directory before the commit, gives the same result with no code in the tool.
+
+**Commit bundles.** A remote machine runs the binary, deduplicates against an
+exported catalog (`catalog export`), writes its new objects into a bundle
+directory (`commit --out`), and the server takes them in (`import`). It is
+not built because it needs a second machine that runs the tool, a bundle
+header format, and trust rules for an untrusted bundle. FORMAT.md still
+reserves the `bundle` source type.
+
+Smaller ideas that left OPERATIONS.md at the same time: the binary burn plan
+with a `burn` command and several burner backends, the capacity estimator for
+many future runs, the JSON loss report with a replay plan, shelf notes in the
+tool (`disc label`, `disc mark-degraded`), hardlink groups, extended
+attributes and ACLs, the restore time model, and the cache rebuild levels.
+
 ---
 
 ## 3. Open judgement calls
@@ -2547,6 +2603,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 0.4.13 | **OPERATIONS.md first simplification pass (GitHub issue #26): deletions and corrections.** OPERATIONS.md is now document version 3.3 and keeps its section numbers, with gaps. Deleted: the binary burn plan, the `burn` command and the burner backends; append, close, tail anchors, the spare area and raw append; the capacity estimator, replaced by the normative `--capacity` preset table and one budget formula whose parity term is zero when `fec.scheme` is `none`; controlled duplication, the locality presets, the split threshold and consolidation; the scrub schedule, the health report and the verify levels; mirror mode, remote source roots and commit bundles with `sync`, `watch`, `import`, `catalog export` and `reindex`; the JSON loss report and the replay plan; the notes file with `disc label` and `disc mark-degraded`; the decision index, the conformance checklist, the JSON evolution rules, the local magic values and limits; the restore time model and the cache rebuild levels; the phase and Backlog tags and every "not in the build yet" paragraph; and every config key of a deleted feature. The options that stay planned are in two short "Planned, not built" lists: `commit --exclude` with `sources.exclude` and the ignore file, `--one-file-system`, `--checksum`, `--source-root`, and `pack --dry-run`. Corrected: every mention of filters, manifests and layout tables, which FORMAT.md removed (dedup and planning are exact lookups in INDEX); the magic scan in verify (a disc that does not mount fails verify); the state diagram and the transition rules, which now use `disc burned` and `disc burned --undo`; "the tool never mounts", with the one exception that `image build` loop-mounts an image file as root; the capacity source (the operator gives `--capacity`); the failure table, which now names the second identical disc as the primary redundancy and gives a real command in each row; the second-drive check, now a recommendation; the lock lists; and the citations of FORMAT.md, now by heading text. The GC rules state the gap that GitHub issue #28 tracks: `gc` can delete staged objects before the second copy exists. This document gains "2.21 Later ideas". No on-disc byte changed. |
 | 0.4.12 | **Stale `disc.force_capacity` key text removed from OPERATIONS.md.** The repository configuration holds no capacity key; every `pack` gives `--capacity` on the command line, and a `--capacity` below `--physical-capacity` is a forced capacity. OPERATIONS.md's "Forced capacity" text, its fill-policy bullet and its configuration reference no longer name a `disc.force_capacity` config key. No on-disc byte changed. |
 | 0.4.11 | **Pack and gc durability rules documented.** OPERATIONS.md's staging state machine section states that a `Close` error on the state log is returned by every later append, and that a torn tail is reported as a warning and truncated before the next append; its GC rules gain the sync-before-delete rule: `gc` syncs the GC-ELIGIBLE record before it deletes the staged file, and a sync error stops `gc` before the delete. Its packing section gains "Integrity checks and durable recording": `pack` checks each chunk's content id during the copy into the run tree, removes the part-written run tree and records nothing on a mismatch, and syncs every file and directory of the run tree before it marks objects PACKED and saves the ledgers; a sync error there also records nothing. The failure and recovery table gains three rows for these cases. No on-disc byte changed. |
 | 0.4.10 | **Restore warns instead of stopping on two conflicts.** An unsupported entry (a device node, a FIFO or a socket) is outside the scope of a restore, not a failure: `restore` still names each one on a warning line, but it no longer changes the exit code by itself. With `--overwrite`, a non-empty directory standing where a symlink or a file must go no longer stops the whole restore with a hard error; `restore` still never removes a directory tree, but now leaves that one path alone, counts it as skipped, reports it on a warning line naming the path, and continues the walk. The skipped-path summary line distinguishes a plain conflict, which still advises `--overwrite`, from one `--overwrite` itself could not clear. OPERATIONS.md's restore exit code table and its name and symlink safety section state both rules; no on-disc byte changed. |
