@@ -78,7 +78,13 @@ func HealWithProgress(discRoot, outDir string, prog *progress.Reporter) ([]Strip
 		return nil, err
 	}
 	if run.FECScheme != format.FECSchemeRS255GF8 {
-		return nil, fmt.Errorf("run %d has no FEC", run.RunSeq)
+		// Name the disc, not the run sequence number: that number
+		// repeats across discs of different lineages.
+		uuid, uerr := ReadDiscUUID(work)
+		if uerr != nil {
+			return nil, fmt.Errorf("the disc at %s has no FEC", discRoot)
+		}
+		return nil, fmt.Errorf("disc %s has no FEC", uuidText(uuid))
 	}
 
 	paths, sizes, _, err := image.StreamFilesWithCache(base, runDir, cache)

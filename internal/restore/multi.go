@@ -20,6 +20,9 @@ type MissingDiscError struct {
 	// complete restore would need. Set only when at least one provided
 	// disc's Prereqs row names the disc a missing object lives on.
 	ByDisc map[[16]byte][]object.ID
+	// Labels gives the label of a disc uuid, when a provided disc's
+	// DISCS table names it.
+	Labels map[[16]byte]string
 	// UnnamedCount is the number of needed objects that no provided
 	// disc's INDEX or Prereqs names. Set only when ByDisc is empty.
 	UnnamedCount int
@@ -51,7 +54,11 @@ func (e *MissingDiscError) Error() string {
 		}
 		sort.Slice(uuids, func(i, j int) bool { return uuidText(uuids[i]) < uuidText(uuids[j]) })
 		for _, u := range uuids {
-			_, _ = fmt.Fprintf(&s, "\n  disc %s holds %d needed object(s)", uuidText(u), len(e.ByDisc[u]))
+			_, _ = fmt.Fprintf(&s, "\n  disc %s", uuidText(u))
+			if label := e.Labels[u]; label != "" {
+				_, _ = fmt.Fprintf(&s, " (%s)", label)
+			}
+			_, _ = fmt.Fprintf(&s, " holds %d needed object(s)", len(e.ByDisc[u]))
 		}
 		return s.String()
 	}
@@ -60,13 +67,15 @@ func (e *MissingDiscError) Error() string {
 	} else {
 		_, _ = fmt.Fprintf(&s, "%d object(s) not found on any provided disc and named by no provided disc's INDEX", e.UnnamedCount)
 	}
-	if len(e.Candidates) > 0 {
-		s.WriteString("; disc(s) not provided, that may hold them:")
-		for _, c := range e.Candidates {
-			_, _ = fmt.Fprintf(&s, "\n  disc %s", uuidText(c.UUID))
-			if c.Label != "" {
-				_, _ = fmt.Fprintf(&s, " (%s)", c.Label)
-			}
+	if len(e.Candidates) == 0 {
+		s.WriteString("; no provided disc names the disc that holds them; provide more discs")
+		return s.String()
+	}
+	s.WriteString("; disc(s) not provided, that may hold them:")
+	for _, c := range e.Candidates {
+		_, _ = fmt.Fprintf(&s, "\n  disc %s", uuidText(c.UUID))
+		if c.Label != "" {
+			_, _ = fmt.Fprintf(&s, " (%s)", c.Label)
 		}
 	}
 	return s.String()
@@ -88,8 +97,7 @@ type discSource struct {
 // objects and discs a restore could not find.
 type multiSource struct {
 	bases          []discSource
-	runSeqToUUID   map[uint64][16]byte
-	contentToRun   map[object.ID]uint64
+	contentToDisc  map[object.ID][16]byte
 	missingByDisc  map[[16]byte][]object.ID
 	missingUnknown []object.ID // needed but no disc could be identified
 	names          *image.NameCache
@@ -247,17 +255,29 @@ func (src *multiSource) resolveIncludesDir(treeID object.ID, fs *filterState) er
 }
 
 // newMultiSource resolves every disc root and reads its single run's
-// INDEX (Objects and Prereqs) and DISCS, to build the id-to-run and
-// run-to-disc maps a missing-object lookup needs.
+// INDEX (Objects and Prereqs) and DISCS, to build the map from object id
+// to the disc that holds it.
+//
+// A run sequence number identifies a run only on the disc that wrote it.
+// Two discs of different lineages can carry the same number. So a
+// Prereqs row is resolved through the DISCS table of its own disc, and
+// no run sequence number is ever compared across discs.
 func newMultiSource(discRoots []string) (*multiSource, error) {
 	src := &multiSource{
-		runSeqToUUID:  make(map[uint64][16]byte),
-		contentToRun:  make(map[object.ID]uint64),
+		contentToDisc: make(map[object.ID][16]byte),
 		missingByDisc: make(map[[16]byte][]object.ID),
 		names:         image.NewNameCache(),
 		provided:      make(map[[16]byte]bool),
 		discLabels:    make(map[[16]byte]string),
 	}
+	// A Prereqs row only points at a disc. The disc that lists the
+	// object in its own Objects rows is the better answer, so prereq
+	// pointers are applied after every disc is read.
+	type prereq struct {
+		id   object.ID
+		disc [16]byte
+	}
+	var prereqs []prereq
 	for _, root := range discRoots {
 		base, err := findNoahsark(root, src.names)
 		if err != nil {
@@ -285,16 +305,6 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		if _, err := idx.Decode(idxBuf); err != nil {
 			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
-		for _, row := range idx.Objects {
-			src.contentToRun[object.ID(row.ContentID)] = idx.RunSeq
-		}
-		for _, row := range idx.Prereqs {
-			if _, ok := src.contentToRun[object.ID(row.ContentID)]; !ok {
-				src.contentToRun[object.ID(row.ContentID)] = row.RunSeq
-			}
-		}
-		src.runSeqToUUID[idx.RunSeq] = disc.DiscUUID
-
 		catalogDir := src.names.Join(runDir, "catalog")
 		discsBuf, err := os.ReadFile(filepath.Join(catalogDir, src.names.Resolve(catalogDir, "DISCS.bin")))
 		if err != nil {
@@ -304,11 +314,26 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		if _, err := discs.Decode(discsBuf); err != nil {
 			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
+		runToDisc := map[uint64][16]byte{idx.RunSeq: disc.DiscUUID}
 		for _, row := range discs.Rows {
-			src.runSeqToUUID[row.RunSeq] = row.DiscUUID
+			runToDisc[row.RunSeq] = row.DiscUUID
 			if _, ok := src.discLabels[row.DiscUUID]; !ok {
 				src.discLabels[row.DiscUUID] = discLabelText(row)
 			}
+		}
+
+		for _, row := range idx.Objects {
+			src.contentToDisc[object.ID(row.ContentID)] = disc.DiscUUID
+		}
+		for _, row := range idx.Prereqs {
+			if uuid, ok := runToDisc[row.RunSeq]; ok {
+				prereqs = append(prereqs, prereq{id: object.ID(row.ContentID), disc: uuid})
+			}
+		}
+	}
+	for _, p := range prereqs {
+		if _, ok := src.contentToDisc[p.id]; !ok {
+			src.contentToDisc[p.id] = p.disc
 		}
 	}
 	return src, nil
@@ -345,11 +370,9 @@ func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, 
 			}
 		}
 	}
-	if runSeq, ok := src.contentToRun[id]; ok {
-		if uuid, ok := src.runSeqToUUID[runSeq]; ok {
-			src.missingByDisc[uuid] = append(src.missingByDisc[uuid], id)
-			return nil, nil, false
-		}
+	if uuid, ok := src.contentToDisc[id]; ok {
+		src.missingByDisc[uuid] = append(src.missingByDisc[uuid], id)
+		return nil, nil, false
 	}
 	src.missingUnknown = append(src.missingUnknown, id)
 	return nil, nil, false
@@ -362,7 +385,7 @@ func (src *multiSource) finalError() error {
 		return nil
 	}
 	if len(src.missingByDisc) > 0 {
-		return &MissingDiscError{ByDisc: src.missingByDisc}
+		return &MissingDiscError{ByDisc: src.missingByDisc, Labels: src.discLabels}
 	}
 	var candidates []DiscCandidate
 	for uuid, label := range src.discLabels {
