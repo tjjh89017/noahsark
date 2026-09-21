@@ -184,7 +184,7 @@ func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, jsonOut bool,
 	id, err := src.ParseSnapshotArg(arg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-		return 2
+		return exitForSnapshotArg(err)
 	}
 	snap, err := src.Snapshot(id)
 	if err != nil {

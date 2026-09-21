@@ -343,7 +343,7 @@ runs `commit`. The repository lock keeps two commits from running at once.
 | FIFO, socket, device node | Recorded by type, with no content. `commit` warns about each one. |
 | Unreadable or vanished file | Skipped and reported. The snapshot is still written. Exit code 1. |
 | Mount points | Crossed by default. With `--one-file-system`, a directory on another device is not walked. Its own entry stays in the tree as an empty directory, and `commit` prints one line for it. There is no config key for it. |
-| Owner | The build records mode and mtime. It records uid 0 and gid 0 for every entry. |
+| Owner | The build records mode, mtime, uid and gid. It also records the user name and the group name TLVs when the host names the ids. A lookup that fails records no name and is not an error. |
 
 FORMAT.md's "The root tree" gives the root name encoding. `restore SNAPSHOT
 OUT-DIR` creates `OUT-DIR/<root path>`.
@@ -714,22 +714,30 @@ reports at the end ("Failure policy").
 
 ## 15. Metadata restore policy
 
-FORMAT.md's "Tree entry fixed header" gives the metadata fields. `restore`
-applies type, mode, mtime, the symlink target and, as root, the owner.
+FORMAT.md's "Tree entry fixed header" gives the metadata fields. `commit`
+records mode, mtime, uid and gid, and the user name and the group name TLVs
+when the host names the ids. `restore` applies type, mode, mtime, the symlink
+target and, as root, the owner. `restore` applies the uid and the gid, never
+the name TLVs: a name can point at a different id on the restoring host.
 
 ### 15.1 What restore applies
 
-1. For a file and a directory: mode, then mtime, then, only when `restore`
-   runs as root, the stored uid and gid.
+1. For a file and a directory: the owner first, then mode, then mtime. The
+   owner comes first because a `chown` clears the setuid and the setgid bits,
+   and the `chmod` that follows puts them back. The owner is applied only
+   when `restore` runs as root.
 2. For a symlink: the target, as data, never rewritten. As root, the owner,
    with a no-follow `lchown`. The mode and the times of a symlink are not
    restored.
 3. Directory metadata is applied in a last pass, deepest directory first,
    because a write into a directory changes its mtime.
 4. A `restore` that does not run as root does not attempt ownership. Files get
-   the uid and gid of the invoking user. It prints no owner warning, and the
-   exit code does not change. To restore ownership, run `restore` again as
-   root with `--overwrite`.
+   the uid and gid of the invoking user. It prints no owner warning for any
+   path, not even one whose stored owner differs, and the exit code stays 0.
+   An ordinary user who restores their own files is the normal case. The
+   report holds no ownership problem at all, thus the output says nothing
+   about ownership. To restore ownership, run `restore` again as root with
+   `--overwrite`.
 5. A directory between `OUT-DIR` and the source root that no tree entry
    describes is created with mode 0755. A directory that already exists is
    left as it is.

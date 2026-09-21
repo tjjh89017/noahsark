@@ -1,5 +1,5 @@
-// Package plan computes a restore plan from the local cache alone,
-// OPERATIONS.md's "14. Restore" section "14.1 The planner". The
+// Package plan computes a restore plan from the local cache alone, the
+// disc order OPERATIONS.md's restore section states. The
 // "restore" command's disc-swap mode reads objects in plan order as
 // each disc is inserted, and "restore --dry-run" prints the same plan
 // with no disc read.
@@ -280,9 +280,9 @@ func rootPathOf(e format.TreeEntry) string {
 }
 
 // group maps every needed object to a disc through c.LocateObject and
-// c.DiscRow, groups the result by disc, and orders the discs by
-// "14.1 The planner"'s tie-breaks: most bytes first, then the newer
-// disc, then the lower disc_seq.
+// c.DiscRow, groups the result by disc, and orders the discs by these
+// tie-breaks: most bytes first, then the newer disc, then the lower
+// disc_seq.
 //
 // Only chunk objects count toward a disc's Objects and Bytes: a
 // disc-swap restore resolves every tree, blob and the snapshot itself

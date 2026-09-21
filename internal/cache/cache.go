@@ -1,19 +1,16 @@
-// Package cache implements the local cache: OPERATIONS.md "2.4 Local
-// cache layout". Everything the cache holds is derived from a disc or
-// from staging and is rebuildable; a command must behave the same,
-// apart from speed, with the cache deleted. The cache never holds
-// anything whose loss loses archive data.
+// Package cache implements the local cache OPERATIONS.md describes in
+// its local cache layout section. Everything the cache holds is derived
+// from a disc or from staging and is rebuildable; a command must behave
+// the same, apart from speed, with the cache deleted. The cache never
+// holds anything whose loss loses archive data.
 //
-// This build's layout renames one item from OPERATIONS.md's own table.
-// OPERATIONS.md names a per-run "manifests/<seq>.bin" file, copied as
-// discs are mounted. FORMAT.md's "The run index and the catalog"
-// replaced the manifest, the filter, the layout table and the catalog
-// container with one structure, INDEX. This package stores that file,
-// byte for byte, as "discs/<disc-uuid>/INDEX.bin", beside that disc's
-// own copy of REFS.bin and DISCS.bin. One disc holds one run, thus the
-// disc uuid identifies the run too. The key is never run_seq: the host
-// assigns that number from local state, and after a lost repository two
-// discs can carry the same number.
+// One structure, INDEX, carries a run's index and its catalog. This
+// package stores that file, byte for byte, as
+// "discs/<disc-uuid>/INDEX.bin", beside that disc's own copy of
+// REFS.bin and DISCS.bin. One disc holds one run, thus the disc uuid
+// identifies the run too. The key is never run_seq: the host assigns
+// that number from local state, and after a lost repository two discs
+// can carry the same number.
 //
 // The cache also holds every blob object reachable from a cached
 // snapshot, under "blobs/<id>", alongside "trees/<id>": a blob is small,

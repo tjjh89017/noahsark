@@ -69,12 +69,6 @@ const (
 	// ReasonVerifyFailed marks a run's objects returned from Burned to
 	// Packed after a failed verify.
 	ReasonVerifyFailed Reason = 2
-	// ReasonHealed marks an object a heal reconstructed, entering the
-	// machine again at Staged.
-	ReasonHealed Reason = 3
-	// ReasonDuplicateLocality marks an object staged again to place a
-	// second, deliberate copy for locality.
-	ReasonDuplicateLocality Reason = 4
 )
 
 // recordLen is the fixed size of one state.db record: sequence (8),

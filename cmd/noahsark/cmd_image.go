@@ -36,7 +36,7 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 0
 	}
 	if args[0] != "build" {
-		_, _ = fmt.Fprintf(stderr, "noahsark: image %s is not available in Phase 1; only \"image build\" is\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "noahsark: image %s: unknown subcommand; \"image build\" is the only one\n", args[0])
 		return 2
 	}
 	fs := newFlagSet("noahsark image build --out=FILE [--force] TREE-DIR",

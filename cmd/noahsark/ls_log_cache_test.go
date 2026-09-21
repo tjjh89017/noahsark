@@ -109,6 +109,32 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 }
 
+// TestLsAndLogAgreeOnAnEmptyCache checks that ls and log report a cache
+// with no disc in it the same way: it is a failure at run time, exit 1,
+// for the listing form and for the one-snapshot form alike.
+func TestLsAndLogAgreeOnAnEmptyCache(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	cases := [][]string{
+		{"ls", "--repo=" + repo, "latest"},
+		{"log", "--repo=" + repo, "latest"},
+		{"log", "--repo=" + repo},
+	}
+	for _, args := range cases {
+		code, out := runCmd(t, args...)
+		if code != 1 {
+			t.Fatalf("%v: exit %d, want 1: %s", args, code, out)
+		}
+		if !strings.Contains(out, "no disc is cached yet") {
+			t.Fatalf("%v output %q does not name the empty cache", args, out)
+		}
+	}
+}
+
 // repoDirFromTreeDir recovers a fixture's repository directory from its
 // packed tree directory, both children of the same lsFixture work
 // directory ("work/tree" and "work/repo").

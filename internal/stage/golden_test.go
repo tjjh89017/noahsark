@@ -48,9 +48,7 @@ func goldenRecords() []Record {
 		{Sequence: 6, ContentID: fillID(0x22), State: OnDiscOnly, RunSeq: 7, DiscUUID: discA, VerifyCount: 2, CleanSec: goldenCleanSec},
 		{Sequence: 7, ContentID: fillID(0x33), State: Staged, Reason: ReasonBurnFailed},
 		{Sequence: 8, ContentID: fillID(0x44), State: Packed, RunSeq: 9, DiscUUID: fillDisc(0xBB), Reason: ReasonVerifyFailed},
-		{Sequence: 9, ContentID: fillID(0x55), State: Staged, Reason: ReasonHealed},
-		{Sequence: 10, ContentID: fillID(0x66), State: Staged, Reason: ReasonDuplicateLocality},
-		{Sequence: 11, ContentID: fillID(0x77), State: OnDiscOnly, RunSeq: 3, DiscUUID: fillDisc(0xCC)},
+		{Sequence: 9, ContentID: fillID(0x77), State: OnDiscOnly, RunSeq: 3, DiscUUID: fillDisc(0xCC)},
 	}
 }
 
