@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,32 +11,27 @@ import (
 	"github.com/tjjh89017/noahsark/internal/image"
 )
 
-// packedTreeDir picks the "packed run ... into DIR" line out of pack's
-// output.
+// packedTreeDir picks the "tree: DIR" line out of pack's output.
 func packedTreeDir(t *testing.T, output string) string {
 	t.Helper()
 	for line := range strings.SplitSeq(output, "\n") {
-		if strings.HasPrefix(line, "packed run ") {
-			if i := strings.LastIndex(line, " into "); i >= 0 {
-				return line[i+len(" into "):]
-			}
+		if after, found := strings.CutPrefix(line, "tree: "); found {
+			return after
 		}
 	}
-	t.Fatalf("no packed run line in pack output: %q", output)
+	t.Fatalf("no tree line in pack output: %q", output)
 	return ""
 }
 
-// packedDiscUUID picks the disc uuid out of pack's own "noahsark disc
-// burned --repo=... UUID" next-steps line.
+// packedDiscUUID picks the disc uuid out of pack's "uuid: UUID" line.
 func packedDiscUUID(t *testing.T, output string) string {
 	t.Helper()
 	for line := range strings.SplitSeq(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 && fields[0] == "noahsark" && fields[1] == "disc" {
-			return fields[len(fields)-1]
+		if after, found := strings.CutPrefix(line, "uuid: "); found {
+			return after
 		}
 	}
-	t.Fatalf("no disc burned line in pack output: %q", output)
+	t.Fatalf("no uuid line in pack output: %q", output)
 	return ""
 }
 
@@ -75,7 +69,6 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	stagedTree := packedTreeDir(t, packOut)
-	discUUID := packedDiscUUID(t, packOut)
 
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
@@ -84,13 +77,13 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify (unburned): exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "not marked burned") || !strings.Contains(out, "disc burned --repo="+repo+" "+discUUID) {
-		t.Fatalf("verify (unburned) output %q missing the not-marked-burned line, with --repo, for %s", out, discUUID)
+	if !strings.Contains(out, "not marked burned") || !strings.Contains(out, "run: noahsark disc burned 0") {
+		t.Fatalf("verify (unburned) output %q missing the not-marked-burned line for disc 0", out)
 	}
 	if strings.Contains(out, "marked 0 object(s) CLEAN") {
 		t.Fatalf("verify (unburned) output %q prints marked 0 object(s) CLEAN; want it omitted when nothing was BURNED", out)
 	}
-	if i := strings.Index(out, "verify: ok"); i < 0 || i > strings.Index(out, "not marked burned") {
+	if i := strings.Index(out, ", ok"); i < 0 || i > strings.Index(out, "not marked burned") {
 		t.Fatalf("verify (unburned) output %q, want the not-marked-burned hint after the ok line", out)
 	}
 }
@@ -281,25 +274,15 @@ func TestDiscBurnedBySeqAndLabel(t *testing.T) {
 	}
 }
 
-// defaultDiscLabel returns disc seq's on-disc label from "disc list".
+// defaultDiscLabel returns disc seq's on-disc label from "status".
 func defaultDiscLabel(t *testing.T, repo string, seq uint64) string {
 	t.Helper()
-	code, out := runCmd(t, "disc", "list", "--json", "--repo="+repo)
-	if code != 0 {
-		t.Fatalf("disc list --json: exit %d: %s", code, out)
-	}
-	var doc struct {
-		Discs []discSummary `json:"discs"`
-	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil {
-		t.Fatalf("parse disc list --json output %q: %v", out, err)
-	}
-	for _, r := range doc.Discs {
+	for _, r := range statusDiscs(t, repo) {
 		if r.Seq == seq {
 			return r.Label
 		}
 	}
-	t.Fatalf("disc list --json output %q has no disc_seq %d", out, seq)
+	t.Fatalf("status --json names no disc %d", seq)
 	return ""
 }
 
@@ -478,8 +461,8 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify DISC-ROOT: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "verify: ok") {
-		t.Fatalf("verify DISC-ROOT output %q missing verify: ok", out)
+	if !strings.Contains(out, "disc 0 ") || !strings.Contains(out, ", ok") {
+		t.Fatalf("verify DISC-ROOT output %q missing the disc line with ok", out)
 	}
 
 	code, out = runCmd(t, "verify", "--repo="+repo, mounted, mounted)

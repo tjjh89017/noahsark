@@ -44,11 +44,19 @@ type repoConfig struct {
 	// CacheFormatVersion is cache.format_version. A cache whose stored
 	// version differs is deleted and rebuilt, never migrated.
 	CacheFormatVersion int
+	// PackCapacity is pack.capacity: the capacity pack uses when its own
+	// command line names none. It keeps the text the operator wrote, so
+	// a preset name still selects the media type it names.
+	PackCapacity string
 	// RestoreStagingBudget is restore.staging_budget, in bytes: the
 	// peak staging/restore/ size a restore must stay under. A
 	// disc-swap restore splits a disc's reads into passes so spool
 	// usage never exceeds this.
 	RestoreStagingBudget uint64
+	// RestoreStagingBudgetSet reports whether the config named
+	// restore.staging_budget. plan prints a pass split only when the
+	// operator asked for a budget, not for the default one.
+	RestoreStagingBudgetSet bool
 	// RetainAfterClean is staging.retain_after_clean: how long an
 	// object stays CLEAN before gc may free its staged file.
 	RetainAfterClean time.Duration
@@ -68,6 +76,7 @@ var knownConfigKeys = map[string]bool{
 	"commit.restat_after_read":   true,
 	"commit.retry_unstable":      true,
 	"fec.scheme":                 true,
+	"pack.capacity":              true,
 	"cache.dir":                  true,
 	"cache.format_version":       true,
 	"restore.staging_budget":     true,
@@ -186,6 +195,11 @@ func readConfig(path string) (repoConfig, error) {
 			default:
 				return repoConfig{}, fmt.Errorf("config: fec.scheme: unknown value %q, want none or rs255-gf8", value)
 			}
+		case "pack.capacity":
+			if _, err := parseCapacity(value); err != nil {
+				return repoConfig{}, fmt.Errorf("config: pack.capacity: %w", err)
+			}
+			c.PackCapacity = value
 		case "cache.dir":
 			c.CacheDir = value
 		case "cache.format_version":
@@ -200,6 +214,7 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: restore.staging_budget: %w", err)
 			}
 			c.RestoreStagingBudget = n
+			c.RestoreStagingBudgetSet = true
 		case "staging.retain_after_clean":
 			d, err := parseRetentionDuration(value)
 			if err != nil {
@@ -220,7 +235,7 @@ func readConfig(path string) (repoConfig, error) {
 	if err := sc.Err(); err != nil {
 		return repoConfig{}, err
 	}
-	// staging.dir defaults to, and init and rebuild-cache both write,
+	// staging.dir defaults to, and init and recover both write,
 	// a bare "staging" relative to the repository directory, so the
 	// staging store follows the repository if its directory is ever
 	// renamed or moved. Resolve it here, against path's own directory,

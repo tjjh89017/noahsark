@@ -86,10 +86,10 @@ func TestRepoLockFreeAfterGC(t *testing.T) {
 	_ = lk.Release()
 }
 
-// TestDiscListRunsWhileRepoLockHeld checks that a read-only command
-// takes no lock: disc list must still run, and must not report the
+// TestStatusRunsWhileRepoLockHeld checks that a read-only command
+// takes no lock: status must still run, and must not report the
 // held exclusive lock, while a writer holds it.
-func TestDiscListRunsWhileRepoLockHeld(t *testing.T) {
+func TestStatusRunsWhileRepoLockHeld(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
@@ -101,9 +101,9 @@ func TestDiscListRunsWhileRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "disc", "list", "--repo="+repo)
+	code, out := runCmd(t, "status", "--repo="+repo)
 	if code != 0 {
-		t.Fatalf("disc list while a writer holds the lock: exit %d, want 0: %s", code, out)
+		t.Fatalf("status while a writer holds the lock: exit %d, want 0: %s", code, out)
 	}
 }
 
@@ -144,10 +144,10 @@ func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 	}
 }
 
-// TestRebuildCacheFailsFastWhenRepoLockHeld checks that rebuild-cache
-// takes the repository's exclusive lock: rebuild-cache writes the state
+// TestRebuildCacheFailsFastWhenRepoLockHeld checks that recover
+// takes the repository's exclusive lock: recover writes the state
 // log and the disc and ref ledgers, so it must not run alongside
-// another state-writing command, or another rebuild-cache.
+// another state-writing command, or another recover.
 func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -169,11 +169,11 @@ func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir)
+	code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+treeDir)
 	if code != 1 {
-		t.Fatalf("rebuild-cache while locked: exit %d, want 1: %s", code, out)
+		t.Fatalf("recover while locked: exit %d, want 1: %s", code, out)
 	}
 	if !strings.Contains(out, "repository lock") {
-		t.Fatalf("rebuild-cache while locked output %q, want it to name the repository lock", out)
+		t.Fatalf("recover while locked output %q, want it to name the repository lock", out)
 	}
 }

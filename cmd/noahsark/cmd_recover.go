@@ -18,16 +18,16 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdRebuildCache implements "noahsark rebuild-cache". This build keeps
-// no local cache and no catalog: the repository directory holds only the
-// state log, the disc ledger and the refs, and every one of those is
-// exactly what a disc's own INDEX, DISCS and REFS tables already carry.
-// rebuild-cache is a straight replay of every provided disc's tables
-// into a fresh or existing repository directory. See docs/decisions.md,
+// cmdRecover implements "noahsark recover". It rebuilds a repository's
+// state, not a cache: the repository directory holds the state log, the
+// disc ledger and the refs, and every one of those is exactly what a
+// disc's own INDEX, DISCS and REFS tables already carry. recover is a
+// straight replay of every provided disc's tables into a fresh or
+// existing repository directory. See docs/decisions.md,
 // "16. CLI reference".
-func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark rebuild-cache [--disc=ROOT]... [--discs-dir=DIR]",
-		"Rebuild the local repository state from one or more discs.", stderr)
+func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+	fs := newFlagSet("noahsark recover [--disc=ROOT]... [--discs-dir=DIR]",
+		"Rebuild the repository state from one or more discs.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory to create or use")
 	var discFlags stringList
 	fs.Var(&discFlags, "disc", "a disc root to rebuild from; repeatable")
@@ -35,24 +35,24 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
-	if checkPositionalsForFlags("rebuild-cache", fs, stderr) {
+	if checkPositionalsForFlags("recover", fs, stderr) {
 		return 2
 	}
 
 	discRoots, err := resolveDiscRoots(discFlags, *discsDir, fs.Args())
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 2
 	}
 
-	repoDir, err := rebuildTargetRepoDir(*repoFlag)
+	repoDir, err := recoverTargetRepoDir(*repoFlag)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 2
 	}
 
 	// A disc root that fails to read (not mounted, not a NoahsArk tree,
-	// damaged beyond verify) is skipped, not fatal: rebuild-cache still
+	// damaged beyond verify) is skipped, not fatal: recover still
 	// uses whatever discs it can read, and only refuses outright when
 	// none of them yielded anything.
 	var results []*image.ReadResult
@@ -60,40 +60,40 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	for _, root := range discRoots {
 		rr, err := image.ReadWithProgress(root, prog)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "noahsark: rebuild-cache: %s: %v\n", root, err)
+			_, _ = fmt.Fprintf(stderr, "noahsark: recover: %s: %v\n", root, err)
 			continue
 		}
 		results = append(results, rr)
 		readRoots = append(readRoots, root)
 	}
 	if len(results) == 0 {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: no usable disc found")
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover: no usable disc found")
 		return 1
 	}
 
 	repoUUID := results[0].Run.RepoUUID
 	for _, rr := range results {
 		if rr.Run.RepoUUID != repoUUID {
-			_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: the provided discs do not share one repo_uuid")
+			_, _ = fmt.Fprintln(stderr, "noahsark: recover: the provided discs do not share one repo_uuid")
 			return 1
 		}
 	}
 
-	cfg, err := ensureRebuildRepo(repoDir, repoUUID)
+	cfg, err := ensureRecoverRepo(repoDir, repoUUID)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 
-	// OPERATIONS.md's concurrency and locking rules list rebuild-cache
+	// OPERATIONS.md's concurrency and locking rules list recover
 	// among the shared-lock, read-only commands on the repository lock,
 	// alongside its own exclusive lock on the cache directory. This
-	// build has no cache lock, and rebuild-cache does write the state
+	// build has no cache lock, and recover does write the state
 	// log (EnsurePacked) and the disc and ref ledgers, so
 	// it takes the repository's exclusive lock instead: the repository
 	// lock is the only lock this build has to keep those writes safe
 	// against a concurrent reader or another writer.
-	lk, code, ok := lockRepo("rebuild-cache", repoDir, stderr)
+	lk, code, ok := lockRepo("recover", repoDir, stderr)
 	if !ok {
 		return code
 	}
@@ -101,34 +101,34 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 
 	stageLog, err := stage.Open(cfg.StagingDir)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
-	warnIfTruncated("rebuild-cache", stageLog, stderr)
+	warnIfTruncated("recover", stageLog, stderr)
 
-	if err := rebuildCacheFromRoots(cfg, repoUUID, readRoots); err != nil {
+	if err := recoverCacheFromRoots(cfg, repoUUID, readRoots); err != nil {
 		// The cache is only an accelerator: a failure to populate it
-		// never fails rebuild-cache itself.
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache: cache:", err)
+		// never fails recover itself.
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover: cache:", err)
 	}
 
 	// Load every ledger and ref this repository already carries before
 	// writing anything, so a call fed only some of the discs merges into
 	// what earlier calls already recorded instead of erasing it. A
-	// rebuild-cache call otherwise never sees another call's own state.
+	// recover call otherwise never sees another call's own state.
 	existingDiscs, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 	existingRefsLedger, err := image.LoadRefsLedger(cfg.StagingDir, repoUUID)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 	existingLocalRefs, err := readRefs(repoDir)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 
@@ -145,7 +145,7 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 				continue
 			}
 			if err := stageLog.EnsureOnDisc(id, rr.Run.RunSeq, rr.Disc.DiscUUID); err != nil {
-				_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+				_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 				return 1
 			}
 			recorded++
@@ -155,18 +155,18 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	discRows := mergeDiscsRows(results, existingDiscs.Rows)
 	discRows = fillUsedSectorsFromRuns(discRows, results)
 	if err := image.SaveDiscsLedger(cfg.StagingDir, repoUUID, discRows); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 
 	refRecords := bestRefRecords(results, existingRefsLedger.Records)
 	if err := image.SaveRefsLedger(cfg.StagingDir, repoUUID, refRecords); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 	// A local ref name whose snapshot was never packed onto any disc
 	// never appears in refRecords: keep it, rather than let a disc
-	// replay erase a commit rebuild-cache has no way to see. A name
+	// replay erase a commit recover has no way to see. A name
 	// a disc does carry always takes the disc's value.
 	refs := existingLocalRefs
 	if refs == nil {
@@ -174,11 +174,11 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 	}
 	maps.Copy(refs, mergeRefs(refRecords))
 	if err := writeRefs(repoDir, refs); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: rebuild-cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "rebuild-cache: %d disc(s) read, repo %s\n", len(results), repoDir)
+	_, _ = fmt.Fprintf(stdout, "recover: %d disc(s) read, repo %s\n", len(results), repoDir)
 	_, _ = fmt.Fprintf(stdout, "objects recorded: %d on disc, %d already known\n", recorded, alreadyKnown)
 	_, _ = fmt.Fprintf(stdout, "discs known: %d, refs restored: %d\n", len(discRows), len(refs))
 
@@ -191,12 +191,12 @@ func cmdRebuildCache(args []string, stdout, stderr io.Writer, prog *progress.Rep
 		return 1
 	}
 
-	_, _ = fmt.Fprintln(stdout, "rebuild-cache: ok")
+	_, _ = fmt.Fprintln(stdout, "recover: ok")
 	return 0
 }
 
 // discsNotFed returns, sorted by uuid text, every row of the merged
-// ledger whose own disc has never itself been fed to rebuild-cache: its
+// ledger whose own disc has never itself been fed to recover: its
 // row may only have arrived here as a copy carried in a sibling disc's
 // own DISCS table. "ok" must wait for every one of these to be read at
 // least once, however many separate calls that takes.
@@ -211,11 +211,11 @@ func discsNotFed(rows []format.DiscsRow, l *stage.Log) []format.DiscsRow {
 	return out
 }
 
-// rebuildCacheFromRoots copies every one of readRoots' run catalog,
-// snapshots and trees into the local cache, so rebuild-cache leaves ls
+// recoverCacheFromRoots copies every one of readRoots' run catalog,
+// snapshots and trees into the local cache, so recover leaves ls
 // and plan able to run with no disc present, the same way pack does
 // right after building a run.
-func rebuildCacheFromRoots(cfg repoConfig, repoUUID [16]byte, readRoots []string) error {
+func recoverCacheFromRoots(cfg repoConfig, repoUUID [16]byte, readRoots []string) error {
 	if len(readRoots) == 0 {
 		return nil
 	}
@@ -235,11 +235,11 @@ func rebuildCacheFromRoots(cfg repoConfig, repoUUID [16]byte, readRoots []string
 	return nil
 }
 
-// rebuildTargetRepoDir resolves the repository directory rebuild-cache
+// recoverTargetRepoDir resolves the repository directory recover
 // should use, whether or not it exists yet: explicitRepo when set, else
 // NOAHSARK_REPO, else whatever discoverRepo's ancestor search finds. A
-// missing repository is not an error here; ensureRebuildRepo creates it.
-func rebuildTargetRepoDir(explicitRepo string) (string, error) {
+// missing repository is not an error here; ensureRecoverRepo creates it.
+func recoverTargetRepoDir(explicitRepo string) (string, error) {
 	if explicitRepo != "" {
 		return filepath.Abs(explicitRepo)
 	}
@@ -253,11 +253,11 @@ func rebuildTargetRepoDir(explicitRepo string) (string, error) {
 	return "", fmt.Errorf("no repository directory given: pass --repo, or set NOAHSARK_REPO, to say where to rebuild one")
 }
 
-// ensureRebuildRepo loads repoDir's config when it is already a
+// ensureRecoverRepo loads repoDir's config when it is already a
 // repository, or creates a fresh one with repoUUID otherwise: the config
 // file, an empty staging store, and nothing else, matching cmdInit's
 // layout. An existing config's repo.uuid must match repoUUID.
-func ensureRebuildRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
+func ensureRecoverRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 	if isRepoDir(repoDir) {
 		cfg, err := readConfig(configPath(repoDir))
 		if err != nil {
@@ -351,7 +351,7 @@ func rowNewer(a, b format.DiscsRow) bool {
 // itself, since that run's final size is not known until after it is
 // written (docs/decisions.md, "12. Disc lifecycle, closing and
 // appending"); only a later run's copy of the row carries the real
-// value. rebuild-cache instead reads it straight from that disc's own
+// value. recover instead reads it straight from that disc's own
 // RUN.bin, which does carry the run's actual stream_bytes, converted to
 // whole sectors the same way pack itself does.
 func fillUsedSectorsFromRuns(rows []format.DiscsRow, results []*image.ReadResult) []format.DiscsRow {
@@ -392,7 +392,7 @@ func (k refKey) newer(other refKey) bool {
 // bestRefRecords returns one REFS record per ref name, the newest by
 // refKey ordering across every provided disc and existing, the records
 // the local refs ledger already carried from an earlier call.
-// rebuild-cache uses this both to restore the flat local ref file and
+// recover uses this both to restore the flat local ref file and
 // to restore the refs ledger a later pack extends.
 func bestRefRecords(results []*image.ReadResult, existing []format.RefRecord) []format.RefRecord {
 	type keyed struct {

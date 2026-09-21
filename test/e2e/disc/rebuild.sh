@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The rebuild-cache e2e scenario: sourced by run.sh. Proves a lost
+# The recover e2e scenario: sourced by run.sh. Proves a lost
 # repository directory is fully recoverable from discs alone: log, ls
-# and restore already work with no repository, and rebuild-cache
+# and restore already work with no repository, and recover
 # restores the state log, the disc ledger and the refs, so a later pack
 # dedups against what the discs already hold instead of burning
 # everything again. See run.sh for the shared scenario dispatch and
@@ -97,16 +97,16 @@ scenario_rebuild() {
 	assert_dirs_equal "$restored_dir$one_dir" "$one_dir"
 	log "rebuild: --include restore of one file and one directory matches"
 
-	# rebuild-cache with disc 1 alone: exit 0, and the state
+	# recover with disc 1 alone: exit 0, and the state
 	# log's on-disc count must equal disc 1's own INDEX object count.
-	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1"
+	"$BIN" recover --repo="$repo" --disc="$mnt1"
 	local index_count1 ondisc_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
 	ondisc_count1="$(run_tool ci-state-count "$repo/staging")"
 	if [ "$ondisc_count1" != "$index_count1" ]; then
 		fail "rebuild: on-disc count $ondisc_count1 does not equal disc 1 INDEX object count $index_count1"
 	fi
-	log "rebuild: rebuild-cache from disc 1 recorded $ondisc_count1 on-disc objects, matching INDEX"
+	log "rebuild: recover from disc 1 recorded $ondisc_count1 on-disc objects, matching INDEX"
 
 	# Change the source: about REBUILD_ADD_BYTES of new files, a rewritten
 	# file and a few appended files (ci-incremental-fixture's mutate),
@@ -133,7 +133,7 @@ scenario_rebuild() {
 
 	local size_limit=$((size1 * 25 / 100))
 	if [ "$size2" -ge "$size_limit" ]; then
-		fail "rebuild: disc 2 size $size2 is not under 25% of disc 1's $size1; rebuild-cache did not prevent re-packing disc 1's content"
+		fail "rebuild: disc 2 size $size2 is not under 25% of disc 1's $size1; recover did not prevent re-packing disc 1's content"
 	fi
 
 	sudo "$BIN" image build --out="$image2" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree2"
@@ -154,9 +154,9 @@ scenario_rebuild() {
 	run_tool ci-incremental-fixture check "$restored_next$src" "$hashes_next"
 	log "rebuild: NEXT restored from both discs matches"
 
-	# rebuild-cache again, with both discs: exit 0, same on-disc count as
+	# recover again, with both discs: exit 0, same on-disc count as
 	# after the first rebuild plus disc 2's own new objects.
-	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1" --disc="$mnt2"
+	"$BIN" recover --repo="$repo" --disc="$mnt1" --disc="$mnt2"
 	local index_count2 ondisc_count2 want_count2
 	index_count2="$(run_tool ci-index-count "$mnt2")"
 	ondisc_count2="$(run_tool ci-state-count "$repo/staging")"
@@ -166,7 +166,7 @@ scenario_rebuild() {
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
-	"$BIN" rebuild-cache --repo="$repo" --disc="$mnt1" --disc="$mnt2"
+	"$BIN" recover --repo="$repo" --disc="$mnt1" --disc="$mnt2"
 	local ondisc_count3
 	ondisc_count3="$(run_tool ci-state-count "$repo/staging")"
 	if [ "$ondisc_count3" != "$ondisc_count2" ]; then
@@ -174,23 +174,23 @@ scenario_rebuild() {
 	fi
 	log "rebuild: 2-disc rebuild is idempotent at $ondisc_count2 on-disc objects"
 
-	# rebuild-cache with only disc 2: exit 1, naming disc 1's uuid.
+	# recover with only disc 2: exit 1, naming disc 1's uuid.
 	rm -rf "$repo"
 	local uuid1
 	uuid1="$(run_tool ci-disc-uuid "$mnt1")"
 	local rebuild_out rebuild_code
 	set +e
-	rebuild_out="$("$BIN" rebuild-cache --repo="$repo" --disc="$mnt2" 2>&1)"
+	rebuild_out="$("$BIN" recover --repo="$repo" --disc="$mnt2" 2>&1)"
 	rebuild_code=$?
 	set -e
 	echo "$rebuild_out"
 	if [ "$rebuild_code" -ne 1 ]; then
-		fail "rebuild: rebuild-cache with only disc 2 exited $rebuild_code, want 1"
+		fail "rebuild: recover with only disc 2 exited $rebuild_code, want 1"
 	fi
 	if ! echo "$rebuild_out" | grep -qF "$uuid1"; then
-		fail "rebuild: rebuild-cache-with-disc-2-only did not name the missing disc 1 ($uuid1)"
+		fail "rebuild: recover-with-disc-2-only did not name the missing disc 1 ($uuid1)"
 	fi
-	log "rebuild: rebuild-cache with only disc 2 refused as expected, naming disc $uuid1"
+	log "rebuild: recover with only disc 2 refused as expected, naming disc $uuid1"
 
 	umount_if_mounted "$mnt1"
 	umount_if_mounted "$mnt2"

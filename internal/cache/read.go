@@ -41,7 +41,7 @@ func (c *Cache) ListSnapshots() ([]object.ID, error) {
 // discs/<disc-uuid>/ directory for, in uuid text order. A directory
 // name that is not a uuid is not a cached disc; an older cache that
 // still holds runs/<seq>/ directories therefore reports no disc, and
-// the caller tells the operator to run pack or rebuild-cache.
+// the caller tells the operator to run pack or recover.
 func (c *Cache) cachedDiscs() ([][16]byte, error) {
 	entries, err := os.ReadDir(filepath.Join(c.dir, discsDirName))
 	if os.IsNotExist(err) {
@@ -76,7 +76,7 @@ func (c *Cache) newestCachedDisc() ([16]byte, error) {
 		return [16]byte{}, err
 	}
 	if len(uuids) == 0 {
-		return [16]byte{}, fmt.Errorf("cache: no disc is cached yet; run pack, or rebuild-cache, first")
+		return [16]byte{}, fmt.Errorf("cache: no disc is cached yet; run pack, or recover, first")
 	}
 	newest := uuids[0]
 	var newestCreated int64

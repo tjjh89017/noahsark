@@ -56,17 +56,17 @@ func planOrderDiscSeqs(t *testing.T, args ...string) []int {
 	}
 	var seqs []int
 	for line := range strings.SplitSeq(out, "\n") {
-		if !strings.HasPrefix(line, "disc_seq=") {
+		if !strings.HasPrefix(line, "disc ") {
 			continue
 		}
 		var seq int
-		if _, err := fmt.Sscanf(line, "disc_seq=%d", &seq); err != nil {
+		if _, err := fmt.Sscanf(line, "disc %d", &seq); err != nil {
 			t.Fatalf("parse plan line %q: %v", line, err)
 		}
 		seqs = append(seqs, seq)
 	}
 	if len(seqs) == 0 {
-		t.Fatalf("no disc_seq line in plan output %q", out)
+		t.Fatalf("no disc line in plan output %q", out)
 	}
 	return seqs
 }

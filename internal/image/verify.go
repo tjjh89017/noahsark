@@ -7,6 +7,27 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
+// ErrStagedDamaged reports a staged object file that does not hold what
+// its name promises: too short for its own header, undecodable, or
+// hashing to another id. Every object kind reports the damage with this
+// one text, and every text names the cure, because the operator's
+// action is the same in every case: commit the source again, which
+// rewrites the staged copy.
+type ErrStagedDamaged struct {
+	ID   object.ID
+	Kind format.ObjectKind
+}
+
+func (e *ErrStagedDamaged) Error() string {
+	return fmt.Sprintf("staged %s %s is damaged; run commit again to write it once more, then pack",
+		kindName(e.Kind), e.ID.TextForm())
+}
+
+// stagedDamaged builds the one damaged-staged-object error.
+func stagedDamaged(id object.ID, kind format.ObjectKind) error {
+	return &ErrStagedDamaged{ID: id, Kind: kind}
+}
+
 // verifyObjectID confirms that data, a staged blob, tree or snapshot
 // file's whole bytes, really holds the content want names: the hash of
 // its payload, the same computation the writer used to choose the file
@@ -21,13 +42,12 @@ import (
 // graph edge and is never read here; the run's own copy pass checks it.
 func verifyObjectID(want object.ID, kind format.ObjectKind, data []byte) error {
 	if len(data) < format.CommonHeaderLen+format.ObjectHeaderLen {
-		return fmt.Errorf("%s %s: object file is shorter than its own header", kindName(kind), want.TextForm())
+		return stagedDamaged(want, kind)
 	}
 	payload := data[format.CommonHeaderLen+format.ObjectHeaderLen:]
 
-	got := object.ComputeID(payload)
-	if got != want {
-		return fmt.Errorf("staged %s %s does not match its own content (got %s); the staging copy is corrupt, run commit again to rewrite it before packing", kindName(kind), want.TextForm(), got.TextForm())
+	if object.ComputeID(payload) != want {
+		return stagedDamaged(want, kind)
 	}
 	return nil
 }

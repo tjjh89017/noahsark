@@ -58,7 +58,7 @@ func (c *Cache) WriteBlob(id object.ID, raw []byte) error {
 // into the cache. root is a freshly packed run tree or a mounted disc
 // root; both share one on-disc layout (FORMAT.md "Disc and run model"),
 // so the same read and copy path serves pack, right after it builds a
-// run, and rebuild-cache, for every disc it is given. It recomputes and
+// run, and recover, for every disc it is given. It recomputes and
 // persists the completeness of every snapshot it copied, and returns
 // the read result so the caller can report what it found.
 func WriteFromRoot(c *Cache, root string) (*image.ReadResult, error) {

@@ -10,7 +10,7 @@ import (
 )
 
 // repoCacheDir opens repo's config and resolves the cache directory the
-// same way pack and rebuild-cache do.
+// same way pack and recover do.
 func repoCacheDir(t *testing.T, repo string) string {
 	t.Helper()
 	cfg, err := readConfig(configPath(repo))
@@ -101,7 +101,7 @@ func TestPackPopulatesCache(t *testing.T) {
 }
 
 // TestRebuildCacheRestoresCacheContent deletes the whole cache pack
-// left behind, along with the repository, and checks rebuild-cache
+// left behind, along with the repository, and checks recover
 // from the packed tree alone puts back an equally complete cache.
 func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
@@ -141,8 +141,8 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+treeDir); code != 0 {
-		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	if code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+treeDir); code != 0 {
+		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
 	c, err := cache.Open(repoCacheDir(t, repo))

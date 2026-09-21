@@ -34,10 +34,13 @@ func writeMultiDiscFixtureSource(t *testing.T) string {
 	return src
 }
 
-// packSectors converts a byte budget to a --capacity sector count string.
+// packSectors converts a byte budget to a --capacity value with a unit.
+// --capacity refuses a bare number, so the budget is rendered in whole
+// binary kibibytes, which is exact for a whole number of sectors.
 func packSectors(bytes uint64) string {
 	const sectorSize = 2048
-	return strconv.FormatUint((bytes+sectorSize-1)/sectorSize, 10)
+	sectors := (bytes + sectorSize - 1) / sectorSize
+	return strconv.FormatUint(sectors*2, 10) + "KiB"
 }
 
 // TestMultiDiscPackAndRestore runs init, commit, three pack calls over

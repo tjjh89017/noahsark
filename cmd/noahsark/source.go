@@ -140,10 +140,10 @@ func formatIncompleteError(cmd string, e *cache.IncompleteError) string {
 // already-prefixed message instead of printing it standalone.
 func incompleteErrorBody(e *cache.IncompleteError) string {
 	if e.HasDiscUUID {
-		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s%s and run rebuild-cache",
+		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s%s and run recover",
 			e.Snapshot.TextForm(), uuidText(e.DiscUUID), cache.LabelSuffix(e.Label))
 	}
-	return fmt.Sprintf("snapshot %s is not complete in the cache; run rebuild-cache with the disc that holds it",
+	return fmt.Sprintf("snapshot %s is not complete in the cache; run recover with the disc that holds it",
 		e.Snapshot.TextForm())
 }
 

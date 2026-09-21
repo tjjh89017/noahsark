@@ -222,7 +222,7 @@ scenario_cli() {
 
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
 	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
-	sudo "$BIN" image build --out="$image" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree"
+	sudo "$BIN" image build --out="$image" "$tree"
 
 	mount_populate "$image" "$tree" "$mnt"
 	assert_listing_matches "$mnt" "$work"
@@ -231,17 +231,6 @@ scenario_cli() {
 	assert_dirs_equal "$restored$src" "$src"
 	umount_if_mounted "$mnt"
 	log "cli PASS"
-}
-
-# media_image_capacity MEDIA prints the real physical sector preset an
-# image build should use: the preset name itself for an unforced media,
-# or the physical preset for a media whose logical capacity is forced.
-media_image_capacity() {
-	case "$1" in
-	dvd+r) echo "dvd+r" ;;
-	bd25 | bd25-forced-10g) echo "bd25" ;;
-	*) fail "unknown media preset: $1" ;;
-	esac
 }
 
 # scenario_media packs, images, mounts, verifies and restores a sample at
@@ -326,7 +315,7 @@ scenario_media() {
 		rm -rf "$tree_fec" "$small_src2"
 	fi
 
-	sudo "$BIN" image build --out="$image" --capacity="$(media_image_capacity "$media")" "$tree"
+	sudo "$BIN" image build --out="$image" "$tree"
 	assert_sparse "$image" "$apparent"
 
 	mount_populate "$image" "$tree" "$mnt"

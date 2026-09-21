@@ -277,7 +277,7 @@ func TestPackWithoutCapacityRefused(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
 	}
-	if !strings.Contains(out, "target capacity is required") {
+	if !strings.Contains(out, "no capacity") || !strings.Contains(out, "pack.capacity") {
 		t.Fatalf("output = %q, want it to mention the missing capacity", out)
 	}
 }

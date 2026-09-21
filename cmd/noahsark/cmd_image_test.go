@@ -20,7 +20,7 @@ func TestImageBuildRefusesExistingOutputUnlessForced(t *testing.T) {
 	}
 	treeDir := filepath.Join(work, "tree")
 
-	code, cmdOut := runCmd(t, "image", "build", "--out="+out, "--capacity=1MB", treeDir)
+	code, cmdOut := runCmd(t, "image", "build", "--out="+out, treeDir)
 	if code != 2 {
 		t.Fatalf("image build (existing --out): exit %d, want 2: %s", code, cmdOut)
 	}
@@ -35,7 +35,7 @@ func TestImageBuildRefusesExistingOutputUnlessForced(t *testing.T) {
 		t.Fatalf("image build (existing --out) overwrote %s despite refusing", out)
 	}
 
-	code, cmdOut = runCmd(t, "image", "build", "--out="+out, "--capacity=1MB", "--force", treeDir)
+	code, cmdOut = runCmd(t, "image", "build", "--out="+out, "--force", treeDir)
 	if code == 2 && strings.Contains(cmdOut, "already exists") {
 		t.Fatalf("image build --force still refused an existing --out: %s", cmdOut)
 	}

@@ -11,8 +11,8 @@ import (
 // disc, burns and verifies it so its objects reach CLEAN, then commits a
 // one-line change and packs again. The second pack must hold only the
 // new objects: a CLEAN object must never be copied again or rebound to
-// the new disc, and the first disc's object count in "disc list" must
-// not change.
+// the new disc, and the first disc's object count in "status" must not
+// change.
 func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -23,16 +23,11 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 	}
 	packAndVerifyDisc(t, work, repo, src)
 
-	code, out := runCmd(t, "disc", "list", "--repo="+repo)
-	if code != 0 {
-		t.Fatalf("disc list (after first disc): exit %d: %s", code, out)
+	discs := statusDiscs(t, repo)
+	if len(discs) != 1 {
+		t.Fatalf("status names %d disc(s) after the first pack, want 1", len(discs))
 	}
-	firstDiscLine, _, _ := strings.Cut(out, "\n")
-	m := discListLineRe.FindStringSubmatch(firstDiscLine)
-	if m == nil {
-		t.Fatalf("disc line %q does not match the expected column order", firstDiscLine)
-	}
-	firstObjects := m[7]
+	firstObjects := discs[0].OnDiscObjects
 
 	// Commit a one-line change: most objects (the unchanged file, every
 	// tree above it) are unchanged content, already CLEAN.
@@ -47,28 +42,15 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 		t.Fatalf("second pack: exit %d: %s", code, packOut)
 	}
 
-	code, out = runCmd(t, "disc", "list", "--repo="+repo)
-	if code != 0 {
-		t.Fatalf("disc list (after second disc): exit %d: %s", code, out)
+	discs = statusDiscs(t, repo)
+	if len(discs) != 2 {
+		t.Fatalf("status names %d disc(s) after the second pack, want 2", len(discs))
 	}
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) < 3 {
-		t.Fatalf("disc list output = %q, want two disc lines and the staged line", out)
+	if discs[0].OnDiscObjects != firstObjects {
+		t.Fatalf("first disc objects = %d after the second pack, want unchanged %d: a CLEAN object was rebound", discs[0].OnDiscObjects, firstObjects)
 	}
-	m1 := discListLineRe.FindStringSubmatch(lines[0])
-	if m1 == nil {
-		t.Fatalf("disc line %q does not match the expected column order", lines[0])
-	}
-	if m1[7] != firstObjects {
-		t.Fatalf("first disc objects = %q after the second pack, want unchanged %q: a CLEAN object was rebound", m1[7], firstObjects)
-	}
-
-	m2 := discListLineRe.FindStringSubmatch(lines[1])
-	if m2 == nil {
-		t.Fatalf("disc line %q does not match the expected column order", lines[1])
-	}
-	if m2[7] == "0" {
-		t.Fatalf("second disc objects = %q, want nonzero for the new file's objects", m2[7])
+	if discs[1].OnDiscObjects == 0 {
+		t.Fatal("second disc objects = 0, want nonzero for the new file's objects")
 	}
 }
 

@@ -53,11 +53,11 @@ func TestPlanSingleDisc(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("plan: exit %d: %s", code, out)
 	}
-	if strings.Count(out, "disc_seq=") != 1 {
-		t.Fatalf("plan output = %q, want exactly one disc line", out)
+	if n := countDiscLines(out); n != 1 {
+		t.Fatalf("plan output = %q, want exactly one disc line, got %d", out, n)
 	}
-	if !strings.Contains(out, "totals: discs=1") {
-		t.Fatalf("plan output = %q, want totals: discs=1", out)
+	if !strings.Contains(out, "totals: 1 discs") {
+		t.Fatalf("plan output = %q, want totals: 1 discs", out)
 	}
 	if strings.Contains(out, "missing:") {
 		t.Fatalf("plan output = %q, did not expect a missing entry", out)
@@ -75,8 +75,8 @@ func TestPlanTwoDiscChainIncludeNarrows(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("plan (whole snapshot): exit %d: %s", code, fullOut)
 	}
-	if strings.Count(fullOut, "disc_seq=") != 2 {
-		t.Fatalf("plan (whole snapshot) = %q, want two disc lines", fullOut)
+	if n := countDiscLines(fullOut); n != 2 {
+		t.Fatalf("plan (whole snapshot) = %q, want two disc lines, got %d", fullOut, n)
 	}
 
 	code, narrowOut := runCmd(t, "plan", "--repo="+repo, "--include="+includePath, snapID)
@@ -111,7 +111,7 @@ func TestPlanTwoIncludesBothResolve(t *testing.T) {
 	}
 }
 
-// planTotalObjects extracts the "totals: discs=N objects=M bytes=K"
+// planTotalObjects extracts the "totals: N discs, M objects, K bytes"
 // line's objects value from plan's text output.
 func planTotalObjects(t *testing.T, out string) int {
 	t.Helper()
@@ -120,7 +120,7 @@ func planTotalObjects(t *testing.T, out string) int {
 			continue
 		}
 		var discs, objects, bytes int
-		if _, err := fmt.Sscanf(line, "totals: discs=%d objects=%d bytes=%d", &discs, &objects, &bytes); err != nil {
+		if _, err := fmt.Sscanf(line, "totals: %d discs, %d objects, %d bytes", &discs, &objects, &bytes); err != nil {
 			t.Fatalf("parse totals line %q: %v", line, err)
 		}
 		return objects
@@ -260,7 +260,18 @@ func TestPlanEmptyCacheNamesTheFix(t *testing.T) {
 	if !strings.Contains(out, "no disc is cached yet") {
 		t.Fatalf("plan (empty cache) output %q missing \"no disc is cached yet\"", out)
 	}
-	if !strings.Contains(out, "rebuild-cache") {
-		t.Fatalf("plan (empty cache) output %q missing the fix, rebuild-cache", out)
+	if !strings.Contains(out, "recover") {
+		t.Fatalf("plan (empty cache) output %q missing the fix, recover", out)
 	}
+}
+
+// countDiscLines counts the per-disc lines of plan's text output.
+func countDiscLines(out string) int {
+	n := 0
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, "disc ") {
+			n++
+		}
+	}
+	return n
 }

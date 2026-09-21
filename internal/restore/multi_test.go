@@ -426,12 +426,12 @@ func TestMissingDiscErrorCandidatesOnePerLine(t *testing.T) {
 	e := &MissingDiscError{
 		UnnamedCount: 3,
 		Candidates: []DiscCandidate{
-			{UUID: [16]byte{1}, Label: "disc-one"},
-			{UUID: [16]byte{2}, Label: "disc-two"},
+			{UUID: [16]byte{1}, Name: DiscName{Seq: 1, Label: "disc-one"}},
+			{UUID: [16]byte{2}, Name: DiscName{Seq: 2, Label: "disc-two"}},
 		},
 	}
 	want := fmt.Sprintf(
-		"3 object(s) not found on any provided disc and named by no provided disc's INDEX; disc(s) not provided, that may hold them:\n  disc %s (disc-one)\n  disc %s (disc-two)",
+		"3 object(s) not found on any provided disc and named by no provided disc's INDEX; disc(s) not provided, that may hold them:\n  disc 1 \"disc-one\" (%s)\n  disc 2 \"disc-two\" (%s)",
 		uuidText([16]byte{1}), uuidText([16]byte{2}))
 	if got := e.Error(); got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
@@ -495,9 +495,9 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 	commitAndPack(3, 3, "THREE", "disc-three")
 
 	outDir := t.TempDir()
-	known := map[[16]byte]string{
-		{1}: "disc-one",
-		{3}: "disc-three",
+	known := map[[16]byte]DiscName{
+		{1}: {Seq: 1, Label: "disc-one"},
+		{3}: {Seq: 3, Label: "disc-three"},
 	}
 	_, err = RestoreMultiWithProgress([]string{disc2Dir}, snap1, outDir, nil, WithKnownDiscs(known))
 	if err == nil {

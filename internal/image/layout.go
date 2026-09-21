@@ -2,6 +2,7 @@ package image
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -251,6 +252,9 @@ func Build(opts BuildOptions) (*Result, error) {
 			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
 		}
 		if err != nil {
+			if errors.Is(err, errShortStagedHeader) {
+				return nil, stagedDamaged(h.ID, h.Kind)
+			}
 			return nil, fmt.Errorf("%s: %w", h.ID.TextForm(), err)
 		}
 		var flags uint16

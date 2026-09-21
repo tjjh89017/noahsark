@@ -75,35 +75,27 @@ chain_media_order() {
 # image mkudffs builds at the same capacity. media_capacity_flags'
 # preset names leave no room to compute a physical capacity for the
 # forced case, so this builds the flags from media_sectors' numbers
-# instead.
+# instead. --capacity refuses a bare number, so each count is given in
+# whole binary kibibytes, two per sector.
 chain_media_pack_flags() {
 	local media="$1" target physical
 	read -r target physical <<<"$(media_sectors "$media")"
 	case "$media" in
-	dvd+r | bd25) echo "--capacity=$target" ;;
-	bd25-forced-10g) echo "--capacity=$target --physical-capacity=$physical" ;;
+	dvd+r | bd25) echo "--capacity=$((target * 2))KiB" ;;
+	bd25-forced-10g) echo "--capacity=$((target * 2))KiB --physical-capacity=$((physical * 2))KiB" ;;
 	*) fail "unknown chain media: $media" ;;
 	esac
 }
 
-# chain_small_kind_flags KIND prints "PACKFLAGS" then "IMAGECAP" for one
-# of scenario_chain_small's three tiny, distinctly-sized stand-ins for
+# chain_small_kind_flags KIND prints the pack flags for one of
+# scenario_chain_small's three tiny, distinctly-sized stand-ins for
 # dvd+r, bd25 and a forced-capacity BD: small, but shaped the same way
 # (the third is a smaller logical capacity than its physical size).
 chain_small_kind_flags() {
 	case "$1" in
-	dvd)
-		echo "--capacity=90000"
-		echo "90000"
-		;;
-	bd25)
-		echo "--capacity=90000"
-		echo "90000"
-		;;
-	bd10)
-		echo "--capacity=20000 --physical-capacity=90000"
-		echo "90000"
-		;;
+	dvd) echo "--capacity=180000KiB" ;;
+	bd25) echo "--capacity=180000KiB" ;;
+	bd10) echo "--capacity=40000KiB --physical-capacity=180000KiB" ;;
 	*) fail "unknown chain-small kind: $1" ;;
 	esac
 }
@@ -118,15 +110,16 @@ chain_small_order() {
 	esac
 }
 
-# chain_pack_one WORK REPO N PACKFLAGS IMAGECAP builds and packs disc N,
-# images it at IMAGECAP, mounts, populates and verifies it, then
+# chain_pack_one WORK REPO N PACKFLAGS builds and packs disc N, images
+# it at the capacity its own DISC.bin carries, mounts, populates and
+# verifies it, then
 # unmounts, keeping the image but deleting the packed tree. It also frees
 # the staged copy of each object on this disc. It fails unless pack exits
 # 0 with a remaining-staged report: every disc in this scenario is sized
 # so real objects remain after it, and leftover staged data is not a
 # pack failure. It sets CHAIN_REMAINING_BYTES.
 chain_pack_one() {
-	local work="$1" repo="$2" n="$3" packflags="$4" imagecap="$5"
+	local work="$1" repo="$2" n="$3" packflags="$4"
 	local ddir="$work/disc$n"
 	local tree="$ddir/tree" image="$ddir/run.img" mnt="$ddir/mnt" logf="$ddir/pack.log"
 	mkdir -p "$ddir"
@@ -151,7 +144,7 @@ chain_pack_one() {
 	CHAIN_REMAINING_BYTES="$(grep -oE 'remaining staged: [0-9]+ objects, [0-9]+ bytes' "$logf" | grep -oE '[0-9]+ bytes' | grep -oE '[0-9]+')"
 	log "chain: disc $n: $(grep 'remaining staged:' "$logf")"
 
-	sudo "$BIN" image build --out="$image" "--capacity=$imagecap" "$tree"
+	sudo "$BIN" image build --out="$image" "$tree"
 	mount_populate "$image" "$tree" "$mnt"
 	# Unmount whether verify passes or fails: a failure must not leave
 	# the mount busy for the runner's own cleanup.
@@ -250,11 +243,11 @@ chain_commit_fixture() {
 	log "$label: fixture $name: sample manifest $(wc -l <"$sample") lines, full manifest $(wc -l <"$full") lines"
 }
 
-# chain_run LABEL WORK HALF_BYTES ENFORCE_BAND K1 F1 I1 K2 F2 I2 K3 F3 I3
-# is the flow every chain scenario shares: commit two independent
-# fixtures (A and B, each HALF_BYTES), delete both sources, pack three
-# discs (K name, F pack flags, I image capacity, one triple per disc),
-# check the remaining-staged bytes, delete the staging objects, list
+# chain_run LABEL WORK HALF_BYTES ENFORCE_BAND K1 F1 K2 F2 K3 F3 is the
+# flow every chain scenario shares: commit two independent fixtures (A
+# and B, each HALF_BYTES), delete both sources, pack three discs (K
+# name, F pack flags, one pair per disc), check the remaining-staged
+# bytes, delete the staging objects, list
 # each disc's object ids, restore the winner (the fixture pack's
 # candidate order packs first, so the one the three discs fully hold)
 # from all three discs and check it against that fixture's manifests,
@@ -264,7 +257,7 @@ chain_commit_fixture() {
 chain_run() {
 	local label="$1" work="$2" half="$3" enforce_band="$4"
 	shift 4
-	local kinds=("$1" "$4" "$7") packflags=("$2" "$5" "$8") imagecaps=("$3" "$6" "$9")
+	local kinds=("$1" "$3" "$5") packflags=("$2" "$4" "$6")
 	log "$label: disc order: ${kinds[0]}, ${kinds[1]}, ${kinds[2]}; two $half byte fixtures"
 
 	build_binary
@@ -313,7 +306,7 @@ chain_run() {
 	local discroots=()
 	local i
 	for i in 1 2 3; do
-		chain_pack_one "$work" "$repo" "$i" "${packflags[$((i - 1))]}" "${imagecaps[$((i - 1))]}"
+		chain_pack_one "$work" "$repo" "$i" "${packflags[$((i - 1))]}"
 		discroots+=("$work/disc$i/mnt")
 	done
 
@@ -374,18 +367,15 @@ scenario_chain() {
 	local media1 media2 media3
 	read -r media1 media2 media3 <<<"$(chain_media_order "$order")"
 
-	local flags1 flags2 flags3 cap1 cap2 cap3
+	local flags1 flags2 flags3
 	flags1="$(chain_media_pack_flags "$media1")"
-	cap1="$(media_image_capacity "$media1")"
 	flags2="$(chain_media_pack_flags "$media2")"
-	cap2="$(media_image_capacity "$media2")"
 	flags3="$(chain_media_pack_flags "$media3")"
-	cap3="$(media_image_capacity "$media3")"
 
 	chain_run "chain/$order" "$work" "$CHAIN_HALF_BYTES" "yes" \
-		"$media1" "$flags1" "$cap1" \
-		"$media2" "$flags2" "$cap2" \
-		"$media3" "$flags3" "$cap3"
+		"$media1" "$flags1" \
+		"$media2" "$flags2" \
+		"$media3" "$flags3"
 }
 
 # scenario_chain_small ORDER runs the same flow at a fast local scale,
@@ -397,19 +387,13 @@ scenario_chain_small() {
 	local k1 k2 k3
 	read -r k1 k2 k3 <<<"$(chain_small_order "$order")"
 
-	local out1 out2 out3 flags1 cap1 flags2 cap2 flags3 cap3
-	out1="$(chain_small_kind_flags "$k1")"
-	flags1="$(sed -n '1p' <<<"$out1")"
-	cap1="$(sed -n '2p' <<<"$out1")"
-	out2="$(chain_small_kind_flags "$k2")"
-	flags2="$(sed -n '1p' <<<"$out2")"
-	cap2="$(sed -n '2p' <<<"$out2")"
-	out3="$(chain_small_kind_flags "$k3")"
-	flags3="$(sed -n '1p' <<<"$out3")"
-	cap3="$(sed -n '2p' <<<"$out3")"
+	local flags1 flags2 flags3
+	flags1="$(chain_small_kind_flags "$k1")"
+	flags2="$(chain_small_kind_flags "$k2")"
+	flags3="$(chain_small_kind_flags "$k3")"
 
 	chain_run "chain-small/$order" "$work" "$CHAIN_SMALL_HALF_BYTES" "no" \
-		"$k1" "$flags1" "$cap1" \
-		"$k2" "$flags2" "$cap2" \
-		"$k3" "$flags3" "$cap3"
+		"$k1" "$flags1" \
+		"$k2" "$flags2" \
+		"$k3" "$flags3"
 }

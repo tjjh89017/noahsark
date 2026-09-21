@@ -2,7 +2,7 @@
 // surface. It opens a repository's staging state log and prints the
 // number of objects the log places on some disc, so a shell scenario
 // can compare it against a disc's own INDEX object count after
-// rebuild-cache.
+// recover.
 //
 // Usage: ci-state-count STAGING-DIR
 package main

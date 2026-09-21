@@ -246,7 +246,7 @@ func (w *walker) addTree(treeID object.ID) error {
 // addBlob adds blobID and, when the cache also holds that blob object,
 // every chunk id it names. A blob the cache does not hold is still
 // added, at the object level only: the cache holds blobs only for the
-// snapshots pack or rebuild-cache have processed since blob caching was
+// snapshots pack or recover have processed since blob caching was
 // added, and its absence is not, by itself, an incomplete cache.
 func (w *walker) addBlob(blobID object.ID) {
 	if !w.add(blobID, format.ObjectKindBlob) {

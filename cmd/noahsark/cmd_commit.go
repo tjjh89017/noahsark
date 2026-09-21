@@ -114,6 +114,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	for _, p := range sum.Skipped {
 		_, _ = fmt.Fprintf(stdout, "skipped %s: %s\n", p.Path, p.Reason)
 	}
+	printSpecialWarnings(stdout, sum.Special)
 	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
 
 	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
@@ -127,6 +128,32 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 1
 	}
 	return 0
+}
+
+// maxSpecialWarnings bounds how many special-file warning lines one
+// commit prints, the same bound restore puts on its own warnings. A
+// source tree with a large /dev copied into it must not bury the rest
+// of the commit report.
+const maxSpecialWarnings = 20
+
+// printSpecialWarnings names each FIFO, socket and device node the
+// commit recorded without content, up to maxSpecialWarnings lines, then
+// one line with the total. The operator learns at commit time that
+// these paths hold no data on the disc, while the source is still
+// there to look at. It never changes the exit code: such a path is
+// normal in many source trees, and the commit is complete without it.
+func printSpecialWarnings(stdout io.Writer, special []object.SpecialPath) {
+	if len(special) == 0 {
+		return
+	}
+	shown := min(len(special), maxSpecialWarnings)
+	for _, p := range special[:shown] {
+		_, _ = fmt.Fprintf(stdout, "warning: %s: %s, no content is backed up\n", p.Path, p.Kind)
+	}
+	if rest := len(special) - shown; rest > 0 {
+		_, _ = fmt.Fprintf(stdout, "warning: %d more special file(s) not shown\n", rest)
+	}
+	_, _ = fmt.Fprintf(stdout, "special files: %d; a FIFO, a socket and a device node carry no content, and restore does not create them\n", len(special))
 }
 
 // stagedTotals reports the repository-wide STAGED total: how many

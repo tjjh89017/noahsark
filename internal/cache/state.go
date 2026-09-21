@@ -143,7 +143,7 @@ func (c *Cache) CheckComplete(id object.ID) error {
 // tree id it could not find and false, or a zero id and true when every
 // reachable tree is present. A snapshot id the cache has never seen at
 // all is reported as missing, id itself, rather than a hard error: a
-// pack or a rebuild-cache that never saw this snapshot's disc leaves
+// pack or a recover that never saw this snapshot's disc leaves
 // exactly that gap, and CheckComplete resolves it the same way it
 // resolves a missing tree.
 func (c *Cache) walkTrees(id object.ID) (missing object.ID, complete bool, err error) {

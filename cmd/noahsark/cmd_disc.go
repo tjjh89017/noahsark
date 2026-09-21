@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -12,12 +10,11 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdDisc implements "noahsark disc". OPERATIONS.md's "disc list" reads
-// a repository's catalog; this build has none, so it reads the local
-// disc ledger (discs.bin, the same rows a DISCS table carries) and the
-// staging state log instead. "disc label" and "disc mark-degraded" need
-// a notes.bin this build does not keep, so both are refused rather than
-// silently ignored. See docs/decisions.md, "16. CLI reference".
+// cmdDisc implements "noahsark disc". "noahsark status" lists the
+// discs, so "disc" carries the burn mark and its undo alone. "disc
+// label" and "disc mark-degraded" need a notes.bin this build does not
+// keep, so both are refused rather than silently ignored. See
+// docs/decisions.md, "16. CLI reference".
 //
 // "disc burned" is not an OPERATIONS.md command; it is this build's
 // explicit stand-in for the missing burn step (see docs/decisions.md,
@@ -26,25 +23,28 @@ import (
 // really was burned, since no on-disc structure records that moment
 // and this build has no `burn` command to record it automatically.
 func cmdDisc(args []string, stdout, stderr io.Writer) int {
+	const discUsage = "usage: noahsark disc burned [--undo] DISC [DISC...]"
+
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json] | disc burned [--undo] DISC [DISC...]")
+		_, _ = fmt.Fprintln(stderr, discUsage)
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark disc list [--json] | disc burned [--undo] DISC [DISC...]")
+		_, _ = fmt.Fprintln(stdout, discUsage)
 		return 0
 	}
 	sub := args[0]
 	rest := args[1:]
 
 	if strings.HasPrefix(sub, "-") {
-		_, _ = fmt.Fprintf(stderr, "noahsark: disc: flags come after the subcommand: noahsark disc list %s\n", sub)
+		_, _ = fmt.Fprintf(stderr, "noahsark: disc: flags come after the subcommand: noahsark disc burned %s\n", sub)
 		return 2
 	}
 
 	switch sub {
 	case "list":
-		return cmdDiscList(rest, stdout, stderr)
+		_, _ = fmt.Fprintln(stderr, "noahsark: disc list: renamed: run noahsark status")
+		return 2
 	case "burned":
 		return cmdDiscBurned(rest, stdout, stderr)
 	case "label":
@@ -186,161 +186,4 @@ func undoDiscBurn(l *stage.Log, discUUID [16]byte) int {
 		}
 	}
 	return n
-}
-
-// discSummary is one disc's row in "disc list": every row the ledger
-// records for a disc_uuid, folded into a single line.
-type discSummary struct {
-	UUID          string `json:"uuid"`
-	Seq           uint64 `json:"seq"`
-	Label         string `json:"label"`
-	CapacityBytes uint64 `json:"capacity_bytes"`
-	UsedBytes     uint64 `json:"used_bytes"`
-	OnDiscObjects int    `json:"on_disc_objects"`
-	PackedObjects int    `json:"packed_objects"`
-	CleanObjects  int    `json:"clean_objects"`
-	// OnDiscOnlyObjects is how many of the disc's objects staging holds
-	// no file for: gc freed them, or rebuild-cache read them from the
-	// disc itself. Such an object waits for no burn and no verify.
-	OnDiscOnlyObjects int `json:"on_disc_only_objects"`
-	// VerifiedCopies is the lowest verify count of the CLEAN objects of
-	// the disc, and 0 when the disc has no CLEAN object. gc frees an
-	// object at gc.min_verified_copies verifies, so this is the number
-	// the operator watches.
-	VerifiedCopies uint8 `json:"verified_copies"`
-	MinCopies      int   `json:"min_verified_copies"`
-}
-
-func cmdDiscList(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark disc list [--json]", "List every disc the repository ledger knows.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	jsonOut := fs.Bool("json", false, "print discs as a JSON array")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("disc list", fs, stderr) {
-		return 2
-	}
-	if fs.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc list [--json]")
-		return 2
-	}
-
-	repoDir, err := discoverRepo(*repoFlag)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-		return 2
-	}
-	cfg, err := readConfig(configPath(repoDir))
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-		return 2
-	}
-
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-		return 1
-	}
-
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-		return 1
-	}
-	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-		return 1
-	}
-	warnIfTruncated("disc list", stageLog, stderr)
-	onDiscByDisc := stageLog.OnDiscCountByDisc()
-	packedByDisc := stageLog.PackedCountByDisc()
-	cleanByDisc := stageLog.CleanCountByDisc()
-	onDiscOnlyByDisc := stageLog.CountByDiscInState(stage.OnDiscOnly)
-	verifiedByDisc := stageLog.MinCleanVerifyCountByDisc()
-
-	discs := summarizeDiscs(ledger.Rows, onDiscByDisc, packedByDisc, cleanByDisc, onDiscOnlyByDisc, verifiedByDisc, cfg.MinVerifiedCopies)
-
-	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-		return 1
-	}
-
-	if *jsonOut {
-		out := struct {
-			Discs         []discSummary `json:"discs"`
-			StagedObjects int           `json:"staged_objects"`
-			StagedBytes   uint64        `json:"staged_bytes"`
-		}{discs, stagedObjects, stagedBytes}
-		b, err := json.MarshalIndent(out, "", "  ")
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: disc list:", err)
-			return 1
-		}
-		_, _ = fmt.Fprintln(stdout, string(b))
-		return 0
-	}
-
-	for _, d := range discs {
-		head := fmt.Sprintf("%s  seq=%d  label=%q  capacity=%d  used=%d  objects=%d",
-			d.UUID, d.Seq, d.Label, d.CapacityBytes, d.UsedBytes, d.OnDiscObjects)
-		// A disc whose objects are all on the disc alone holds nothing
-		// back. A packed or clean count of 0 and a verify count of 0
-		// would read as work still to do.
-		if d.OnDiscObjects > 0 && d.OnDiscOnlyObjects == d.OnDiscObjects {
-			_, _ = fmt.Fprintf(stdout, "%s  on disc only\n", head)
-			continue
-		}
-		_, _ = fmt.Fprintf(stdout, "%s  packed=%d  clean=%d  verified=%d/%d\n",
-			head, d.PackedObjects, d.CleanObjects, d.VerifiedCopies, d.MinCopies)
-	}
-	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
-	return 0
-}
-
-// summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
-// ascending disc_seq order, and folds each disc's rows into one
-// discSummary: the label and forced capacity of its newest run, the sum
-// of used_sectors across every run, the disc's on-disc, packed, clean
-// and on-disc-only object counts, and its verify count against
-// minCopies.
-func summarizeDiscs(rows []format.DiscsRow, onDiscByDisc, packedByDisc, cleanByDisc, onDiscOnlyByDisc map[[16]byte]int, verifiedByDisc map[[16]byte]uint8, minCopies int) []discSummary {
-	order := make([]string, 0)
-	byUUID := make(map[string][]format.DiscsRow)
-	for _, r := range rows {
-		key := uuidText(r.DiscUUID)
-		if _, ok := byUUID[key]; !ok {
-			order = append(order, key)
-		}
-		byUUID[key] = append(byUUID[key], r)
-	}
-	sort.Slice(order, func(i, j int) bool {
-		return byUUID[order[i]][0].DiscSeq < byUUID[order[j]][0].DiscSeq
-	})
-
-	discs := make([]discSummary, 0, len(order))
-	for _, key := range order {
-		discRows := byUUID[key]
-		newest := discRows[len(discRows)-1]
-		var usedSectors uint64
-		for _, r := range discRows {
-			usedSectors += r.UsedSectors
-		}
-		discs = append(discs, discSummary{
-			UUID:              key,
-			Seq:               newest.DiscSeq,
-			Label:             labelText(newest.Label[:newest.LabelLen]),
-			CapacityBytes:     newest.CapacityForcedSectors * image.SectorSize,
-			UsedBytes:         usedSectors * image.SectorSize,
-			OnDiscObjects:     onDiscByDisc[newest.DiscUUID],
-			PackedObjects:     packedByDisc[newest.DiscUUID],
-			CleanObjects:      cleanByDisc[newest.DiscUUID],
-			OnDiscOnlyObjects: onDiscOnlyByDisc[newest.DiscUUID],
-			VerifiedCopies:    verifiedByDisc[newest.DiscUUID],
-			MinCopies:         minCopies,
-		})
-	}
-	return discs
 }
