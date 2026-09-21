@@ -48,7 +48,6 @@ func firstColumn(t *testing.T, out string) string {
 // prints in its first column. restore, ls and restore --dry-run must
 // all accept both.
 func TestSnapshotArgFormsFromLog(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, treeDir, snapID := snapshotArgFixture(t)
 
 	code, out := runCmd(t, "log", "--repo="+repo)

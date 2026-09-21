@@ -233,7 +233,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	}
 	count, haveClean := discVerifyCount(stageLog, ident.DiscUUID)
 	if haveClean {
-		if err := cacheRunFromDisc(cfg, repoUUID, target); err != nil {
+		if err := cacheRunFromDisc(repoDir, target); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		}
 	}
@@ -398,12 +398,8 @@ func markVerifyFailed(l *stage.Log, discUUID [16]byte) int {
 // into the local cache, the same way recover does, so gc can
 // later confirm an object's presence through the cached INDEX without
 // asking for the disc again.
-func cacheRunFromDisc(cfg repoConfig, repoUUID [16]byte, target string) error {
-	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		return err
-	}
-	c, err := cache.Open(dir)
+func cacheRunFromDisc(repoDir, target string) error {
+	c, err := cache.Open(cache.Dir(repoDir))
 	if err != nil {
 		return err
 	}

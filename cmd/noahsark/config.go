@@ -41,9 +41,6 @@ type repoConfig struct {
 	// two identical discs is the primary redundancy; FEC is a reserve
 	// feature a repository opts into.
 	FECEnabled bool
-	// CacheDir is cache.dir: an override for the local cache location.
-	// Empty means the default of cache.ResolveDir.
-	CacheDir string
 	// PackCapacity is pack.capacity: the capacity pack uses when its own
 	// command line names none. It keeps the text the operator wrote, so
 	// a preset name still selects the media type it names.
@@ -84,9 +81,9 @@ func (c repoConfig) checkKeys(keys ...string) error {
 // of every other key, so a fault in one key stops one command only.
 var (
 	configKeysForCommit = []string{"sources.root", "commit.restat_after_read", "commit.retry_unstable", "sources.exclude"}
-	configKeysForPack   = []string{"pack.capacity", "fec.scheme", "cache.dir"}
-	configKeysForGC     = []string{"staging.retain_after_clean", "gc.min_verified_copies", "cache.dir"}
-	configKeysForVerify = []string{"gc.min_verified_copies", "cache.dir"}
+	configKeysForPack   = []string{"pack.capacity", "fec.scheme"}
+	configKeysForGC     = []string{"staging.retain_after_clean", "gc.min_verified_copies"}
+	configKeysForVerify = []string{"gc.min_verified_copies"}
 )
 
 // knownConfigKeys names every key this build reads. A key present in the
@@ -99,7 +96,6 @@ var knownConfigKeys = map[string]bool{
 	"commit.retry_unstable":      true,
 	"fec.scheme":                 true,
 	"pack.capacity":              true,
-	"cache.dir":                  true,
 	"staging.retain_after_clean": true,
 	"gc.min_verified_copies":     true,
 	"sources.exclude":            true,
@@ -216,8 +212,6 @@ func readConfig(path string) (repoConfig, error) {
 				break
 			}
 			c.PackCapacity = value
-		case "cache.dir":
-			c.CacheDir = value
 		case "staging.retain_after_clean":
 			d, err := parseRetentionDuration(value)
 			if err != nil {

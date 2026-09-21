@@ -9,23 +9,11 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// repoCacheDir opens repo's config and resolves the cache directory the
-// same way pack and recover do.
+// repoCacheDir resolves the cache directory the same way pack and
+// recover do.
 func repoCacheDir(t *testing.T, repo string) string {
 	t.Helper()
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return cache.Dir(repo)
 }
 
 // TestPackPopulatesCache runs init, commit and pack, then checks pack
@@ -33,8 +21,6 @@ func repoCacheDir(t *testing.T, repo string) string {
 // present: the run's catalog, the snapshot object, at least one tree,
 // and a completeness record.
 func TestPackPopulatesCache(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -104,8 +90,6 @@ func TestPackPopulatesCache(t *testing.T) {
 // left behind, along with the repository, and checks recover
 // from the packed tree alone puts back an equally complete cache.
 func TestRebuildCacheRestoresCacheContent(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -128,16 +112,15 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	cacheDir := repoCacheDir(t, repo)
-	beforeTrees, err := os.ReadDir(filepath.Join(cacheDir, "trees"))
+	beforeTrees, err := os.ReadDir(filepath.Join(repoCacheDir(t, repo), "trees"))
 	if err != nil {
 		t.Fatalf("read trees before: %v", err)
 	}
 
+	// The cache lives inside the repository directory, so removing the
+	// repository removes the cache with it: this is the rebuild case
+	// recover must handle, the cache lost along with everything else.
 	if err := os.RemoveAll(repo); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(cacheDir); err != nil {
 		t.Fatal(err)
 	}
 

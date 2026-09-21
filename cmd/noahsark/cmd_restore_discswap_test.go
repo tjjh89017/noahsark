@@ -166,7 +166,6 @@ func setRestoreStdin(t *testing.T, r io.Reader) {
 // second requiring a swap, and checks the result matches the source
 // tree exactly.
 func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
@@ -201,7 +200,6 @@ func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 // again, and that the restore still completes once the right disc is
 // in the drive.
 func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
@@ -234,7 +232,6 @@ func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
 // already finish is on disk, then completes the restore in a second run
 // and checks the whole tree matches.
 func TestRestoreDiscSwapResume(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
@@ -299,7 +296,6 @@ func TestRestoreDiscSwapResume(t *testing.T) {
 // narrowed to a subtree whose chunk data lives on one disc never
 // prompts at all, when that disc is already in the drive.
 func TestRestoreDiscSwapIncludeNarrowsToOneDisc(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	include := strings.TrimPrefix(filepath.Join(src, "sub0"), "/")
 
@@ -328,7 +324,6 @@ func TestRestoreDiscSwapIncludeNarrowsToOneDisc(t *testing.T) {
 // that the disc the loop just finished, still in the drive, draws no
 // complaint before the first prompt.
 func TestRestoreDiscSwapNeverEjects(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 
@@ -361,7 +356,6 @@ func TestRestoreDiscSwapNeverEjects(t *testing.T) {
 // line rather than an "expected ... found ..." mismatch, and never that
 // line on the first look.
 func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -418,7 +412,6 @@ func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
 // another repository is reported the normal way, and the report names
 // the disc by its number, its label and its uuid.
 func TestRestoreDiscSwapStillReportsAGenuineMismatch(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, _, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
@@ -472,7 +465,6 @@ var mismatchNamesRe = regexp.MustCompile(`expected disc \d+ "[^"]+" \([0-9a-f-]+
 // not on the provided disc(s), not as a name unknown outright: --mount
 // implies discs are being fed in, so a later one may still carry it.
 func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, _, _, _ := discSwapFixture(t)
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
@@ -517,7 +509,6 @@ func TestRestoreSnapshotIDPrefixNamesItself(t *testing.T) {
 // from a disc since the assembler resolves those from the cache, would
 // otherwise make the dry-run list a disc restore never asks for.
 func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, _ := discSwapFixture(t)
 
 	for i := range 6 {
@@ -536,7 +527,6 @@ func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 // read it with no prompt and no complaint, and then ask for the other
 // one.
 func TestRestoreDiscSwapReadsTheDiscInTheDriveFirst(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
@@ -567,7 +557,6 @@ func TestRestoreDiscSwapReadsTheDiscInTheDriveFirst(t *testing.T) {
 // restore after the first disc, then checks that both --dry-run and the
 // rerun list only the disc that is still needed.
 func TestRestoreDiscSwapRerunListsOnlyTheDiscsStillNeeded(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {

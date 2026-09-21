@@ -245,7 +245,6 @@ func swapSteps(t *testing.T, mountDir string, discRoots []string, seqs []int) []
 // two discs. Each disc is inserted one time, the file matches the
 // source byte for byte, and no part file is left behind.
 func TestRestoreDiscSwapCrossDiscFile(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
@@ -275,7 +274,6 @@ func TestRestoreDiscSwapCrossDiscFile(t *testing.T) {
 // disc. The cross-disc file must not carry its final name, and the
 // rerun must complete it and ask only for the discs it still needs.
 func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
@@ -315,7 +313,6 @@ func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
 // final name of the cross-disc file while the restore waits for the
 // second disc. The restore must not replace it, and must report it.
 func TestRestoreDiscSwapNoOverwriteAtTheLinkStep(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
@@ -358,7 +355,6 @@ func TestRestoreDiscSwapNoOverwriteAtTheLinkStep(t *testing.T) {
 // --overwrite at the link step: a file in the way is replaced, and a
 // directory that holds entries is not removed.
 func TestRestoreDiscSwapOverwriteReplacesAFileAndRefusesADirectory(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
@@ -395,7 +391,6 @@ func TestRestoreDiscSwapOverwriteReplacesAFileAndRefusesADirectory(t *testing.T)
 // TestRestoreDiscSwapPartPathSymlinkIsNotFollowed plants a symlink at
 // the part file's own path. The restore must not write through it.
 func TestRestoreDiscSwapPartPathSymlinkIsNotFollowed(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
@@ -438,7 +433,6 @@ func TestRestoreDiscSwapPartPathSymlinkIsNotFollowed(t *testing.T) {
 // file named like the part file of its neighbour. Both files must come
 // back exactly.
 func TestRestoreDiscSwapPartNameCollision(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := filepath.Join(work, "src")

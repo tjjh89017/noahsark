@@ -12,7 +12,6 @@ import (
 // entries from the local cache pack left behind, the same as the
 // disc-based listing.
 func TestLsFromCacheWithNoDisc(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	treeDir, snapID, src := lsFixture(t)
 
 	repo := repoDirFromTreeDir(t, treeDir)
@@ -34,7 +33,6 @@ func TestLsFromCacheWithNoDisc(t *testing.T) {
 // TestLogFromCacheWithNoDisc checks log resolves the same way, both
 // listing every snapshot and printing one snapshot's own details.
 func TestLogFromCacheWithNoDisc(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	treeDir, snapID, _ := lsFixture(t)
 	repo := repoDirFromTreeDir(t, treeDir)
 
@@ -63,8 +61,6 @@ func TestLogFromCacheWithNoDisc(t *testing.T) {
 // up genuinely incomplete. ls with no disc given must exit 3 and name
 // recover as the fix.
 func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
@@ -118,7 +114,6 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 // with no disc in it the same way: it is a failure at run time, exit 1,
 // for the listing form and for the one-snapshot form alike.
 func TestLsAndLogAgreeOnAnEmptyCache(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)

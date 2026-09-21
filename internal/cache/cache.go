@@ -54,23 +54,11 @@ type Cache struct {
 // Dir returns the cache's root directory.
 func (c *Cache) Dir() string { return c.dir }
 
-// ResolveDir returns the cache directory for repoUUID: override when
-// set (cache.dir in the configuration reference), else
-// $XDG_CACHE_HOME/noahsark/<repo-uuid>/, falling back to
-// ~/.cache/noahsark/<repo-uuid>/.
-func ResolveDir(repoUUID [16]byte, override string) (string, error) {
-	if override != "" {
-		return override, nil
-	}
-	base := os.Getenv("XDG_CACHE_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cache: resolve directory: %w", err)
-		}
-		base = filepath.Join(home, ".cache")
-	}
-	return filepath.Join(base, "noahsark", uuidText(repoUUID)), nil
+// Dir returns the cache directory for the repository at repoDir: always
+// "cache" inside the repository directory, beside "staging" and the
+// config file.
+func Dir(repoDir string) string {
+	return filepath.Join(repoDir, "cache")
 }
 
 // Open opens the cache directory at dir, creating it and its state file
