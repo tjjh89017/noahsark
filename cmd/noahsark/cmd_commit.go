@@ -20,11 +20,14 @@ var newWriter = object.NewWriter
 // need a config or state layer this build does not have. See
 // docs/decisions.md, "16. CLI reference".
 func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]",
+	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]",
 		"Commit a source directory tree as a new snapshot.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "LATEST", "ref to move")
 	message := fs.String("m", "", "commit message, stored on the snapshot")
+	var excludeFlags stringList
+	fs.Var(&excludeFlags, "exclude", "exclude pattern, gitignore-style; repeatable")
+	oneFileSystem := fs.Bool("one-file-system", false, "do not cross a mount point; the mount point directory is recorded as empty")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -32,7 +35,12 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 	if fs.NArg() > 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]")
+		return 2
+	}
+	flagExcludes, err := parseExcludeFlags(excludeFlags)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
 	}
 
@@ -64,6 +72,12 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 
+	ignoreExcludes, err := parseIgnoreFile(source)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 2
+	}
+
 	commitStageLog, err := stage.Open(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
@@ -76,6 +90,11 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	w.RetryUnstable = cfg.RetryUnstable
 	w.Progress = prog
 	w.Message = *message
+	w.OneFileSystem = *oneFileSystem
+	allExcludes := append(append(append([]object.Pattern(nil), cfg.ExcludePatterns...), ignoreExcludes...), flagExcludes...)
+	if len(allExcludes) > 0 {
+		w.Exclude = object.NewMatcher(allExcludes)
+	}
 	w.Known = func(id object.ID) bool {
 		rec, ok := commitStageLog.Get(id)
 		return ok && (rec.State == stage.Staged || rec.State.OnDisc())
@@ -114,8 +133,12 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	for _, p := range sum.Skipped {
 		_, _ = fmt.Fprintf(stdout, "skipped %s: %s\n", p.Path, p.Reason)
 	}
+	for _, p := range sum.MountPoints {
+		_, _ = fmt.Fprintf(stdout, "mount point %s: not crossed, recorded as an empty directory\n", p)
+	}
 	printSpecialWarnings(stdout, sum.Special)
 	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
+	_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
 
 	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
 	if err != nil {

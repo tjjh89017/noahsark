@@ -108,6 +108,25 @@ staged: 7 objects, 3001388 bytes
 To commit a different directory one time, add it as an argument:
 `noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>`.
 
+To leave paths out of the backup, add `--exclude=<PATTERN>` (repeatable),
+set `sources.exclude` in the config, or put a `.noahsarkignore` file in
+the source root. The pattern language is small and gitignore-style: one
+pattern on each line, `*.tmp` or `node_modules` matches a name at any
+depth, `/cache` or `build/out` is anchored at the source root, a
+trailing `/` matches a directory only, and `**` crosses directories.
+Negation (`!`) is not supported. For example:
+
+```
+# .noahsarkignore
+node_modules/
+*.tmp
+/build/out
+```
+
+`commit` prints how many paths the excludes kept out. `--one-file-system`
+keeps the walk off any other mounted filesystem; the mount point itself
+still appears in the snapshot, as an empty directory.
+
 *... Three days pass. You edit one small file. Commit again with a new
 `<REF>`.*
 
@@ -168,6 +187,11 @@ dvd+rw-mediainfo <DEVICE> | grep 'Free Blocks'
 If the block count is less than the preset, multiply it by 2048 and give
 that byte size to `--physical-capacity`. `pack` refuses a `--capacity`
 above `--physical-capacity`.
+
+To find out how many discs to buy before burning anything, run
+`noahsark pack --repo=<REPO> --capacity=<CAPACITY> --dry-run`. It prints
+the object count and bytes for each predicted disc, and a total, without
+writing anything.
 
 Expected result:
 

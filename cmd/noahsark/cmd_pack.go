@@ -17,6 +17,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
+	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -51,7 +52,7 @@ func discMediaType(capacityStr string) format.MediaType {
 // forward every pending ref, falling back to LATEST only when that
 // leaves nothing. See docs/decisions.md, "16. CLI reference".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... [--capacity=SIZE] [--physical-capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close]",
+	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... [--capacity=SIZE] [--physical-capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close] [--dry-run]",
 		"Pack staged objects onto the next disc.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
@@ -64,6 +65,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
 	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
 	closeDisc := fs.Bool("close", false, "seal the disc when it is burned: spare:none and -dvd-compat, no later append. Only the printed burn command changes; this build does not burn or track disc state")
+	dryRun := fs.Bool("dry-run", false, "print how many discs the staged data needs at this capacity, and stop; writes nothing")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -86,11 +88,20 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
-	lk, code, ok := lockRepo("pack", repoDir, stderr)
-	if !ok {
-		return code
+	// --dry-run only reads the staging store and the ledgers; it takes
+	// no repository lock, matching the rule that a read-only command
+	// takes none. Every other pack path writes the state log, the
+	// staging store or the ledgers, so it takes the lock as usual.
+	var lk *repolock.Lock
+	if !*dryRun {
+		var code int
+		var ok bool
+		lk, code, ok = lockRepo("pack", repoDir, stderr)
+		if !ok {
+			return code
+		}
+		defer releaseLock(lk)
 	}
-	defer releaseLock(lk)
 
 	capacityArg := *capacityStr
 	if capacityArg == "" {
@@ -167,6 +178,17 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		}
 	}
 
+	fecEnabled := cfg.FECEnabled
+	if *fecOn {
+		fecEnabled = true
+	} else if *fecOff {
+		fecEnabled = false
+	}
+
+	if *dryRun {
+		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, physicalCapacitySectors, fecEnabled)
+	}
+
 	discLabel := *label
 	if discLabel == "" {
 		discLabel, err = defaultLabel(cfg, repoUUID, snapshots)
@@ -206,13 +228,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 1
 	}
 	warnIfTruncated("pack", stageLog, stderr)
-
-	fecEnabled := cfg.FECEnabled
-	if *fecOn {
-		fecEnabled = true
-	} else if *fecOff {
-		fecEnabled = false
-	}
 
 	opts := image.PackOptions{
 		StagingDir:              cfg.StagingDir,
@@ -274,6 +289,57 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 0
 	}
 	_, _ = fmt.Fprintln(stdout, "remaining staged: 0 objects, 0 bytes")
+	return 0
+}
+
+// runPackDryRun implements "pack --dry-run". It answers how many discs
+// the staged data needs at this capacity, and writes nothing: no output
+// tree, no state record, no cache entry, no ledger row, and no sequence
+// number is used. It takes no repository lock, since it only reads the
+// staging store and the ledgers.
+func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors, physicalCapacitySectors uint64, fecEnabled bool) int {
+	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	warnIfTruncated("pack", stageLog, stderr)
+
+	opts := image.PackOptions{
+		StagingDir:              cfg.StagingDir,
+		Snapshots:               snapshots,
+		TargetCapacitySectors:   capacitySectors,
+		PhysicalCapacitySectors: physicalCapacitySectors,
+		RepoUUID:                repoUUID,
+		FECEnabled:              fecEnabled,
+		StageLog:                stageLog,
+	}
+	discs, err := image.DryRun(opts)
+	if err != nil {
+		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --dry-run: capacity (%d bytes) holds not one object; %s\n",
+				capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --dry-run: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
+			return 2
+		}
+		if exceeds, ok := errors.AsType[*image.ErrCapacityExceedsPhysical](err); ok {
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --dry-run: capacity (%d bytes) is above the physical capacity (%d bytes)\n",
+				exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
+			return 2
+		}
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --dry-run:", err)
+		return 1
+	}
+
+	var totalObjects int
+	var totalBytes uint64
+	for i, d := range discs {
+		_, _ = fmt.Fprintf(stdout, "disc %d: %d objects, %d bytes\n", i+1, d.ObjectCount, d.ObjectBytes)
+		totalObjects += d.ObjectCount
+		totalBytes += d.ObjectBytes
+	}
+	_, _ = fmt.Fprintf(stdout, "total: %d disc(s), %d objects, %d bytes\n", len(discs), totalObjects, totalBytes)
+	_, _ = fmt.Fprintln(stdout, "these numbers are an estimate: a real pack's DISCS table grows by one row on each later disc, which this estimate does not simulate, so the real per-disc fixed files (DISC.bin, DISCS.bin, REFS.bin) can end up a little larger")
 	return 0
 }
 
