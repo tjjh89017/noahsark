@@ -17,11 +17,10 @@ import (
 )
 
 // cmdVerify implements "noahsark verify DISC-ROOT". A drive mount needs
-// root, which this build never assumes, so DISC-ROOT here names a
-// mounted disc path or an unpacked NOAHSARK tree, the same root
-// image.Read and restore.Heal already accept, instead of OPERATIONS.md's
-// raw image file plus --mapfile. See docs/decisions.md,
-// "16. CLI reference".
+// root, which this build never assumes, so DISC-ROOT names a mounted
+// disc path or an unpacked NOAHSARK tree, the same root image.Read and
+// restore.Heal accept. See docs/decisions.md, "Burning and disc
+// lifecycle".
 //
 // verify never moves an object from PACKED to BURNED itself: the
 // guide has an operator loop-mount and verify an image before it

@@ -27,7 +27,7 @@ var ErrNothingToPack = errors.New("nothing to pack")
 // with run_hash filled in as soon as it is known, since that is the
 // exact same information a real DISCS table carries for an earlier run
 // and this build has no burn step to read it back from a drive. See
-// docs/decisions.md, "12. Disc lifecycle, closing and appending".
+// docs/decisions.md, "Burning and disc lifecycle".
 const discsLedgerName = "discs.bin"
 
 // DiscsLedgerName is discsLedgerName, exported for recover, which

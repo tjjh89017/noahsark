@@ -10,9 +10,7 @@ import (
 
 // lockRepo takes the repository's exclusive lock for a command that
 // writes the state log, the staging store, the ledgers or the config,
-// matching OPERATIONS.md's "a command that writes the state log, the
-// staging store, the ledgers or the config takes an exclusive advisory
-// lock on it before it reads the state log" rule. A held lock is a
+// matching OPERATIONS.md's "Concurrency and locking". A held lock is a
 // failure at run time: on failure this prints the standard message on
 // stderr and returns exit code 1.
 func lockRepo(cmd, repoDir string, stderr io.Writer) (*repolock.Lock, int, bool) {

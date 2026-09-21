@@ -16,11 +16,9 @@ import (
 // imageBuildUsage is the one usage line "image build" prints.
 const imageBuildUsage = "usage: noahsark image build --out=FILE [--force] TREE-DIR"
 
-// cmdImage implements "noahsark image build". OPERATIONS.md's
-// "image build --run=SEQ --out=FILE" selects the run from repository
-// state this build does not keep; instead it takes the packed tree
-// directory directly, the one pack's --out already printed. See
-// docs/decisions.md, "16. CLI reference".
+// cmdImage implements "noahsark image build". It takes the packed tree
+// directory, the one that pack printed. See docs/decisions.md, "Image
+// build".
 //
 // The image length is the capacity pack already wrote into the tree's
 // own DISC.bin. An operator who had to repeat that capacity by hand

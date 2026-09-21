@@ -19,8 +19,8 @@ Three documents replace the old single spec. `FORMAT.md` is the authority
 for every on-disc byte: object layouts, disc and run structures, and reader
 rules. `OPERATIONS.md` is the authority for host-side behaviour: the CLI, the
 configuration keys, staging, packing, burning, restore, and failure handling.
-`NOTES.md` is informative: rationale, evidence, worked examples, the
-glossary, and the change log. Where `NOTES.md` disagrees with `FORMAT.md` or
+`NOTES.md` is informative: rationale, evidence, the glossary, and the
+change log. Where `NOTES.md` disagrees with `FORMAT.md` or
 `OPERATIONS.md`, the other two win.
 
 Read the relevant section before you write or change any code. Do not copy
@@ -33,7 +33,7 @@ Use this table to find a topic, by document and heading, not by number
 | Topic | Document | Heading |
 |---|---|---|
 | Overview, goals, and platform tiers | NOTES.md | "1. Purpose and goals" |
-| System structure and data flow | NOTES.md | "1.8 Architecture" |
+| System structure and data flow | NOTES.md | "2. Architecture" |
 | Byte layout rules that every structure obeys | FORMAT.md | "2. Binary format rules" |
 | Hashing and multihash | FORMAT.md | "3. Identity and hashing" |
 | Chunking algorithm and parameters | FORMAT.md | "4. Chunking" |
@@ -51,7 +51,7 @@ Use this table to find a topic, by document and heading, not by number
 | Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
 | State log, local refs and ledgers | OPERATIONS.md | "3. Local file formats" |
 | Repository lock | OPERATIONS.md | "6. Concurrency and locking" |
-| Exit codes | OPERATIONS.md | "19. Exit code registry" |
+| Exit codes | OPERATIONS.md | "18. Exit code registry" |
 | Packing and locality | OPERATIONS.md | "8. Packing and locality" |
 | Restore planning | OPERATIONS.md | "14. Restore" |
 | File metadata and permissions | OPERATIONS.md | "15. Metadata restore policy" |
@@ -59,22 +59,22 @@ Use this table to find a topic, by document and heading, not by number
 | Command syntax | OPERATIONS.md | "16. CLI reference" |
 | Config keys | OPERATIONS.md | "17. Configuration reference" |
 | Format versioning rules | FORMAT.md | "11. Reader and writer rules" |
-| Failure and recovery behaviour | OPERATIONS.md | "20. Failure and recovery actions" |
-| Testing and CI | OPERATIONS.md | "22. Test list" and "23. Manual physical checklist" |
-| Go-level implementation notes | NOTES.md | "6. Implementation notes" |
-| What changed from the old design | NOTES.md | "2.19 Design changes from the superseded design" |
-| Term definitions | NOTES.md | "8. Glossary" |
+| Failure and recovery behaviour | OPERATIONS.md | "19. Failure and recovery actions" |
+| Testing and CI | OPERATIONS.md | "20. Test list" and "21. Manual physical checklist" |
+| Go-level implementation notes | NOTES.md | "5. Implementation notes" |
+| Why the build is as it is | docs/decisions.md | the topic headings |
+| Term definitions | NOTES.md | "6. Glossary" |
 | The Gear table generation rule | FORMAT.md | "4.6 Gear table" |
 | Magic numbers and registries | FORMAT.md | "2.2 Magic values" and "2.5 Registries" |
-| Burning-host command reference | OPERATIONS.md | "24. Burning-host command reference" |
-| Rejected designs and why | NOTES.md | "2.18 Rejected and superseded alternatives" |
+| Burning-host command reference | OPERATIONS.md | "22. Burning-host command reference" |
+| Rejected designs and why | NOTES.md | "3.11 Rejected alternatives" |
 
 If this file disagrees with `FORMAT.md` or `OPERATIONS.md`, those documents
 win. Fix this file.
 
 ## Implementation rules
 
-Follow these rules for every change, in addition to NOTES.md's "6.
+Follow these rules for every change, in addition to NOTES.md's "5.
 Implementation notes" section.
 
 - Write Go. Use the standard library where it covers the need.
@@ -95,11 +95,11 @@ Implementation notes" section.
   regenerate it from a dependency.
 - `image build` checks the `mkudffs` version: `udftools` 2.3 or later. The
   tool never runs `growisofs`, thus the operator checks `dvd+rw-tools` 7.1-14
-  or later. OPERATIONS.md's "11.9 Tool version check" holds the rule.
+  or later. OPERATIONS.md's "11.2 Tool version check" holds the rule.
 
 ## Testing rules
 
-Follow OPERATIONS.md's "22. Test list" and "23. Manual physical checklist"
+Follow OPERATIONS.md's "20. Test list" and "21. Manual physical checklist"
 sections. In summary:
 
 - Test image-first. Build a filesystem image, loop-mount it, verify it,

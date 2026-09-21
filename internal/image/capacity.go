@@ -71,8 +71,7 @@ func estimateDirCount(fileCount int) int {
 // costs the itemised terms miss.
 //
 // Reading: measured on a real mkudffs UDF 2.01 image, loop-mounted and
-// populated; see docs/decisions.md under "Profiles a reader must know:
-// filesystem overhead estimate".
+// populated; see docs/decisions.md, "Image build".
 func EstimateFilesystemOverhead(fileCount int, capacitySectors uint64) uint64 {
 	base := spaceBitmapOverheadBytes(capacitySectors) + filesystemMarginBytes
 	perFile := uint64(fileCount) * filesystemPerFileOverheadBytes

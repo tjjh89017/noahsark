@@ -81,7 +81,7 @@ type fileRow struct {
 	role    uint8
 	byteLen uint64
 	hash    [32]byte // zero for a row whose bytes are not final until
-	// after INDEX itself is built; see docs/decisions.md.
+	// after INDEX itself is built; see docs/decisions.md, "Pack".
 	data []byte // bytes to write; nil when filled in later (RUN,
 	// RUN2, checksum, parity, and INDEX itself) or when srcPath names
 	// the bytes instead.

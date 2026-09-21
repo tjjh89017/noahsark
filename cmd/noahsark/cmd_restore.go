@@ -30,7 +30,7 @@ var restoreStdin io.Reader = os.Stdin
 // resolves SNAPSHOT through the local cache and walks the disc-swap
 // loop one disc at a time, by disc number, prompting the operator to
 // insert the next one. This is the single-drive path; see
-// docs/decisions.md.
+// docs/decisions.md, "Restore".
 func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR\n"+
 		"       noahsark restore [--include=PATH]... [--overwrite] --mount=DIR [--dry-run] SNAPSHOT OUT-DIR",

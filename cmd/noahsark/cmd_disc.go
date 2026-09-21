@@ -13,12 +13,10 @@ import (
 // cmdDisc implements "noahsark disc". "noahsark status" lists the
 // discs, so "disc" carries the burn mark and its undo alone.
 //
-// "disc burned" is not an OPERATIONS.md command; it is this build's
-// explicit stand-in for the missing burn step (see docs/decisions.md,
-// "4. Staging state machine"): the operator burns with growisofs by
-// hand, and running it is how the staging state machine learns a disc
-// really was burned, since no on-disc structure records that moment
-// and this build has no `burn` command to record it automatically.
+// The operator burns with growisofs by hand. "disc burned" is how the
+// staging state machine learns that a disc was burned: no on-disc
+// structure records that moment. See docs/decisions.md, "Burning and
+// disc lifecycle".
 func cmdDisc(args []string, stdout, stderr io.Writer) int {
 	const discUsage = "usage: noahsark disc burned [--undo] DISC [DISC...]"
 

@@ -24,8 +24,7 @@ import (
 // disc ledger and the refs, and every one of those is exactly what a
 // disc's own INDEX, DISCS and REFS tables already carry. recover is a
 // straight replay of every provided disc's tables into a fresh or
-// existing repository directory. See docs/decisions.md,
-// "16. CLI reference".
+// existing repository directory.
 func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark recover [DISC-ROOT... | --discs-dir=DIR]",
 		"Rebuild the repository state from one or more discs.", stderr)

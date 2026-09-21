@@ -9,19 +9,12 @@ import (
 	"path/filepath"
 )
 
-// cmdInit implements "noahsark init". It reduces OPERATIONS.md's init
-// flags to --repo and --source: every other init flag exists to choose
-// among alternatives (hash algorithm, chunker profile, filesystem
-// profile, locality preset) that this build fixes to one value, or to
-// recover sequence numbers from existing discs, which no multi-disc
-// state exists yet to scan. Capacity is not among them: a disc's
-// capacity is a per-disc value chosen at pack time, not a repository
-// setting, so init takes no --capacity and the config carries no
-// capacity default. --source stores sources.root, so a later commit
-// with no SOURCE on its own command line can read it; the key is
-// repeatable in OPERATIONS.md, but this build stores only one, since
+// cmdInit implements "noahsark init". It takes no --capacity: the
+// operator gives the capacity to pack, or puts pack.capacity in the
+// config. --source stores sources.root, so a later commit with no SOURCE
+// on its own command line can read it. It holds one path, since
 // Writer.Commit takes one source directory. See docs/decisions.md,
-// "16. CLI reference".
+// "Commit".
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("noahsark init [--repo=PATH] [--source=PATH]",
 		"Create a new, empty repository directory.", stderr)
