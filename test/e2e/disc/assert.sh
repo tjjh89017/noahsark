@@ -55,7 +55,7 @@ assert_refused() {
 		echo "$out" >&2
 		fail "$label: expected a nonzero exit, got 0"
 	fi
-	if ! echo "$out" | grep -qi "capacity"; then
+	if ! grep -qi "capacity" <<<"$out"; then
 		echo "$out" >&2
 		fail "$label: expected the refusal message to name the capacity"
 	fi

@@ -190,7 +190,7 @@ scenario_corrupt_over() {
 	if [ "$code" -eq 0 ]; then
 		fail "corrupt-over: expected ci-heal to fail, it exited 0"
 	fi
-	if ! echo "$heal_out" | grep -qi "stripe 0"; then
+	if ! grep -qi "stripe 0" <<<"$heal_out"; then
 		fail "corrupt-over: expected the failure to name stripe 0"
 	fi
 
@@ -327,7 +327,7 @@ scenario_media() {
 		# reader verify uses, through the ci-only helper.
 		local field_out
 		field_out="$(run_tool ci-disc-field "$mnt")"
-		echo "$field_out" | grep -qE 'capacity 5242880 sectors' \
+		grep -qE 'capacity 5242880 sectors' <<<"$field_out" \
 			|| fail "media/$media: DISC.bin did not report the packed-for capacity"
 	fi
 	"$BIN" restore "$mnt" "$snap" "$restored"

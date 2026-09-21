@@ -64,7 +64,7 @@ scenario_rebuild() {
 	local log_out
 	log_out="$("$BIN" log "$mnt1")"
 	echo "$log_out"
-	if ! echo "$log_out" | grep -qF "$snap1"; then
+	if ! grep -qF "$snap1" <<<"$log_out"; then
 		fail "rebuild: log with no repository did not list snapshot $snap1"
 	fi
 
@@ -144,7 +144,7 @@ scenario_rebuild() {
 	local field_out2
 	field_out2="$(run_tool ci-disc-field "$mnt2")"
 	echo "$field_out2"
-	if ! echo "$field_out2" | grep -qE 'discs: 2$'; then
+	if ! grep -qE 'discs: 2$' <<<"$field_out2"; then
 		fail "rebuild: disc 2's DISCS table does not record 2 discs (expected disc 1 as a prerequisite)"
 	fi
 
@@ -190,7 +190,7 @@ scenario_rebuild() {
 	if [ "$rebuild_code" -ne 1 ]; then
 		fail "rebuild: recover with only disc 2 exited $rebuild_code, want 1"
 	fi
-	if ! echo "$rebuild_out" | grep -qF "$uuid1"; then
+	if ! grep -qF "$uuid1" <<<"$rebuild_out"; then
 		fail "rebuild: recover-with-disc-2-only did not name the missing disc 1 ($uuid1)"
 	fi
 	log "rebuild: recover with only disc 2 refused as expected, naming disc $uuid1"
