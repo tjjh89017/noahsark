@@ -335,7 +335,9 @@ mark or verify the discs again. `recover` ends with
 `config: put sources.root and pack.capacity into <REPO>/config; no disc
 carries them`: no disc holds the source path or the media size, so write
 those two keys back by hand. A commit that was not packed before the loss
-is gone: commit again.
+is gone: commit again. Until you write them back, `status` keeps saying
+`next: put sources.root and pack.capacity into the config before commit or
+pack can run`, instead of claiming there is nothing left to do.
 
 **A disc is lost or bad.** Read from the other copy. Burn a new copy from
 `tree.img` if you kept it. If the two copies are lost, `restore` names the
@@ -352,7 +354,9 @@ option and is off by default. Add `--fec` to `pack`, or set
 then prints `fec: on`. FEC uses approximately 9% of the
 disc. `noahsark verify --heal --out=<DIR> <MOUNT>` writes a repaired disc
 root into `<DIR>` and prints `heal: repaired N block(s)`. It refuses a
-disc without FEC: `has no FEC`.
+disc without FEC: `has no FEC`. `<DIR>` is a directory on the hard disk, not
+a disc, so healing it never counts as a verified copy. Burn `<DIR>` to a new
+disc, then run a plain `noahsark verify` of that disc.
 
 ## Image build, rehearsal and other options
 

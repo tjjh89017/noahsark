@@ -138,6 +138,40 @@ func TestGCRetentionGate(t *testing.T) {
 	}
 }
 
+// TestGCPlainRunBeforeRetentionNamesTheReason checks that a plain gc
+// (no --dry-run) that deletes nothing because the retention time is not
+// over prints the same reason and earliest eligible date --dry-run
+// prints, not just "deleted 0".
+func TestGCPlainRunBeforeRetentionNamesTheReason(t *testing.T) {
+	oldClock := gcClock
+	defer func() { gcClock = oldClock }()
+
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	before := time.Now()
+	packAndVerifyDisc(t, work, repo, src)
+
+	gcClock = func() time.Time { return before.Add(24 * time.Hour) }
+	code, out := runCmd(t, "gc", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("gc (before retention): exit %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "deleted 0 staged object") {
+		t.Fatalf("gc (before retention) output %q, want 0 objects deleted", out)
+	}
+	if !strings.Contains(out, "gc: nothing is eligible yet") {
+		t.Fatalf("gc (before retention) output %q, want the nothing-eligible-yet message", out)
+	}
+	if !strings.Contains(out, "earliest eligible date:") {
+		t.Fatalf("gc (before retention) output %q, want the earliest eligible date", out)
+	}
+}
+
 // TestGCDryRunDefaultIsASummary checks that gc --dry-run prints no
 // per-object "would delete" line, only the staging totals and one
 // grouped line per disc.

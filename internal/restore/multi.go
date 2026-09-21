@@ -376,7 +376,7 @@ func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, 
 	for _, b := range src.bases {
 		path := objectPath(b.base, id, snapshot, src.names)
 		if _, err := os.Stat(path); err == nil {
-			raw, payload, err := readVerifiedAt(path, id)
+			raw, payload, err := object.ReadVerified(path, id)
 			if err == nil {
 				return raw, payload, true
 			}

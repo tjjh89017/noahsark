@@ -149,7 +149,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if objDeleted == 0 && dirDeleted == 0 && *dryRun && uncached == 0 {
+	if objDeleted == 0 && dirDeleted == 0 && uncached == 0 {
 		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, cfg.MinVerifiedCopies)
 	}
 	// Nothing eligible, whether reported by --dry-run or found true by a

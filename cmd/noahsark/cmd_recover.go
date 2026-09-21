@@ -384,13 +384,7 @@ func uuidText(u [16]byte) string {
 // recover reads the discs, and no disc holds the source path or the
 // media size, so the operator writes those two keys back by hand.
 func printConfigToComplete(stdout io.Writer, repoDir string, cfg repoConfig) {
-	var missing []string
-	if cfg.SourceRoot == "" {
-		missing = append(missing, "sources.root")
-	}
-	if cfg.PackCapacity == "" {
-		missing = append(missing, "pack.capacity")
-	}
+	missing := missingConfigKeys(cfg)
 	if len(missing) == 0 {
 		return
 	}

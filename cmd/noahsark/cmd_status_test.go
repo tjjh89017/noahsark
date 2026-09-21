@@ -104,9 +104,14 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 	if code, out := runCmd(t, "verify", "--repo="+repo, treeDir); code != 0 {
 		t.Fatalf("verify (second copy): exit %d: %s", code, out)
 	}
+	// This fixture's own config carries neither sources.root nor
+	// pack.capacity (commit and pack were given SOURCE and --capacity on
+	// the command line instead), so status must say the config needs
+	// them, not claim there is nothing left to do.
 	lines = statusLines(t, repo)
-	if got := lines[len(lines)-1]; got != "next: nothing to do" {
-		t.Fatalf("next line after the second verify = %q", got)
+	want := "next: put sources.root and pack.capacity into the config before commit or pack can run"
+	if got := lines[len(lines)-1]; got != want {
+		t.Fatalf("next line after the second verify = %q, want %q", got, want)
 	}
 	if !strings.Contains(lines[1], "verified") || strings.Contains(lines[1], "/") {
 		t.Fatalf("disc line after the second verify = %q, want the plain word verified", lines[1])
@@ -186,8 +191,12 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 	if m[3] != "on disc only" {
 		t.Fatalf("disc state = %q, want \"on disc only\"", m[3])
 	}
-	if lines[len(lines)-1] != "next: nothing to do" {
-		t.Fatalf("next line = %q, want nothing to do", lines[len(lines)-1])
+	// commit needs sources.root and pack needs pack.capacity; recover's
+	// rebuilt config carries neither, so status must say so, not claim
+	// there is nothing left to do.
+	want := "next: put sources.root and pack.capacity into the config before commit or pack can run"
+	if lines[len(lines)-1] != want {
+		t.Fatalf("next line = %q, want %q", lines[len(lines)-1], want)
 	}
 }
 

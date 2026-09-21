@@ -105,6 +105,9 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 	if _, err := refs.Decode(refsBuf); err != nil {
 		return nil, fmt.Errorf("REFS.bin: %w", err)
 	}
+	if err := checkFileHash(&idx, format.FileRoleRefs, refsBuf, "REFS.bin"); err != nil {
+		return nil, err
+	}
 
 	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "DISCS.bin")))
 	if err != nil {
@@ -113,6 +116,9 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 	var discs format.DiscsTable
 	if _, err := discs.Decode(discsBuf); err != nil {
 		return nil, fmt.Errorf("DISCS.bin: %w", err)
+	}
+	if err := checkFileHash(&idx, format.FileRoleDiscs, discsBuf, "DISCS.bin"); err != nil {
+		return nil, err
 	}
 
 	if err := verifyObjects(base, &idx, prog, cache); err != nil {
@@ -173,12 +179,12 @@ func NewestRunDir(runsDir string) (string, error) {
 	return filepath.Join(runsDir, byName[seqs[0]]), nil
 }
 
-// verifyObjects checks every Objects row's content id against the
-// stored bytes read from disc, decompressing when the row says
-// compression was used. It streams each object's stored bytes straight
-// into the hash, never holding a whole object file, or a decompressed
-// payload, in memory: an object can be as large as the maximum chunk
-// size, so this bound must hold whatever the object's own size is.
+// verifyObjects checks every Objects row's header_crc32c and content id
+// against the stored bytes read from disc, the same check
+// object.ReadVerified runs for restore, so verify and restore cannot
+// silently drift apart on what "a good object" means. An object file is
+// at most the maximum chunk size, so the memory this holds is bounded by
+// chunk size, never by how much data the disc carries.
 func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cache *NameCache) error {
 	paths, err := ObjectPaths(base, idx, cache)
 	if err != nil {
@@ -234,36 +240,33 @@ func ObjectPaths(base string, idx *format.Index, cache *NameCache) ([]string, er
 	return paths, nil
 }
 
-// verifyOneObject reads the object file at path, takes its stored
-// length and compression from its own object header, and checks the
-// payload hashes to id. It returns the stored byte count it read.
-func verifyOneObject(path string, id object.ID) (int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
+// checkFileHash checks buf against the file_hash INDEX's Files table
+// records for role: the check restore and recover rely on for a
+// structure, such as REFS or DISCS, that carries no CRC of its own. name
+// names the file in an error.
+func checkFileHash(idx *format.Index, role uint8, buf []byte, name string) error {
+	for _, row := range idx.Files {
+		if row.Role != role {
+			continue
+		}
+		if row.ByteLen != uint64(len(buf)) || row.FileHash != sha256sum(buf) {
+			return fmt.Errorf("%s does not match its INDEX file_hash", name)
+		}
+		return nil
 	}
-	defer func() { _ = f.Close() }()
+	return fmt.Errorf("INDEX: no Files row for %s", name)
+}
 
-	head := make([]byte, format.CommonHeaderLen+format.ObjectHeaderLen)
-	if _, err := io.ReadFull(f, head); err != nil {
-		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
-	}
-	var ch format.CommonHeader
-	if err := ch.Decode(head); err != nil {
-		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
-	}
-	var oh format.ObjectHeader
-	if err := oh.Decode(head[format.CommonHeaderLen:]); err != nil {
-		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
-	}
-	got, err := object.HashStreamed(oh.Kind, f, oh.Compression, oh.StoredLen)
+// verifyOneObject reads the object file at path through
+// object.ReadVerified, the same read-and-check restore runs before it
+// trusts an object. It returns the stored byte count read, for progress
+// reporting.
+func verifyOneObject(path string, id object.ID) (int64, error) {
+	raw, _, err := object.ReadVerified(path, id)
 	if err != nil {
 		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
-	if object.ID(got) != id {
-		return 0, fmt.Errorf("object %s: content id does not verify", id.TextForm())
-	}
-	return int64(oh.StoredLen), nil
+	return int64(len(raw)) - int64(format.CommonHeaderLen+format.ObjectHeaderLen), nil
 }
 
 // StreamFiles resolves the FEC stream's file paths and sizes for one run

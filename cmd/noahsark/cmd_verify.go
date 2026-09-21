@@ -87,7 +87,14 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	// collected here and written once the disc line is out.
 	var outcome bytes.Buffer
 	var trailingHint string
-	if repoDir, err := discoverRepo(*repoFlag); err == nil {
+	if *heal {
+		// A healed tree lives on the hard disk, not on a disc. It is not
+		// a copy the retention count can rely on: only a verify of an
+		// actual disc, burned from this healed tree, moves its objects
+		// on or raises their verify count. Skip the whole repository
+		// state update, whatever --repo names.
+		trailingHint = "heal: burn the healed tree to a new disc, then verify that disc; healing alone does not verify or count as a copy"
+	} else if repoDir, err := discoverRepo(*repoFlag); err == nil {
 		if cfg, cfgErr := readConfig(configPath(repoDir)); cfgErr == nil {
 			if refuseBadConfig("verify", cfg, stderr, configKeysForVerify...) {
 				return 2

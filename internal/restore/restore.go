@@ -88,44 +88,8 @@ func objectPath(base string, id object.ID, snapshot bool, cache *image.NameCache
 	return filepath.Join(cache.Join(base, "objects"), id.FanoutByte(), id.TextForm())
 }
 
-// readVerified reads id's object file, decompresses its payload, and
-// verifies the payload hashes to id. It returns the whole raw file bytes
-// (for a typed Decode call) and the decompressed payload separately.
+// readVerified reads id's object file through object.ReadVerified, at the
+// path this package's own naming rule gives it.
 func readVerified(base string, id object.ID, snapshot bool, cache *image.NameCache) (raw, payload []byte, err error) {
-	return readVerifiedAt(objectPath(base, id, snapshot, cache), id)
-}
-
-// readVerifiedAt is readVerified against an explicit file path, for a
-// caller that already knows where an object's file is. The kind byte of
-// the id comes from the object header, whose CRC covers it; a file that
-// names another kind gives another id and fails this check.
-func readVerifiedAt(path string, id object.ID) (raw, payload []byte, err error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
-	}
-	var ch format.CommonHeader
-	if err := ch.Decode(data); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
-	}
-	if len(data) < format.CommonHeaderLen+format.ObjectHeaderLen {
-		return nil, nil, fmt.Errorf("%s: file too short", id.TextForm())
-	}
-	var oh format.ObjectHeader
-	if err := oh.Decode(data[format.CommonHeaderLen:]); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
-	}
-	headerLen := uint64(format.CommonHeaderLen + format.ObjectHeaderLen)
-	if uint64(len(data)) < headerLen+oh.StoredLen {
-		return nil, nil, fmt.Errorf("%s: file too short", id.TextForm())
-	}
-	stored := data[headerLen : headerLen+oh.StoredLen]
-	payload, err = object.Decompress(stored, oh.Compression, oh.PayloadLen)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
-	}
-	if object.ComputeID(oh.Kind, payload) != id {
-		return nil, nil, fmt.Errorf("%s: content id does not verify", id.TextForm())
-	}
-	return data, payload, nil
+	return object.ReadVerified(objectPath(base, id, snapshot, cache), id)
 }
