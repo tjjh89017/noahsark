@@ -70,12 +70,15 @@ media_sectors() {
 	esac
 }
 
-# media_apparent_bytes MEDIA prints the real, drive-reported byte size an
-# empty image built at that preset's physical capacity must have.
+# media_apparent_bytes MEDIA prints the byte size an empty image built
+# for that preset must have. image build reads the length from the
+# packed tree's own DISC.bin, so a forced media gives an image of the
+# forced target, not of the physical capacity.
 media_apparent_bytes() {
 	case "$1" in
 	dvd+r) echo 4700372992 ;;
-	bd25 | bd25-forced-10g) echo 25025314816 ;;
+	bd25) echo 25025314816 ;;
+	bd25-forced-10g) echo 10737418240 ;;
 	*) fail "unknown media preset: $1" ;;
 	esac
 }

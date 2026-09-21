@@ -3,7 +3,6 @@ package image
 import (
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -53,6 +52,11 @@ func readObjectHeaderFile(path string) (storedLen, payloadLen uint64, compressio
 	return oh.StoredLen, oh.PayloadLen, oh.Compression, nil
 }
 
+// errShortStagedHeader marks an object file too short to hold even the
+// common and object header prefix. The caller knows the object's id and
+// kind, so it turns this into the one damaged-staged-object error.
+var errShortStagedHeader = errors.New("object file is shorter than its own header")
+
 // readObjectHeaderPrefix reads the common and object header prefix of an
 // object file from r. A file too short to hold even that prefix is a
 // corrupt staging copy, not an internal error, so it says so.
@@ -60,7 +64,7 @@ func readObjectHeaderPrefix(r io.Reader) ([]byte, error) {
 	buf := make([]byte, format.CommonHeaderLen+format.ObjectHeaderLen)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-			return nil, fmt.Errorf("staged object file is shorter than its own header; the staging copy is corrupt, run commit again to rewrite it before packing")
+			return nil, errShortStagedHeader
 		}
 		return nil, err
 	}
@@ -88,11 +92,14 @@ func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer, want obje
 
 	hdr, err := readObjectHeaderPrefix(in)
 	if err != nil {
+		if errors.Is(err, errShortStagedHeader) {
+			return stagedDamaged(want, format.ObjectKindChunk)
+		}
 		return err
 	}
 	var oh format.ObjectHeader
 	if err := oh.Decode(hdr[format.CommonHeaderLen:]); err != nil {
-		return err
+		return stagedDamaged(want, format.ObjectKindChunk)
 	}
 
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
@@ -115,15 +122,13 @@ func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer, want obje
 
 	got, payloadLen, err := copyAndHashPayload(w, in, oh.Compression, oh.StoredLen)
 	if err != nil {
-		return fmt.Errorf("staged chunk %s: %w", want.TextForm(), err)
+		return stagedDamaged(want, format.ObjectKindChunk)
 	}
 	if payloadLen != oh.StoredLen || uint64(len(hdr))+payloadLen != wantLen {
-		return fmt.Errorf("staged chunk %s does not match its own content (it reads %d bytes, its header and its size say %d); the staging copy is corrupt, run commit again to rewrite it before packing",
-			want.TextForm(), uint64(len(hdr))+payloadLen, wantLen)
+		return stagedDamaged(want, format.ObjectKindChunk)
 	}
 	if object.ID(got) != want {
-		return fmt.Errorf("staged chunk %s does not match its own content (got %s); the staging copy is corrupt, run commit again to rewrite it before packing",
-			want.TextForm(), object.ID(got).TextForm())
+		return stagedDamaged(want, format.ObjectKindChunk)
 	}
 	return nil
 }

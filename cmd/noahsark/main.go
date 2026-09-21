@@ -55,8 +55,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdLs(rest, stdout, stderr)
 	case "log":
 		return cmdLog(rest, stdout, stderr)
-	case "rebuild-cache":
-		return cmdRebuildCache(rest, stdout, stderr, prog)
+	case "recover":
+		return cmdRecover(rest, stdout, stderr, prog)
+	case "status":
+		return cmdStatus(rest, stdout, stderr)
 	case "plan":
 		return cmdPlan(rest, stdout, stderr)
 	case "disc":
@@ -112,15 +114,16 @@ func printUsage(w io.Writer) {
 Commands:
   init           create a repository directory
   commit         stage a source directory as a snapshot
-  pack           write staged snapshots into a run and a disc image
+  pack           write staged snapshots onto the next disc
   image build    build a disc image from a run tree
   verify         check a disc image, or heal it from a second copy
   restore        restore a snapshot from a disc, or from a mounted drive
   ls             list a snapshot's tree
   log            list a repository's snapshots
   plan           plan a restore's disc order from the local cache
-  rebuild-cache  rebuild a repository's state log and ledgers from discs
-  disc           list known discs, or mark one burned
+  status         show what is staged, every disc's state, and what to do next
+  recover        rebuild a repository's state log and ledgers from discs
+  disc           mark a disc burned, or undo that mark
   gc             delete staging bytes past their retention period
 
 Every command also accepts --no-progress and --quiet (-q), which turn

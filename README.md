@@ -15,13 +15,19 @@ Text in angle brackets is a value that you supply.
 ```sh
 go build -o noahsark ./cmd/noahsark
 ./noahsark init --repo=<REPO> --source=<SOURCE>
+echo "pack.capacity = 1GB" >> <REPO>/config
+export NOAHSARK_REPO=<REPO>
 # ... work as usual in <SOURCE>, then commit
-./noahsark commit --repo=<REPO> --ref=<REF>
-./noahsark pack --repo=<REPO> --capacity=1GB --out=<DISC_DIR>
+./noahsark commit --ref=<REF>
+./noahsark pack --out=<DISC_DIR>
+./noahsark status
 ./noahsark verify <DISC_DIR>
 ./noahsark restore <DISC_DIR> <REF> <RESTORE_DIR>
 diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
 ```
+
+`noahsark status` prints what is staged, the state of each disc in one
+word, and one `next:` line that names the action to take next.
 
 `diff` prints no line when the restore is correct. Give `<SOURCE>` to
 `diff` as an absolute path: the restored tree holds the full source path.

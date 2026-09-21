@@ -181,16 +181,15 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	}
 }
 
-// packedIntoPath picks the directory out of pack's "packed run N on disc
-// N into PATH" summary line.
+// packedIntoPath picks the directory out of pack's "tree: PATH" line.
 func packedIntoPath(t *testing.T, output string) string {
 	t.Helper()
 	for line := range strings.SplitSeq(output, "\n") {
-		if _, after, found := strings.Cut(line, " into "); found && strings.HasPrefix(line, "packed run") {
+		if after, found := strings.CutPrefix(line, "tree: "); found {
 			return after
 		}
 	}
-	t.Fatalf("no \"packed run ... into PATH\" line in pack output: %q", output)
+	t.Fatalf("no \"tree: PATH\" line in pack output: %q", output)
 	return ""
 }
 
@@ -212,14 +211,14 @@ func TestPackCapacityTooSmallMessage(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=25", "--out="+treeDir)
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=50KiB", "--out="+treeDir)
 	if code != 2 {
 		t.Fatalf("pack: exit %d, want 2: %s", code, out)
 	}
 	if strings.Contains(out, "internal error") {
 		t.Fatalf("pack: output %q leaked the internal-error wording", out)
 	}
-	for _, want := range []string{"25", "51200", "this run needs at least"} {
+	for _, want := range []string{"51200", "holds not one object", "the smallest staged object is", "or more"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pack: output %q missing %q", out, want)
 		}
@@ -246,7 +245,7 @@ func TestPackRefusesCapacityAbovePhysical(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("pack: exit %d, want 2: %s", code, out)
 	}
-	for _, want := range []string{"exceeds --physical-capacity"} {
+	for _, want := range []string{"is above the physical capacity"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pack: output %q missing %q", out, want)
 		}

@@ -51,15 +51,15 @@ func discMediaType(capacityStr string) format.MediaType {
 // forward every pending ref, falling back to LATEST only when that
 // leaves nothing. See docs/decisions.md, "16. CLI reference".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... --capacity=N [--physical-capacity=N] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close]",
-		"Pack staged objects into the next run.", stderr)
+	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... [--capacity=SIZE] [--physical-capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close]",
+		"Pack staged objects onto the next disc.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
 	var snapshotFlags stringList
 	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
-	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); required")
-	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity (sectors, a preset, or a byte size); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
-	label := fs.String("label", "", "human label for the disc")
+	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
+	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity ("+capacityHelpText()+"); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
+	label := fs.String("label", "", "human label for the disc; defaults to the newest ref name and the disc number")
 	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <repo>/staging/plans/<disc uuid>/tree")
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
 	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
@@ -92,11 +92,15 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	defer releaseLock(lk)
 
-	if *capacityStr == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack: target capacity is required: pass --capacity")
+	capacityArg := *capacityStr
+	if capacityArg == "" {
+		capacityArg = cfg.PackCapacity
+	}
+	if capacityArg == "" {
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: no capacity: pass --capacity, or put pack.capacity in %s\n", configPath(repoDir))
 		return 2
 	}
-	capacitySectors, err := parseCapacity(*capacityStr)
+	capacitySectors, err := parseCapacity(capacityArg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
@@ -111,7 +115,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		}
 	}
 
-	mediaType := discMediaType(*capacityStr)
+	mediaType := discMediaType(capacityArg)
 
 	snapIDs := []string(snapshotFlags)
 	if *ref != "" && len(snapIDs) > 0 {
@@ -163,6 +167,15 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		}
 	}
 
+	discLabel := *label
+	if discLabel == "" {
+		discLabel, err = defaultLabel(cfg, repoUUID, snapshots)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+			return 1
+		}
+	}
+
 	discUUIDBytes := make([]byte, 16)
 	if _, err := rand.Read(discUUIDBytes); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -209,7 +222,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		OutputDir:               absOut,
 		RepoUUID:                repoUUID,
 		DiscUUID:                discUUID,
-		Label:                   *label,
+		Label:                   discLabel,
 		MediaType:               mediaType,
 		FECEnabled:              fecEnabled,
 		StageLog:                stageLog,
@@ -218,15 +231,14 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	result, err := image.Pack(opts)
 	if err != nil {
 		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes, %d sectors) is too small; this run needs at least %d sectors (%d bytes)\n",
-				*capacityStr, capacitySectors*image.SectorSize, capacitySectors,
-				tooSmall.NeededSectors, tooSmall.NeededSectors*image.SectorSize)
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) holds not one object; %s\n",
+				capacityArg, capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
 			return 2
 		}
 		if exceeds, ok := errors.AsType[*image.ErrCapacityExceedsPhysical](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --capacity=%s (%d bytes, %d sectors) exceeds --physical-capacity (%d bytes, %d sectors)\n",
-				*capacityStr, exceeds.TargetSectors*image.SectorSize, exceeds.TargetSectors,
-				exceeds.PhysicalSectors*image.SectorSize, exceeds.PhysicalSectors)
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) is above the physical capacity (%d bytes)\n",
+				capacityArg, exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
 			return 2
 		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -240,20 +252,19 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: cache:", err)
 	}
 
+	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d objects, %d bytes\n",
+		result.DiscSeq, discLabel, result.ObjectCount, result.ObjectBytes)
+	_, _ = fmt.Fprintf(stdout, "uuid: %s\n", uuidText(discUUID))
+	_, _ = fmt.Fprintf(stdout, "tree: %s\n", absOut)
 	if fecEnabled {
-		_, _ = fmt.Fprintf(stdout, "fec: on, budget used: %d stream blocks across %d stripes\n", result.StreamBlocks, result.StripeCount)
-	} else {
-		_, _ = fmt.Fprintf(stdout, "fec: off, budget used: %d stream blocks\n", result.StreamBlocks)
+		_, _ = fmt.Fprintln(stdout, "fec: on")
 	}
-	_, _ = fmt.Fprintf(stdout, "packed run %d on disc %d into %s\n", result.RunSeq, result.DiscSeq, absOut)
-	_, _ = fmt.Fprintf(stdout, "objects: %d, files: %d, stream blocks: %d, stripes: %d\n",
-		result.ObjectCount, result.FileCount, result.StreamBlocks, result.StripeCount)
 
-	imageCapacityArg := *capacityStr
-	if imageCapacityArg == "" {
-		imageCapacityArg = fmt.Sprintf("%d", capacitySectors)
+	repoArg := ""
+	if *repoFlag != "" {
+		repoArg = " --repo=" + repoDir
 	}
-	printNextSteps(stdout, repoDir, absOut, imageCapacityArg, uuidText(discUUID), *closeDisc)
+	printNextSteps(stdout, repoArg, absOut, result.DiscSeq, *closeDisc)
 
 	// Objects left STAGED after a successful pack are not a failure: the
 	// disc was packed correctly, and the leftover simply waits for the
@@ -264,6 +275,71 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 	_, _ = fmt.Fprintln(stdout, "remaining staged: 0 objects, 0 bytes")
 	return 0
+}
+
+// smallestObjectText names the smallest staged object of a refused
+// capacity, the one object the capacity must first grow to hold.
+func smallestObjectText(e *image.ErrCapacityTooSmall) string {
+	return fmt.Sprintf("the smallest staged object is %s %s, %d bytes",
+		kindWord(e.SmallestKind), e.SmallestID.TextForm(), e.SmallestBytes)
+}
+
+// kindWord renders an object kind as the word an operator message uses.
+func kindWord(kind format.ObjectKind) string {
+	switch kind {
+	case format.ObjectKindChunk:
+		return "chunk"
+	case format.ObjectKindBlob:
+		return "blob"
+	case format.ObjectKindTree:
+		return "tree"
+	case format.ObjectKindSnapshot:
+		return "snapshot"
+	default:
+		return "object"
+	}
+}
+
+// defaultLabel builds the label a pack uses when --label names none:
+// the name of the newest ref this disc carries, and the disc number the
+// next pack will take. The newest ref is the one whose snapshot has the
+// latest commit time; a tie goes to the name that sorts first. A pack
+// that carries no ref at all gets the disc number alone.
+func defaultLabel(cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef) (string, error) {
+	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		return "", err
+	}
+	_, discSeq := image.NextSeqNumbers(ledger.Rows)
+
+	name := ""
+	var newest int64
+	for _, s := range snapshots {
+		sec, err := snapshotTime(cfg.StagingDir, s.ID)
+		if err != nil {
+			continue
+		}
+		if name == "" || sec > newest || (sec == newest && s.Name < name) {
+			name, newest = s.Name, sec
+		}
+	}
+	if name == "" {
+		return fmt.Sprintf("disc %d", discSeq), nil
+	}
+	return fmt.Sprintf("%s disc %d", name, discSeq), nil
+}
+
+// snapshotTime reads one staged snapshot object's commit time.
+func snapshotTime(stagingDir string, id object.ID) (int64, error) {
+	data, err := os.ReadFile(filepath.Join(stagingDir, "snapshots", id.TextForm()))
+	if err != nil {
+		return 0, err
+	}
+	var snap format.Snapshot
+	if _, err := snap.Decode(data); err != nil {
+		return 0, err
+	}
+	return snap.TimeSec, nil
 }
 
 // stringList implements flag.Value for a repeatable flag.
@@ -289,7 +365,9 @@ const (
 // tree into a burned, verified disc: building the UDF image, burning
 // it, telling the staging state machine the burn happened, and
 // verifying the mount. This build stops at pack, so these are printed
-// rather than run.
+// rather than run. repoArg repeats --repo only when the operator gave
+// it, so a repository found from NOAHSARK_REPO or from the working
+// directory keeps the printed commands free of flags.
 //
 // The burn line follows FORMAT.md's and OPERATIONS.md's open-by-default
 // rule: spare:min and no -dvd-compat, unless close is true, which is the
@@ -299,7 +377,7 @@ const (
 // from PACKED to BURNED itself, since a loop-mounted image checked
 // before burning has the same disc uuid and would otherwise look
 // burned too. See docs/decisions.md, "4. Staging state machine".
-func printNextSteps(stdout io.Writer, repoDir, treeDir, capacityArg, discUUID string, sealDisc bool) {
+func printNextSteps(stdout io.Writer, repoArg, treeDir string, discSeq uint64, sealDisc bool) {
 	imagePath := treeDir + ".img"
 	spareMode := "spare:min"
 	dvdCompat := ""
@@ -308,11 +386,11 @@ func printNextSteps(stdout io.Writer, repoDir, treeDir, capacityArg, discUUID st
 		dvdCompat = "-dvd-compat "
 	}
 	_, _ = fmt.Fprintln(stdout, "next steps:")
-	_, _ = fmt.Fprintf(stdout, "  sudo noahsark image build --out=%s --capacity=%s %s\n", imagePath, capacityArg, treeDir)
+	_, _ = fmt.Fprintf(stdout, "  sudo noahsark image build --out=%s %s\n", imagePath, treeDir)
 	_, _ = fmt.Fprintf(stdout, "  growisofs -speed=%d -use-the-force-luke=%s,tty %s-Z %s=%s\n",
 		burnerDefaultSpeed, spareMode, dvdCompat, burnerDefaultDevice, imagePath)
-	_, _ = fmt.Fprintf(stdout, "  noahsark disc burned --repo=%s %s\n", repoDir, discUUID)
-	_, _ = fmt.Fprintf(stdout, "  noahsark verify --repo=%s <mount point>\n", repoDir)
+	_, _ = fmt.Fprintf(stdout, "  noahsark disc burned%s %d\n", repoArg, discSeq)
+	_, _ = fmt.Fprintf(stdout, "  noahsark verify%s <MOUNT>\n", repoArg)
 }
 
 // dirIsEmptyOrMissing reports whether path does not exist yet, or exists

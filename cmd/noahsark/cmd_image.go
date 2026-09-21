@@ -5,34 +5,43 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
+
+// imageBuildUsage is the one usage line "image build" prints.
+const imageBuildUsage = "usage: noahsark image build --out=FILE [--force] TREE-DIR"
 
 // cmdImage implements "noahsark image build". OPERATIONS.md's
 // "image build --run=SEQ --out=FILE" selects the run from repository
 // state this build does not keep; instead it takes the packed tree
 // directory directly, the one pack's --out already printed. See
 // docs/decisions.md, "16. CLI reference".
+//
+// The image length is the capacity pack already wrote into the tree's
+// own DISC.bin. An operator who had to repeat that capacity by hand
+// could type a different one, and an image of the wrong length is not
+// the disc pack planned.
 func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE --capacity=N [--force] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, imageBuildUsage)
 		return 2
 	}
 	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, "usage: noahsark image build --out=FILE --capacity=N [--force] TREE-DIR")
+		_, _ = fmt.Fprintln(stdout, imageBuildUsage)
 		return 0
 	}
 	if args[0] != "build" {
 		_, _ = fmt.Fprintf(stderr, "noahsark: image %s is not available in Phase 1; only \"image build\" is\n", args[0])
 		return 2
 	}
-	fs := newFlagSet("noahsark image build --out=FILE --capacity=N [--force] TREE-DIR",
-		"Build a disc image from a packed tree directory.", stderr)
+	fs := newFlagSet("noahsark image build --out=FILE [--force] TREE-DIR",
+		"Build a disc image from a packed tree directory. The image length comes from the tree's own DISC.bin.", stderr)
 	out := fs.String("out", "", "output image path")
-	capacityStr := fs.String("capacity", "", "image length (sectors, or e.g. 25GB)")
 	force := fs.Bool("force", false, "overwrite --out if it already exists")
 	if err := fs.Parse(args[1:]); err != nil {
 		return exitForFlagParse(err)
@@ -41,7 +50,7 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 2
 	}
 	if fs.NArg() != 1 || *out == "" {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark image build --out=FILE --capacity=N [--force] TREE-DIR")
+		_, _ = fmt.Fprintln(stderr, imageBuildUsage)
 		return 2
 	}
 	treeDir := fs.Arg(0)
@@ -56,15 +65,12 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		}
 	}
 
-	if *capacityStr == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: image build: --capacity is required")
-		return 2
-	}
-	sectors, err := parseCapacity(*capacityStr)
+	disc, err := readTreeDisc(treeDir)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: image build:", err)
-		return 2
+		_, _ = fmt.Fprintf(stderr, "noahsark: image build: %s: %v\n", treeDir, err)
+		return 1
 	}
+	sectors := disc.CapacityForcedSectors
 
 	if err := image.MakeImage(treeDir, *out, sectors, prog); err != nil {
 		if errors.Is(err, image.ErrPopulateNeedsRoot) {
@@ -75,6 +81,26 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "built image %s (%d sectors)\n", *out, sectors)
+	_, _ = fmt.Fprintf(stdout, "built image %s (%d bytes)\n", *out, sectors*image.SectorSize)
 	return 0
+}
+
+// readTreeDisc reads DISC.bin from a packed tree directory. pack wrote
+// it, so it carries the capacity, the label and the disc number of the
+// disc the tree is for.
+func readTreeDisc(treeDir string) (format.Disc, error) {
+	names := image.NewNameCache()
+	base, err := image.FindNoahsark(treeDir, names)
+	if err != nil {
+		return format.Disc{}, err
+	}
+	buf, err := os.ReadFile(filepath.Join(base, names.Resolve(base, "DISC.bin")))
+	if err != nil {
+		return format.Disc{}, err
+	}
+	var disc format.Disc
+	if err := disc.Decode(buf); err != nil {
+		return format.Disc{}, err
+	}
+	return disc, nil
 }

@@ -259,7 +259,7 @@ favour of always populating and refusing loudly when root is missing.
 
 `cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
 `pack`, `image build`, `verify`, `restore`, `ls`, `log`, `plan`,
-`rebuild-cache`, `disc list`, `disc burned` and `gc`. Every command
+`recover`, `status`, `disc burned` and `gc`. Every command
 below keeps OPERATIONS.md's name; a flag is reduced or renamed only
 when the Go packages this build calls have no way to honour it yet,
 since no ref log, locality planner or burn plan exists in this build.
@@ -352,7 +352,7 @@ ref not yet moved onto a run (see `addPendingRefs`, and section 8
 below), the same set a `--ref`ed pack's own carry-forward step already
 adds; `LATEST` is used only as a last resort, when that leaves nothing
 pending and `LATEST` itself resolves.
-`--capacity` accepts a bare integer as a sector count, an integer
+`--capacity` accepts an integer
 suffixed `GiB`/`MiB`/`KiB` (binary) or `GB`/`MB`/`KB` (decimal, the
 marketing convention optical media capacities like "25GB" are named
 in), converted to whole sectors at FORMAT.md's 2048-byte sector size,
@@ -369,11 +369,15 @@ capacity a drive reports:
 | `bd100` | BD-R XL, 100 GB | 48,878,592 | 100,103,356,416 |
 | `bd128` | BD-R XL, 128 GB | 62,500,864 | 128,001,769,472 |
 
-`--capacity` is required and refuses to run without it, per the fixed
-decision that every pack takes a capacity; the config carries no
-capacity default, since a disc's capacity is a per-disc value, not a
-repository constant. `--physical-capacity` takes the same forms (sectors,
-a preset, or a byte size) and sets the disc's physical capacity,
+A bare number is refused. It reads as a byte count, it once meant
+sectors, and the two are a factor of 2048 apart with nothing in the
+output to say which one was taken. The error lists the presets and shows
+a size example.
+
+`--capacity` falls back to the config key `pack.capacity`, so a
+repository that always burns one medium needs no capacity flag; a pack
+of a different medium still gives `--capacity` on the command line.
+`--physical-capacity` takes the same forms and sets the disc's physical capacity,
 `capacity_sectors` in the superblock, separately from `--capacity`,
 which sets the forced limit, `capacity_forced_sectors`; it defaults to
 `--capacity`, so a pack that does not force a smaller limit than the
@@ -485,7 +489,7 @@ where a cached disc's INDEX or DISCS table allows it.
 `plan` groups every object a restore of SNAPSHOT (or of `--include`'s
 paths alone) would need by the disc that holds it, walking cached tree
 and blob objects; a blob the cache does not hold still counts as one
-object, since blob caching only covers what pack or rebuild-cache
+object, since blob caching only covers what pack or recover
 processed after it was added, and its own absence is not, by itself,
 an incomplete cache the way a missing tree is. `--staging-budget` is
 now defined. `--drives`, `--score` and `--target` are not defined,
@@ -504,13 +508,16 @@ disc or a conforming reader accepts; they change only which command-line
 surface reaches the same Go calls the rest of this implementation
 already exposes.
 
-`disc list` reads the local disc ledger (`discs.bin`, the same rows a
+`status` reads the local disc ledger (`discs.bin`, the same rows a
 DISCS table carries) and the staging state log, since no catalog exists
-in this build either. It prints one line per disc_uuid, folding that
-disc's runs together: seq, label and forced capacity from the newest
-run, used_sectors summed across every run, the run count, and the
-packed object count from the state log, plus the same staged total line
-`commit` prints. `--json` prints the same fields, machine-readable.
+in this build either. It folds each disc's runs together and prints one
+line per disc_uuid: the seq and the label of the newest run, one word
+for the disc's state, and the uuid. It prints the same staged total line
+`commit` prints, then one `next:` line naming the action to take next.
+A counter answers a question the operator did not ask; the state word
+and the `next:` line answer the one they did. `--json` keeps the exact
+numbers: the object counts, the capacity, the used bytes and the verify
+count.
 `disc label` and `disc mark-degraded` need a `notes.bin` this build does
 not keep, so both are refused with a clear message rather than silently
 doing nothing.
@@ -519,7 +526,7 @@ The on-disc DISCS row a run carries for itself always writes
 `used_sectors` zero, the same way it leaves `run_hash` zero: the run's
 own final size is not known until the run is written. The local ledger
 row, built after the run is written, carries the real value, so every
-later run's copy of DISCS (and `disc list`) sees it from the next pack
+later run's copy of DISCS (and `status`) sees it from the next pack
 on.
 
 Burning the folder `pack` produces directly, without running `image
@@ -566,7 +573,7 @@ is never something to paper over.
 There are five states: STAGED, PACKED, BURNED, CLEAN and ON-DISC.
 ON-DISC is the last one. It means a disc holds the object and staging
 holds no file for it. `gc` records it before it unlinks a staged file,
-and `rebuild-cache` records it for every object it reads from a disc's
+and `recover` records it for every object it reads from a disc's
 own catalog. One state covers both, because both say the same thing:
 the bytes are on a disc and nowhere else here. A separate DELETED state
 would say no more, and a rebuilt object was never deleted.
@@ -605,7 +612,7 @@ dependency, at the cost of re-walking the tree once per commit.
 summary, the repository-wide STAGED total from `image.StagedTotals`, so
 the "pack when staged data nears one disc" rule of OPERATIONS.md's
 packing guidance has a number to check against without waiting for a
-`pack` to report it. `disc list` (below) prints the same line.
+`pack` to report it. `status` (below) prints the same line.
 
 This build has no `burn` or `close` command: the operator burns with
 `growisofs` by hand, following the command `pack` prints. Something
@@ -654,7 +661,7 @@ orphan, a staged file whose object is already ON-DISC, and the next
 record per object and a sync per object would set its pace; a lost tail
 there only replays as an object still STAGED, which the next `pack`
 heals. `gc` never trims the local cache: the cache is an accelerator,
-it costs little, and `rebuild-cache` is the only tool needed to get it
+it costs little, and `recover` is the only tool needed to get it
 back.
 
 `--force-after=DURATION` substitutes DURATION for
@@ -690,7 +697,7 @@ A staging object at PACKED, BURNED, CLEAN or ON-DISC all name an
 object a disc already holds; only STAGED does not.
 `stage.State.OnDisc()` names this test once, so `pack`'s two "is this
 object already on a disc" checks, `cmd_commit`'s `Known` callback, and
-`disc list`'s on-disc object count all agree with each other. Before
+`status`'s on-disc object count all agree with each other. Before
 this existed, both of `pack`'s checks compared against PACKED alone: an
 object `disc burned` and `verify` had already moved to BURNED or CLEAN
 looked unpacked again to the next `pack`, which copied it a second time
@@ -932,7 +939,7 @@ mounted at once.
 `internal/restore.BuildManifest` reads every tree and blob the
 restore needs straight from the cache: `CheckComplete` already proved
 every tree is cached, and a blob is cached for any snapshot `pack` or
-`rebuild-cache` has touched since blob caching was added. Only chunk
+`recover` has touched since blob caching was added. Only chunk
 payloads still need a disc, so a mounted disc is read for its assigned
 chunk objects alone (`internal/restore.ReadChunkFromRoot`, the same
 canonical `objects/<fanout>/<id>` path `Restore` and `RestoreMulti`
@@ -1044,18 +1051,18 @@ rule.
 Every state-writing command this build has takes the lock before it
 opens the state log: `init` (on the directory it just created),
 `commit`, `pack`, `gc` (`--dry-run` included, since it still replays the
-log to report what it would delete), `disc burned`, `rebuild-cache` and
+log to report what it would delete), `disc burned`, `recover` and
 `restore`'s single-drive disc-swap mode. `verify` takes it only when
 `--repo` resolves to a repository; with no `--repo` it never touches any
 repository's state, the same reasoning that already applies to `image
 build`, and to `ls` and `log` reading straight from a disc instead of
-the cache. `plan`, `ls`, `log` and `disc list` take no lock at all.
+the cache. `plan`, `ls`, `log` and `status` take no lock at all.
 
-`disc list` is the one lock-free command that still opens the state
+`status` is the one lock-free command that still opens the state
 log, so it uses `stage.OpenReadOnly` instead of `stage.Open`: both
 replay the log the same way and cut the same torn tail from the
 in-memory result, but only `stage.Open` (used by the exclusive lock
-holders) also truncates the file on disk. A lock-free `disc list` that
+holders) also truncates the file on disk. A lock-free `status` that
 raced a concurrent append could otherwise observe a torn tail that is
 really an append still in progress, and truncating it would corrupt the
 writer's work; `stage.OpenReadOnly` leaves the file untouched, so this
@@ -1067,17 +1074,17 @@ repository at all in this build, so it takes no lock, the same as
 
 `pack` now takes the next `run_seq` and `disc_seq` from the disc
 ledger's highest recorded numbers, not from its row count, so a ledger
-`rebuild-cache` rebuilt with a gap (a disc known only through a
+`recover` rebuilt with a gap (a disc known only through a
 sibling's DISCS table, never itself fed) cannot hand out a number a
 known disc already carries. This build still cannot know the numbers
 of a disc that both the repository and the disc itself are lost
 together: nothing surviving names it. `init --next-run-seq`,
 `--next-disc-seq` and `--scan-discs`, OPERATIONS.md's own answer to
 that case, are not in this build yet, matching "16. CLI reference"
-above. Instead, `rebuild-cache` warns on stderr, on every successful
+above. Instead, `recover` warns on stderr, on every successful
 run, which disc it treats as the newest fed and which numbers the next
 `pack` assigns, so the operator can feed the true newest disc first
-and catch the gap before it is baked into a new run. `rebuild-cache`
+and catch the gap before it is baked into a new run. `recover`
 also refuses outright, before writing anything, when a disc it is fed
 would take a `run_seq` or `disc_seq` the ledger already has under a
 different disc uuid: the two discs' uuids differ even when their

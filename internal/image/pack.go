@@ -2,6 +2,7 @@ package image
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ import (
 // docs/decisions.md, "12. Disc lifecycle, closing and appending".
 const discsLedgerName = "discs.bin"
 
-// DiscsLedgerName is discsLedgerName, exported for rebuild-cache, which
+// DiscsLedgerName is discsLedgerName, exported for recover, which
 // reports the ledger path it rewrote.
 const DiscsLedgerName = discsLedgerName
 
@@ -36,7 +37,7 @@ const DiscsLedgerName = discsLedgerName
 // the repository knows, not only the ones packed this time.
 const refsLedgerName = "refslog.bin"
 
-// RefsLedgerName is refsLedgerName, exported for rebuild-cache, which
+// RefsLedgerName is refsLedgerName, exported for recover, which
 // reports the ledger path it rewrote.
 const RefsLedgerName = refsLedgerName
 
@@ -79,6 +80,9 @@ type PackOptions struct {
 // left STAGED afterward.
 type PackResult struct {
 	Result
+	// ObjectBytes is the staged byte length of every object this run
+	// placed, the number the operator sees leave staging for the disc.
+	ObjectBytes      uint64
 	RemainingObjects int
 	RemainingBytes   uint64
 }
@@ -91,14 +95,24 @@ type PackResult struct {
 // whenever selectRun places nothing. NeededSectors, when nonzero, is
 // the smallest target capacity that would let this same run place its
 // first object.
+//
+// A capacity that holds some of the staged data is not an error: pack
+// places what fits and leaves the rest staged for the next disc. Only a
+// capacity that holds nothing at all comes here, so the error names the
+// smallest staged object, the one object the capacity must grow to
+// hold, and not the size of all the staged data.
 type ErrCapacityTooSmall struct {
 	TargetSectors uint64
 	NeededSectors uint64
+	SmallestID    object.ID
+	SmallestKind  format.ObjectKind
+	SmallestBytes uint64
 }
 
 func (e *ErrCapacityTooSmall) Error() string {
-	return fmt.Sprintf("target capacity of %d sectors (%d bytes) is too small to hold even one object",
-		e.TargetSectors, e.TargetSectors*SectorSize)
+	return fmt.Sprintf("target capacity of %d sectors (%d bytes) holds not one object; the smallest staged object is %s %s, %d bytes",
+		e.TargetSectors, e.TargetSectors*SectorSize,
+		kindName(e.SmallestKind), e.SmallestID.TextForm(), e.SmallestBytes)
 }
 
 // ErrCapacityExceedsPhysical reports a target capacity above the disc's
@@ -269,7 +283,14 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		if needErr != nil {
 			return nil, needErr
 		}
-		return nil, &ErrCapacityTooSmall{TargetSectors: opts.TargetCapacitySectors, NeededSectors: needed}
+		smallest, err := smallestCandidate(opts.StagingDir, candidates)
+		if err != nil {
+			return nil, err
+		}
+		return nil, &ErrCapacityTooSmall{
+			TargetSectors: opts.TargetCapacitySectors, NeededSectors: needed,
+			SmallestID: smallest.ID, SmallestKind: smallest.Kind, SmallestBytes: smallest.ByteLen,
+		}
 	}
 
 	// A selected chunk's hash is read by streaming its staged file; its
@@ -374,6 +395,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
 		}
 		if err != nil {
+			if errors.Is(err, errShortStagedHeader) {
+				return nil, stagedDamaged(h.ID, h.Kind)
+			}
 			return nil, fmt.Errorf("%s: %w", h.ID.TextForm(), err)
 		}
 		var flags uint16
@@ -473,8 +497,14 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		remainingBytes += n
 	}
 
+	var objectBytes uint64
+	for _, u := range selected {
+		objectBytes += u.ByteLen
+	}
+
 	return &PackResult{
-		RunSeq: runSeq, DiscSeq: discSeq, ObjectCount: objectCount,
+		ObjectBytes: objectBytes,
+		RunSeq:      runSeq, DiscSeq: discSeq, ObjectCount: objectCount,
 		FileCount: len(rows), StreamBlocks: blockCount(plan.streamBytesTotal), StripeCount: plan.stripeCount,
 		RemainingObjects: remainingObjects,
 		RemainingBytes:   remainingBytes,
@@ -634,6 +664,24 @@ func minimumSectorsToPlaceOne(opts PackOptions, candidates []packUnit, fixedBloc
 	return hi, nil
 }
 
+// smallestCandidate returns the candidate with the fewest bytes, the
+// object a refused capacity must first grow to hold. A tie goes to the
+// first in dependency order, so the answer never depends on map order.
+func smallestCandidate(stagingDir string, candidates []packUnit) (packUnit, error) {
+	var best packUnit
+	for i, u := range candidates {
+		n, err := objectByteLen(stagingDir, u)
+		if err != nil {
+			return packUnit{}, err
+		}
+		u.ByteLen = n
+		if i == 0 || n < best.ByteLen {
+			best = u
+		}
+	}
+	return best, nil
+}
+
 // objectByteLen returns the encoded byte length of unit's own staged
 // file: the cached bytes for a tree, blob or snapshot, or a stat of the
 // chunk file otherwise.
@@ -729,7 +777,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 		}
 		var tree format.Tree
 		if _, err := tree.Decode(data); err != nil {
-			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
+			return stagedDamaged(id, format.ObjectKindTree)
 		}
 		if err := verifyObjectID(id, format.ObjectKindTree, data); err != nil {
 			return err
@@ -762,7 +810,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 		snapshotBytes[snapID] = data
 		var snap format.Snapshot
 		if _, err := snap.Decode(data); err != nil {
-			return nil, nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
+			return nil, nil, stagedDamaged(snapID, format.ObjectKindSnapshot)
 		}
 		if err := verifyObjectID(snapID, format.ObjectKindSnapshot, data); err != nil {
 			return nil, nil, err
@@ -800,7 +848,7 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 	}
 	var blob format.Blob
 	if _, err := blob.Decode(data); err != nil {
-		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
+		return stagedDamaged(id, format.ObjectKindBlob)
 	}
 	if err := verifyObjectID(id, format.ObjectKindBlob, data); err != nil {
 		return err
@@ -823,10 +871,10 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 // from the highest numbers the ledger already holds, not from its row
 // count. A ledger rebuilt from surviving discs after the repository was
 // lost can hold fewer rows than the newest sequence number seen, since
-// rebuild-cache may not have been fed every disc a lost repository once
+// recover may not have been fed every disc a lost repository once
 // knew; counting rows would then hand out a number already in use. An
 // empty ledger gives run_seq 1 and disc_seq 0, matching a fresh repository.
-// rebuild-cache calls this too, to report the numbers the next pack
+// recover calls this too, to report the numbers the next pack
 // will use.
 func NextSeqNumbers(rows []format.DiscsRow) (runSeq, discSeq uint64) {
 	if len(rows) == 0 {
@@ -847,7 +895,7 @@ func NextSeqNumbers(rows []format.DiscsRow) (runSeq, discSeq uint64) {
 }
 
 // LoadDiscsLedger reads the local disc ledger, or returns an empty one
-// for a repository with no disc packed yet. rebuild-cache also calls
+// for a repository with no disc packed yet. recover also calls
 // this to inspect the ledger it is about to replace.
 func LoadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, error) {
 	data, err := os.ReadFile(filepath.Join(stagingDir, discsLedgerName))
@@ -865,7 +913,7 @@ func LoadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, e
 }
 
 // SaveDiscsLedger writes the local disc ledger: the rows a later Pack
-// call reads back as prior rows for its own DISCS table. rebuild-cache
+// call reads back as prior rows for its own DISCS table. recover
 // also calls this to restore the ledger from discs.
 func SaveDiscsLedger(stagingDir string, repoUUID [16]byte, rows []format.DiscsRow) error {
 	t := format.DiscsTable{
@@ -902,7 +950,7 @@ func LoadRefsLedger(stagingDir string, repoUUID [16]byte) (format.RefsTable, err
 
 // SaveRefsLedger writes the local refs ledger: the records a later Pack
 // call reads back as the refs earlier runs already carry, so it can
-// carry them into its own refs.bin unchanged. rebuild-cache also calls
+// carry them into its own refs.bin unchanged. recover also calls
 // this to restore the ledger from discs.
 func SaveRefsLedger(stagingDir string, repoUUID [16]byte, recs []format.RefRecord) error {
 	buf, _, err := encodeRefsTable(repoUUID, append([]format.RefRecord(nil), recs...))

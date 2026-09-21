@@ -10,7 +10,7 @@ type Option func(*restoreOptions)
 type restoreOptions struct {
 	includes   []string
 	overwrite  bool
-	knownDiscs map[[16]byte]string
+	knownDiscs map[[16]byte]DiscName
 }
 
 // WithInclude restricts a restore to these snapshot-relative paths, and
@@ -34,14 +34,14 @@ func WithOverwrite(overwrite bool) Option {
 }
 
 // WithKnownDiscs names every disc the caller's own repository ledger or
-// cache knows about, uuid to label. A missing-disc error then names
+// cache knows about, uuid to its number and label. A missing-disc error then names
 // candidates from this whole set, not only the discs a provided disc's
 // own DISCS table happens to mention, so a candidate list covers a disc
 // packed after every provided disc too, not only an earlier one.
-func WithKnownDiscs(discs map[[16]byte]string) Option {
+func WithKnownDiscs(discs map[[16]byte]DiscName) Option {
 	return func(o *restoreOptions) {
 		if o.knownDiscs == nil {
-			o.knownDiscs = make(map[[16]byte]string, len(discs))
+			o.knownDiscs = make(map[[16]byte]DiscName, len(discs))
 		}
 		maps.Copy(o.knownDiscs, discs)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
@@ -62,12 +63,14 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	}
 
 	stagingBudget := cfg.RestoreStagingBudget
+	budgetSet := cfg.RestoreStagingBudgetSet
 	if *stagingBudgetFlag != "" {
 		stagingBudget, err = parseByteSize(*stagingBudgetFlag)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: plan: --staging-budget:", err)
 			return 2
 		}
+		budgetSet = true
 	}
 
 	src, c, err := openCacheSource(*repoFlag)
@@ -124,7 +127,7 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	printPlanText(stdout, result, passSplit)
+	printPlanText(stdout, result, passSplit, budgetSet)
 
 	if *outFile != "" {
 		repoUUID, err := decodeUUID(cfg.RepoUUID)
@@ -145,18 +148,42 @@ func cmdPlan(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(result.Missing) > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: plan: %d object(s) have no disc known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
+		_, _ = fmt.Fprintf(stderr, "noahsark: plan: %d object(s) have no disc known to the cache; run recover with more discs\n", result.MissingObjectCount())
 		return 1
 	}
 	return 0
 }
 
-// printPlanText prints one line per disc, in plan order, then the
-// plan's totals, including the pass split a staging budget forces.
-func printPlanText(stdout io.Writer, r *plan.Result, ps plan.PassSplit) {
+// printPlanText prints one line per disc, by disc number and then by
+// uuid, then the plan's totals. The operator looks a disc up by the
+// number on its sleeve, so the list follows that number, not the read
+// order the planner chose. The pass split and the peak staging bytes
+// appear only when a staging budget was asked for: without one, a pass
+// count of 1 tells the operator nothing.
+func printPlanText(stdout io.Writer, r *plan.Result, ps plan.PassSplit, budgetSet bool) {
+	type line struct {
+		disc   plan.DiscEntry
+		passes int
+	}
+	lines := make([]line, len(r.Discs))
 	for i, d := range r.Discs {
-		_, _ = fmt.Fprintf(stdout, "disc_seq=%d uuid=%s label=%q objects=%d bytes=%d passes=%d\n",
-			d.DiscSeq, plan.UUIDText(d.DiscUUID), d.Label, len(d.Objects), d.Bytes, ps.DiscPasses[i])
+		lines[i] = line{disc: d, passes: ps.DiscPasses[i]}
+	}
+	sort.Slice(lines, func(i, j int) bool {
+		if lines[i].disc.DiscSeq != lines[j].disc.DiscSeq {
+			return lines[i].disc.DiscSeq < lines[j].disc.DiscSeq
+		}
+		return plan.UUIDText(lines[i].disc.DiscUUID) < plan.UUIDText(lines[j].disc.DiscUUID)
+	})
+	for _, l := range lines {
+		d := l.disc
+		if budgetSet {
+			_, _ = fmt.Fprintf(stdout, "disc %d %q (%s): %d objects, %d bytes, %d passes\n",
+				d.DiscSeq, d.Label, plan.UUIDText(d.DiscUUID), len(d.Objects), d.Bytes, l.passes)
+			continue
+		}
+		_, _ = fmt.Fprintf(stdout, "disc %d %q (%s): %d objects, %d bytes\n",
+			d.DiscSeq, d.Label, plan.UUIDText(d.DiscUUID), len(d.Objects), d.Bytes)
 	}
 	for _, m := range r.Missing {
 		if !m.HasDisc {
@@ -166,8 +193,13 @@ func printPlanText(stdout io.Writer, r *plan.Result, ps plan.PassSplit) {
 		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on disc %s, no cached DISCS row names it\n",
 			m.Objects, plan.UUIDText(m.DiscUUID))
 	}
-	_, _ = fmt.Fprintf(stdout, "totals: discs=%d objects=%d bytes=%d passes=%d peak_staging_bytes=%d\n",
-		len(r.Discs), r.TotalObjects, r.TotalBytes, ps.Total, ps.PeakBytes)
+	if budgetSet {
+		_, _ = fmt.Fprintf(stdout, "totals: %d discs, %d objects, %d bytes, %d passes, peak staging %d bytes\n",
+			len(r.Discs), r.TotalObjects, r.TotalBytes, ps.Total, ps.PeakBytes)
+		return
+	}
+	_, _ = fmt.Fprintf(stdout, "totals: %d discs, %d objects, %d bytes\n",
+		len(r.Discs), r.TotalObjects, r.TotalBytes)
 }
 
 // planDiscJSON is one disc of the JSON plan's discs array, the subset

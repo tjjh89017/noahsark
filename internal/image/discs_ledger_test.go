@@ -42,7 +42,7 @@ func TestPackRecordsUsedSectorsInTheLedger(t *testing.T) {
 	}
 }
 
-// TestNextSeqNumbersWithGap stands in for a ledger rebuild-cache
+// TestNextSeqNumbersWithGap stands in for a ledger recover
 // rebuilt from surviving discs after the newest disc's own row never
 // reached any fed disc's DISCS table: the ledger holds rows 0 and 1
 // but not the lost row 2, so it has 2 rows while the highest disc_seq
@@ -73,7 +73,7 @@ func TestNextSeqNumbersEmptyLedger(t *testing.T) {
 }
 
 // TestPackAfterLedgerGapAvoidsReuse packs onto a ledger that already
-// has a gap (as a partial rebuild-cache could leave it) and checks the
+// has a gap (as a partial recover could leave it) and checks the
 // new run's numbers continue past the highest one the ledger holds,
 // not past its row count.
 func TestPackAfterLedgerGapAvoidsReuse(t *testing.T) {

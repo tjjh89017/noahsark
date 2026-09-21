@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ func packBurnDisc(t *testing.T, work, repo, src string) string {
 
 // TestSecondVerifyRaisesTheVerifyCount checks the two verifies of the
 // two identical discs: the objects stay CLEAN, the count goes from 1 to
-// 2, and "disc list" reports the count against gc.min_verified_copies.
+// 2, and "status" reports the count against gc.min_verified_copies.
 func TestSecondVerifyRaisesTheVerifyCount(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -50,10 +51,10 @@ func TestSecondVerifyRaisesTheVerifyCount(t *testing.T) {
 	}
 	cleanAfterFirst, verifiedAfterFirst := discListCounts(t, repo)
 	if cleanAfterFirst == 0 {
-		t.Fatal("disc list reports 0 clean objects after the first verify")
+		t.Fatal("status reports 0 clean objects after the first verify")
 	}
 	if verifiedAfterFirst != "1/2" {
-		t.Fatalf("disc list verified = %q after the first verify, want 1/2", verifiedAfterFirst)
+		t.Fatalf("status verified = %q after the first verify, want 1/2", verifiedAfterFirst)
 	}
 
 	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
@@ -68,28 +69,33 @@ func TestSecondVerifyRaisesTheVerifyCount(t *testing.T) {
 		t.Fatalf("clean objects = %d after the second verify, want %d", cleanAfterSecond, cleanAfterFirst)
 	}
 	if verifiedAfterSecond != "2/2" {
-		t.Fatalf("disc list verified = %q after the second verify, want 2/2", verifiedAfterSecond)
+		t.Fatalf("status verified = %q after the second verify, want 2/2", verifiedAfterSecond)
 	}
 }
 
 // discListCounts returns the clean object count and the verified column
-// of the first disc "disc list" prints.
+// of the first disc, read from "status --json".
 func discListCounts(t *testing.T, repo string) (clean int, verified string) {
 	t.Helper()
-	code, out := runCmd(t, "disc", "list", "--repo="+repo)
+	code, out := runCmd(t, "status", "--repo="+repo, "--json")
 	if code != 0 {
-		t.Fatalf("disc list: exit %d: %s", code, out)
+		t.Fatalf("status --json: exit %d: %s", code, out)
 	}
-	line, _, _ := strings.Cut(out, "\n")
-	m := discListLineRe.FindStringSubmatch(line)
-	if m == nil {
-		t.Fatalf("disc line %q does not match the expected column order", line)
+	var parsed struct {
+		Discs []struct {
+			CleanObjects   int `json:"clean_objects"`
+			VerifiedCopies int `json:"verified_copies"`
+			MinCopies      int `json:"min_verified_copies"`
+		} `json:"discs"`
 	}
-	n, err := strconv.Atoi(m[8])
-	if err != nil {
-		t.Fatalf("clean count %q: %v", m[8], err)
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("status --json: invalid JSON: %v: %s", err, out)
 	}
-	return n, m[9] + "/" + m[10]
+	if len(parsed.Discs) == 0 {
+		t.Fatalf("status --json names no disc: %s", out)
+	}
+	d := parsed.Discs[0]
+	return d.CleanObjects, strconv.Itoa(d.VerifiedCopies) + "/" + strconv.Itoa(d.MinCopies)
 }
 
 // TestGCHoldsObjectsUntilTheSecondVerify checks that one verify is not

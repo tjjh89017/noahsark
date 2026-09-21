@@ -36,7 +36,7 @@ const (
 	// that holds it has checked out.
 	Clean State = 4
 	// OnDiscOnly is an object's state once a disc alone holds it. gc
-	// records it before it unlinks the staged file, and rebuild-cache
+	// records it before it unlinks the staged file, and recover
 	// records it for every object it reads from a disc's own catalog.
 	// It is terminal: the object needs no staging file any more.
 	OnDiscOnly State = 5
@@ -264,7 +264,7 @@ func (l *Log) MarkPacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
 
 // EnsureOnDisc appends an OnDiscOnly record for id, naming the run and
 // disc that hold it, unless the log already has a record for id.
-// rebuild-cache is the only caller: it reads a disc's own catalog into a
+// recover is the only caller: it reads a disc's own catalog into a
 // repository whose staging is empty, so the objects of that disc need no
 // staging file and no further burn or verify. An object the log already
 // knows keeps its own state, because that state says more than a disc
@@ -448,7 +448,7 @@ func (l *Log) CleanTime(id object.ID) (time.Time, bool) {
 }
 
 // FedDiscs reports whether the state log holds a current on-disc record
-// naming discUUID as the disc that holds it. rebuild-cache records every
+// naming discUUID as the disc that holds it. recover records every
 // object of a disc's own catalog before asking this, and pack always
 // refuses to create a run with no objects, so every disc that was ever
 // packed leaves at least one such record.

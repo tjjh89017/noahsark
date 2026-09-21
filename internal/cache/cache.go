@@ -148,7 +148,7 @@ func parseUUIDText(s string) ([16]byte, bool) {
 // rename, so a crash or a concurrent reader never sees a partial file.
 // It does nothing when path already holds exactly data, so repeated
 // writes of the same bytes (a pack that carries the same snapshot or
-// tree forward, or a rebuild-cache run over an already-cached disc)
+// tree forward, or a recover run over an already-cached disc)
 // touch the filesystem only once.
 func atomicWriteFile(path string, data []byte) error {
 	if existing, err := os.ReadFile(path); err == nil {

@@ -64,6 +64,12 @@ type Summary struct {
 	// file's content stays in staging as an orphan; gc reclaims it like
 	// any other object nothing references.
 	Skipped []SkippedPath
+	// Special lists every FIFO, socket and device node the commit
+	// recorded in a tree. The tree entry keeps the name, the kind and
+	// the mode, but no content: such a path carries no bytes to back
+	// up, and a restore does not create it again. commit warns about
+	// each one, where the operator can still act on it.
+	Special []SpecialPath
 	// Reachable lists every chunk, blob and tree id this commit's root
 	// tree reaches, whether or not the writer actually staged its file.
 	// A caller that needs the commit's full object graph must read it
@@ -80,6 +86,13 @@ type Summary struct {
 type UnstablePath struct {
 	Path   string
 	Branch string
+}
+
+// SpecialPath names one FIFO, socket or device node a commit recorded
+// without content, and the kind word a warning prints for it.
+type SpecialPath struct {
+	Path string
+	Kind string
 }
 
 // SkippedPath names one path the writer could not commit, and why.
@@ -131,8 +144,8 @@ type Writer struct {
 	// staging state log carries a record for it. A nil Known leaves an
 	// object's Summary count to writeObjectFile's own on-disk check
 	// alone. A non-nil Known counts an object as existing whenever it
-	// reports true, even when rebuild-cache left no local staging file
-	// for a Packed object, so a re-commit after rebuild-cache reports
+	// reports true, even when recover left no local staging file
+	// for a Packed object, so a re-commit after recover reports
 	// the object as existing, not new.
 	Known func(id ID) bool
 
@@ -315,15 +328,20 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 		te.TLVs = []format.TLV{{Type: format.TLVTypeSymlinkTarget, Payload: []byte(target)}}
 	case mode&os.ModeNamedPipe != 0:
 		te.EntryType = format.EntryTypeFIFO
+		sum.Special = append(sum.Special, SpecialPath{Path: w.relPath(path), Kind: "FIFO"})
 	case mode&os.ModeSocket != 0:
 		te.EntryType = format.EntryTypeSocket
+		sum.Special = append(sum.Special, SpecialPath{Path: w.relPath(path), Kind: "socket"})
 	case mode&os.ModeDevice != 0:
+		kind := "block device"
 		if mode&os.ModeCharDevice != 0 {
 			te.EntryType = format.EntryTypeCharDev
+			kind = "character device"
 		} else {
 			te.EntryType = format.EntryTypeBlockDev
 		}
 		te.RdevMajor, te.RdevMinor = rdevMajorMinor(info)
+		sum.Special = append(sum.Special, SpecialPath{Path: w.relPath(path), Kind: kind})
 	default:
 		return te, fmt.Errorf("object: unsupported entry type for %s", path)
 	}
@@ -658,7 +676,7 @@ func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 // countObject adds id to sum as new or existing. id counts as existing
 // when writeObjectFile found it already on disk, or when w.Known
 // reports it as already Staged or Packed in the repository's state
-// log; the state log answers for an object that rebuild-cache marked
+// log; the state log answers for an object that recover marked
 // Packed without restoring its local staging file.
 func (w *Writer) countObject(sum *Summary, id ID, wroteNew bool) {
 	isNew := wroteNew

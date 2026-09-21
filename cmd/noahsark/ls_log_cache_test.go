@@ -61,7 +61,7 @@ func TestLogFromCacheWithNoDisc(t *testing.T) {
 // repository, wipes the cache, then rebuilds it from only the last
 // disc: the snapshot's tree spans earlier discs too, so the cache ends
 // up genuinely incomplete. ls with no disc given must exit 3 and name
-// rebuild-cache as the fix.
+// recover as the fix.
 func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
@@ -96,15 +96,15 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 
 	lastDisc := discRoots[len(discRoots)-1]
-	if code, out := runCmd(t, "rebuild-cache", "--repo="+repo, "--disc="+lastDisc); code == 2 {
-		t.Fatalf("rebuild-cache: exit %d: %s", code, out)
+	if code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+lastDisc); code == 2 {
+		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
 	code, out = runCmd(t, "ls", "--repo="+repo, "--recursive", snapID)
 	if code != 1 {
 		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "not complete in the cache") || !strings.Contains(out, "rebuild-cache") {
+	if !strings.Contains(out, "not complete in the cache") || !strings.Contains(out, "recover") {
 		t.Fatalf("ls output %q does not report an incomplete cache", out)
 	}
 }

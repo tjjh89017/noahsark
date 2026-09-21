@@ -4,17 +4,18 @@ import (
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
 // knownDiscsForRepo names every disc repoFlag's repository has ever
-// recorded, uuid to label, so a missing-disc hint can list a candidate
+// recorded, uuid to its number and label, so a missing-disc hint can list a candidate
 // disc packed after every provided disc, not only one an earlier disc's
 // own DISCS table happens to mention. It tries the local disc ledger
 // first, since that is the authoritative, always up to date copy, and
 // falls back to the cache when the repository carries no ledger yet. A
 // repository that cannot be found or read at all yields no candidates,
 // never an error: the hint is best-effort.
-func knownDiscsForRepo(repoFlag string) map[[16]byte]string {
+func knownDiscsForRepo(repoFlag string) map[[16]byte]restore.DiscName {
 	repoDir, err := discoverRepo(repoFlag)
 	if err != nil {
 		return nil
@@ -29,7 +30,7 @@ func knownDiscsForRepo(repoFlag string) map[[16]byte]string {
 	}
 
 	if ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID); err == nil && len(ledger.Rows) > 0 {
-		return discLabelsByUUID(ledger.Rows)
+		return discNamesByUUID(ledger.Rows)
 	}
 
 	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
@@ -44,15 +45,15 @@ func knownDiscsForRepo(repoFlag string) map[[16]byte]string {
 	if err != nil || discs == nil {
 		return nil
 	}
-	return discLabelsByUUID(discs.Rows)
+	return discNamesByUUID(discs.Rows)
 }
 
-// discLabelsByUUID reduces DISCS ledger rows to one label per disc
-// uuid.
-func discLabelsByUUID(rows []format.DiscsRow) map[[16]byte]string {
-	labels := make(map[[16]byte]string, len(rows))
+// discNamesByUUID reduces DISCS ledger rows to one number and label per
+// disc uuid.
+func discNamesByUUID(rows []format.DiscsRow) map[[16]byte]restore.DiscName {
+	names := make(map[[16]byte]restore.DiscName, len(rows))
 	for _, row := range rows {
-		labels[row.DiscUUID] = labelText(row.Label[:row.LabelLen])
+		names[row.DiscUUID] = restore.DiscName{Seq: row.DiscSeq, Label: labelText(row.Label[:row.LabelLen])}
 	}
-	return labels
+	return names
 }

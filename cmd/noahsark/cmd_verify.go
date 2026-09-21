@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -80,6 +81,10 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	// --repo, verify never touches any repository's state, so there is
 	// nothing to lock, the same way "image build" and a --repo-less "ls"
 	// or "log" touch no repository.
+	// The state lines applyVerifyOutcome writes belong after the disc
+	// line, not before it, so the report reads as one result. They are
+	// collected here and written once the disc line is out.
+	var outcome bytes.Buffer
 	var trailingHint string
 	if repoDir, err := discoverRepo(*repoFlag); err == nil {
 		lk, code, ok := lockRepo("verify", repoDir, stderr)
@@ -87,10 +92,10 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 			return code
 		}
 
-		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, stdout, stderr)
+		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, &outcome, stderr)
 		if notInRepo {
 			releaseLock(lk)
-			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark rebuild-cache --disc=%s to add it\n",
+			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark recover --disc=%s to add it\n",
 				uuidText(ident.DiscUUID), ident.Label, repoDir, target)
 			return 1
 		}
@@ -99,16 +104,14 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	}
 
 	if verifyErr != nil {
+		_, _ = io.Copy(stdout, &outcome)
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", verifyErr)
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "disc label: %q\n", labelText(rr.Disc.Label[:rr.Disc.LabelLen]))
-	_, _ = fmt.Fprintf(stdout, "disc capacity: %d sectors, forced %d sectors, capacity_is_forced=%d\n",
-		rr.Disc.CapacitySectors, rr.Disc.CapacityForcedSectors, rr.Disc.CapacityIsForced)
-	_, _ = fmt.Fprintf(stdout, "run: %d objects verified, %d run header copies\n", rr.ObjectsVerified, rr.RunCopies)
-	_, _ = fmt.Fprintf(stdout, "refs: %d, discs: %d\n", len(rr.Refs.Records), len(rr.Discs.Rows))
-	_, _ = fmt.Fprintln(stdout, "verify: ok")
+	_, _ = fmt.Fprintf(stdout, "disc %d %q: %d objects, ok\n",
+		rr.Disc.DiscSeq, labelText(rr.Disc.Label[:rr.Disc.LabelLen]), rr.ObjectsVerified)
+	_, _ = io.Copy(stdout, &outcome)
 	if trailingHint != "" {
 		_, _ = fmt.Fprintln(stdout, trailingHint)
 	}
@@ -234,7 +237,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID)
 	if n == 0 && !haveClean && stillPacked == 0 {
 		// Every object of the disc is on the disc alone: gc freed the
-		// staged files, or rebuild-cache read the disc into an empty
+		// staged files, or recover read the disc into an empty
 		// staging. The verify still read every object back; there is
 		// simply no staging state left to move.
 		_, _ = fmt.Fprintf(stdout, "verify: disc %s holds no staged object; nothing to mark\n", uuidText(ident.DiscUUID))
@@ -248,8 +251,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	if found {
 		discSeq = row.DiscSeq
 	}
-	hintLine := fmt.Sprintf("verify: disc %d is not marked burned; run: noahsark disc burned --repo=%s %s",
-		discSeq, repoDir, uuidText(ident.DiscUUID))
+	hintLine := fmt.Sprintf("verify: disc %d is not marked burned; run: noahsark disc burned %d", discSeq, discSeq)
 	if n > 0 || haveClean {
 		_, _ = fmt.Fprintln(stdout, hintLine)
 		return "", false
@@ -401,7 +403,7 @@ func recordLedgerVerify(stagingDir string, repoUUID, discUUID [16]byte) error {
 }
 
 // cacheRunFromDisc copies target's run catalog, snapshots and trees
-// into the local cache, the same way rebuild-cache does, so gc can
+// into the local cache, the same way recover does, so gc can
 // later confirm an object's presence through the cached INDEX without
 // asking for the disc again.
 func cacheRunFromDisc(cfg repoConfig, repoUUID [16]byte, target string) error {

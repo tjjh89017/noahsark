@@ -36,8 +36,10 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		{"restore: unknown flag", []string{"restore", "--repo=" + repo, "--no-such-flag"}},
 		{"disc: unknown subcommand", []string{"disc", "bogus"}},
 		{"disc burned: missing DISC", []string{"disc", "burned", "--repo=" + repo}},
-		{"rebuild-cache: unknown flag", []string{"rebuild-cache", "--repo=" + repo, "--no-such-flag"}},
-		{"image build: missing --capacity", []string{"image", "build", "--out=" + filepath.Join(work, "img"), work}},
+		{"recover: unknown flag", []string{"recover", "--repo=" + repo, "--no-such-flag"}},
+		{"image build: missing --out", []string{"image", "build", work}},
+		{"status: unexpected positional argument", []string{"status", "--repo=" + repo, "extra"}},
+		{"pack: capacity without a unit", []string{"pack", "--repo=" + repo, "--capacity=7500000"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

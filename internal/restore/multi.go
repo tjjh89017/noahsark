@@ -20,9 +20,11 @@ type MissingDiscError struct {
 	// complete restore would need. Set only when at least one provided
 	// disc's Prereqs row names the disc a missing object lives on.
 	ByDisc map[[16]byte][]object.ID
-	// Labels gives the label of a disc uuid, when a provided disc's
-	// DISCS table names it.
-	Labels map[[16]byte]string
+	// Names gives the disc number and the label of a disc uuid, when a
+	// provided disc's DISCS table names it. The operator reads the
+	// number and the label off the sleeve; the uuid alone makes them
+	// compare 32 hexadecimal characters.
+	Names map[[16]byte]DiscName
 	// UnnamedCount is the number of needed objects that no provided
 	// disc's INDEX or Prereqs names. Set only when ByDisc is empty.
 	UnnamedCount int
@@ -37,11 +39,26 @@ type MissingDiscError struct {
 	RootTreeMissing bool
 }
 
+// DiscName is one disc's number and label, as a DISCS row gives them.
+type DiscName struct {
+	Seq   uint64
+	Label string
+}
+
+// Text renders a disc's name and uuid the way every missing-disc line
+// prints them.
+func (n DiscName) Text(uuid [16]byte) string {
+	if n.Label == "" {
+		return fmt.Sprintf("disc %d (%s)", n.Seq, uuidText(uuid))
+	}
+	return fmt.Sprintf("disc %d %q (%s)", n.Seq, n.Label, uuidText(uuid))
+}
+
 // DiscCandidate is one disc named by a DISCS table but not provided to
 // a restore.
 type DiscCandidate struct {
-	UUID  [16]byte
-	Label string
+	UUID [16]byte
+	Name DiscName
 }
 
 func (e *MissingDiscError) Error() string {
@@ -54,11 +71,7 @@ func (e *MissingDiscError) Error() string {
 		}
 		sort.Slice(uuids, func(i, j int) bool { return uuidText(uuids[i]) < uuidText(uuids[j]) })
 		for _, u := range uuids {
-			_, _ = fmt.Fprintf(&s, "\n  disc %s", uuidText(u))
-			if label := e.Labels[u]; label != "" {
-				_, _ = fmt.Fprintf(&s, " (%s)", label)
-			}
-			_, _ = fmt.Fprintf(&s, " holds %d needed object(s)", len(e.ByDisc[u]))
+			_, _ = fmt.Fprintf(&s, "\n  %s holds %d needed object(s)", e.Names[u].Text(u), len(e.ByDisc[u]))
 		}
 		return s.String()
 	}
@@ -73,10 +86,7 @@ func (e *MissingDiscError) Error() string {
 	}
 	s.WriteString("; disc(s) not provided, that may hold them:")
 	for _, c := range e.Candidates {
-		_, _ = fmt.Fprintf(&s, "\n  disc %s", uuidText(c.UUID))
-		if c.Label != "" {
-			_, _ = fmt.Fprintf(&s, " (%s)", c.Label)
-		}
+		_, _ = fmt.Fprintf(&s, "\n  %s", c.Name.Text(c.UUID))
 	}
 	return s.String()
 }
@@ -103,11 +113,11 @@ type multiSource struct {
 	// bad holds every object that a provided disc does hold, but whose
 	// bytes do not verify. Such an object is damage, not a missing
 	// disc, so it never enters the missing lists.
-	bad        map[object.ID]error
-	names      *image.NameCache
-	provided   map[[16]byte]bool   // uuids of the discs RestoreMulti was given
-	discLabels map[[16]byte]string // every disc uuid named by any provided disc's DISCS table, with its label
-	wp         *writePolicy        // the overwrite rule for this restore, and its report
+	bad       map[object.ID]error
+	names     *image.NameCache
+	provided  map[[16]byte]bool     // uuids of the discs RestoreMulti was given
+	discNames map[[16]byte]DiscName // every disc uuid named by any provided disc's DISCS table, with its number and label
+	wp        *writePolicy          // the overwrite rule for this restore, and its report
 }
 
 // RestoreMulti reads snapshotID's tree from whichever of discRoots holds
@@ -143,9 +153,9 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 		return Report{}, err
 	}
 	src.wp = &writePolicy{overwrite: o.overwrite}
-	for u, l := range o.knownDiscs {
-		if _, ok := src.discLabels[u]; !ok {
-			src.discLabels[u] = l
+	for u, n := range o.knownDiscs {
+		if _, ok := src.discNames[u]; !ok {
+			src.discNames[u] = n
 		}
 	}
 
@@ -200,6 +210,13 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 	// double-count itself into the eventual MissingDiscError. Progress
 	// reports bytes written and throughput only, with no percentage or
 	// ETA.
+	//
+	// The snapshot's own total_size is not that total. It sums the
+	// payload of every distinct object, so it counts a deduplicated
+	// chunk one time where the restore writes it into each file that
+	// holds it, and it adds the tree and blob objects the restore never
+	// writes. An --include filter narrows the walk further. A
+	// percentage from that number would be wrong in both directions.
 	prog.Start("restore: bytes written", 0)
 	defer prog.Done()
 
@@ -273,7 +290,7 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		bad:           make(map[object.ID]error),
 		names:         image.NewNameCache(),
 		provided:      make(map[[16]byte]bool),
-		discLabels:    make(map[[16]byte]string),
+		discNames:     make(map[[16]byte]DiscName),
 	}
 	// A Prereqs row only points at a disc. The disc that lists the
 	// object in its own Objects rows is the better answer, so prereq
@@ -322,8 +339,8 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		runToDisc := map[uint64][16]byte{idx.RunSeq: disc.DiscUUID}
 		for _, row := range discs.Rows {
 			runToDisc[row.RunSeq] = row.DiscUUID
-			if _, ok := src.discLabels[row.DiscUUID]; !ok {
-				src.discLabels[row.DiscUUID] = discLabelText(row)
+			if _, ok := src.discNames[row.DiscUUID]; !ok {
+				src.discNames[row.DiscUUID] = DiscName{Seq: row.DiscSeq, Label: discLabelText(row)}
 			}
 		}
 
@@ -406,14 +423,14 @@ func (src *multiSource) finalError() error {
 		return nil
 	}
 	if len(src.missingByDisc) > 0 {
-		return &MissingDiscError{ByDisc: src.missingByDisc, Labels: src.discLabels}
+		return &MissingDiscError{ByDisc: src.missingByDisc, Names: src.discNames}
 	}
 	var candidates []DiscCandidate
-	for uuid, label := range src.discLabels {
+	for uuid, name := range src.discNames {
 		if src.provided[uuid] {
 			continue
 		}
-		candidates = append(candidates, DiscCandidate{UUID: uuid, Label: label})
+		candidates = append(candidates, DiscCandidate{UUID: uuid, Name: name})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return uuidText(candidates[i].UUID) < uuidText(candidates[j].UUID) })
 	return &MissingDiscError{UnnamedCount: len(src.missingUnknown), Candidates: candidates}

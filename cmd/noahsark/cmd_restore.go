@@ -291,7 +291,9 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 	defer releaseLock(lk)
 
 	stagingBudget := cfg.RestoreStagingBudget
+	budgetSet := cfg.RestoreStagingBudgetSet
 	if stagingBudgetOverride != "" {
+		budgetSet = true
 		stagingBudget, err = parseByteSize(stagingBudgetOverride)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --staging-budget:", err)
@@ -335,7 +337,7 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		for _, d := range doc.Discs {
 			planDiscOrder = append(planDiscOrder, strings.ToLower(d.DiscUUID))
 		}
-		return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, planDiscOrder, planFile, stagingBudget, overwrite, mountDir, noEject, interactive, outDir, stdout, stderr, prog)
+		return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, planDiscOrder, planFile, stagingBudget, budgetSet, overwrite, mountDir, noEject, interactive, outDir, stdout, stderr, prog)
 	}
 
 	snapID, err := src.ParseSnapshotArg(snapshotArg)
@@ -351,7 +353,7 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}
-	return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, nil, "", stagingBudget, overwrite, mountDir, noEject, interactive, outDir, stdout, stderr, prog)
+	return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, nil, "", stagingBudget, budgetSet, overwrite, mountDir, noEject, interactive, outDir, stdout, stderr, prog)
 }
 
 // readRestorePlanFile reads and parses a plan file "plan --out" wrote.
@@ -381,7 +383,7 @@ func reorderDiscsForPlan(discs []plan.DiscEntry, wantOrder []string) ([]plan.Dis
 	for _, uuid := range wantOrder {
 		d, ok := byUUID[uuid]
 		if !ok {
-			return nil, fmt.Errorf("plan names disc %s, which the current cache's plan for this snapshot does not need; rebuild-cache and re-plan", uuid)
+			return nil, fmt.Errorf("plan names disc %s, which the current cache's plan for this snapshot does not need; recover and re-plan", uuid)
 		}
 		ordered = append(ordered, d)
 	}
@@ -390,7 +392,7 @@ func reorderDiscsForPlan(discs []plan.DiscEntry, wantOrder []string) ([]plan.Dis
 
 // cmdRestoreDiscSwapRun is cmdRestoreDiscSwap's body once snapID,
 // includes and, when resuming a persisted plan, planDiscOrder are known.
-func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, includes []string, planDiscOrder []string, planFile string, stagingBudget uint64, overwrite bool, mountDir string, noEject, interactive bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, includes []string, planDiscOrder []string, planFile string, stagingBudget uint64, budgetSet bool, overwrite bool, mountDir string, noEject, interactive bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if err := c.CheckComplete(snapID); err != nil {
 		if ie, ok := err.(*cache.IncompleteError); ok {
 			msg := formatIncompleteError("restore", ie)
@@ -430,9 +432,9 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 			passSplit.DiscPasses[i] = 1
 		}
 	}
-	printPlanText(stdout, result, passSplit)
+	printPlanText(stdout, result, passSplit, budgetSet)
 	if len(result.Missing) > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d object(s) have no run known to the cache; rebuild-cache from more discs\n", result.MissingObjectCount())
+		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d object(s) have no run known to the cache; run recover with more discs\n", result.MissingObjectCount())
 		return 1
 	}
 

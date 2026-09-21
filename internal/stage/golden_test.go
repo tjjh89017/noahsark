@@ -35,7 +35,7 @@ const goldenCleanSec = int64(1700000000)
 // testdata/state_records_golden.bin. The two Clean records are the two
 // verifies of the two identical discs; the second one keeps the clean
 // time of the first, and the ON-DISC record carries both forward. The
-// last record is the ON-DISC record rebuild-cache writes: a disc holds
+// last record is the ON-DISC record recover writes: a disc holds
 // the object, and no verify has happened here.
 func goldenRecords() []Record {
 	discA := fillDisc(0xAA)

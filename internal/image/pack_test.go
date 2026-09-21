@@ -371,8 +371,8 @@ func TestPackRefusesAStagedChunkWithAFlippedByte(t *testing.T) {
 	if !strings.Contains(err.Error(), chunkID.TextForm()) {
 		t.Fatalf("Pack error = %q, want it to name the chunk id %s", err, chunkID.TextForm())
 	}
-	if !strings.Contains(err.Error(), "does not match its own content") {
-		t.Fatalf("Pack error = %q, want it to report a content mismatch", err)
+	if !strings.Contains(err.Error(), "is damaged") || !strings.Contains(err.Error(), "commit again") {
+		t.Fatalf("Pack error = %q, want the one damaged-staged-object text with its cure", err)
 	}
 
 	assertNoRunAndNothingPacked(t, outDir, stagingDir)
