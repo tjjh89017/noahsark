@@ -9,9 +9,9 @@ authorities. `NOTES.md` is informative.
 NoahsArk is a backup system for write-once Blu-ray optical media. It writes
 content-addressed objects to discs and reads them back years later. It uses
 content-defined chunking for dedup, self-describing on-disc tables, and
-Reed-Solomon self-healing per run. The implementation language is Go. The Go
-implementation of Phase 1 exists under `cmd/noahsark` and `internal/`. The
-specification documents stay the design authority.
+optional Reed-Solomon self-healing per run. The implementation language is
+Go. The implementation is under `cmd/noahsark` and `internal/`. For host-side
+behaviour the code is the truth, and `OPERATIONS.md` describes it.
 
 ## Where the truth lives
 
@@ -49,10 +49,13 @@ Use this table to find a topic, by document and heading, not by number
 | The run index and the catalog | FORMAT.md | "11. The run index and the catalog" |
 | Local cache | OPERATIONS.md | "2.4 Local cache layout" |
 | Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
+| State log, local refs and ledgers | OPERATIONS.md | "3. Local file formats" |
+| Repository lock | OPERATIONS.md | "6. Concurrency and locking" |
+| Exit codes | OPERATIONS.md | "19. Exit code registry" |
 | Packing and locality | OPERATIONS.md | "8. Packing and locality" |
 | Restore planning | OPERATIONS.md | "14. Restore" |
 | File metadata and permissions | OPERATIONS.md | "15. Metadata restore policy" |
-| Commit flow and the quick check | OPERATIONS.md | "7. Commit" |
+| Commit flow, excludes and unstable files | OPERATIONS.md | "7. Commit" |
 | Command syntax | OPERATIONS.md | "16. CLI reference" |
 | Config keys | OPERATIONS.md | "17. Configuration reference" |
 | Format versioning rules | FORMAT.md | "12. Reader and writer rules" |
@@ -90,9 +93,9 @@ Implementation notes" section.
 - Vendor the Gear table. Generate it once from the normative rule in
   FORMAT.md's "4.8 Gear table", check it in as a literal array, and never
   regenerate it from a dependency.
-- Check pinned tool versions at startup: `dvd+rw-tools` 7.1-14 or later, and
-  `udftools` 2.3 or later. Refuse to run the burn path on an older or
-  unpatched build.
+- `image build` checks the `mkudffs` version: `udftools` 2.3 or later. The
+  tool never runs `growisofs`, thus the operator checks `dvd+rw-tools` 7.1-14
+  or later. OPERATIONS.md's "11.9 Tool version check" holds the rule.
 
 ## Testing rules
 
@@ -100,7 +103,7 @@ Follow OPERATIONS.md's "22. Test list" and "23. Manual physical checklist"
 sections. In summary:
 
 - Test image-first. Build a filesystem image, loop-mount it, verify it,
-  simulate append and damage on the image. Physical burns are a manual
+  simulate damage on the image. Physical burns are a manual
   checklist, not CI.
 - Put CI test steps in the composite actions under `.github/actions/`
   (`lint`, `unit`, `e2e`).
@@ -108,9 +111,8 @@ sections. In summary:
 - When a tool's behaviour is an open question, write a probe action under
   `.github/actions/probe-<topic>/`. A probe records an unknown answer; a test
   asserts a known one. Promote a probe to a test once its answer is stable.
-- Manual physical probes need a real drive and real media. Follow
-  OPERATIONS.md's manual checklist and manual probes; do not attempt to
-  automate them in CI.
+- Manual physical checks need a real drive and real media. Follow
+  OPERATIONS.md's manual checklist; do not attempt to automate it in CI.
 - CI must prove the local cache is only an accelerator: delete the cache and
   restore from the disc images alone.
 

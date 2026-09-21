@@ -179,8 +179,8 @@ copy for convenience and is never the definition.
 
 This section explains why priority 4 sits below priority 3. A disc costs a
 small amount of money. A disc swap costs a minute of human attention on every
-future restore. The capping knobs of OPERATIONS.md section 8.2 turn that
-ordering into numbers. Section 2.11 gives the arithmetic.
+future restore. Section 2.11 gives the arithmetic. The build has no capping
+knob; section 2.21 lists capping as a later idea.
 
 ### 1.5 Implementation phases
 
@@ -206,9 +206,9 @@ rule.
 scheduled. A backlog item may never be built. Nothing else waits for it, and
 building it later changes no structure, because its format is already frozen.
 
-OPERATIONS.md sections 16 and 17 tag every command, option and config key with
-its phase, and OPERATIONS.md section 16.1 holds the refusal rule for a command
-of a later phase.
+OPERATIONS.md carries no phase tag. Its "CLI reference" and "Configuration
+reference" list only what the build has, and the build refuses every other
+command, option and key by name.
 
 The Phase 1 disc model is deliberately simple. A disc holds exactly one run.
 The run is written once. Nothing is ever overwritten. The disc is left open, so
@@ -228,9 +228,7 @@ slower implementation still conforms.
 
 | Item | Target | Class | Home |
 |---|---|---|---|
-| Commit cost on an unchanged file | One `stat`. The file is never opened. | rule | OPERATIONS.md 7.2 |
-| Commit cost on an unchanged directory | One tree id comparison. | rule | OPERATIONS.md 7.1 |
-| Staging space for a commit | The change set, never a second copy of the source. | rule | OPERATIONS.md 7.2 |
+| Staging space for a commit | The new chunks only, never a second copy of the source. | rule | OPERATIONS.md 7.1 |
 | FEC encoder working set | 512 MiB to 1 GiB per band, at `fec.band_stripes` 2048. | budget | section 2.9 |
 | FEC encode time, 25 GB run | Under 2 minutes on one core. Never the bottleneck against a 4x burn. | budget | section 2.9 |
 | Parity overhead per run | `m / (k + 1 + m)` = 9.02 percent of the stripe. | rule | FORMAT.md 10.1 |
@@ -239,15 +237,8 @@ slower implementation still conforms.
 | Manifest cost per run | 64 bytes per object, about 0.0015 percent of the disc. | rule | FORMAT.md 11.2 |
 | Filter false-positive rate | 2^-16 per run. | rule | FORMAT.md 11.1 |
 | UDF overhead per object, P4 | About 3.1 KiB, under 0.1 percent of a 25 GB disc. | budget | FORMAT.md 4.3 |
-| Duplication overhead per repository | Warn above 5 percent. | budget | OPERATIONS.md 8.4 |
-| Restore peak staging | One disc's own share of the plan, freed per file as each completes; never a config budget. | rule | OPERATIONS.md 14.2 |
+| Restore memory and spool | No spool. Nothing that `restore` holds grows with the snapshot size. | rule | OPERATIONS.md 14.2 |
 | Restore disc switches | One per disc in the plan, which is the minimum. | rule | OPERATIONS.md 14.2 |
-| Restore read rate for planning | `restore.rate_mb_s`, default 20 MB/s. | budget | OPERATIONS.md 14.5 |
-| Restore fixed cost per switch | `restore.switch_seconds`, default 60 s. | budget | OPERATIONS.md 14.5 |
-| Scrub throughput | About 15 minutes per 25 GB disc, about 20 discs per drive-day. | budget | OPERATIONS.md 13.3 |
-| Library scrub cycle | Under 12 months. | budget | OPERATIONS.md 13.3 |
-| Cache rebuild, level 1 | One disc mount, a few seconds. | budget | OPERATIONS.md 2.5 |
-| Cache rebuild, level 3 | One mount per disc, about 0.3 s of reading each. | budget | OPERATIONS.md 2.5 |
 | Reindex table cost | About 72 bytes per object; 15 minutes per 25 GB disc to build. | budget | FORMAT.md 3.7 |
 | Profile 1 append cost | About one block per new object. | budget | section 5.6 |
 | Profile 2 append cost | The whole directory tree, about 107 MiB at 100,000 objects. | budget | section 5.6 |
@@ -347,8 +338,8 @@ structure is validated before any field of it is used.
    +---------------------+                  +-------------------------+
 ```
 
-The data flows themselves are operational and live in OPERATIONS.md section
-2.8. The trust boundaries are normative and live in FORMAT.md section 2.11.
+The data flows themselves are operational and live in OPERATIONS.md's
+"Staging state machine" and "Restore". The trust boundaries are normative and live in FORMAT.md section 2.11.
 
 | Component | Responsibility | Talks to |
 |---|---|---|
@@ -1031,11 +1022,12 @@ chunks are spread one per disc across 500 discs, restoring means 500 disc
 swaps. NoahsArk therefore adopts capping, Lillibridge's technique from FAST
 2013, with a run in place of a container. Their result: capping at 10 to 20
 containers per 20 MB segment costs a few percent of dedup ratio and buys a 2x
-to 6x restore speed-up. OPERATIONS.md section 8.2 holds the knobs and the
+to 6x restore speed-up. Section 2.21 lists the knobs as a later idea, with the
 presets.
 
-**The packing algorithm.** The rules of OPERATIONS.md section 8.1 and the knobs
-of OPERATIONS.md section 8.2 are the requirement; any algorithm that satisfies them conforms.
+**The packing algorithm.** OPERATIONS.md section 8.1 holds the rules that the
+build follows. The text below describes a design with capping knobs that is
+not built; section 2.21 lists it as a later idea.
 The reference implementation uses two passes, plus a pre-pass.
 
 ```
@@ -1105,10 +1097,9 @@ code 1 alone.
 daemon. A watcher is Phase 3. It will record changed paths with `fsnotify` and
 append them to a log, and `commit` will take the union of that log and the
 quick check. It will never commit by itself, because a commit needs a stable
-filesystem. Nothing has to change for it to arrive: `commit` is idempotent, so
-a commit whose root tree equals the parent's root tree writes no new snapshot
-object and moves no ref, unless `--force` is given. The watcher is therefore an
-accelerator for the change scan, and it changes no format and no state.
+filesystem. The build has no quick check and no parent snapshot yet; section
+2.21 lists both as later ideas. The watcher is an accelerator for the change
+scan, and it changes no format and no state.
 
 Rejected: **real-time automatic commit in watch mode.** A daemon that commits
 by itself cannot know when the source is quiescent, and a commit must run
@@ -1129,7 +1120,7 @@ that holds the data but is not the machine that holds the discs.
 
 Mode A mounts the source over NFS and runs `commit` normally. Prefer NFS over
 SMB: NFS keeps link counts, extended attributes and often ctime, and SMB keeps
-few of them. OPERATIONS.md section 7.8 holds the behaviour table.
+few of them. OPERATIONS.md's "Source policy" holds the behaviour table.
 
 Mode B runs one command on the data host, over ssh, to produce a stat listing:
 
@@ -1163,9 +1154,8 @@ runs it by default.
 
 Rule: OPERATIONS.md section 14.
 
-**The time model constants.** The formula in OPERATIONS.md section 14.5 is the
-requirement. The constants below are the defaults that `restore.rate_mb_s` and
-`restore.switch_seconds` replace.
+**The time model constants.** The build has no time model and no key for one.
+The constants below are estimates for a human who plans a restore.
 
 | Quantity | Value | Class |
 |---|---|---|
@@ -1371,10 +1361,9 @@ normative outcome is only that every required test runs and that a physical
 burn is never part of CI. Any CI system that runs the required tests conforms;
 GitHub Actions is not required. Section 7 holds the workflow.
 
-**Probes.** OPERATIONS.md section 22 holds the rule: the probe list is
-normative, and each question in it must be answered before the feature that
-depends on it ships. This document holds the probe list itself and the action
-paths, which are informative. Any open question about tool behaviour becomes a
+**Probes.** A probe records an unknown answer; a test asserts a known one.
+This document holds the probe list and the action paths, which are
+informative. Any open question about tool behaviour becomes a
 probe action: a small composite action that runs the experiment on an image
 file and records the result as a job artifact. A probe is not a test. A test
 asserts a known answer. A probe records an unknown one. When a probe answer
@@ -1571,6 +1560,22 @@ many future runs, the JSON loss report with a replay plan, shelf notes in the
 tool (`disc label`, `disc mark-degraded`), hardlink groups, extended
 attributes and ACLs, the restore time model, and the cache rebuild levels.
 
+Ideas that left OPERATIONS.md in the second pass of GitHub issue #26, one line
+each:
+
+- The quick check: `commit` reuses the parent entry of a file whose size, mtime and ctime did not change, and does not read the file.
+- Parent snapshots: a snapshot records its parent, and an unchanged tree writes no new snapshot.
+- `commit --checksum` and `commit --source-root`.
+- The numeric owner: `commit` records the real uid and gid of each entry.
+- A warning at `restore` for each `UNSTABLE` entry.
+- `restore` through directory file descriptors (`openat`, `openat2`), so that the check and the use of a path are one system call.
+- A minimum set cover planner for a chunk that more than one disc holds.
+- The image build copies files in fill order, so that the copy order equals the LBA order.
+- A `--progress` option that forces the progress line when standard error is not a terminal.
+- `init` refuses to create a repository inside another repository.
+- A compaction of the state log.
+- A cache format version check that deletes and builds the cache again.
+
 ---
 
 ## 3. Open judgement calls
@@ -1583,63 +1588,17 @@ FORMAT.md section 12.8 is the index that governs that column.
 
 | Id | Key or constant | Current value | Defined in | Disc bytes | Note |
 |---|---|---|---|---|---|
-| OC001 | `disc.expected_runs` | 2 under profile 0, 32 under profiles 1 and 2 | OPERATIONS.md 9.5, 17.5 | Yes | Named a heuristic. 2 reserves for a hypothetical Phase 2 repair run; 32 is an unjustified round number. |
-| OC002 | `earlier_runs` in the reference estimator | set equal to `expected_runs` | OPERATIONS.md 9.6 | Yes | Deliberately conservative, not exact. Prices every catalog copy as if it were the disc's last. |
-| OC003 | `catalog.expected_snapshots` | 10,000 | OPERATIONS.md 17.8, 9.6 | Yes | A planning count with no derivation. It dominates `table_bytes` at scale. |
-| OC004 | `catalog.table_reserve_bytes` | 65,536 | OPERATIONS.md 17.8, 9.6 | Yes | A residual planning reserve, round number. |
-| OC005 | `snapobj_bytes` worst case | 640 bytes | FORMAT.md 11.4; OPERATIONS.md 9.6 | Yes | A size cap asserted, not derived from the snapshot header layout. |
-| OC006 | `filter_bytes` planning figure | `84 + ceil(n * 91 / 40)`, that is 18.2 bits per key | OPERATIONS.md 9.6; FORMAT.md 11.1 | Yes | The asymptotic paper figure; the real body size from the sizing rule is a little larger. |
-| OC007 | `manifest_bytes` header allowance | 4,096 bytes added to `64 * objects_per_run` | OPERATIONS.md 9.6 | Yes | Round allowance for header, TOC, fan-out and small chunks. |
-| OC008 | `alignment_padding` | `expected_runs * 16` sectors | OPERATIONS.md 9.4 | Yes | Assumes exactly one 32 KiB alignment loss per run. |
-| OC009 | `manifest.history_depth` | 8 | FORMAT.md 11.7; OPERATIONS.md 17.8 | Yes | Chosen so one disc yields the depth plus one manifests. Nothing fixes the value at 8. |
-| OC010 | `catalog.max_bytes` | 512 MiB | OPERATIONS.md 17.8; FORMAT.md 11.7 | Yes | Round cap. |
-| OC011 | `catalog.snapobj_pack_threshold` | 1,000 snapshots | OPERATIONS.md 17.8; FORMAT.md 11.4 | Yes | Round threshold for switching to `snapobj.bin`. |
-| OC012 | `bundle.threshold` | 1 MiB | OPERATIONS.md 17.2; FORMAT.md 4.5 | Yes | Changes which chunks are bundled, so it changes disc bytes. Derived from a UDF overhead argument, not a requirement. |
-| OC013 | `bundle.target_size` | 64 MiB | OPERATIONS.md 17.2; FORMAT.md 6.3 | Yes | Fixes bundle ids. No derivation given. |
-| OC014 | `chunklist.inline_max` | 64 | OPERATIONS.md 17.2; FORMAT.md 6.4 | Yes | Explicitly a writer choice, not a format limit. |
-| OC015 | `tree.tlv_spill_threshold` | 4 KiB | OPERATIONS.md 17.2; FORMAT.md 6.11 | Yes | Changes tree bytes. Round number. |
-| OC016 | `chunker.profile` default | P4 (1 MiB / 4 MiB / 16 MiB) | FORMAT.md 4.3; OPERATIONS.md 17.2 | Yes | Argued from object counts and UDF overhead, not required. |
-| OC017 | `hash.current` default | `blake3` | FORMAT.md 3.2; OPERATIONS.md 17.2 | Yes | A speed argument. SHA-256 is equally conforming. |
-| OC018 | `compression.level` | zstd 3 | FORMAT.md 5.3; OPERATIONS.md 17.3 | Yes | "The balance point". |
-| OC019 | `compression.min_gain` | 0.05 | FORMAT.md 5.4; OPERATIONS.md 17.3 | Yes | 5 percent chosen on a restore-cost argument. |
+| OC016 | Chunker profile | P4 (1 MiB / 4 MiB / 16 MiB) | FORMAT.md 4.3; a constant of the build, OPERATIONS.md 7.1 | Yes | Argued from object counts and UDF overhead, not required. |
+| OC018 | Compression level | zstd 3 | FORMAT.md 5.3; a constant of the build, OPERATIONS.md 7.1 | Yes | "The balance point". |
+| OC019 | Compression minimum gain | 0.05 | FORMAT.md 5.4; a constant of the build, OPERATIONS.md 7.1 | Yes | 5 percent chosen on a restore-cost argument. |
 | OC020 | `k = 231`, `m = 23` | fixed for version 1 | FORMAT.md 10.1, 10.2 | Yes | Chosen as "the knee of the curve" at about 10 percent parity, from an informative comparison table. |
 | OC021 | Checksum column digest width | first 8 bytes of BLAKE3-256 | FORMAT.md 10.3 | Yes | 2^-64 per sector asserted as sufficient for decay detection. |
-| OC022 | `fec.band_stripes` | 2048, for a 512 MiB to 1 GiB working set | OPERATIONS.md 17.7; NOTES.md 2.9 | No | Explicitly one encoder's strategy, not a requirement. |
-| OC023 | `fec.reburn_margin` | 0.50 | OPERATIONS.md 17.7, 13.5 | No | The 50 percent re-burn trigger is a round number. |
-| OC024 | `fec.group_size` | 0, with 10 or 20 recommended | OPERATIONS.md 17.7 | No | Cross-disc group size is an operational guess. |
-| OC025 | `disc.fill_ratio` | 0.95 | OPERATIONS.md 17.5, 9.1 | Yes | Based on "the outer 3 mm holds about 5 percent". |
-| OC026 | `disc.min_fill` | 0.90 | OPERATIONS.md 17.5, 16.8 | No | Pack trigger threshold. |
-| OC027 | `disc.max_wait` | 30 days | OPERATIONS.md 17.5, 16.8 | No | Pack trigger age. |
-| OC028 | `disc.spare` default and `disc.spare_reserve_bytes` | `min`, 256 MiB; 512 MiB under `default` | OPERATIONS.md 17.5, 12.5, 9.4 | Yes | Approximate spare sizes ("about 256 MB", "about 512 MB"). |
-| OC029 | `disc.min_spare_ratio` | 0.20 | OPERATIONS.md 17.5, 12.5 | No | Warning threshold, round number. |
-| OC030 | `disc.close_policy` | `never` | OPERATIONS.md 12.2, 17.5 | No | A policy choice in favour of later appends. |
-| OC031 | `fs.fanout_levels` | 1 | FORMAT.md 3.5; OPERATIONS.md 17.4 | Yes | Both 1 and 2 are acceptable; 1 is chosen. |
-| OC032 | `manifest.fanout_bits` and the 16-bit switch point | 8, must be 16 above 1,000,000 objects in a run | OPERATIONS.md 17.8; FORMAT.md 11.2 | Yes | The switch point is a seek-cost argument. |
+| OC031 | Object fan-out levels | 1 | FORMAT.md 3.5 | Yes | Both 1 and 2 are acceptable; 1 is chosen. |
 | OC033 | Filter seed search bound | at most 100 attempts, seeds 0..99 | FORMAT.md 11.1 | Yes | Round bound; failure is declared a writer defect. |
 | OC034 | Filter geometry constants | `ln(n)/ln(3.33) + 2.25`, `0.875 + 0.25 * ln(1e6)/ln(n)`, cap 262144 | FORMAT.md 11.1 | Yes | Taken from the reference construction, binding only for the golden vector. |
-| OC035 | `filter.rollup_threshold` | 64 MiB | OPERATIONS.md 17.8; FORMAT.md 11.1 | No | Reserved super-filter threshold that will never be reached at the projected sizes. |
-| OC036 | `locality.max_source_runs` and preset | 8, preset `balanced` | OPERATIONS.md 8.2, 17.10 | Yes | From the capping paper's 10-to-20 range, halved without explanation. |
-| OC037 | `locality.segment_size` | 1 GiB | OPERATIONS.md 8.2, 17.10 | Yes | Round segment size. |
-| OC038 | `locality.rewrite_below_chunks` | 64 | OPERATIONS.md 8.2, 17.10 | Yes | Round threshold. |
-| OC039 | `locality.max_duplicate_bytes_per_file` | 64 MiB | OPERATIONS.md 8.2, 17.10 | Yes | Round per-file cap. |
-| OC040 | `locality.max_duplicate_ratio_per_file` | 0.05 | OPERATIONS.md 8.2, 17.10 | Yes | Round per-file ratio. |
-| OC041 | `locality.disc_budget` | 0.03 | OPERATIONS.md 8.2, 17.10 | Yes | Round per-disc cap. |
-| OC042 | Duplication overhead warning | above 5 percent | OPERATIONS.md 8.4 | No | A budget, not a requirement. |
-| OC043 | `split.threshold` | 0.25 | OPERATIONS.md 8.6, 17.10 | Yes | "Wasting a quarter of a disc is cheaper" is an assertion. |
-| OC044 | Consolidation triggers | 20 discs, spread 2.0, 8 hours, 5 years | OPERATIONS.md 8.7, 17.10 | No | All four are operational guesses. |
-| OC045 | `staging.retain_after_clean` | 7 days | OPERATIONS.md 4.5, 17.12 | No | Round retention. |
-| OC048 | `restore.rate_mb_s`, `restore.switch_seconds` | 20 MB/s, 60 s | OPERATIONS.md 14.5, 17.13 | No | Both marked estimated. The 60 s is a sum of estimated components. |
-| OC049 | `restore.score` | `bytes` | OPERATIONS.md 14.1, 17.13 | No | Bytes chosen over object count. |
-| OC050 | `scrub.first_check_hours` | 24 | OPERATIONS.md 13.3, 17.14 | No | Stated as a requirement, but the 24-hour figure itself is a judgement. |
-| OC051 | `scrub.schedule` default | `3m,12m,then 12m to 5y,then 6m` | OPERATIONS.md 13.3, 17.14 | No | Explicitly "the recommended default". |
-| OC052 | `scrub.degraded_interval`, `scrub.max_disc_age` | 3 months, 10 years | OPERATIONS.md 17.14, 13.5 | No | Round intervals. |
-| OC053 | Library scrub cycle target | under 12 months | OPERATIONS.md 13.3; NOTES.md 1.6 | No | A budget. |
-| OC054 | Health counter thresholds | LDC average below 13, BIS average below 15 | OPERATIONS.md 13.5 | No | Vendor-dependent figures. |
-| OC055 | `source.mtime_slack` | 0 local, 2 s remote | OPERATIONS.md 7.8, 17.9 | No | Round slack for remote mounts. |
-| OC056 | `source.checksum_every` | 30 days | OPERATIONS.md 7.5, 17.9 | No | Round rehash interval. |
-| OC057 | `commit.retry_unstable` | 1 | OPERATIONS.md 7.6, 17.9 | No | One retry chosen arbitrarily. |
-| OC058 | `burner.speed`, `burner.speed_mdisc` | 4, 2 | OPERATIONS.md 17.6 | No | Conservative speeds. |
-| OC059 | `burn.reload_seconds` | 10 | OPERATIONS.md 17.6 | No | Tuning wait. |
+| OC045 | `staging.retain_after_clean` | 7 days | OPERATIONS.md 4.5, 17 | No | Round retention. |
+| OC057 | `commit.retry_unstable` | 1 | OPERATIONS.md 7.6, 17 | No | One retry chosen arbitrarily. |
+| OC058 | The speed in the printed burn line, and the M-DISC speed | 4, 2 | OPERATIONS.md 10.2 | No | Conservative speeds. |
 | OC060 | `README.txt` and `FORMAT.txt` caps | 16 KiB and 64 KiB | FORMAT.md 8.4, 8.5 | Yes | Normative caps chosen with headroom, not derived. |
 | OC061 | Gear seed string | `"noahsark/gear/v1"` | FORMAT.md 4.8 | Yes | An arbitrary but frozen 16-byte seed. |
 | OC062 | Cauchy parameter choice | `x_j = k + j`, `y_i = i` | FORMAT.md 10.2 | Yes | One of many valid Cauchy assignments; frozen by fiat. |
@@ -1648,14 +1607,8 @@ FORMAT.md section 12.8 is the index that governs that column.
 | OC065 | Run directory zero padding | 10 decimal digits, so `run_seq` is capped at 9,999,999,999 | FORMAT.md 8.3, 2.10 | Yes | The width is a formatting choice that becomes a format limit. |
 | OC066 | Ref name limit | 1 to 40 bytes | FORMAT.md 6.18, 2.10 | Yes | Declared part of the format without derivation. |
 | OC067 | Disc label widths | 64 bytes in the superblock, 48 in the disc directory | FORMAT.md 7.5, 11.6, 2.10 | Yes | Two different widths for one label. |
-| OC068 | Shelf note width | 128 bytes | OPERATIONS.md 3.4; FORMAT.md 2.10 | No | Round width. Local file only. |
-| OC069 | Burn step path limits | `source_path` 256 bytes, `aux_path` 184 bytes | OPERATIONS.md 11.3; FORMAT.md 2.10 | No | Chosen to make the step record exactly 512 bytes. |
 | OC070 | On-disc name and path caps | 126 characters, under 220 characters | FORMAT.md 8.7, 2.10 | Yes | 126 is half of a UDF limit; 220 is a Windows `MAX_PATH` margin. |
-| OC071 | `init --scan-discs` safety gap | add at least 100 to both sequence numbers | OPERATIONS.md 16.2 | No | A recommendation with a round number. |
 | OC072 | Filter false-positive target | 2^-16 per run, via BinaryFuse16 | FORMAT.md 11.1 | Yes | Chosen from a 2,000-run spurious-hit calculation. |
-| OC073 | `restore.drives` | 1 | OPERATIONS.md 17.13 | No | Single-drive default; multi-drive is Phase 3. |
-| OC074 | `metadata.atime`, `btime`, `xattr`, `acl`, `windows` | all false | OPERATIONS.md 17.11 | Yes | Off by default on a tree-churn argument. |
-| OC075 | Object-count planning figure | `objects_per_run = ceil(capacity_forced * 2048 / chunk_avg)` | OPERATIONS.md 9.6 | Yes | A planning figure only; the packer never limits a run by it. |
 
 ---
 
@@ -1718,8 +1671,8 @@ already supports and that growisofs accepts as a `-M` image.
 ### 4.2 growisofs internals
 
 This records where in the growisofs source each burn rule comes from, so that a
-later reader can re-check it. OPERATIONS.md sections 11.7 and 11.8 hold the
-rules themselves.
+later reader can re-check it. OPERATIONS.md's "Burning is externalized" and
+"Profile 0 burn paths" hold the rules themselves.
 
 | Rule | Where it comes from |
 |---|---|
@@ -2364,7 +2317,6 @@ package at all.**
 | zstd | `github.com/klauspost/compress/zstd` |
 | BLAKE3 | `lukechampine.com/blake3` or `github.com/zeebo/blake3` |
 | BinaryFuse16 (FORMAT.md 11.1) | `github.com/FastFilter/xorfilter` |
-| UDF File Entry parsing (OPERATIONS.md 10.3) | `github.com/mogaika/udf`, read-only |
 | Watch mode (Phase 3) | `github.com/fsnotify/fsnotify` |
 | CLI | any |
 
@@ -2506,9 +2458,9 @@ The section named against a term is its normative home.
 
 | Term | Definition |
 |---|---|
-| **Append** | Adding a run to a disc that already holds one. Phase 2. OPERATIONS.md section 10.5 is the normative home. |
+| **Append** | Adding a run to a disc that already holds one. It is not built; section 2.21 lists it as a later idea. |
 | **Metadata object** | A tree, a chunklist or a snapshot object: an object that holds references and no file content. Bit 2 of `extent_flags` and of `record_flags` marks one. |
-| **Local ref log** | `<repo>/refs.bin`, the append-only log of ref values that OPERATIONS.md section 3.3 defines. |
+| **Local refs** | `<repo>/refs.txt`, the text file of ref names and snapshot ids that OPERATIONS.md section 3.3 defines. |
 | **Pending snapshot chain** | The snapshot objects in staging whose state is below CLEAN, reachable from the head named by the local ref log. |
 | **Bundle** | An object that holds many small chunks plus an index. |
 | **Burn plan** | The machine-readable file that `pack` writes and `burn` renders into command lines. |
@@ -2519,7 +2471,7 @@ The section named against a term is its normative home.
 | **Direct mode** | A commit that walks the source itself and reads only changed files. |
 | **Mirror mode** | A commit whose changed files are pulled into a mirror directory first, by `sync`. |
 | **Unstable path** | A file whose size or mtime changed while it was being read. The parent entry is reused, or the content is stored with the `UNSTABLE` flag. The path is reported. |
-| **Quick check** | The size, mtime and ctime comparison against the parent snapshot's tree entry. |
+| **Quick check** | The size, mtime and ctime comparison against the parent snapshot's tree entry. It is not built; section 2.21 lists it as a later idea. |
 | **Chunk** | A content-defined slice of a file. The unit of deduplication. |
 | **Chunklist** | An object that holds the ordered chunk ids of one large file. |
 | **Column** | One of 255 ranges of `L` sectors: `k` data columns inside the parity domain, the checksum column, and `m` parity columns, each in its own file. |
@@ -2562,7 +2514,7 @@ disagree, FORMAT.md wins for the on-disc format.
 |---|---|
 | FastCDC | W. Xia et al., "The Design of Fast Content-Defined Chunking for Data Deduplication Based Storage Systems", IEEE Transactions on Parallel and Distributed Systems, 2020. FORMAT.md sections 4.1 to 4.9. |
 | BinaryFuse filters | T. M. Graf and D. Lemire, "Binary Fuse Filters: Fast and Smaller Than Xor Filters", ACM Journal of Experimental Algorithmics, 2022. FORMAT.md section 11.1. |
-| Capping | M. Lillibridge, K. Eshghi and D. Bhagwat, "Improving Restore Speed for Backup Systems that Use Inline Chunk-Based Deduplication", USENIX FAST 2013. OPERATIONS.md section 8.2. |
+| Capping | M. Lillibridge, K. Eshghi and D. Bhagwat, "Improving Restore Speed for Backup Systems that Use Inline Chunk-Based Deduplication", USENIX FAST 2013. Section 2.11. |
 | Reed-Solomon codes | I. S. Reed and G. Solomon, "Polynomial Codes over Certain Finite Fields", Journal of SIAM, 1960. FORMAT.md section 10.1. |
 | Cauchy generator matrices | J. Blömer et al., "An XOR-Based Erasure-Resilient Coding Scheme", ICSI TR-95-048, 1995. FORMAT.md section 10.2. |
 | dvdisaster RS03 | dvdisaster documentation, the RS03 codec. Informative comparison in section 4.8. |
@@ -2571,17 +2523,17 @@ disagree, FORMAT.md wins for the on-disc format.
 | Multihash and multicodec | The multiformats specifications, multihash and the multicodec table. FORMAT.md sections 2.6 and 3.4. |
 | CRC-32C | G. Castagnoli, S. Bräuer and M. Herrmann, "Optimization of Cyclic Redundancy-Check Codes with 24 and 32 Parity Bits", IEEE Transactions on Communications, 1993; parameters as used by RFC 3720 (iSCSI). FORMAT.md section 2.1. |
 | zstd | RFC 8878, Zstandard Compression and the 'application/zstd' Media Type. FORMAT.md section 5. |
-| UDF 2.01 | OSTA Universal Disk Format Specification, revision 2.01, and ECMA-167, 3rd edition. OPERATIONS.md sections 10.1 and 10.5. |
-| ISO 9660:1999 | ISO 9660:1988 with the 1999 amendment (level 4), and ECMA-119. OPERATIONS.md section 10.6. |
+| UDF 2.01 | OSTA Universal Disk Format Specification, revision 2.01, and ECMA-167, 3rd edition. OPERATIONS.md section 10.1. |
+| ISO 9660:1999 | ISO 9660:1988 with the 1999 amendment (level 4), and ECMA-119. Section 4.6. |
 | Blu-ray error correction | Blu-ray Disc Association, "White Paper Blu-ray Disc Format, 1.A Physical Format Specifications for BD-RE", the LDC and BIS picket code. Section 4.7. |
-| dvd+rw-tools | growisofs and dvd+rw-mediainfo, upstream 7.1 with the Debian patch set. OPERATIONS.md sections 11.8 and 11.9, and sections 4.2 and 4.3. |
+| dvd+rw-tools | growisofs and dvd+rw-mediainfo, upstream 7.1 with the Debian patch set. OPERATIONS.md section 11.9, and sections 4.2 and 4.3. |
 | udftools | mkudffs and udfinfo, 2.3 or later. OPERATIONS.md section 10.1. |
-| GNU ddrescue | The ddrescue manual, the mapfile format. OPERATIONS.md sections 13.2 and 24. |
+| GNU ddrescue | The ddrescue manual, the mapfile format. OPERATIONS.md sections 13.4 and 24. |
 | Git multi-pack-index | Git technical documentation, "multi-pack-index format". FORMAT.md section 11.2 and OPERATIONS.md section 2.4. |
 | Git partial clone | Git technical documentation, "partial clone", the promisor discipline. FORMAT.md section 11.3. |
 | GEFS | O. Read, GEFS, a content-addressed filesystem for Plan 9: hashed pointers and one root per snapshot. FORMAT.md sections 2.1 and 6.15. |
 | Duplicacy | The two-step fossil collection rule. OPERATIONS.md section 4.5. |
-| Bacula | The bootstrap file. OPERATIONS.md section 14.4. |
+| Bacula | The bootstrap file. |
 | restic | The bundle (pack) shape and the Windows ACL inheritance defect. FORMAT.md section 6.3 and section 2.14. |
 | age | The separation of encryption from signing that FORMAT.md section 6.19 reserves. |
 | Linux kernel | `fs/udf/super.c` for the write-once read-only rule, and the `openat2` and `RESOLVE_*` flags that FORMAT.md section 6.12 and OPERATIONS.md section 15.6 rest on. |
@@ -2601,6 +2553,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 0.4.27 | **OPERATIONS.md second simplification pass (GitHub issue #26): the document describes the build.** OPERATIONS.md is now document version 4.0 and about half its length. The rule of the pass: the code is the truth. Corrected: the local refs are `<repo>/refs.txt`, a text file, not a binary `refs.bin` log, and the log container header is gone; the ledgers `discs.bin` and `refslog.bin` are described; `commit` reads every file on every run, writes a root snapshot each time and finds a known object through the state log (the quick check, the parent chain, the pending snapshot chain and "commit is idempotent" were never built); `commit` records uid 0 and gid 0; the restore plan groups chunks by disc and sorts (no set cover); `restore` applies mode, mtime, then the owner as root, checks each path component with `lstat`, and does not read the `UNSTABLE` flag; `restore` runs `umount` and `eject` between discs; `verify` prints no `verify: ok` line and writes the cache entries of the disc; `image build` copies the tree in walk order and passes no `--label` to `mkudffs`; there is no `--progress` option; `init` does not refuse a nested repository; the state log is never compacted. The configuration reference is one table with exactly the 12 keys of `knownConfigKeys`; the CLI reference is one syntax block, one option table and one note for each command; the failure table quotes the real messages; the test list names the unit test packages and the 7 e2e cells. `docs/moved-from-format.md` is deleted: its exclude language, capacity invariants and settings index described keys that the build does not have. NOTES.md: the rows of the performance table and of "Open judgement calls" that cited deleted OPERATIONS.md sections or keys that no code reads are deleted or corrected, and the ideas that left OPERATIONS.md are one line each in "2.21 Later ideas". `docs/decisions.md` lost the entries for deleted features. |
 | 0.4.26 | **The disc-swap restore writes with no spool (GitHub issue #33, part 3).** `internal/restore.Assembler` replaces the manifest and the spool under `<repo>/staging/restore/`. For each disc in plan order it walks the snapshot's tree one time, reads each file's blob from the cache, and writes each chunk that is on that disc straight into a hidden part file, `<dir>/.<name>.noahsark-part`, at the chunk's own offset. The final name appears one time, by `link` of the part file and then `unlink`, so a half-written file never carries the final name and the no-overwrite rule holds with no race; a filesystem with no hard link falls back to a check and a rename. A snapshot that holds a file of the part name itself gets a numbered suffix. Each byte is copied one time, and the restore holds one disc's object id set, one chunk, and one file's blob entries; for each file that is not complete it keeps one small record, with no chunk id in it. A part file left by a killed run is resumed chunk by chunk against each chunk's content id, thus a rerun asks only for the discs that still hold a chunk it needs, and a successful run leaves no part file. `Manifest`, `MarkSpooled`, `WriteReady`, `SpoolObjectPath` and the `staging/restore/` directory are gone. With no spool, `restore` writes nothing in the repository, so no mode of `restore` takes the repository lock any more. `RestoreMulti` keeps its own write path. No on-disc byte changed. |
 | 0.4.25 | **No staging budget, no plan command or plan file (GitHub issue #33, parts 1 and 2).** The disc-swap restore spools what one disc's plan entry needs, reads it, frees each file's chunks as it completes, and moves to the next disc: one pass for each disc, never split into several. `restore.staging_budget`, `--staging-budget` (on `restore` and the deleted `plan` command), `--interactive` and `--plan=FILE` are gone; `internal/plan/passes.go`, `OverBudgetFile`, `Manifest.FileExceedingBudget` and the JSON plan document are deleted with them. `internal/plan` keeps `Build` and `group` alone. The `plan` command is gone; `restore --mount` prints the disc list (the number, the label, the uuid and the object count of each disc, then a totals line) before it reads the first disc, and `restore --dry-run` prints that same list and stops, writing nothing and taking no lock. `--dry-run` needs `--mount`: the all-discs-at-once modes read every disc together and have no list to preview, so they refuse it by name. The spool itself, `internal/restore/discswap.go`, is unchanged; its rewrite around a per-disc walk is GitHub issue #33's third part, not done here. No on-disc byte changed. |
 | 0.4.24 | **Excludes, one filesystem, and `pack --dry-run` (GitHub issue #37).** Three of the four options the issue asked for are built; `commit --checksum`, `commit --source-root` and `rebuild-cache --source` stay planned text, by the user's own choice. `commit --exclude=PATTERN` (repeatable), the config key `sources.exclude` (repeatable), and a `.noahsarkignore` file in the source root together name a small, gitignore-style pattern language: no `/` matches a name at any depth, a `/` anchors at the source root, a trailing `/` is directory-only, `*` and `?` do not cross `/`, `**` does, `[abc]` classes work as in `path.Match`, and negation (`!`) is a usage or config error naming the pattern. A matched directory is not walked; `commit` prints one line with the count of paths the excludes kept out. The rule set is not stored on the snapshot: it only decides which tree entries a commit writes, so no on-disc byte or format changed, and the "Exclude pattern language" heading the design text once pointed at in FORMAT.md is not needed. `commit --one-file-system` keeps the walk on the source root's own device, comparing `syscall.Stat_t.Dev`; a crossed mount point is recorded as an empty directory instead, and `commit` prints one line for each one skipped. It carries no config key: crossing or not crossing a mount is a per-command choice. The repository already handles OS-specific behaviour by a runtime type assertion on `info.Sys()`, not a build tag, so `--one-file-system` follows that pattern and refuses itself at run time on a platform that reports no device id, rather than adding the repository's first build-tagged file. `pack --dry-run` predicts how many discs the STAGED pool needs at a given capacity by calling the same `selectRun` a real `pack` uses, once per predicted disc, over a shrinking in-memory candidate list; it writes no run tree, state record, cache entry or ledger row, and consumes no run or disc sequence number, so it takes no repository lock. Its fixed-overhead estimate is built once and reused for every predicted disc, so it can undercount a real pack's growing `DISCS` table by a sector or two near a capacity edge; the output says so. No on-disc byte changed. |
@@ -2642,7 +2595,7 @@ of each entry is unchanged.
 
 ## 11. Decision index
 
-The thirteen decisions whose home is this document.
+The twelve decisions whose home is this document.
 
 | Id | Decision | Section |
 |---|---|---|
@@ -2653,9 +2606,8 @@ The thirteen decisions whose home is this document.
 | D505 | The parent snapshot's trees take the place of rsync's old copy, so the staging disk never needs a second copy of the source. | 2.12 |
 | D523 | NoahsArk has no built-in scheduler. `commit` is a batch job run by an external scheduler, and the exclusive repository lock keeps two commits from running at once. | 2.12, 7 |
 | D524 | Phase 1 has manual `commit` only. There is no daemon. A watcher never commits by itself. | 2.12 |
-| D525 | `commit` is idempotent, so a watcher changes no format and no state. | 2.12 |
 | D605 | Every burn test uses an image file first. Physical burns are a manual checklist, not CI. | 2.17 |
-| D606 | The 59 required tests must all run. | 2.17 |
+| D606 | Every test of the test list must run. | 2.17 |
 | D607 | A probe records an unknown answer; a test asserts a known one. A probe answer that becomes stable moves into the test list as a test. | 2.17, 7 |
 | D609 | Probe 2 (Windows reads ISO 9660:1999 level 4 long lowercase names) is blocking; profile 2 must not be used in production until it passes. | 4.6, 7 |
 | D618 | Chunk and hash in parallel across files. Write the run image single-threaded, because copy order is LBA order. | 6 |
