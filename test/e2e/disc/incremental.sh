@@ -65,7 +65,7 @@ scenario_incremental() {
 	local field_out1
 	field_out1="$(run_tool ci-disc-field "$mnt1")"
 	echo "$field_out1"
-	if ! echo "$field_out1" | grep -qE 'discs: 1$'; then
+	if ! grep -qE 'discs: 1$' <<<"$field_out1"; then
 		fail "incremental: disc 1's DISCS table does not record exactly 1 disc"
 	fi
 
@@ -112,7 +112,7 @@ scenario_incremental() {
 	local field_out2
 	field_out2="$(run_tool ci-disc-field "$mnt2")"
 	echo "$field_out2"
-	if ! echo "$field_out2" | grep -qE 'discs: 2$'; then
+	if ! grep -qE 'discs: 2$' <<<"$field_out2"; then
 		fail "incremental: disc 2's DISCS table does not record 2 discs (expected disc 1 as a prerequisite)"
 	fi
 

@@ -194,10 +194,12 @@ chain_assert_missing_disc() {
 	if [ "$code" -eq 0 ]; then
 		fail "chain: restore with a disc missing exited 0, want nonzero"
 	fi
-	if ! echo "$result" | grep -qF "$missing_uuid"; then
+	if ! grep -qF "$missing_uuid" <<<"$result"; then
 		fail "chain: restore-with-a-disc-missing did not name the missing disc's uuid ($missing_uuid)"
 	fi
-	log "chain: missing-disc restore refused as expected, naming disc $missing_uuid: $(echo "$result" | grep -F "$missing_uuid" | head -1)"
+	local matches
+	matches="$(grep -F "$missing_uuid" <<<"$result")"
+	log "chain: missing-disc restore refused as expected, naming disc $missing_uuid: $(head -1 <<<"$matches")"
 }
 
 # chain_commit_fixture LABEL WORK REPO NAME HALF_BYTES SEED builds and
@@ -272,8 +274,9 @@ chain_run() {
 	# Whichever snapshot id sorts first packs first (see chain_run's own
 	# comment), so it is the one guaranteed to fit fully in the three
 	# discs; that is the winner this scenario restores and checks.
-	local snap src sample full
-	if [ "$(printf '%s\n%s\n' "$snapA" "$snapB" | LC_ALL=C sort | head -1)" = "$snapA" ]; then
+	local snap src sample full sorted_snaps
+	sorted_snaps="$(printf '%s\n%s\n' "$snapA" "$snapB" | LC_ALL=C sort)"
+	if [ "$(head -1 <<<"$sorted_snaps")" = "$snapA" ]; then
 		snap="$snapA"
 		src="$srcA"
 		sample="$sampleA"
