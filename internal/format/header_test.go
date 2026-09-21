@@ -7,9 +7,7 @@ func testCommonHeader() CommonHeader {
 		MagicProject: ProjectMagic,
 		MagicKind:    MagicChunk,
 		VersionMajor: 1,
-		VersionMinor: 0,
 		HeaderLen:    CommonHeaderLen + ObjectHeaderLen,
-		ReservedU16:  0,
 		ReservedU64:  0,
 	}
 }
@@ -31,8 +29,8 @@ func TestCommonHeaderGolden(t *testing.T) {
 		t.Fatalf("decoded header mismatch: got %+v, want %+v", got, h)
 	}
 
-	if got.ReservedU16 != 0 {
-		t.Errorf("reserved_u16 not zero: 0x%04x", got.ReservedU16)
+	if got.ReservedU16a != 0 || got.ReservedU16b != 0 {
+		t.Errorf("reserved_u16 not zero: 0x%04x 0x%04x", got.ReservedU16a, got.ReservedU16b)
 	}
 	if got.ReservedU64 != 0 {
 		t.Errorf("reserved_u64 not zero: 0x%016x", got.ReservedU64)
@@ -75,11 +73,8 @@ func testObjectHeader() ObjectHeader {
 	return ObjectHeader{
 		Kind:         ObjectKindChunk,
 		HashAlgo:     HashAlgoSHA256,
-		DigestLen:    32,
-		Compression:  CompressionZstd,
-		Crypto:       0,
 		ReservedU8:   0,
-		ReservedU16:  0,
+		Compression:  CompressionZstd,
 		PayloadLen:   1024,
 		StoredLen:    512,
 		HeaderCRC32C: 0xDEADBEEF,
@@ -107,8 +102,8 @@ func TestObjectHeaderGolden(t *testing.T) {
 	if got.ReservedU8 != 0 {
 		t.Errorf("reserved_u8 not zero: 0x%02x", got.ReservedU8)
 	}
-	if got.ReservedU16 != 0 {
-		t.Errorf("reserved_u16 not zero: 0x%04x", got.ReservedU16)
+	if got.ReservedA != ([4]byte{}) {
+		t.Errorf("reserved_a not zero: %x", got.ReservedA)
 	}
 	if got.ReservedU32 != 0 {
 		t.Errorf("reserved_u32 not zero: 0x%08x", got.ReservedU32)

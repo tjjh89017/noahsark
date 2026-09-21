@@ -22,26 +22,12 @@ var (
 	MagicBlob     = magicFromString("BLOB")
 	MagicTree     = magicFromString("TREE")
 	MagicSnapshot = magicFromString("SNAPSHOT")
-	// MagicBundle is reserved for a later version. This build's writer never
-	// emits it; a reader refuses it.
-	MagicBundle   = magicFromString("BUNDLE")
 	MagicDisc     = magicFromString("DISC")
 	MagicRun      = magicFromString("RUN")
 	MagicIndex    = magicFromString("INDEX")
 	MagicChecksum = magicFromString("CHECKSUM")
 	MagicRefs     = magicFromString("REFS")
 	MagicDiscs    = magicFromString("DISCS")
-)
-
-// Host-only magics. Their structures never reach a disc; the operations
-// document holds their layouts.
-var (
-	MagicNASL = magicFromString("NASL")
-	MagicNABN = magicFromString("NABN")
-	MagicNABP = magicFromString("NABP")
-	MagicNABS = magicFromString("NABS")
-	MagicNALR = magicFromString("NALR")
-	MagicNANT = magicFromString("NANT")
 )
 
 // ObjectKind is the object kind registry.
@@ -55,20 +41,10 @@ const (
 )
 
 // HashAlgo is the hash algorithm registry. Values are multicodec codes.
-type HashAlgo uint32
+type HashAlgo uint8
 
-const (
-	// HashAlgoSHA256 is the only algorithm this build's writer emits.
-	HashAlgoSHA256 HashAlgo = 0x12
-	// HashAlgoBLAKE3 is reserved for a later version.
-	HashAlgoBLAKE3 HashAlgo = 0x1e
-	// HashAlgoSHA512 is reserved. Not used in version 1.
-	HashAlgoSHA512 HashAlgo = 0x13
-	// HashAlgoSHA512_256 is reserved for a later version.
-	HashAlgoSHA512_256 HashAlgo = 0x1020
-	// HashAlgoBLAKE2b256 is reserved.
-	HashAlgoBLAKE2b256 HashAlgo = 0xb220
-)
+// HashAlgoSHA256 is the only algorithm of format major 1.
+const HashAlgoSHA256 HashAlgo = 0x12
 
 // Compression is the compression registry.
 type Compression uint8
@@ -76,35 +52,6 @@ type Compression uint8
 const (
 	CompressionNone Compression = 0
 	CompressionZstd Compression = 1
-	CompressionLZ4  Compression = 2
-)
-
-// ChunkerProfile is the chunker profile registry.
-type ChunkerProfile uint8
-
-const (
-	ChunkerProfileP3 ChunkerProfile = 1
-	ChunkerProfileP4 ChunkerProfile = 2
-	ChunkerProfileP5 ChunkerProfile = 3
-)
-
-// DiscFSProfile is the disc filesystem profile registry.
-type DiscFSProfile uint8
-
-// DiscFSProfileOneshot is the default and only profile this build writes.
-const DiscFSProfileOneshot DiscFSProfile = 0
-
-// MediaType is the media type registry. It is informational; a reader
-// never rejects a value it does not know.
-type MediaType uint8
-
-const (
-	MediaTypeBDRSL25GB   MediaType = 1
-	MediaTypeBDRDL50GB   MediaType = 2
-	MediaTypeBDRXL100GB  MediaType = 3
-	MediaTypeBDRXL128GB  MediaType = 4
-	MediaTypeDVDPlusRSL  MediaType = 5
-	MediaTypeDVDMinusRSL MediaType = 6
 )
 
 // FECScheme is the FEC scheme registry.

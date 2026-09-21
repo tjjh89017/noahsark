@@ -6,31 +6,23 @@ import "encoding/binary"
 const DiscLen = 2048
 
 // Disc is the disc superblock: the immutable facts of one physical disc.
-// A writer writes it once, as /NOAHSARK/DISC.bin in the first run, and
-// never updates it.
+// Every per-run parameter lives in the run header, never here.
 type Disc struct {
-	Common                CommonHeader
-	DiscUUID              [16]byte
-	RepoUUID              [16]byte
-	DiscSeq               uint64
-	CapacitySectors       uint64
-	CapacityForcedSectors uint64
-	PrevDiscSuperHash     [32]byte
-	CreatedSec            int64
-	CreatedNsec           uint32
-	TzOffsetSec           int32
-	MediaType             MediaType
-	FSProfile             DiscFSProfile
-	FanoutLevels          uint8
-	CapacityIsForced      uint8
-	Sealed                uint8
-	ReservedU8            [3]byte
-	LabelLen              uint32
-	Label                 [64]byte
-	ToolVersion           uint32
-	ReservedU32           uint32
-	Reserved              [1824]byte
-	SuperCRC32C           uint32
+	Common          CommonHeader
+	DiscUUID        [16]byte
+	RepoUUID        [16]byte
+	DiscSeq         uint64
+	CapacitySectors uint64
+	ReservedA       [40]byte
+	CreatedSec      int64
+	CreatedNsec     uint32
+	TzOffsetSec     int32
+	ReservedB       [8]byte
+	LabelLen        uint32
+	Label           [64]byte
+	ToolVersion     uint32
+	ReservedC       [1828]byte
+	SuperCRC32C     uint32
 }
 
 // Encode writes d into buf[0:DiscLen]. buf must be at least DiscLen bytes.
@@ -47,22 +39,15 @@ func (d *Disc) Encode(buf []byte) error {
 	copy(buf[48:64], d.RepoUUID[:])
 	binary.LittleEndian.PutUint64(buf[64:72], d.DiscSeq)
 	binary.LittleEndian.PutUint64(buf[72:80], d.CapacitySectors)
-	binary.LittleEndian.PutUint64(buf[80:88], d.CapacityForcedSectors)
-	copy(buf[88:120], d.PrevDiscSuperHash[:])
+	copy(buf[80:120], d.ReservedA[:])
 	binary.LittleEndian.PutUint64(buf[120:128], uint64(d.CreatedSec))
 	binary.LittleEndian.PutUint32(buf[128:132], d.CreatedNsec)
 	binary.LittleEndian.PutUint32(buf[132:136], uint32(d.TzOffsetSec))
-	buf[136] = byte(d.MediaType)
-	buf[137] = byte(d.FSProfile)
-	buf[138] = d.FanoutLevels
-	buf[139] = d.CapacityIsForced
-	buf[140] = d.Sealed
-	copy(buf[141:144], d.ReservedU8[:])
+	copy(buf[136:144], d.ReservedB[:])
 	binary.LittleEndian.PutUint32(buf[144:148], d.LabelLen)
 	copy(buf[148:212], d.Label[:])
 	binary.LittleEndian.PutUint32(buf[212:216], d.ToolVersion)
-	binary.LittleEndian.PutUint32(buf[216:220], d.ReservedU32)
-	copy(buf[220:2044], d.Reserved[:])
+	copy(buf[216:2044], d.ReservedC[:])
 	crc := crc32c(buf[0:2044])
 	d.SuperCRC32C = crc
 	binary.LittleEndian.PutUint32(buf[2044:2048], crc)
@@ -86,22 +71,15 @@ func (d *Disc) Decode(buf []byte) error {
 	copy(d.RepoUUID[:], buf[48:64])
 	d.DiscSeq = binary.LittleEndian.Uint64(buf[64:72])
 	d.CapacitySectors = binary.LittleEndian.Uint64(buf[72:80])
-	d.CapacityForcedSectors = binary.LittleEndian.Uint64(buf[80:88])
-	copy(d.PrevDiscSuperHash[:], buf[88:120])
+	copy(d.ReservedA[:], buf[80:120])
 	d.CreatedSec = int64(binary.LittleEndian.Uint64(buf[120:128]))
 	d.CreatedNsec = binary.LittleEndian.Uint32(buf[128:132])
 	d.TzOffsetSec = int32(binary.LittleEndian.Uint32(buf[132:136]))
-	d.MediaType = MediaType(buf[136])
-	d.FSProfile = DiscFSProfile(buf[137])
-	d.FanoutLevels = buf[138]
-	d.CapacityIsForced = buf[139]
-	d.Sealed = buf[140]
-	copy(d.ReservedU8[:], buf[141:144])
+	copy(d.ReservedB[:], buf[136:144])
 	d.LabelLen = binary.LittleEndian.Uint32(buf[144:148])
 	copy(d.Label[:], buf[148:212])
 	d.ToolVersion = binary.LittleEndian.Uint32(buf[212:216])
-	d.ReservedU32 = binary.LittleEndian.Uint32(buf[216:220])
-	copy(d.Reserved[:], buf[220:2044])
+	copy(d.ReservedC[:], buf[216:2044])
 	d.SuperCRC32C = binary.LittleEndian.Uint32(buf[2044:2048])
 	if crc32c(buf[0:2044]) != d.SuperCRC32C {
 		return ErrCRC

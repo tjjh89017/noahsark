@@ -2,7 +2,6 @@ package image
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +44,6 @@ type BuildOptions struct {
 	RepoUUID  [16]byte
 	DiscUUID  [16]byte
 	Label     string
-	MediaType format.MediaType
 	// FECEnabled writes a Reed-Solomon checksum column and parity for
 	// this run when true (fec_scheme 1). When false, the default, the
 	// run carries no FEC (fec_scheme 0): burning two identical discs is
@@ -122,42 +120,11 @@ func Build(opts BuildOptions) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Sort object rows by their whole-file hash, the order INDEX's Files
-	// table gives for role 13 rows. A chunk's hash is read by streaming
-	// its staged file; its bytes are never held whole in memory here.
-	type hashedObject struct {
-		ReachableObject
-		hash [32]byte
-	}
-	hashed := make([]hashedObject, len(reachable))
-	for i, r := range reachable {
-		var h [32]byte
-		if r.Bytes != nil {
-			h = sha256.Sum256(r.Bytes)
-		} else {
-			h, err = hashFile(StagedPath(opts.StagingDir, r.ID, r.Kind))
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", r.ID.TextForm(), err)
-			}
-		}
-		hashed[i] = hashedObject{ReachableObject: r, hash: h}
-	}
-	sort.Slice(hashed, func(i, j int) bool {
-		return lessBytes(hashed[i].hash[:], hashed[j].hash[:])
+	// The role 13 rows and the Objects rows pair by position, and both
+	// are in ascending content id order.
+	sort.Slice(reachable, func(i, j int) bool {
+		return lessBytes(reachable[i].ID[:], reachable[j].ID[:])
 	})
-
-	// Snapshot object copies under catalog/snapobj, one per snapshot this
-	// run stores, ordered by snapshot content id ascending.
-	snapObjOrder := append([]object.ID(nil), snapIDs...)
-	sort.Slice(snapObjOrder, func(i, j int) bool {
-		return lessBytes(snapObjOrder[i][:], snapObjOrder[j][:])
-	})
-	snapBytes := make(map[object.ID][]byte, len(hashed))
-	for _, h := range hashed {
-		if h.Kind == format.ObjectKindSnapshot {
-			snapBytes[h.ID] = h.Bytes
-		}
-	}
 
 	discBuf, discHash, err := buildDisc(opts, packTime, buildDiscSeq)
 	if err != nil {
@@ -168,7 +135,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	readmeBuf := buildReadme(opts, packTime, label[:labelLen], buildDiscSeq)
 	readmeHash := sha256.Sum256(readmeBuf)
 	formatHash := sha256.Sum256(FormatTxt)
-	refsBuf, refsHash, err := buildRefs(opts, buildRunSeq)
+	refsBuf, refsHash, err := buildRefs(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +146,6 @@ func Build(opts BuildOptions) (*Result, error) {
 	decoderHash := sha256.Sum256(DecoderPy)
 
 	var rows []fileRow
-	fileIndex := make(map[object.ID]int)
 
 	indexRowIdx := len(rows)
 	rows = append(rows, fileRow{role: format.FileRoleIndex, path: "NOAHSARK/runs/%RUNSEQ%/INDEX.bin", inStream: true})
@@ -192,24 +158,8 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows = append(rows, fileRow{role: format.FileRoleRefs, byteLen: uint64(len(refsBuf)), hash: refsHash, data: refsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/REFS.bin", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleDiscs, byteLen: uint64(len(discsBuf)), hash: discsHash, data: discsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/DISCS.bin", inStream: true})
 
-	for _, id := range snapObjOrder {
-		data := snapBytes[id]
-		h := sha256.Sum256(data)
-		rows = append(rows, fileRow{
-			role: format.FileRoleSnapobj, byteLen: uint64(len(data)), hash: h, data: data,
-			path: filepath.ToSlash(filepath.Join("NOAHSARK/runs/%RUNSEQ%/catalog/snapobj", id.TextForm())), inStream: true,
-		})
-	}
-
-	for _, h := range hashed {
-		var p string
-		if h.Kind == format.ObjectKindSnapshot {
-			p = filepath.ToSlash(filepath.Join("NOAHSARK/snapshots", h.ID.TextForm()))
-		} else {
-			p = filepath.ToSlash(filepath.Join("NOAHSARK/objects", h.ID.FanoutByte(), h.ID.TextForm()))
-		}
-		fileIndex[h.ID] = len(rows)
-		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, hash: h.hash, path: p, inStream: true}
+	for _, h := range reachable {
+		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, path: objectDiscPath(h.ID, h.Kind), inStream: true}
 		if h.Bytes != nil {
 			row.data = h.Bytes
 		} else {
@@ -223,7 +173,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	// stream. INDEX's own size is computed by formula: its content is
 	// not needed to know its length, only the row and table counts,
 	// which are already fixed at this point.
-	objectCount := len(hashed)
+	objectCount := len(reachable)
 	fileCount := len(rows) + extraFixedRowCount(opts.FECEnabled)
 	indexLen := format.IndexHeaderLen + fileCount*format.IndexFileRecordLen +
 		objectCount*format.IndexObjectRecordLen
@@ -240,40 +190,11 @@ func Build(opts BuildOptions) (*Result, error) {
 		return nil, err
 	}
 
-	// Objects table, sorted by content id.
+	// Objects table, in the content id order of the role 13 rows.
 	objRows := make([]format.IndexObjectRecord, objectCount)
-	for i, h := range hashed {
-		var storedLen, payloadLen uint64
-		var compression format.Compression
-		var err error
-		if h.Bytes != nil {
-			err = readObjectHeader(h.Bytes, &storedLen, &payloadLen, &compression)
-		} else {
-			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
-		}
-		if err != nil {
-			if errors.Is(err, errShortStagedHeader) {
-				return nil, stagedDamaged(h.ID, h.Kind)
-			}
-			return nil, fmt.Errorf("%s: %w", h.ID.TextForm(), err)
-		}
-		var flags uint16
-		if h.Kind != format.ObjectKindChunk {
-			flags |= 0x2
-		}
-		objRows[i] = format.IndexObjectRecord{
-			ContentID:   h.ID,
-			FileIndex:   uint32(fileIndex[h.ID]),
-			StoredLen:   storedLen,
-			PayloadLen:  payloadLen,
-			Kind:        h.Kind,
-			Compression: compression,
-			Flags:       flags,
-		}
+	for i, h := range reachable {
+		objRows[i] = format.IndexObjectRecord{ContentID: h.ID, Kind: h.Kind}
 	}
-	sort.Slice(objRows, func(i, j int) bool {
-		return lessBytes(objRows[i].ContentID[:], objRows[j].ContentID[:])
-	})
 
 	idxFiles := make([]format.IndexFileRecord, len(rows))
 	for i, r := range rows {
@@ -283,13 +204,11 @@ func Build(opts BuildOptions) (*Result, error) {
 	idx := format.Index{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.IndexHeaderLen,
+			VersionMajor: 1, HeaderLen: format.IndexHeaderLen,
 		},
 		RunSeq: buildRunSeq, FileCount: uint32(len(rows)), ObjectCount: uint32(objectCount),
-		PrereqCount: 0, FileRecordSize: format.IndexFileRecordLen,
-		ObjectRecordSize: format.IndexObjectRecordLen, PrereqRecordSize: format.IndexPrereqRecordLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32,
-		Files: idxFiles, Objects: objRows,
+		PrereqCount: 0,
+		Files:       idxFiles, Objects: objRows,
 	}
 	indexBuf := make([]byte, idx.EncodedLen())
 	if _, err := idx.Encode(indexBuf); err != nil {
@@ -301,7 +220,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
 
-	runBuf, err := buildRun(opts, packTime, indexBuf, indexHash, plan.streamBytesTotal, uint64(objectCount), buildRunSeq, buildDiscSeq, opts.FECEnabled)
+	runBuf, err := buildRun(opts, packTime, indexBuf, indexHash, plan.streamBytesTotal, buildRunSeq, buildDiscSeq, opts.FECEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +228,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	rows[run2RowIdx].data = runBuf
 	plan.rows = rows
 
-	if err := writeRunTree(opts.OutputDir, buildRunSeq, plan, runBuf, opts.Progress); err != nil {
+	if err := writeRunTree(opts.OutputDir, buildRunSeq, plan, opts.Progress); err != nil {
 		return nil, err
 	}
 
@@ -390,7 +309,7 @@ func appendFECRows(rows []fileRow, fecEnabled bool) (fecPlan, error) {
 		plan.layout = layout
 		plan.stripeCount = L
 		plan.checksumLen = L * fec.BlockSize
-		plan.parityFileLen = (L + 1) * fec.BlockSize
+		plan.parityFileLen = L * fec.BlockSize
 
 		plan.checksumRowIdx = len(rows)
 		rows = append(rows, fileRow{role: format.FileRoleChecksum, byteLen: plan.checksumLen, path: "NOAHSARK/runs/%RUNSEQ%/checksum.bin"})
@@ -427,7 +346,7 @@ func appendFECRows(rows []fileRow, fecEnabled bool) (fecPlan, error) {
 // is flushed to stable storage before it returns. Pack records the run
 // PACKED right after this call, and that record must never outlive the
 // bytes it claims.
-func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, prog *progress.Reporter) error {
+func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, prog *progress.Reporter) error {
 	rows := plan.rows
 	seqDir := fmt.Sprintf("%010d", runSeq)
 	finalPaths := make([]string, len(rows))
@@ -504,7 +423,7 @@ func writeRunTree(outputDir string, runSeq uint64, plan fecPlan, runBuf []byte, 
 	if err := os.MkdirAll(filepath.Dir(parityPaths[0]), 0o755); err != nil {
 		return err
 	}
-	if err := buildFECToDisk(sources, plan.layout, runBuf, finalPaths[plan.checksumRowIdx], parityPaths, digester.digests, prog); err != nil {
+	if err := buildFECToDisk(sources, plan.layout, finalPaths[plan.checksumRowIdx], parityPaths, digester.digests, prog); err != nil {
 		return err
 	}
 	return syncTree(outputDir)
@@ -535,20 +454,11 @@ func lessBytes(a, b []byte) bool {
 	return false
 }
 
-// readObjectHeader reads the stored length, payload length and
-// compression id out of an already-staged object file's common and
-// object header, without a type-specific decode.
-func readObjectHeader(data []byte, storedLen, payloadLen *uint64, compression *format.Compression) error {
-	var h format.CommonHeader
-	if err := h.Decode(data); err != nil {
-		return err
+// objectDiscPath is the path of one object file inside the run tree:
+// snapshots/ for a snapshot, objects/<ab>/ for every other kind.
+func objectDiscPath(id object.ID, kind format.ObjectKind) string {
+	if kind == format.ObjectKindSnapshot {
+		return filepath.ToSlash(filepath.Join("NOAHSARK/snapshots", id.TextForm()))
 	}
-	var oh format.ObjectHeader
-	if err := oh.Decode(data[format.CommonHeaderLen:]); err != nil {
-		return err
-	}
-	*storedLen = oh.StoredLen
-	*payloadLen = oh.PayloadLen
-	*compression = oh.Compression
-	return nil
+	return filepath.ToSlash(filepath.Join("NOAHSARK/objects", id.FanoutByte(), id.TextForm()))
 }

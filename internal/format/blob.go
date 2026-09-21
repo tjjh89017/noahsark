@@ -3,20 +3,21 @@ package format
 import "encoding/binary"
 
 // BlobEntryLen is the encoded size of one BlobEntry.
-const BlobEntryLen = 48
+const BlobEntryLen = 40
 
 // blobBodyLen is the fixed part of the blob payload, before the entries.
-const blobBodyLen = 24
+const blobBodyLen = 8
 
 // blobFixedLen is the common header, the object header, and the fixed
 // blob body, before the entries.
 const blobFixedLen = CommonHeaderLen + ObjectHeaderLen + blobBodyLen
 
-// BlobEntry is one chunk id, or child blob id, of a file's content.
+// BlobEntry is one chunk id of a file's content. An entry stores no file
+// offset: the offset of an entry is the sum of Length over the entries
+// before it.
 type BlobEntry struct {
-	ContentID  [32]byte
-	Length     uint64
-	FileOffset uint64
+	ContentID [32]byte
+	Length    uint64
 }
 
 // Blob is the ordered chunk ids of one file, held outside the tree entry.
@@ -24,15 +25,7 @@ type Blob struct {
 	Header       CommonHeader
 	ObjectHeader ObjectHeader
 	EntryCount   uint64
-	TotalSize    uint64
-	EntrySize    uint16
-	HashAlgo     HashAlgo
-	DigestLen    uint8
-	// Level is 0 when entries are chunks, 1 when entries are blobs. A
-	// version 1 writer never writes 1.
-	Level    uint8
-	Reserved [3]byte
-	Entries  []BlobEntry
+	Entries      []BlobEntry
 }
 
 // EncodedLen is the blob's encoded length: the fixed header plus every
@@ -58,21 +51,15 @@ func (b *Blob) Encode(buf []byte) (int, error) {
 	}
 	off += ObjectHeaderLen
 	binary.LittleEndian.PutUint64(buf[off:off+8], b.EntryCount)
-	binary.LittleEndian.PutUint64(buf[off+8:off+16], b.TotalSize)
-	binary.LittleEndian.PutUint16(buf[off+16:off+18], b.EntrySize)
-	buf[off+18] = byte(b.HashAlgo)
-	buf[off+19] = b.DigestLen
-	buf[off+20] = b.Level
-	copy(buf[off+21:off+24], b.Reserved[:])
 
 	crc := crc32c(buf[0:objectHeaderCRCOffset])
+	b.ObjectHeader.HeaderCRC32C = crc
 	binary.LittleEndian.PutUint32(buf[objectHeaderCRCOffset:objectHeaderCRCOffset+4], crc)
 
 	entOff := blobFixedLen
 	for _, e := range b.Entries {
 		copy(buf[entOff:entOff+32], e.ContentID[:])
 		binary.LittleEndian.PutUint64(buf[entOff+32:entOff+40], e.Length)
-		binary.LittleEndian.PutUint64(buf[entOff+40:entOff+48], e.FileOffset)
 		entOff += BlobEntryLen
 	}
 	return n, nil
@@ -80,7 +67,9 @@ func (b *Blob) Encode(buf []byte) (int, error) {
 
 // Decode reads a Blob from buf and returns the number of bytes read. It
 // rejects a short buffer, a magic_kind mismatch, a header_crc32c mismatch,
-// and a level above 1. It does not interpret a reserved byte.
+// a header_len below the fixed part this build knows, and an entry
+// count that does not agree with payload_len. The entries start at
+// header_len, so a larger fixed part from a later writer is skipped.
 func (b *Blob) Decode(buf []byte) (int, error) {
 	if len(buf) < blobFixedLen {
 		return 0, ErrShort
@@ -90,6 +79,10 @@ func (b *Blob) Decode(buf []byte) (int, error) {
 	}
 	if b.Header.MagicKind != MagicBlob {
 		return 0, ErrBadMagic
+	}
+	entriesOff, err := b.Header.fixedPartEnd(blobFixedLen)
+	if err != nil {
+		return 0, err
 	}
 	off := CommonHeaderLen
 	if err := b.ObjectHeader.Decode(buf[off : off+ObjectHeaderLen]); err != nil {
@@ -101,29 +94,35 @@ func (b *Blob) Decode(buf []byte) (int, error) {
 	}
 
 	b.EntryCount = binary.LittleEndian.Uint64(buf[off : off+8])
-	b.TotalSize = binary.LittleEndian.Uint64(buf[off+8 : off+16])
-	b.EntrySize = binary.LittleEndian.Uint16(buf[off+16 : off+18])
-	b.HashAlgo = HashAlgo(buf[off+18])
-	b.DigestLen = buf[off+19]
-	b.Level = buf[off+20]
-	copy(b.Reserved[:], buf[off+21:off+24])
-	if b.Level > 1 {
-		return 0, ErrBadField
-	}
 
-	n := blobFixedLen + int(b.EntryCount)*BlobEntryLen
+	n := entriesOff + int(b.EntryCount)*BlobEntryLen
 	if len(buf) < n {
 		return 0, ErrShort
 	}
-	b.Entries = nil
-	entOff := blobFixedLen
+	if uint64(entriesOff-CommonHeaderLen-ObjectHeaderLen)+b.EntryCount*BlobEntryLen != b.ObjectHeader.PayloadLen {
+		return 0, ErrBadField
+	}
+	b.Entries = make([]BlobEntry, 0, b.EntryCount)
+	entOff := entriesOff
 	for i := uint64(0); i < b.EntryCount; i++ {
 		var e BlobEntry
 		copy(e.ContentID[:], buf[entOff:entOff+32])
 		e.Length = binary.LittleEndian.Uint64(buf[entOff+32 : entOff+40])
-		e.FileOffset = binary.LittleEndian.Uint64(buf[entOff+40 : entOff+48])
 		b.Entries = append(b.Entries, e)
 		entOff += BlobEntryLen
 	}
 	return n, nil
+}
+
+// BlobOffsets returns the file offset of each entry: the sum of the
+// lengths of the entries before it. An entry stores no offset of its
+// own, and the entries are in file order.
+func BlobOffsets(entries []BlobEntry) []uint64 {
+	offsets := make([]uint64, len(entries))
+	var off uint64
+	for i, e := range entries {
+		offsets[i] = off
+		off += e.Length
+	}
+	return offsets
 }

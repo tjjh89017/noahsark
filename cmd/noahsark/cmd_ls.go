@@ -346,14 +346,12 @@ func splitLsPath(p string) []string {
 	return out
 }
 
-// rootPathOf returns e's ROOT_PATH TLV payload, or "" when absent.
+// rootPathOf returns the source root path a root tree entry's name
+// holds, decoded by the root name escape rule. An undecodable name is
+// used as it is.
 func rootPathOf(e format.TreeEntry) string {
-	for _, t := range e.TLVs {
-		if t.Type == format.TLVTypeRootPath {
-			return string(t.Payload)
-		}
-	}
-	return ""
+	path, _ := format.DecodeRootName(string(e.Name))
+	return path
 }
 
 // modeString renders e's type and permission bits the way "ls -l" does:

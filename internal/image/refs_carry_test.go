@@ -53,15 +53,15 @@ func TestPackCarriesRefsForward(t *testing.T) {
 	if len(rr.Refs.Records) != 2 {
 		t.Fatalf("disc 2 REFS has %d records, want 2 (run1 and run2)", len(rr.Refs.Records))
 	}
-	byName := make(map[string]uint64)
+	byName := make(map[string]bool)
 	for _, r := range rr.Refs.Records {
-		byName[string(r.Name[:r.NameLen])] = r.RunSeq
+		byName[string(r.Name[:r.NameLen])] = true
 	}
-	if byName["run1"] != 1 {
-		t.Fatalf("run1 carried into disc 2 with run_seq %d, want 1 (the run that packed it)", byName["run1"])
+	if !byName["run1"] {
+		t.Fatal("run1 was not carried into disc 2's REFS")
 	}
-	if byName["run2"] != 2 {
-		t.Fatalf("run2 has run_seq %d, want 2 (the run packing it now)", byName["run2"])
+	if !byName["run2"] {
+		t.Fatal("run2 is missing from disc 2's REFS")
 	}
 
 	// The local refs ledger on disk must hold the same union, so a

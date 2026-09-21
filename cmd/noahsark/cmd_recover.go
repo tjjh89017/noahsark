@@ -154,7 +154,6 @@ func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	}
 
 	discRows := mergeDiscsRows(results, existingDiscs.Rows)
-	discRows = fillUsedSectorsFromRuns(discRows, results)
 	if err := image.SaveDiscsLedger(cfg.StagingDir, repoUUID, discRows); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
@@ -318,7 +317,7 @@ func mergeDiscsRows(results []*image.ReadResult, existing []format.DiscsRow) []f
 
 	for _, rr := range results {
 		for _, row := range rr.Discs.Rows {
-			if cur, ok := byUUID[row.DiscUUID]; !ok || rowNewer(row, cur) {
+			if _, ok := byUUID[row.DiscUUID]; !ok {
 				byUUID[row.DiscUUID] = row
 			}
 		}
@@ -337,79 +336,20 @@ func mergeDiscsRows(results []*image.ReadResult, existing []format.DiscsRow) []f
 	return rows
 }
 
-// rowNewer reports whether a should replace b when both name the same
-// disc: the row with the later last-verify time wins, and a tie goes to
-// the row that already carries a real used-sectors count over one that
-// still carries the zero placeholder a disc's own DISCS copy of itself
-// always holds.
-func rowNewer(a, b format.DiscsRow) bool {
-	if a.LastVerifySec != b.LastVerifySec {
-		return a.LastVerifySec > b.LastVerifySec
-	}
-	return a.UsedSectors > b.UsedSectors
-}
-
-// fillUsedSectorsFromRuns fills in used_sectors for a provided disc's
-// own row. A disc's own DISCS.bin always carries used_sectors 0 for
-// itself, since that run's final size is not known until after it is
-// written (docs/decisions.md, "12. Disc lifecycle, closing and
-// appending"); only a later run's copy of the row carries the real
-// value. recover instead reads it straight from that disc's own
-// RUN.bin, which does carry the run's actual stream_bytes, converted to
-// whole sectors the same way pack itself does.
-func fillUsedSectorsFromRuns(rows []format.DiscsRow, results []*image.ReadResult) []format.DiscsRow {
-	streamBytesByUUID := make(map[[16]byte]uint64, len(results))
-	for _, rr := range results {
-		streamBytesByUUID[rr.Disc.DiscUUID] = rr.Run.StreamBytes
-	}
-	for i, row := range rows {
-		streamBytes, ok := streamBytesByUUID[row.DiscUUID]
-		if !ok {
-			continue
-		}
-		rows[i].UsedSectors = (streamBytes + image.SectorSize - 1) / image.SectorSize
-	}
-	return rows
-}
-
-// refKey orders REFS records the way FORMAT.md's ref resolution rule
-// does: the highest run_seq, then the highest time_sec, then the
-// highest time_nsec.
-type refKey struct {
-	runSeq   uint64
-	timeSec  int64
-	timeNsec uint32
-}
-
-// newer reports whether k is the newer record under refKey's ordering.
-func (k refKey) newer(other refKey) bool {
-	if k.runSeq != other.runSeq {
-		return k.runSeq > other.runSeq
-	}
-	if k.timeSec != other.timeSec {
-		return k.timeSec > other.timeSec
-	}
-	return k.timeNsec > other.timeNsec
-}
-
-// bestRefRecords returns one REFS record per ref name, the newest by
-// refKey ordering across every provided disc and existing, the records
-// the local refs ledger already carried from an earlier call.
-// recover uses this both to restore the flat local ref file and
-// to restore the refs ledger a later pack extends.
+// bestRefRecords returns every REFS record the provided discs and
+// existing hold, deduplicated: the ref table only grows from one run to
+// the next, and two equal records keep one copy. recover uses this both
+// to restore the flat local ref file and to restore the refs ledger a
+// later pack extends.
 func bestRefRecords(results []*image.ReadResult, existing []format.RefRecord) []format.RefRecord {
-	type keyed struct {
-		key refKey
-		rec format.RefRecord
-	}
-	best := make(map[string]keyed)
+	seen := make(map[format.RefRecord]bool)
+	var recs []format.RefRecord
 	consider := func(rec format.RefRecord) {
-		name := string(rec.Name[:rec.NameLen])
-		k := refKey{runSeq: rec.RunSeq, timeSec: rec.TimeSec, timeNsec: rec.TimeNsec}
-		if cur, ok := best[name]; ok && !k.newer(cur.key) {
+		if seen[rec] {
 			return
 		}
-		best[name] = keyed{key: k, rec: rec}
+		seen[rec] = true
+		recs = append(recs, rec)
 	}
 	for _, rr := range results {
 		for _, rec := range rr.Refs.Records {
@@ -419,19 +359,23 @@ func bestRefRecords(results []*image.ReadResult, existing []format.RefRecord) []
 	for _, rec := range existing {
 		consider(rec)
 	}
-	recs := make([]format.RefRecord, 0, len(best))
-	for _, kv := range best {
-		recs = append(recs, kv.rec)
-	}
 	return recs
 }
 
 // mergeRefs turns REFS records into the name-to-id-text map the flat
-// local ref file holds.
+// local ref file holds, taking the newest record of each name.
 func mergeRefs(records []format.RefRecord) map[string]string {
-	out := make(map[string]string, len(records))
+	best := make(map[string]format.RefRecord, len(records))
 	for _, rec := range records {
-		out[string(rec.Name[:rec.NameLen])] = object.ID(rec.SnapshotID).TextForm()
+		name := string(rec.Name[:rec.NameLen])
+		if cur, ok := best[name]; ok && !format.NewerRef(rec, cur) {
+			continue
+		}
+		best[name] = rec
+	}
+	out := make(map[string]string, len(best))
+	for name, rec := range best {
+		out[name] = object.ID(rec.SnapshotID).TextForm()
 	}
 	return out
 }

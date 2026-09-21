@@ -15,16 +15,6 @@ const (
 	TLVTypeSymlinkTarget uint16 = 0x0001
 	TLVTypeUserName      uint16 = 0x0002
 	TLVTypeGroupName     uint16 = 0x0003
-	TLVTypeRootPath      uint16 = 0x0004
-	TLVTypeXattr         uint16 = 0x0010
-	TLVTypeACLAccess     uint16 = 0x0011
-	TLVTypeACLDefault    uint16 = 0x0012
-	TLVTypeACLNFS4       uint16 = 0x0013
-	TLVTypeLinuxAttr     uint16 = 0x0020
-	TLVTypeBSDFlags      uint16 = 0x0021
-	TLVTypeWinAttrs      uint16 = 0x0030
-	TLVTypeWinSD         uint16 = 0x0031
-	TLVTypeWinADS        uint16 = 0x0032
 )
 
 // tlvVendorLow and tlvVendorHigh bound the vendor range. A vendor type is
@@ -40,16 +30,6 @@ var tlvKnownTypes = map[uint16]bool{
 	TLVTypeSymlinkTarget: true,
 	TLVTypeUserName:      true,
 	TLVTypeGroupName:     true,
-	TLVTypeRootPath:      true,
-	TLVTypeXattr:         true,
-	TLVTypeACLAccess:     true,
-	TLVTypeACLDefault:    true,
-	TLVTypeACLNFS4:       true,
-	TLVTypeLinuxAttr:     true,
-	TLVTypeBSDFlags:      true,
-	TLVTypeWinAttrs:      true,
-	TLVTypeWinSD:         true,
-	TLVTypeWinADS:        true,
 }
 
 // tlvIsVendor reports whether typ is in the vendor range, 0xF000 to

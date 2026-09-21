@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
@@ -20,29 +19,6 @@ import (
 	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
-
-// mediaPresetAliases maps a --capacity preset name to the media type a
-// pack built with that preset records in DISC.bin's media_type field,
-// case insensitive.
-var mediaPresetAliases = map[string]format.MediaType{
-	"bd25":  format.MediaTypeBDRSL25GB,
-	"bd50":  format.MediaTypeBDRDL50GB,
-	"bd100": format.MediaTypeBDRXL100GB,
-	"bd128": format.MediaTypeBDRXL128GB,
-	"dvd+r": format.MediaTypeDVDPlusRSL,
-	"dvd-r": format.MediaTypeDVDMinusRSL,
-}
-
-// discMediaType picks the media type a pack records: the type of the
-// --capacity preset when capacityStr names one, else the BD-R-SL-25
-// default. media_type is informational only (FORMAT.md's media type
-// registry) and never gates reading or writing.
-func discMediaType(capacityStr string) format.MediaType {
-	if mt, ok := mediaPresetAliases[strings.ToLower(capacityStr)]; ok {
-		return mt
-	}
-	return format.MediaTypeBDRSL25GB
-}
 
 // cmdPack implements "noahsark pack". It reduces OPERATIONS.md's pack
 // flags: object selection by staging fill or age (disc.min_fill,
@@ -129,8 +105,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		}
 	}
 
-	mediaType := discMediaType(capacityArg)
-
 	snapIDs := []string(snapshotFlags)
 	if *ref != "" && len(snapIDs) > 0 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --ref and --snapshot are mutually exclusive")
@@ -199,7 +173,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 
 	if *dryRun {
-		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, physicalCapacitySectors, mediaType, fecEnabled, labelFor)
+		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, physicalCapacitySectors, fecEnabled, labelFor)
 	}
 
 	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
@@ -250,7 +224,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		RepoUUID:                repoUUID,
 		DiscUUID:                discUUID,
 		Label:                   discLabel,
-		MediaType:               mediaType,
 		FECEnabled:              fecEnabled,
 		StageLog:                stageLog,
 		Progress:                prog,
@@ -309,7 +282,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 // tree, no state record, no cache entry, no ledger row, and no sequence
 // number is used. It takes no repository lock, since it only reads the
 // staging store and the ledgers.
-func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors, physicalCapacitySectors uint64, mediaType format.MediaType, fecEnabled bool, labelFor func(uint64) string) int {
+func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors, physicalCapacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
 	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -323,7 +296,6 @@ func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, 
 		TargetCapacitySectors:   capacitySectors,
 		PhysicalCapacitySectors: physicalCapacitySectors,
 		RepoUUID:                repoUUID,
-		MediaType:               mediaType,
 		FECEnabled:              fecEnabled,
 		StageLog:                stageLog,
 	}

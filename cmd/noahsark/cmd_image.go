@@ -70,7 +70,7 @@ func cmdImage(args []string, stdout, stderr io.Writer, prog *progress.Reporter) 
 		_, _ = fmt.Fprintf(stderr, "noahsark: image build: %s: %v\n", treeDir, err)
 		return 1
 	}
-	sectors := disc.CapacityForcedSectors
+	sectors := disc.CapacitySectors
 
 	if err := image.MakeImage(treeDir, *out, sectors, prog); err != nil {
 		if errors.Is(err, image.ErrPopulateNeedsRoot) {

@@ -11,8 +11,8 @@ func testBlob() Blob {
 		id2[i] = byte((i*7 + 3) % 256)
 	}
 	entries := []BlobEntry{
-		{ContentID: id1, Length: 4096, FileOffset: 0},
-		{ContentID: id2, Length: 2048, FileOffset: 4096},
+		{ContentID: id1, Length: 4096},
+		{ContentID: id2, Length: 2048},
 	}
 	payloadLen := blobBodyLen + len(entries)*BlobEntryLen
 	return Blob{
@@ -20,23 +20,16 @@ func testBlob() Blob {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicBlob,
 			VersionMajor: 1,
-			VersionMinor: 0,
 			HeaderLen:    blobFixedLen,
 		},
 		ObjectHeader: ObjectHeader{
 			Kind:        ObjectKindBlob,
 			HashAlgo:    HashAlgoSHA256,
-			DigestLen:   32,
 			Compression: CompressionNone,
 			PayloadLen:  uint64(payloadLen),
 			StoredLen:   uint64(payloadLen),
 		},
 		EntryCount: uint64(len(entries)),
-		TotalSize:  4096 + 2048,
-		EntrySize:  BlobEntryLen,
-		HashAlgo:   HashAlgoSHA256,
-		DigestLen:  32,
-		Level:      0,
 		Entries:    entries,
 	}
 }
@@ -61,8 +54,8 @@ func TestBlobGolden(t *testing.T) {
 	if got.Header != b.Header {
 		t.Fatalf("header mismatch: got %+v, want %+v", got.Header, b.Header)
 	}
-	if got.EntryCount != b.EntryCount || got.TotalSize != b.TotalSize || got.EntrySize != b.EntrySize {
-		t.Fatalf("body mismatch: got %+v, want %+v", got, b)
+	if got.EntryCount != b.EntryCount {
+		t.Fatalf("entry_count mismatch: got %d, want %d", got.EntryCount, b.EntryCount)
 	}
 	if len(got.Entries) != len(b.Entries) {
 		t.Fatalf("entry count mismatch: got %d, want %d", len(got.Entries), len(b.Entries))
@@ -72,26 +65,22 @@ func TestBlobGolden(t *testing.T) {
 			t.Fatalf("entry %d mismatch: got %+v, want %+v", i, got.Entries[i], b.Entries[i])
 		}
 	}
-	if got.Reserved != ([3]byte{}) {
-		t.Fatalf("reserved not zero: %v", got.Reserved)
-	}
 }
 
-func TestBlobDecodeIgnoresReservedByte(t *testing.T) {
-	golden := readGolden(t, "blob.golden")
-	buf := append([]byte(nil), golden...)
-	buf[CommonHeaderLen+ObjectHeaderLen+21] = 0xFF // the body's reserved byte
-
-	var got Blob
-	if _, err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved byte: %v", err)
-	}
-	if got.Reserved[0] != 0xFF {
-		t.Fatalf("reserved byte not preserved: %v", got.Reserved)
-	}
+// TestBlobOffsetsAreRunningSums checks the rule that replaced the stored
+// offset: the offset of an entry is the sum of the lengths before it.
+func TestBlobOffsetsAreRunningSums(t *testing.T) {
 	b := testBlob()
-	if got.EntryCount != b.EntryCount || got.TotalSize != b.TotalSize {
-		t.Fatalf("body mismatch: got %+v, want %+v", got, b)
+	var off uint64
+	want := []uint64{0, 4096}
+	for i, e := range b.Entries {
+		if off != want[i] {
+			t.Fatalf("entry %d offset: got %d, want %d", i, off, want[i])
+		}
+		off += e.Length
+	}
+	if off != 6144 {
+		t.Fatalf("file size: got %d, want 6144", off)
 	}
 }
 
@@ -110,16 +99,5 @@ func TestBlobDecodeRejectsBadMagic(t *testing.T) {
 	var b Blob
 	if _, err := b.Decode(buf); err != ErrBadMagic {
 		t.Fatalf("decode bad magic: got %v, want %v", err, ErrBadMagic)
-	}
-}
-
-func TestBlobDecodeRejectsLevelAboveOne(t *testing.T) {
-	golden := readGolden(t, "blob.golden")
-	buf := append([]byte(nil), golden...)
-	// level lies after the CRC-covered bytes, so the header CRC still matches.
-	buf[CommonHeaderLen+ObjectHeaderLen+20] = 2
-	var b Blob
-	if _, err := b.Decode(buf); err != ErrBadField {
-		t.Fatalf("decode bad level: got %v, want %v", err, ErrBadField)
 	}
 }

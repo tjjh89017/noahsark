@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -57,10 +58,9 @@ func overwriteREFS(t *testing.T, discRoot string, repoUUID [16]byte, recs []form
 	table := format.RefsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.RefsHeaderLen,
+			VersionMajor: 1, HeaderLen: format.RefsHeaderLen,
 		},
-		RepoUUID: repoUUID, RecordCount: uint64(len(recs)), RecordSize: format.RefRecordLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Records: recs,
+		RepoUUID: repoUUID, RecordCount: uint64(len(recs)), Records: recs,
 	}
 	buf := make([]byte, table.EncodedLen())
 	if _, err := table.Encode(buf); err != nil {
@@ -102,7 +102,7 @@ func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	var name1 [format.RefNameLen]byte
 	n1 := copy(name1[:], "run1")
 	overwriteREFS(t, firstOut, repoUUID, []format.RefRecord{
-		{SnapshotID: firstSnap, TimeSec: multiFixedClock().Unix(), NameLen: uint16(n1), HashAlgo: format.HashAlgoSHA256, Name: name1, RunSeq: 1},
+		{SnapshotID: firstSnap, TimeSec: multiFixedClock().Unix(), NameLen: uint16(n1), Name: name1},
 	})
 
 	secondSnap := commitRefsFixture(t, stagingDir, "second")
@@ -190,10 +190,11 @@ func TestSourceParseSnapshotArgUnknownRefNamesProvidedDiscs(t *testing.T) {
 	}
 }
 
-// TestSourceRefsHigherRunSeqWins gives two discs conflicting records for
-// the same ref name and checks the merge keeps the one with the higher
-// run_seq, whichever disc root is listed first.
-func TestSourceRefsHigherRunSeqWins(t *testing.T) {
+// TestSourceRefsNewestRecordWins gives two discs two records for the
+// same ref name and checks the merge keeps the newest one by time,
+// whichever disc root is listed first. A ref record carries no run
+// number, so only the time and the snapshot id decide.
+func TestSourceRefsNewestRecordWins(t *testing.T) {
 	stagingDir := t.TempDir()
 	l, err := stage.Open(stagingDir)
 	if err != nil {
@@ -217,7 +218,7 @@ func TestSourceRefsHigherRunSeqWins(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, newSnap, l)
 	secondOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "LATEST", ID: newSnap, Time: multiFixedClock()}},
+		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "LATEST", ID: newSnap, Time: multiFixedClock().Add(time.Second)}},
 		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
 		OutputDir: secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: multiFixedClock, StageLog: l,
@@ -235,7 +236,7 @@ func TestSourceRefsHigherRunSeqWins(t *testing.T) {
 			t.Fatalf("ParseSnapshotArg(LATEST), order %v: %v", order, err)
 		}
 		if got != newSnap {
-			t.Fatalf("order %v: LATEST resolved to %s, want the higher run_seq record %s", order, got.TextForm(), newSnap.TextForm())
+			t.Fatalf("order %v: LATEST resolved to %s, want the newest record %s", order, got.TextForm(), newSnap.TextForm())
 		}
 	}
 }

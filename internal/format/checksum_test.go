@@ -12,8 +12,6 @@ func testChecksumRecord() ChecksumRecord {
 	return ChecksumRecord{
 		StripeIndex: 5,
 		DigestCount: 3,
-		DigestBytes: 8,
-		HashAlgo:    HashAlgoSHA256,
 		Digests:     digests,
 	}
 }
@@ -32,8 +30,7 @@ func TestChecksumRecordGolden(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	if got.StripeIndex != r.StripeIndex || got.DigestCount != r.DigestCount ||
-		got.DigestBytes != r.DigestBytes || got.HashAlgo != r.HashAlgo {
+	if got.StripeIndex != r.StripeIndex || got.DigestCount != r.DigestCount {
 		t.Fatalf("decoded fields mismatch: got %+v, want %+v", got, r)
 	}
 	for i := range r.Digests {

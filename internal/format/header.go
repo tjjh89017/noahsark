@@ -9,15 +9,14 @@ const CommonHeaderLen = 32
 const ObjectHeaderLen = 32
 
 // CommonHeader begins every structure. It carries identity and versioning
-// in one place, so a scan of the raw medium can find a structure by its
-// magic and read enough to find the structure's own end.
+// in one place.
 type CommonHeader struct {
 	MagicProject Magic
 	MagicKind    Magic
 	VersionMajor uint16
-	VersionMinor uint16
+	ReservedU16a uint16
 	HeaderLen    uint16
-	ReservedU16  uint16
+	ReservedU16b uint16
 	ReservedU64  uint64
 }
 
@@ -30,9 +29,9 @@ func (h *CommonHeader) Encode(buf []byte) error {
 	copy(buf[0:8], h.MagicProject[:])
 	copy(buf[8:16], h.MagicKind[:])
 	binary.LittleEndian.PutUint16(buf[16:18], h.VersionMajor)
-	binary.LittleEndian.PutUint16(buf[18:20], h.VersionMinor)
+	binary.LittleEndian.PutUint16(buf[18:20], h.ReservedU16a)
 	binary.LittleEndian.PutUint16(buf[20:22], h.HeaderLen)
-	binary.LittleEndian.PutUint16(buf[22:24], h.ReservedU16)
+	binary.LittleEndian.PutUint16(buf[22:24], h.ReservedU16b)
 	binary.LittleEndian.PutUint64(buf[24:32], h.ReservedU64)
 	return nil
 }
@@ -56,11 +55,21 @@ func (h *CommonHeader) Decode(buf []byte) error {
 	h.MagicProject = magicProject
 	h.MagicKind = magicKind
 	h.VersionMajor = versionMajor
-	h.VersionMinor = binary.LittleEndian.Uint16(buf[18:20])
+	h.ReservedU16a = binary.LittleEndian.Uint16(buf[18:20])
 	h.HeaderLen = binary.LittleEndian.Uint16(buf[20:22])
-	h.ReservedU16 = binary.LittleEndian.Uint16(buf[22:24])
+	h.ReservedU16b = binary.LittleEndian.Uint16(buf[22:24])
 	h.ReservedU64 = binary.LittleEndian.Uint64(buf[24:32])
 	return nil
+}
+
+// fixedPartEnd returns the offset of the first byte after the fixed part.
+// A header_len below the length this build knows is refused; a larger one
+// is obeyed, so the variable part starts where the writer put it.
+func (h *CommonHeader) fixedPartEnd(knownLen int) (int, error) {
+	if int(h.HeaderLen) < knownLen {
+		return 0, ErrHeaderLen
+	}
+	return int(h.HeaderLen), nil
 }
 
 // ObjectHeader follows the common header in every object file. An object
@@ -69,11 +78,9 @@ func (h *CommonHeader) Decode(buf []byte) error {
 type ObjectHeader struct {
 	Kind         ObjectKind
 	HashAlgo     HashAlgo
-	DigestLen    uint8
-	Compression  Compression
-	Crypto       uint8
 	ReservedU8   uint8
-	ReservedU16  uint16
+	Compression  Compression
+	ReservedA    [4]byte
 	PayloadLen   uint64
 	StoredLen    uint64
 	HeaderCRC32C uint32
@@ -88,11 +95,9 @@ func (h *ObjectHeader) Encode(buf []byte) error {
 	}
 	buf[0] = byte(h.Kind)
 	buf[1] = byte(h.HashAlgo)
-	buf[2] = h.DigestLen
+	buf[2] = h.ReservedU8
 	buf[3] = byte(h.Compression)
-	buf[4] = h.Crypto
-	buf[5] = h.ReservedU8
-	binary.LittleEndian.PutUint16(buf[6:8], h.ReservedU16)
+	copy(buf[4:8], h.ReservedA[:])
 	binary.LittleEndian.PutUint64(buf[8:16], h.PayloadLen)
 	binary.LittleEndian.PutUint64(buf[16:24], h.StoredLen)
 	binary.LittleEndian.PutUint32(buf[24:28], h.HeaderCRC32C)
@@ -109,14 +114,22 @@ func (h *ObjectHeader) Decode(buf []byte) error {
 	}
 	h.Kind = ObjectKind(buf[0])
 	h.HashAlgo = HashAlgo(buf[1])
-	h.DigestLen = buf[2]
+	h.ReservedU8 = buf[2]
 	h.Compression = Compression(buf[3])
-	h.Crypto = buf[4]
-	h.ReservedU8 = buf[5]
-	h.ReservedU16 = binary.LittleEndian.Uint16(buf[6:8])
+	copy(h.ReservedA[:], buf[4:8])
 	h.PayloadLen = binary.LittleEndian.Uint64(buf[8:16])
 	h.StoredLen = binary.LittleEndian.Uint64(buf[16:24])
 	h.HeaderCRC32C = binary.LittleEndian.Uint32(buf[24:28])
 	h.ReservedU32 = binary.LittleEndian.Uint32(buf[28:32])
 	return nil
 }
+
+// The header_len values this version's writer records for the four
+// object kinds: the common header, the object header, and the kind's own
+// fixed body.
+const (
+	ChunkHeaderLen    = chunkFixedLen
+	BlobHeaderLen     = blobFixedLen
+	TreeHeaderLen     = treeFixedLen
+	SnapshotHeaderLen = CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen
+)

@@ -27,7 +27,6 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "ci-disc-field: read:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("capacity %d sectors, forced %d sectors, capacity_is_forced=%d\n",
-		rr.Disc.CapacitySectors, rr.Disc.CapacityForcedSectors, rr.Disc.CapacityIsForced)
+	fmt.Printf("capacity %d sectors\n", rr.Disc.CapacitySectors)
 	fmt.Printf("refs: %d, discs: %d\n", len(rr.Refs.Records), len(rr.Discs.Rows))
 }

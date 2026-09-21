@@ -13,34 +13,12 @@ const (
 	SnapshotMetaAuthor         SnapshotMetaTag = 1
 	SnapshotMetaHost           SnapshotMetaTag = 2
 	SnapshotMetaMessage        SnapshotMetaTag = 3
-	SnapshotMetaSourceRoot     SnapshotMetaTag = 4
 	SnapshotMetaExcludeRules   SnapshotMetaTag = 5
 	SnapshotMetaChecksumCommit SnapshotMetaTag = 6
 )
 
 // SnapshotMetaFlagCritical is bit 0 of a metadata record's flags field.
 const SnapshotMetaFlagCritical uint16 = 1 << 0
-
-// SnapshotSourceType is the source_type registry.
-type SnapshotSourceType uint8
-
-const (
-	SnapshotSourceUnknown  SnapshotSourceType = 0
-	SnapshotSourceLocal    SnapshotSourceType = 1
-	SnapshotSourceSnapshot SnapshotSourceType = 2
-	SnapshotSourceNFS      SnapshotSourceType = 3
-	SnapshotSourceSMB      SnapshotSourceType = 4
-	SnapshotSourceBundle   SnapshotSourceType = 5
-)
-
-// source_flags bits.
-const (
-	SnapshotFlagNoCtime         uint8 = 1 << 0
-	SnapshotFlagNoSparse        uint8 = 1 << 2
-	SnapshotFlagSyntheticIDs    uint8 = 1 << 3
-	SnapshotFlagCaseInsensitive uint8 = 1 << 4
-	SnapshotFlagMtimeSlack      uint8 = 1 << 5
-)
 
 // SnapshotMeta is one metadata TLV record that follows a snapshot's fixed
 // body. meta_count of them follow, in the order they were written.
@@ -100,26 +78,22 @@ func (m *SnapshotMeta) Decode(buf []byte) (int, error) {
 }
 
 // Snapshot is a snapshot object: one root tree pointer, a parent pointer,
-// a generation number, and the snapshot's own metadata.
+// the snapshot time, and the snapshot's own metadata.
 type Snapshot struct {
-	Common               CommonHeader
-	Object               ObjectHeader
-	RootTree             [32]byte
-	Parent               [32]byte
-	Generation           uint64
-	TimeSec              int64
-	TimeNsec             uint32
-	TzOffsetSec          int32
-	TotalSize            uint64
-	ReachableObjectCount uint64
-	HashAlgo             HashAlgo
-	ChunkerProfile       ChunkerProfile
-	MetaCount            uint16
-	SourceType           SnapshotSourceType
-	SourceFlags          uint8
-	ParentHashAlgo       HashAlgo
-	ReservedU8           uint8
-	Meta                 []SnapshotMeta
+	Common       CommonHeader
+	Object       ObjectHeader
+	RootTree     [32]byte
+	Parent       [32]byte
+	ReservedU64a uint64
+	TimeSec      int64
+	TimeNsec     uint32
+	TzOffsetSec  int32
+	TotalSize    uint64
+	ReservedU64b uint64
+	ReservedU16  uint16
+	MetaCount    uint16
+	ReservedU32  uint32
+	Meta         []SnapshotMeta
 }
 
 // EncodedLen is the snapshot's encoded length: both headers, the fixed
@@ -149,19 +123,15 @@ func (s *Snapshot) Encode(buf []byte) (int, error) {
 	body := buf[CommonHeaderLen+ObjectHeaderLen:]
 	copy(body[0:32], s.RootTree[:])
 	copy(body[32:64], s.Parent[:])
-	binary.LittleEndian.PutUint64(body[64:72], s.Generation)
+	binary.LittleEndian.PutUint64(body[64:72], s.ReservedU64a)
 	binary.LittleEndian.PutUint64(body[72:80], uint64(s.TimeSec))
 	binary.LittleEndian.PutUint32(body[80:84], s.TimeNsec)
 	binary.LittleEndian.PutUint32(body[84:88], uint32(s.TzOffsetSec))
 	binary.LittleEndian.PutUint64(body[88:96], s.TotalSize)
-	binary.LittleEndian.PutUint64(body[96:104], s.ReachableObjectCount)
-	body[104] = byte(s.HashAlgo)
-	body[105] = byte(s.ChunkerProfile)
+	binary.LittleEndian.PutUint64(body[96:104], s.ReservedU64b)
+	binary.LittleEndian.PutUint16(body[104:106], s.ReservedU16)
 	binary.LittleEndian.PutUint16(body[106:108], s.MetaCount)
-	body[108] = byte(s.SourceType)
-	body[109] = s.SourceFlags
-	body[110] = byte(s.ParentHashAlgo)
-	body[111] = s.ReservedU8
+	binary.LittleEndian.PutUint32(body[108:112], s.ReservedU32)
 
 	crc := crc32c(buf[0:objectHeaderCRCOffset])
 	s.Object.HeaderCRC32C = crc
@@ -190,6 +160,10 @@ func (s *Snapshot) Decode(buf []byte) (int, error) {
 	if s.Common.MagicKind != MagicSnapshot {
 		return 0, ErrBadMagic
 	}
+	metaOff, err := s.Common.fixedPartEnd(CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen)
+	if err != nil {
+		return 0, err
+	}
 	if err := s.Object.Decode(buf[CommonHeaderLen : CommonHeaderLen+ObjectHeaderLen]); err != nil {
 		return 0, err
 	}
@@ -199,21 +173,17 @@ func (s *Snapshot) Decode(buf []byte) (int, error) {
 	body := buf[CommonHeaderLen+ObjectHeaderLen:]
 	copy(s.RootTree[:], body[0:32])
 	copy(s.Parent[:], body[32:64])
-	s.Generation = binary.LittleEndian.Uint64(body[64:72])
+	s.ReservedU64a = binary.LittleEndian.Uint64(body[64:72])
 	s.TimeSec = int64(binary.LittleEndian.Uint64(body[72:80]))
 	s.TimeNsec = binary.LittleEndian.Uint32(body[80:84])
 	s.TzOffsetSec = int32(binary.LittleEndian.Uint32(body[84:88]))
 	s.TotalSize = binary.LittleEndian.Uint64(body[88:96])
-	s.ReachableObjectCount = binary.LittleEndian.Uint64(body[96:104])
-	s.HashAlgo = HashAlgo(body[104])
-	s.ChunkerProfile = ChunkerProfile(body[105])
+	s.ReservedU64b = binary.LittleEndian.Uint64(body[96:104])
+	s.ReservedU16 = binary.LittleEndian.Uint16(body[104:106])
 	s.MetaCount = binary.LittleEndian.Uint16(body[106:108])
-	s.SourceType = SnapshotSourceType(body[108])
-	s.SourceFlags = body[109]
-	s.ParentHashAlgo = HashAlgo(body[110])
-	s.ReservedU8 = body[111]
+	s.ReservedU32 = binary.LittleEndian.Uint32(body[108:112])
 
-	off := CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen
+	off := metaOff
 	s.Meta = make([]SnapshotMeta, 0, s.MetaCount)
 	for i := 0; i < int(s.MetaCount); i++ {
 		var m SnapshotMeta

@@ -213,13 +213,13 @@ func (c *Cache) incompleteError(id, missingTree object.ID) *IncompleteError {
 type ObjectLocation struct {
 	// DiscUUID is the disc that stores the object.
 	DiscUUID [16]byte
-	// PayloadLen is the object's uncompressed size. SizeKnown is true
-	// only when the disc named by DiscUUID is itself cached, so its own
-	// Objects row, which carries the size, was read directly; a disc
-	// known only through another cached disc's Prereqs table names the
-	// disc but not the size.
-	PayloadLen uint64
-	SizeKnown  bool
+	// ByteLen is the object file's length on the disc. SizeKnown is
+	// true only when the disc named by DiscUUID is itself cached, so
+	// its own Files row, which carries the length, was read directly;
+	// a disc known only through another cached disc's Prereqs table
+	// names the disc but not the length.
+	ByteLen   uint64
+	SizeKnown bool
 }
 
 // LocateObject looks across every cached disc's INDEX for id, first in
@@ -230,10 +230,8 @@ type ObjectLocation struct {
 // case some other cached disc's Objects table still resolves the same
 // id with its size.
 //
-// A Prereqs row names a run_seq, a number the host assigns. Each disc
-// resolves its own Prereqs rows through its own cached DISCS table, so
-// a run_seq that repeats on another disc never sends the lookup to the
-// wrong disc.
+// A Prereqs row names the disc by uuid, so the lookup never depends on
+// a run number, which can repeat after a repository is rebuilt.
 func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
 	uuids, err := c.cachedDiscs()
 	if err != nil {
@@ -246,9 +244,10 @@ func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
 		if err != nil {
 			continue
 		}
-		for _, row := range idx.Objects {
+		objectRows := objectFileRows(idx)
+		for i, row := range idx.Objects {
 			if object.ID(row.ContentID) == id {
-				return ObjectLocation{DiscUUID: uuid, PayloadLen: row.PayloadLen, SizeKnown: true}, true
+				return ObjectLocation{DiscUUID: uuid, ByteLen: objectRows[i].ByteLen, SizeKnown: true}, true
 			}
 		}
 		if haveFallback {
@@ -258,10 +257,8 @@ func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
 			if object.ID(row.ContentID) != id {
 				continue
 			}
-			if holder, ok := c.runHolderOf(uuid, row.RunSeq); ok {
-				fallback = ObjectLocation{DiscUUID: holder}
-				haveFallback = true
-			}
+			fallback = ObjectLocation{DiscUUID: row.DiscUUID}
+			haveFallback = true
 			break
 		}
 	}
@@ -271,19 +268,16 @@ func (c *Cache) LocateObject(id object.ID) (ObjectLocation, bool) {
 	return ObjectLocation{}, false
 }
 
-// runHolderOf returns the disc that uuid's own cached DISCS table names
-// for runSeq.
-func (c *Cache) runHolderOf(uuid [16]byte, runSeq uint64) ([16]byte, bool) {
-	discs, err := c.discsTableOf(uuid)
-	if err != nil {
-		return [16]byte{}, false
-	}
-	for _, row := range discs.Rows {
-		if row.RunSeq == runSeq {
-			return row.DiscUUID, true
+// objectFileRows returns a run's role 13 Files rows, in row order. The
+// j-th of them describes the file of Objects row j.
+func objectFileRows(idx *format.Index) []format.IndexFileRecord {
+	rows := make([]format.IndexFileRecord, 0, idx.ObjectCount)
+	for _, row := range idx.Files {
+		if row.Role == format.FileRoleObject {
+			rows = append(rows, row)
 		}
 	}
-	return [16]byte{}, false
+	return rows
 }
 
 // DiscRow returns the DISCS row for uuid: the disc's own cached table

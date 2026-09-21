@@ -219,10 +219,10 @@ func TestCheckCompleteResolvesDisc(t *testing.T) {
 
 	cachedDisc := [16]byte{3, 3, 3, 3}
 	holderDisc := [16]byte{9, 9, 9, 9}
-	idxBuf := encodeTestIndex(t, 3, nil, []format.IndexPrereqRecord{{ContentID: missingID, RunSeq: 7}})
+	idxBuf := encodeTestIndex(t, 3, nil, nil, []format.IndexPrereqRecord{{ContentID: missingID, DiscUUID: holderDisc}})
 	discsBuf := encodeTestDiscs(t, []format.DiscsRow{
-		{RunSeq: 3, DiscUUID: cachedDisc, RunStatus: 1, Health: 1},
-		{RunSeq: 7, DiscUUID: holderDisc, RunStatus: 1, Health: 1},
+		{RunSeq: 3, DiscUUID: cachedDisc},
+		{RunSeq: 7, DiscUUID: holderDisc},
 	})
 	if err := c.WriteDisc(cachedDisc, idxBuf, encodeTestRefs(t), discsBuf); err != nil {
 		t.Fatal(err)
@@ -257,16 +257,16 @@ func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
 	const sharedRunSeq = 5
 
 	idxA := encodeTestIndex(t, sharedRunSeq,
-		[]format.IndexObjectRecord{{ContentID: objA, PayloadLen: 11, Kind: format.ObjectKindChunk}}, nil)
-	discsA := encodeTestDiscs(t, []format.DiscsRow{{RunSeq: sharedRunSeq, DiscUUID: discA, RunStatus: 1, Health: 1}})
+		[]format.IndexObjectRecord{{ContentID: objA, Kind: format.ObjectKindChunk}}, []uint64{11}, nil)
+	discsA := encodeTestDiscs(t, []format.DiscsRow{{RunSeq: sharedRunSeq, DiscUUID: discA}})
 	if err := c.WriteDisc(discA, idxA, encodeTestRefs(t), discsA); err != nil {
 		t.Fatal(err)
 	}
 
 	idxB := encodeTestIndex(t, sharedRunSeq,
-		[]format.IndexObjectRecord{{ContentID: objB, PayloadLen: 22, Kind: format.ObjectKindChunk}},
-		[]format.IndexPrereqRecord{{ContentID: prereqOnly, RunSeq: sharedRunSeq}})
-	discsB := encodeTestDiscs(t, []format.DiscsRow{{RunSeq: sharedRunSeq, DiscUUID: discB, RunStatus: 1, Health: 1}})
+		[]format.IndexObjectRecord{{ContentID: objB, Kind: format.ObjectKindChunk}}, []uint64{22},
+		[]format.IndexPrereqRecord{{ContentID: prereqOnly, DiscUUID: discA}})
+	discsB := encodeTestDiscs(t, []format.DiscsRow{{RunSeq: sharedRunSeq, DiscUUID: discB}})
 	if err := c.WriteDisc(discB, idxB, encodeTestRefs(t), discsB); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
 	}{
 		{"objects row of disc A", objA, discA, 11},
 		{"objects row of disc B", objB, discB, 22},
-		{"prereqs row of disc B", prereqOnly, discB, 0},
+		{"prereqs row of disc B names disc A", prereqOnly, discA, 0},
 	}
 	for _, tc := range cases {
 		loc, found := c.LocateObject(tc.id)
@@ -289,23 +289,29 @@ func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
 		if loc.DiscUUID != tc.disc {
 			t.Fatalf("%s: disc = %v, want %v", tc.name, loc.DiscUUID, tc.disc)
 		}
-		if loc.PayloadLen != tc.size {
-			t.Fatalf("%s: PayloadLen = %d, want %d", tc.name, loc.PayloadLen, tc.size)
+		if loc.ByteLen != tc.size {
+			t.Fatalf("%s: ByteLen = %d, want %d", tc.name, loc.ByteLen, tc.size)
 		}
 	}
 }
 
 // encodeTestIndex builds a minimal, valid INDEX holding the given
 // Objects and Prereqs rows, encoded ready for cache.WriteDisc.
-func encodeTestIndex(t *testing.T, runSeq uint64, objects []format.IndexObjectRecord, prereqs []format.IndexPrereqRecord) []byte {
+func encodeTestIndex(t *testing.T, runSeq uint64, objects []format.IndexObjectRecord, objectByteLens []uint64, prereqs []format.IndexPrereqRecord) []byte {
 	t.Helper()
+	// The j-th role 13 Files row describes the file of Objects row j,
+	// so the two tables must stay the same length.
+	files := make([]format.IndexFileRecord, len(objects))
+	for i := range objects {
+		files[i] = format.IndexFileRecord{Role: format.FileRoleObject, ByteLen: objectByteLens[i]}
+	}
 	idx := &format.Index{
-		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1},
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1, HeaderLen: format.IndexHeaderLen},
 		RunSeq:      runSeq,
+		FileCount:   uint32(len(files)),
 		ObjectCount: uint32(len(objects)),
 		PrereqCount: uint32(len(prereqs)),
-		HashAlgo:    format.HashAlgoSHA256,
-		DigestLen:   32,
+		Files:       files,
 		Objects:     objects,
 		Prereqs:     prereqs,
 	}
@@ -320,11 +326,8 @@ func encodeTestIndex(t *testing.T, runSeq uint64, objects []format.IndexObjectRe
 func encodeTestDiscs(t *testing.T, rows []format.DiscsRow) []byte {
 	t.Helper()
 	discs := &format.DiscsTable{
-		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1},
-		HashAlgo:    format.HashAlgoSHA256,
-		DigestLen:   32,
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1, HeaderLen: format.DiscsHeaderLen},
 		RecordCount: uint64(len(rows)),
-		RecordSize:  format.DiscsRowLen,
 		Rows:        rows,
 	}
 	buf := make([]byte, format.DiscsHeaderLen+len(rows)*format.DiscsRowLen)
@@ -338,10 +341,7 @@ func encodeTestDiscs(t *testing.T, rows []format.DiscsRow) []byte {
 func encodeTestRefs(t *testing.T) []byte {
 	t.Helper()
 	refs := &format.RefsTable{
-		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1},
-		HashAlgo:   format.HashAlgoSHA256,
-		DigestLen:  32,
-		RecordSize: format.RefRecordLen,
+		Header: format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1, HeaderLen: format.RefsHeaderLen},
 	}
 	buf := make([]byte, format.RefsHeaderLen)
 	if _, err := refs.Encode(buf); err != nil {
@@ -355,7 +355,7 @@ func encodeTestRefs(t *testing.T) []byte {
 func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
 	t.Helper()
 	tree := &format.Tree{
-		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicTree, VersionMajor: 1},
+		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicTree, VersionMajor: 1, HeaderLen: format.TreeHeaderLen},
 		EntryCount: 1,
 		Entries:    []format.TreeEntry{entry},
 	}
@@ -371,7 +371,7 @@ func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
 func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
 	t.Helper()
 	snap := &format.Snapshot{
-		Common:   format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicSnapshot, VersionMajor: 1},
+		Common:   format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicSnapshot, VersionMajor: 1, HeaderLen: format.SnapshotHeaderLen},
 		RootTree: [32]byte(rootTree),
 	}
 	buf := make([]byte, snap.EncodedLen())

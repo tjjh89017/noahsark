@@ -38,9 +38,6 @@ func TestBuildFECToDiskDigestsMatchHashing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runHeader := make([]byte, RunFileLen)
-	rng.Read(runHeader)
-
 	// Digests computed the way the fused write pass computes them: fed
 	// in stream order, one file at a time, padded to a block boundary
 	// per file, then padded again out to fec.K*L to cover the last
@@ -64,7 +61,7 @@ func TestBuildFECToDiskDigestsMatchHashing(t *testing.T) {
 		for j := range fec.M {
 			parityPaths[j] = filepath.Join(dir, fmt.Sprintf("p%04d.bin", j))
 		}
-		if err := buildFECToDisk(sources, layout, runHeader, checksumPath, parityPaths, digests, nil); err != nil {
+		if err := buildFECToDisk(sources, layout, checksumPath, parityPaths, digests, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

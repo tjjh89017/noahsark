@@ -109,7 +109,7 @@ func (s *pendingScan) file(dest, part string, blobID object.ID, e format.TreeEnt
 		return fmt.Errorf("blob %s: not held by the cache; disc-swap restore needs every blob cached: %w", blobID.TextForm(), err)
 	}
 	if !s.overwrite {
-		if resumed, found := existingFileStatus(dest, e, blob.Entries); found && resumed {
+		if resumed, found := existingFileStatus(dest, e, placeChunks(blob.Entries)); found && resumed {
 			return nil
 		}
 	}
@@ -121,7 +121,7 @@ func (s *pendingScan) file(dest, part string, blobID object.ID, e format.TreeEnt
 		return nil
 	}
 	defer func() { _ = f.Close() }()
-	for _, be := range blob.Entries {
+	for _, be := range placeChunks(blob.Entries) {
 		if s.chunkInPlace(f, be) {
 			continue
 		}
@@ -132,12 +132,12 @@ func (s *pendingScan) file(dest, part string, blobID object.ID, e format.TreeEnt
 
 // chunkInPlace reports whether f already holds be's own bytes at be's
 // offset, the same content id check the assembler makes.
-func (s *pendingScan) chunkInPlace(f *os.File, be format.BlobEntry) bool {
+func (s *pendingScan) chunkInPlace(f *os.File, be placedChunk) bool {
 	if uint64(cap(s.buf)) < be.Length {
 		s.buf = make([]byte, be.Length)
 	}
 	buf := s.buf[:be.Length]
-	if _, err := f.ReadAt(buf, int64(be.FileOffset)); err != nil {
+	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
 		return false
 	}
 	return object.ComputeID(buf) == object.ID(be.ContentID)

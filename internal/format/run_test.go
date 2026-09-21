@@ -11,28 +11,19 @@ func testRun() Run {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicRun,
 			VersionMajor: 1,
-			VersionMinor: 0,
-			HeaderLen:    CommonHeaderLen + 480,
+			HeaderLen:    RunLen,
 		},
-		RunSeq:          1,
-		DiscSeq:         0,
-		FECK:            231,
-		FECM:            23,
-		FECScheme:       FECSchemeRS255GF8,
-		HashAlgo:        HashAlgoSHA256,
-		ChunkerProfile:  ChunkerProfileP3,
-		Compression:     CompressionZstd,
-		FSProfile:       DiscFSProfileOneshot,
-		RunKind:         RunKindData,
-		RunFlags:        RunFlagClosing,
-		IndexBytes:      65536,
-		StreamBytes:     471859200,
-		CreatedSec:      1700000000,
-		CreatedNsec:     500000000,
-		ToolVersion:     0x01000001,
-		DiscObjectCount: 1000,
-		DiscRunIndex:    0,
-		HeaderCRC32C:    0x17AF43B4,
+		RunSeq:      1,
+		DiscSeq:     0,
+		FECK:        231,
+		FECM:        23,
+		FECScheme:   FECSchemeRS255GF8,
+		HashAlgo:    HashAlgoSHA256,
+		IndexBytes:  65536,
+		StreamBytes: 471859200,
+		CreatedSec:  1700000000,
+		CreatedNsec: 500000000,
+		ToolVersion: 0x01000001,
 	}
 	for i := range r.DiscUUID {
 		r.DiscUUID[i] = byte(i + 1)
@@ -63,18 +54,12 @@ func TestRunGolden(t *testing.T) {
 		t.Fatalf("decoded run mismatch: got %+v, want %+v", got, r)
 	}
 
-	if got.ReservedU8 != 0 {
-		t.Errorf("reserved_u8 not zero: 0x%02x", got.ReservedU8)
+	if got.ReservedA != ([10]byte{}) || got.ReservedB != ([32]byte{}) {
+		t.Errorf("reserved field not zero: %x %x", got.ReservedA, got.ReservedB)
 	}
-	if got.ReservedU32a != 0 {
-		t.Errorf("reserved_u32a not zero: 0x%08x", got.ReservedU32a)
-	}
-	if got.ReservedU32b != 0 {
-		t.Errorf("reserved_u32b not zero: 0x%08x", got.ReservedU32b)
-	}
-	for i, b := range got.Reserved {
+	for i, b := range got.ReservedC {
 		if b != 0 {
-			t.Errorf("reserved[%d] not zero: 0x%02x", i, b)
+			t.Errorf("reserved_c[%d] not zero: 0x%02x", i, b)
 		}
 	}
 	for i, b := range got.ReservedFinal {
@@ -87,7 +72,7 @@ func TestRunGolden(t *testing.T) {
 func TestRunDecodeIgnoresReservedByte(t *testing.T) {
 	golden := readGolden(t, "run.golden")
 	buf := append([]byte(nil), golden...)
-	buf[208] = 0xFF
+	buf[192] = 0xFF
 	binary.LittleEndian.PutUint32(buf[504:508], crc32c(buf[0:504]))
 
 	var got Run
@@ -95,7 +80,7 @@ func TestRunDecodeIgnoresReservedByte(t *testing.T) {
 		t.Fatalf("decode nonzero reserved byte: %v", err)
 	}
 	want := testRun()
-	want.Reserved[0] = 0xFF
+	want.ReservedC[0] = 0xFF
 	want.HeaderCRC32C = crc32c(buf[0:504])
 	if got != want {
 		t.Fatalf("decoded run mismatch: got %+v, want %+v", got, want)

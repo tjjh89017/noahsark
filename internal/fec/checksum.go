@@ -25,8 +25,6 @@ func BuildChecksumRecord(stripeIndex uint32, dataBlocks [][]byte) *format.Checks
 	return &format.ChecksumRecord{
 		StripeIndex: stripeIndex,
 		DigestCount: uint16(len(dataBlocks)),
-		DigestBytes: format.ChecksumDigestSize,
-		HashAlgo:    format.HashAlgoSHA256,
 		Digests:     digests,
 	}
 }
@@ -41,8 +39,6 @@ func BuildChecksumRecordFromDigests(stripeIndex uint32, digests [][8]byte) *form
 	return &format.ChecksumRecord{
 		StripeIndex: stripeIndex,
 		DigestCount: uint16(len(out)),
-		DigestBytes: format.ChecksumDigestSize,
-		HashAlgo:    format.HashAlgoSHA256,
 		Digests:     out,
 	}
 }

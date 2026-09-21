@@ -5,29 +5,26 @@ import "encoding/binary"
 const (
 	// IndexFixedBodyLen is the size of INDEX's fixed body, after the
 	// common header and before the Files table.
-	IndexFixedBodyLen = 48
+	IndexFixedBodyLen = 24
 	// IndexHeaderLen is the common header plus the fixed body.
 	IndexHeaderLen = CommonHeaderLen + IndexFixedBodyLen
 	// IndexFileRecordLen is the size of one Files table row.
 	IndexFileRecordLen = 48
 	// IndexObjectRecordLen is the size of one Objects table row.
-	IndexObjectRecordLen = 72
+	IndexObjectRecordLen = 40
 	// IndexPrereqRecordLen is the size of one Prereqs table row.
-	IndexPrereqRecordLen = 40
+	IndexPrereqRecordLen = 48
 )
 
 // File role registry. A role names what a Files row describes.
 const (
-	FileRoleReserved  = 0
 	FileRoleIndex     = 1
 	FileRoleRun       = 2
 	FileRoleDisc      = 3
 	FileRoleReadme    = 4
 	FileRoleFormat    = 5
-	FileRoleUnused6   = 6
 	FileRoleRefs      = 7
 	FileRoleDiscs     = 8
-	FileRoleSnapobj   = 9
 	FileRoleChecksum  = 10
 	FileRoleParity    = 11
 	FileRoleRun2      = 12
@@ -35,7 +32,8 @@ const (
 	FileRoleReference = 14
 )
 
-// IndexFileRecord is one row of the Files table, 48 bytes.
+// IndexFileRecord is one row of the Files table, 48 bytes. FileHash is
+// set for the fixed-name files only; every other role carries zero.
 type IndexFileRecord struct {
 	FileHash [32]byte
 	ByteLen  uint64
@@ -57,88 +55,63 @@ func (r *IndexFileRecord) decode(buf []byte) {
 	copy(r.Reserved[:], buf[41:48])
 }
 
-// IndexObjectRecord is one row of the Objects table, 72 bytes.
+// IndexObjectRecord is one row of the Objects table, 40 bytes. The id
+// gives the file name and Kind gives the directory. The j-th role 13
+// Files row describes the file of Objects row j.
 type IndexObjectRecord struct {
-	ContentID   [32]byte
-	FileIndex   uint32
-	Reserved1   uint32
-	Offset      uint64
-	StoredLen   uint64
-	PayloadLen  uint64
-	Kind        ObjectKind
-	Compression Compression
-	Flags       uint16
-	Reserved2   uint32
+	ContentID [32]byte
+	Kind      ObjectKind
+	Reserved  [7]byte
 }
 
 func (r *IndexObjectRecord) encode(buf []byte) {
 	copy(buf[0:32], r.ContentID[:])
-	binary.LittleEndian.PutUint32(buf[32:36], r.FileIndex)
-	binary.LittleEndian.PutUint32(buf[36:40], r.Reserved1)
-	binary.LittleEndian.PutUint64(buf[40:48], r.Offset)
-	binary.LittleEndian.PutUint64(buf[48:56], r.StoredLen)
-	binary.LittleEndian.PutUint64(buf[56:64], r.PayloadLen)
-	buf[64] = byte(r.Kind)
-	buf[65] = byte(r.Compression)
-	binary.LittleEndian.PutUint16(buf[66:68], r.Flags)
-	binary.LittleEndian.PutUint32(buf[68:72], r.Reserved2)
+	buf[32] = byte(r.Kind)
+	copy(buf[33:40], r.Reserved[:])
 }
 
 func (r *IndexObjectRecord) decode(buf []byte) error {
 	copy(r.ContentID[:], buf[0:32])
-	r.FileIndex = binary.LittleEndian.Uint32(buf[32:36])
-	r.Reserved1 = binary.LittleEndian.Uint32(buf[36:40])
-	r.Offset = binary.LittleEndian.Uint64(buf[40:48])
-	r.StoredLen = binary.LittleEndian.Uint64(buf[48:56])
-	r.PayloadLen = binary.LittleEndian.Uint64(buf[56:64])
-	r.Kind = ObjectKind(buf[64])
-	r.Compression = Compression(buf[65])
-	r.Flags = binary.LittleEndian.Uint16(buf[66:68])
-	r.Reserved2 = binary.LittleEndian.Uint32(buf[68:72])
+	r.Kind = ObjectKind(buf[32])
+	copy(r.Reserved[:], buf[33:40])
 	if r.Kind < ObjectKindChunk || r.Kind > ObjectKindSnapshot {
 		return ErrObjectKind
 	}
 	return nil
 }
 
-// IndexPrereqRecord is one row of the Prereqs table, 40 bytes.
+// IndexPrereqRecord is one row of the Prereqs table, 48 bytes. It names
+// the disc by uuid, because a run_seq can repeat after a repository is
+// rebuilt.
 type IndexPrereqRecord struct {
 	ContentID [32]byte
-	RunSeq    uint64
+	DiscUUID  [16]byte
 }
 
 func (r *IndexPrereqRecord) encode(buf []byte) {
 	copy(buf[0:32], r.ContentID[:])
-	binary.LittleEndian.PutUint64(buf[32:40], r.RunSeq)
+	copy(buf[32:48], r.DiscUUID[:])
 }
 
 func (r *IndexPrereqRecord) decode(buf []byte) {
 	copy(r.ContentID[:], buf[0:32])
-	r.RunSeq = binary.LittleEndian.Uint64(buf[32:40])
+	copy(r.DiscUUID[:], buf[32:48])
 }
 
 // Index is INDEX, the structure a reader opens first inside a run. It
-// lists every file the run wrote, locates and verifies every object the
-// run stores, and names every object the run references but does not
-// store.
+// lists every file the run wrote, names every object the run stores, and
+// names every object the run references but does not store. It holds no
+// CRC; index_hash of the run header covers every byte.
 type Index struct {
-	Header           CommonHeader
-	RunSeq           uint64
-	FileCount        uint32
-	ObjectCount      uint32
-	PrereqCount      uint32
-	FileRecordSize   uint16
-	ObjectRecordSize uint16
-	PrereqRecordSize uint16
-	HashAlgo         HashAlgo
-	DigestLen        uint8
-	Reserved         [4]byte
-	ContainerLen     uint64
-	BodyCRC32C       uint32
-	HeaderCRC32C     uint32
-	Files            []IndexFileRecord
-	Objects          []IndexObjectRecord
-	Prereqs          []IndexPrereqRecord
+	Header      CommonHeader
+	RunSeq      uint64
+	FileCount   uint32
+	ObjectCount uint32
+	PrereqCount uint32
+	ReservedU32 uint32
+	Files       []IndexFileRecord
+	Objects     []IndexObjectRecord
+	Prereqs     []IndexPrereqRecord
 }
 
 // EncodedLen returns the total encoded size of idx: the header plus every
@@ -151,10 +124,7 @@ func (idx *Index) EncodedLen() int {
 }
 
 // Encode writes idx into buf and returns the number of bytes written,
-// EncodedLen(). It computes container_len, body_crc32c over the three
-// tables, and header_crc32c over bytes 0 to 75, and overwrites
-// idx.ContainerLen, idx.BodyCRC32C and idx.HeaderCRC32C with the computed
-// values.
+// EncodedLen().
 func (idx *Index) Encode(buf []byte) (int, error) {
 	total := idx.EncodedLen()
 	if len(buf) < total {
@@ -167,14 +137,7 @@ func (idx *Index) Encode(buf []byte) (int, error) {
 	binary.LittleEndian.PutUint32(buf[40:44], idx.FileCount)
 	binary.LittleEndian.PutUint32(buf[44:48], idx.ObjectCount)
 	binary.LittleEndian.PutUint32(buf[48:52], idx.PrereqCount)
-	binary.LittleEndian.PutUint16(buf[52:54], idx.FileRecordSize)
-	binary.LittleEndian.PutUint16(buf[54:56], idx.ObjectRecordSize)
-	binary.LittleEndian.PutUint16(buf[56:58], idx.PrereqRecordSize)
-	buf[58] = byte(idx.HashAlgo)
-	buf[59] = idx.DigestLen
-	copy(buf[60:64], idx.Reserved[:])
-	idx.ContainerLen = uint64(total)
-	binary.LittleEndian.PutUint64(buf[64:72], idx.ContainerLen)
+	binary.LittleEndian.PutUint32(buf[52:56], idx.ReservedU32)
 
 	off := IndexHeaderLen
 	for i := range idx.Files {
@@ -189,21 +152,14 @@ func (idx *Index) Encode(buf []byte) (int, error) {
 		idx.Prereqs[i].encode(buf[off : off+IndexPrereqRecordLen])
 		off += IndexPrereqRecordLen
 	}
-
-	bodyCRC := crc32c(buf[IndexHeaderLen:total])
-	idx.BodyCRC32C = bodyCRC
-	binary.LittleEndian.PutUint32(buf[72:76], bodyCRC)
-
-	headerCRC := crc32c(buf[0:76])
-	idx.HeaderCRC32C = headerCRC
-	binary.LittleEndian.PutUint32(buf[76:80], headerCRC)
 	return total, nil
 }
 
 // Decode reads an Index from buf and returns the number of bytes read.
-// It rejects a short buffer, a magic_kind mismatch, a CRC mismatch, and an
-// Objects row whose kind is outside 1 to 4. It does not interpret a
-// reserved field.
+// It rejects a short buffer, a magic_kind mismatch, a header_len below
+// the fixed part this build knows, a file length that does not agree
+// with the row counts, and an Objects row whose kind is outside 1 to 4.
+// It does not interpret a reserved field.
 func (idx *Index) Decode(buf []byte) (int, error) {
 	if len(buf) < IndexHeaderLen {
 		return 0, ErrShort
@@ -215,38 +171,29 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	if h.MagicKind != MagicIndex {
 		return 0, ErrBadMagic
 	}
+	tablesOff, err := h.fixedPartEnd(IndexHeaderLen)
+	if err != nil {
+		return 0, err
+	}
 
 	runSeq := binary.LittleEndian.Uint64(buf[32:40])
 	fileCount := binary.LittleEndian.Uint32(buf[40:44])
 	objectCount := binary.LittleEndian.Uint32(buf[44:48])
 	prereqCount := binary.LittleEndian.Uint32(buf[48:52])
-	fileRecordSize := binary.LittleEndian.Uint16(buf[52:54])
-	objectRecordSize := binary.LittleEndian.Uint16(buf[54:56])
-	prereqRecordSize := binary.LittleEndian.Uint16(buf[56:58])
-	hashAlgo := HashAlgo(buf[58])
-	digestLen := buf[59]
-	var reserved [4]byte
-	copy(reserved[:], buf[60:64])
-	containerLen := binary.LittleEndian.Uint64(buf[64:72])
-	bodyCRC := binary.LittleEndian.Uint32(buf[72:76])
-	headerCRC := binary.LittleEndian.Uint32(buf[76:80])
+	reservedU32 := binary.LittleEndian.Uint32(buf[52:56])
 
-	if headerCRC != crc32c(buf[0:76]) {
-		return 0, ErrCRC
-	}
-
-	total := IndexHeaderLen +
+	total := tablesOff +
 		int(fileCount)*IndexFileRecordLen +
 		int(objectCount)*IndexObjectRecordLen +
 		int(prereqCount)*IndexPrereqRecordLen
 	if len(buf) < total {
 		return 0, ErrShort
 	}
-	if bodyCRC != crc32c(buf[IndexHeaderLen:total]) {
-		return 0, ErrCRC
+	if len(buf) != total {
+		return 0, ErrBadField
 	}
 
-	off := IndexHeaderLen
+	off := tablesOff
 	files := make([]IndexFileRecord, fileCount)
 	for i := range files {
 		files[i].decode(buf[off : off+IndexFileRecordLen])
@@ -270,15 +217,7 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	idx.FileCount = fileCount
 	idx.ObjectCount = objectCount
 	idx.PrereqCount = prereqCount
-	idx.FileRecordSize = fileRecordSize
-	idx.ObjectRecordSize = objectRecordSize
-	idx.PrereqRecordSize = prereqRecordSize
-	idx.HashAlgo = hashAlgo
-	idx.DigestLen = digestLen
-	idx.Reserved = reserved
-	idx.ContainerLen = containerLen
-	idx.BodyCRC32C = bodyCRC
-	idx.HeaderCRC32C = headerCRC
+	idx.ReservedU32 = reservedU32
 	idx.Files = files
 	idx.Objects = objects
 	idx.Prereqs = prereqs

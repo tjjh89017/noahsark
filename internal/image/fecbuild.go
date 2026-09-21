@@ -216,13 +216,13 @@ type stripeRead struct {
 // over the FEC stream sources describe, and writes them straight to
 // checksumPath and parityPaths, one stripe at a time. It holds at most
 // a couple of stripes of k data blocks and the m parity blocks in
-// memory, never the stream itself. runHeaderCopy is the 2048-byte run
-// header copy every parity file starts with. digests, when not nil, is
+// memory, never the stream itself. A parity file holds its column and
+// nothing else, with no header block. digests, when not nil, is
 // the stream's block digests precomputed while the stream's bytes were
 // placed (see blockDigester); passing nil makes this pass compute each
 // stripe's digests itself, as if no earlier pass had read the stream.
 // prog reports stripes encoded; a nil prog reports nothing.
-func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy []byte, checksumPath string, parityPaths []string, digests [][8]byte, prog *progress.Reporter) error {
+func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, checksumPath string, parityPaths []string, digests [][8]byte, prog *progress.Reporter) error {
 	codec, err := fec.NewCodec(fec.K, fec.M)
 	if err != nil {
 		return err
@@ -269,11 +269,7 @@ func buildFECToDisk(sources []streamSource, layout *fec.StreamLayout, runHeaderC
 			return err
 		}
 		open = append(open, f)
-		w := bufio.NewWriter(f)
-		if _, err := w.Write(runHeaderCopy); err != nil {
-			return err
-		}
-		parityW[j] = w
+		parityW[j] = bufio.NewWriter(f)
 	}
 
 	// The read-ahead goroutine fills one stripe while the main loop

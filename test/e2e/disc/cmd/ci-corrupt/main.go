@@ -122,9 +122,9 @@ func corruptData(paths []string, sizes []uint64, layout *fec.StreamLayout, L uin
 	return nil
 }
 
-// corruptParity flips one byte in a parity column's stripe block. Parity
-// files carry a one-block run-header copy before the stripe blocks, the
-// same layout Heal reads.
+// corruptParity flips one byte in a parity column's stripe block. A
+// parity file holds its column and nothing else, the same layout Heal
+// reads.
 func corruptParity(runDir, arg string) error {
 	parts := strings.SplitN(arg, ":", 3)
 	if len(parts) != 3 {
@@ -139,7 +139,7 @@ func corruptParity(runDir, arg string) error {
 		return fmt.Errorf("parity column %d is out of range, this run has %d parity columns", col, fec.M)
 	}
 	path := filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", uint64(fec.K)+1+col))
-	off := (1 + int64(stripe)) * fec.BlockSize
+	off := int64(stripe) * fec.BlockSize
 	if err := flipByte(path, off); err != nil {
 		return err
 	}

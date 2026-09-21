@@ -38,18 +38,6 @@ func asSkip(err error) (*skipErr, bool) {
 	return errors.AsType[*skipErr](err)
 }
 
-// Fixed header lengths of the four object kinds: the common header, the
-// object header, and each kind's own fixed body, before any variable
-// area. These match the header_len this build's writer records.
-const (
-	chunkHeaderLen    = format.CommonHeaderLen + format.ObjectHeaderLen
-	blobBodyLen       = 24
-	blobHeaderLen     = format.CommonHeaderLen + format.ObjectHeaderLen + blobBodyLen
-	treeBodyLen       = 8
-	treeHeaderLen     = format.CommonHeaderLen + format.ObjectHeaderLen + treeBodyLen
-	snapshotHeaderLen = format.CommonHeaderLen + format.ObjectHeaderLen + format.SnapshotFixedLen
-)
-
 // Summary counts the objects one Commit call wrote or found already
 // staged. It covers chunks, blobs, trees and the snapshot together.
 type Summary struct {
@@ -251,14 +239,11 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	rootEntry := format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Mode:      permBits(rootInfo),
-		Name:      []byte(encodeRootName(absRoot)),
+		Name:      []byte(format.EncodeRootName(absRoot)),
 		ContentID: rootDirTree,
 	}
 	fillTimes(&rootEntry, rootInfo)
-	// A TLV area is sorted by type, thus the owner names go in before
-	// the root path.
 	w.fillOwner(&rootEntry, rootInfo)
-	rootEntry.TLVs = append(rootEntry.TLVs, format.TLV{Type: format.TLVTypeRootPath, Payload: []byte(absRoot)})
 
 	rootTreeID, err := w.writeTree([]format.TreeEntry{rootEntry}, &sum)
 	if err != nil {
@@ -478,9 +463,8 @@ func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
 			return ID{}, 0, err
 		}
 		entries = append(entries, format.BlobEntry{
-			ContentID:  id,
-			Length:     uint64(len(chunk)),
-			FileOffset: offset,
+			ContentID: id,
+			Length:    uint64(len(chunk)),
 		})
 		offset += uint64(len(chunk))
 		w.Progress.Add(int64(len(chunk)))
@@ -503,11 +487,10 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 
 	stored, code, storedLen := Compress(payload)
 	c := format.Chunk{
-		Header: commonHeader(format.MagicChunk, chunkHeaderLen),
+		Header: commonHeader(format.MagicChunk, format.ChunkHeaderLen),
 		ObjectHeader: format.ObjectHeader{
 			Kind:        format.ObjectKindChunk,
 			HashAlgo:    format.HashAlgoSHA256,
-			DigestLen:   32,
 			Compression: code,
 			PayloadLen:  uint64(len(payload)),
 			StoredLen:   storedLen,
@@ -532,14 +515,10 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Summary) (ID, error) {
 	b := format.Blob{
 		EntryCount: uint64(len(entries)),
-		TotalSize:  totalSize,
-		EntrySize:  format.BlobEntryLen,
-		HashAlgo:   format.HashAlgoSHA256,
-		DigestLen:  32,
 		Entries:    entries,
 	}
-	b.Header = commonHeader(format.MagicBlob, blobHeaderLen)
-	b.ObjectHeader = format.ObjectHeader{Kind: format.ObjectKindBlob, HashAlgo: format.HashAlgoSHA256, DigestLen: 32}
+	b.Header = commonHeader(format.MagicBlob, format.BlobHeaderLen)
+	b.ObjectHeader = format.ObjectHeader{Kind: format.ObjectKindBlob, HashAlgo: format.HashAlgoSHA256}
 
 	buf := make([]byte, b.EncodedLen())
 	if _, err := b.Encode(buf); err != nil {
@@ -572,8 +551,8 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 // uncompressed, for the same reason as a blob.
 func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error) {
 	t := format.Tree{
-		Header:       commonHeader(format.MagicTree, treeHeaderLen),
-		ObjectHeader: format.ObjectHeader{Kind: format.ObjectKindTree, HashAlgo: format.HashAlgoSHA256, DigestLen: 32},
+		Header:       commonHeader(format.MagicTree, format.TreeHeaderLen),
+		ObjectHeader: format.ObjectHeader{Kind: format.ObjectKindTree, HashAlgo: format.HashAlgoSHA256},
 		EntryCount:   uint32(len(entries)),
 		Entries:      entries,
 	}
@@ -605,27 +584,19 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 
 // writeSnapshot writes the snapshot object for this commit and returns
 // its content id. This build has no parent-chaining input, so every commit
-// writes a root snapshot: generation 1, an all-zero parent.
+// writes a root snapshot with an all-zero parent.
 func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	now := w.Now()
 	_, tzOffset := now.Zone()
 
 	s := format.Snapshot{
-		Common:               commonHeader(format.MagicSnapshot, snapshotHeaderLen),
-		Object:               format.ObjectHeader{Kind: format.ObjectKindSnapshot, HashAlgo: format.HashAlgoSHA256, DigestLen: 32},
-		RootTree:             rootTreeID,
-		Generation:           1,
-		TimeSec:              now.Unix(),
-		TimeNsec:             uint32(now.Nanosecond()),
-		TzOffsetSec:          int32(tzOffset),
-		TotalSize:            w.totalReachableSize(),
-		ReachableObjectCount: uint64(len(w.reachable)),
-		HashAlgo:             format.HashAlgoSHA256,
-		ChunkerProfile:       format.ChunkerProfileP4,
-		SourceType:           format.SnapshotSourceLocal,
-		// The writer does not probe SEEK_HOLE, so it never claims sparse
-		// detection happened.
-		SourceFlags: format.SnapshotFlagNoSparse,
+		Common:      commonHeader(format.MagicSnapshot, format.SnapshotHeaderLen),
+		Object:      format.ObjectHeader{Kind: format.ObjectKindSnapshot, HashAlgo: format.HashAlgoSHA256},
+		RootTree:    rootTreeID,
+		TimeSec:     now.Unix(),
+		TimeNsec:    uint32(now.Nanosecond()),
+		TzOffsetSec: int32(tzOffset),
+		TotalSize:   w.totalReachableSize(),
 	}
 	if w.Message != "" {
 		s.Meta = []format.SnapshotMeta{{Tag: format.SnapshotMetaMessage, Value: []byte(w.Message)}}
@@ -685,7 +656,6 @@ func commonHeader(kind format.Magic, headerLen int) format.CommonHeader {
 		MagicProject: format.ProjectMagic,
 		MagicKind:    kind,
 		VersionMajor: 1,
-		VersionMinor: 0,
 		HeaderLen:    uint16(headerLen),
 	}
 }
@@ -764,28 +734,6 @@ func entrySortKey(e format.TreeEntry) []byte {
 	return e.Name
 }
 
-// encodeRootName escapes a source root's absolute path into the one path
-// component a root tree entry's name must be: '/' becomes "%2F", '\'
-// becomes "%5C", NUL becomes "%00", and '%' becomes "%25".
-func encodeRootName(path string) string {
-	var b bytes.Buffer
-	for i := 0; i < len(path); i++ {
-		switch c := path[i]; c {
-		case '/':
-			b.WriteString("%2F")
-		case '\\':
-			b.WriteString("%5C")
-		case 0:
-			b.WriteString("%00")
-		case '%':
-			b.WriteString("%25")
-		default:
-			b.WriteByte(c)
-		}
-	}
-	return b.String()
-}
-
 // relPath renders path relative to the commit's source root for
 // reporting. It falls back to the absolute path if the relation cannot be
 // computed, which never happens for a path this writer built itself.
@@ -817,10 +765,9 @@ func mtimeOf(info os.FileInfo) (sec int64, nsec int64) {
 	return info.ModTime().Unix(), int64(info.ModTime().Nanosecond())
 }
 
-// fillTimes sets a tree entry's mtime and ctime from info, and marks
-// atime and btime absent. This build never stores atime or btime.
+// fillTimes sets a tree entry's mtime and ctime from info. Access time
+// and birth time are never stored.
 func fillTimes(te *format.TreeEntry, info os.FileInfo) {
-	te.EntryFlags |= format.EntryFlagAtimeAbsent | format.EntryFlagBtimeAbsent
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		te.MtimeSec = info.ModTime().Unix()

@@ -23,8 +23,7 @@ const (
 type ChecksumRecord struct {
 	StripeIndex  uint32
 	DigestCount  uint16
-	DigestBytes  uint8
-	HashAlgo     HashAlgo
+	ReservedU16  uint16
 	HeaderCRC32C uint32
 	// Digests holds DigestCount entries, in data column order. Encode
 	// zero-pads the digests area past the last entry.
@@ -45,8 +44,7 @@ func (r *ChecksumRecord) Encode(buf []byte) error {
 	copy(buf[0:8], MagicChecksum[:])
 	binary.LittleEndian.PutUint32(buf[8:12], r.StripeIndex)
 	binary.LittleEndian.PutUint16(buf[12:14], r.DigestCount)
-	buf[14] = r.DigestBytes
-	buf[15] = byte(r.HashAlgo)
+	binary.LittleEndian.PutUint16(buf[14:16], r.ReservedU16)
 
 	digests := buf[checksumHeaderLen : checksumHeaderLen+ChecksumDigestsAreaLen]
 	for i := range digests {
@@ -86,8 +84,7 @@ func (r *ChecksumRecord) Decode(buf []byte) error {
 
 	r.StripeIndex = binary.LittleEndian.Uint32(buf[8:12])
 	r.DigestCount = binary.LittleEndian.Uint16(buf[12:14])
-	r.DigestBytes = buf[14]
-	r.HashAlgo = HashAlgo(buf[15])
+	r.ReservedU16 = binary.LittleEndian.Uint16(buf[14:16])
 	r.HeaderCRC32C = headerCRC
 
 	digestCount := int(r.DigestCount)

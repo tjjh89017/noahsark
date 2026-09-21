@@ -1,8 +1,7 @@
 package image
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -42,19 +41,17 @@ func fencedBlock(t *testing.T, formatMD, heading string) string {
 	return rest[:close+1]
 }
 
-// TestFormatTxtIsPinned checks the byte length and the SHA-256 digest of
-// the embedded FORMAT.txt. internal/image/format.txt is the normative
-// source of the on-disc text, so a change to it changes disc bytes and
-// must be deliberate.
-func TestFormatTxtIsPinned(t *testing.T) {
-	const wantLen = 21718
-	const wantSHA256 = "ed64d4fc7e673f568d67e83148cd1b572bb7b3fa2f46e651b33f69f4f754ad8c"
-	if len(FormatTxt) != wantLen {
-		t.Fatalf("FORMAT.txt: want %d bytes, got %d", wantLen, len(FormatTxt))
+// TestFormatTxtMatchesRepo checks that the embedded FORMAT.txt is
+// byte-identical to FORMAT.md. go:embed cannot reach outside the package
+// directory, so internal/image/format.txt is a copy; this test catches a
+// stale one.
+func TestFormatTxtMatchesRepo(t *testing.T) {
+	want, err := os.ReadFile("../../FORMAT.md")
+	if err != nil {
+		t.Fatal(err)
 	}
-	sum := sha256.Sum256(FormatTxt)
-	if got := hex.EncodeToString(sum[:]); got != wantSHA256 {
-		t.Fatalf("FORMAT.txt: want SHA-256 %s, got %s", wantSHA256, got)
+	if !bytes.Equal(want, FormatTxt) {
+		t.Fatal("internal/image/format.txt is out of date with FORMAT.md")
 	}
 }
 

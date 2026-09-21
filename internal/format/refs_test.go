@@ -1,9 +1,6 @@
 package format
 
-import (
-	"encoding/binary"
-	"testing"
-)
+import "testing"
 
 func snapshotIDN(n int) [32]byte {
 	var h [32]byte
@@ -25,16 +22,12 @@ func testRefsTable() RefsTable {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicRefs,
 			VersionMajor: 1,
-			VersionMinor: 0,
 			HeaderLen:    RefsHeaderLen,
 		},
 		RecordCount: 2,
-		RecordSize:  RefRecordLen,
-		HashAlgo:    HashAlgoSHA256,
-		DigestLen:   32,
 		Records: []RefRecord{
-			{SnapshotID: snapshotIDN(1), TimeSec: 1700000000, TimeNsec: 123456, NameLen: 6, HashAlgo: HashAlgoSHA256, Name: nameArray("LATEST"), RunSeq: 3},
-			{SnapshotID: snapshotIDN(2), TimeSec: 1700000100, TimeNsec: 0, NameLen: 5, HashAlgo: HashAlgoSHA256, Name: nameArray("daily"), RunSeq: 4},
+			{SnapshotID: snapshotIDN(1), TimeSec: 1700000000, TimeNsec: 123456, NameLen: 6, Name: nameArray("LATEST")},
+			{SnapshotID: snapshotIDN(2), TimeSec: 1700000100, TimeNsec: 0, NameLen: 5, Name: nameArray("daily")},
 		},
 	}
 	for i := range t.RepoUUID {
@@ -53,8 +46,12 @@ func TestRefsTableGolden(t *testing.T) {
 
 	golden := readGolden(t, "refs.golden")
 	var got RefsTable
-	if _, err := got.Decode(golden); err != nil {
+	n, err := got.Decode(golden)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if n != len(golden) {
+		t.Fatalf("decode consumed %d bytes, want %d", n, len(golden))
 	}
 
 	if got.RepoUUID != tbl.RepoUUID || got.RecordCount != tbl.RecordCount {
@@ -65,35 +62,10 @@ func TestRefsTableGolden(t *testing.T) {
 			t.Errorf("record %d mismatch: got %+v, want %+v", i, got.Records[i], tbl.Records[i])
 		}
 	}
-	if got.Reserved != ([4]byte{}) {
-		t.Errorf("reserved not zero: %x", got.Reserved)
-	}
 	for i, r := range got.Records {
-		if r.ReservedU8 != 0 {
-			t.Errorf("record %d reserved_u8 not zero: %d", i, r.ReservedU8)
+		if r.ReservedU16 != 0 {
+			t.Errorf("record %d reserved_u16 not zero: %d", i, r.ReservedU16)
 		}
-	}
-}
-
-func TestRefsTableDecodeIgnoresReservedFields(t *testing.T) {
-	golden := readGolden(t, "refs.golden")
-	buf := append([]byte(nil), golden...)
-	buf[60] = 0xFF               // the table's reserved field
-	buf[RefsHeaderLen+47] = 0xFF // the first record's reserved_u8
-
-	total := len(buf)
-	binary.LittleEndian.PutUint32(buf[64:68], crc32c(buf[RefsHeaderLen:total]))
-	binary.LittleEndian.PutUint32(buf[68:72], crc32c(buf[0:68]))
-
-	var got RefsTable
-	if _, err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved fields: %v", err)
-	}
-	if got.Reserved[0] != 0xFF {
-		t.Fatalf("table reserved byte not preserved: %x", got.Reserved)
-	}
-	if got.Records[0].ReservedU8 != 0xFF {
-		t.Fatalf("record reserved_u8 not preserved: %x", got.Records[0].ReservedU8)
 	}
 }
 
@@ -115,15 +87,5 @@ func TestRefsTableDecodeRejectsBadMagic(t *testing.T) {
 	var tbl RefsTable
 	if _, err := tbl.Decode(buf); err != ErrBadMagic {
 		t.Fatalf("decode bad magic: got %v, want %v", err, ErrBadMagic)
-	}
-}
-
-func TestRefsTableDecodeRejectsBadCRC(t *testing.T) {
-	golden := readGolden(t, "refs.golden")
-	buf := append([]byte(nil), golden...)
-	buf[len(buf)-1] ^= 0xFF
-	var tbl RefsTable
-	if _, err := tbl.Decode(buf); err != ErrCRC {
-		t.Fatalf("decode bad body crc: got %v, want %v", err, ErrCRC)
 	}
 }

@@ -291,14 +291,14 @@ func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retai
 			uncached++
 			continue
 		}
-		row, found := findObjectRow(idx, id)
+		row, byteLen, found := findObjectRow(idx, id)
 		if !found {
 			uncached++
 			continue
 		}
 
 		path := image.StagedPath(stagingDir, id, row.Kind)
-		size := row.StoredLen
+		size := byteLen
 		if fi, err := os.Stat(path); err == nil {
 			size = uint64(fi.Size())
 		}
@@ -437,16 +437,27 @@ func confirmForceAfter(objs []gcObj, stdout, stderr io.Writer) (exitCode int, ok
 	return 0, true
 }
 
-// findObjectRow returns idx's Objects row for id, confirming the object
-// is actually present in the run gc is about to delete its staging copy
-// of.
-func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, bool) {
-	for _, row := range idx.Objects {
-		if object.ID(row.ContentID) == id {
-			return row, true
+// findObjectRow returns idx's Objects row for id, and the length of the
+// object's file from the role 13 Files row that pairs with it. It
+// confirms the object is actually present in the run gc is about to
+// delete its staging copy of.
+func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, uint64, bool) {
+	var fileRows []format.IndexFileRecord
+	for _, row := range idx.Files {
+		if row.Role == format.FileRoleObject {
+			fileRows = append(fileRows, row)
 		}
 	}
-	return format.IndexObjectRecord{}, false
+	for i, row := range idx.Objects {
+		if object.ID(row.ContentID) != id {
+			continue
+		}
+		if i >= len(fileRows) {
+			return row, 0, true
+		}
+		return row, fileRows[i].ByteLen, true
+	}
+	return format.IndexObjectRecord{}, 0, false
 }
 
 // discNamesFromLedger maps each disc uuid the local ledger knows to the

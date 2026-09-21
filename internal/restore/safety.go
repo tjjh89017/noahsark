@@ -143,7 +143,7 @@ func symlinkTarget(e format.TreeEntry) (string, error) {
 // provided disc holds; writeChunks then leaves that part of the file
 // unwritten and reports complete false, so a caller that restores
 // across discs can carry on.
-func writeChunks(f *os.File, entries []format.BlobEntry, prog *progress.Reporter, fetch func(object.ID) (payload []byte, ok bool, err error)) (complete bool, err error) {
+func writeChunks(f *os.File, entries []placedChunk, prog *progress.Reporter, fetch func(object.ID) (payload []byte, ok bool, err error)) (complete bool, err error) {
 	complete = true
 	for _, be := range entries {
 		id := object.ID(be.ContentID)
@@ -160,7 +160,7 @@ func writeChunks(f *os.File, entries []format.BlobEntry, prog *progress.Reporter
 			_ = f.Close()
 			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d", id.TextForm(), len(payload), be.Length)
 		}
-		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
+		if _, err := f.WriteAt(payload, int64(be.Offset)); err != nil {
 			_ = f.Close()
 			return false, err
 		}
