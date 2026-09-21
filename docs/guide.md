@@ -1,632 +1,328 @@
 # Operator guide
 
-Follow the steps in order. Each step gives the command, its purpose and
-the expected result. Run `noahsark <command> -h` to see all flags of a
-command. For more detail, read the OPERATIONS.md headings that this
-guide names.
+Part 1 is the full cycle. Follow it in order. Part 2 is a reference.
+`noahsark <command> -h` lists all flags of a command. The examples use
+these values. Put your own values in their place:
+`/srv/ark/repo` is the repository, `/srv/data` is the source that you back
+up, `2026-09-14` is a ref, `/dev/sr0` is the drive, and `/mnt/ark` is its
+mount point (`<MOUNT>`). A line that starts with `$` is a command. The
+lines below it are its output. A line in italics that starts with `...`
+shows that time passes.
 
-Text in angle brackets, such as `<REPO>`, is a value that you supply.
-Type all other text as shown.
+# Part 1. The cycle
 
-A line in italics that starts with `...` shows that time passes. It
-tells you what occurs before the subsequent step.
+## Words
 
-| Placeholder | Meaning | Example |
-|---|---|---|
-| `<REPO>` | repository directory | `/srv/noahsark/repo` |
-| `<SOURCE>` | directory to back up | `/srv/data` |
-| `<REF>` | name for one commit; use the date | `2026-09-14` |
-| `<LABEL>` | text that names one disc | `"2026-09-14 disc 0"` |
-| `<CAPACITY>` | disc size; see step 4 | `bd25` |
-| `<DISC_DIR>` | new directory for one packed disc | `/srv/noahsark/disc0` |
-| `<IMAGE>` | image file to build | `/srv/noahsark/disc0.img` |
-| `<DEVICE>` | optical drive | `/dev/sr0` |
-| `<MOUNT>` | mount point of the drive | `/mnt/noahsark` |
-| `<DISC>` | one disc: its `seq`, uuid, uuid prefix or label | `0` |
+- **Object**: one piece of your data. Equal data is stored one time.
+- **Snapshot**: the state of the source at one commit.
+- **Ref**: your name for a snapshot. Use the date.
+- **Staged**: committed and held in the repository, not yet on a disc.
+- **Pack**: write staged objects into a disc root, ready to burn.
+- **Disc root**: the directory that holds `NOAHSARK/`: a packed tree or a mounted disc.
+- **Disc number** (seq), **label**: the names of a disc. The uuid is its exact name.
+- **Packed, burned, verified**: the states of a disc. `status` shows them.
+- **Local cache**: disc indexes in the repository, so `log` and `ls` need no disc.
+- **Unstable file**: a file that changed while `commit` read it.
+- **FEC**: optional repair data on the disc. It is off by default.
 
-## 1. Install
+## 1. Set up, one time
 
-You need:
-
-- Go 1.27 or later, to build the binary.
-- A DVD or Blu-ray writer and write-once media (BD-R, DVD+R or DVD-R).
-- `dvd+rw-tools` 7.1-14 or later (`growisofs`, `dvd+rw-mediainfo`).
-- `udftools` 2.3 or later (`mkudffs`). `image build` refuses an older
-  version.
-- Optional: `eject`. Without it, open the tray by hand during a
-  single-drive restore.
-
-```sh
-go build -o noahsark ./cmd/noahsark
-```
-
-Put the binary on your `PATH`. Add your user to the `cdrom` group, then
-log in again, so that `growisofs` can open `<DEVICE>`.
-
-`noahsark` never calls `sudo`. You run `sudo` yourself for `image build`,
-`mount` and `umount`. All other commands run as your user.
-
-To omit `--repo` from every command, set `NOAHSARK_REPO=<REPO>` or work
-inside `<REPO>`. This guide shows `--repo` on each command. With
-`NOAHSARK_REPO` set, leave it out.
-
-## 2. Create the repository
-
-```sh
-noahsark init --repo=<REPO> --source=<SOURCE>
-```
-
-Do this one time. Expected result: `initialized repository <REPO>`, and
-`<REPO>/config` holds `repo.uuid`, `staging.dir` and `sources.root`.
-
-Add the size of your media to the config, one time:
-
-```sh
-echo "pack.capacity = bd25" >> <REPO>/config
-```
-
-Then `pack` needs no `--capacity`. Step 4 lists the values this key takes.
-
-*... Work as usual. Add, change and delete files in `<SOURCE>`.*
-
-## 3. Commit
-
-```sh
-noahsark commit --repo=<REPO> --ref=<REF>
-```
-
-This reads `<SOURCE>` and stages a snapshot. It writes no disc. Expected
-result:
+You need Go 1.27 or later, a DVD or Blu-ray writer, write-once media,
+`dvd+rw-tools` 7.1-14 or later (`growisofs`) and `udftools` 2.3 or later
+(`mkudffs`). Build in the source checkout. Put the binary on your `PATH`.
 
 ```
-snapshot <id>
-ref 2026-09-14 -> <id>
-new objects: 7, existing objects: 0
+$ go build -o noahsark ./cmd/noahsark
+$ sudo usermod -aG cdrom $USER      # then log in again
+$ noahsark init --repo=/srv/ark/repo --source=/srv/data
+initialized repository /srv/ark/repo
+staging: /srv/ark/repo/staging
+source: /srv/data
+$ echo "pack.capacity = bd25" >> /srv/ark/repo/config
+$ export NOAHSARK_REPO=/srv/ark/repo
+```
+
+Put the `export` line in your shell profile. `noahsark` never runs `sudo`
+and never mounts a disc. You do that.
+
+## 2. Commit
+
+*... Days pass. You add, change and delete files in `/srv/data`.*
+
+```
+$ noahsark commit --ref=2026-09-14
+snapshot 122009a2...
+ref 2026-09-14 -> 122009a2...
+new objects: 8, existing objects: 0
 unstable: 0, skipped: 0
-staged: 7 objects, 3001388 bytes
+excluded: 0 path(s)
+staged: 8 objects, 3001470 bytes
 ```
 
-- `staged:` is the total that waits for the next pack.
-- An `unstable <PATH>` line names a file that changed during the read.
-  The file is committed and flagged. Commit again when the source is
-  quiet. Exit code 1 means that a path was unstable or skipped; the
-  snapshot is still committed.
-- A `skipped <PATH>: <REASON>` line names a file or directory that
-  vanished during the scan, or that an open, read or permission error
-  blocked. The rest of the tree still commits. Fix the reason (for
-  example, restore read permission) and commit again to include it.
-- A `warning: object <ID> was staged but corrupt; rewritten` line names
-  a staged object file that existed but did not hold the right bytes
-  (for example, truncated by an earlier crash). Commit rewrote it; no
-  action is necessary.
-- A `warning: <PATH>: FIFO, no content is backed up` line names a FIFO, a
-  socket or a device node in the source. The name stays in the snapshot,
-  the content does not, and `restore` does not create the path again.
-  `commit` prints 20 such lines at most, then the count. The line
-  `special files: N` gives the total. The exit code stays 0.
+`commit` stages a snapshot. It writes no disc. Commit as often as you
+want: a later commit stages only the new data. `status` always ends with
+the one action to do next.
 
-To commit a different directory one time, add it as an argument:
-`noahsark commit --repo=<REPO> --ref=<REF> <SOURCE>`.
-
-To leave paths out of the backup, add `--exclude=<PATTERN>` (repeatable),
-set `sources.exclude` in the config, or put a `.noahsarkignore` file in
-the source root. The pattern language is small and gitignore-style: one
-pattern on each line, `*.tmp` or `node_modules` matches a name at any
-depth, `/cache` or `build/out` is anchored at the source root, a
-trailing `/` matches a directory only, and `**` crosses directories.
-Negation (`!`) is not supported. For example:
+*... Days pass. You edit one file and commit. Then you add photographs.*
 
 ```
-# .noahsarkignore
-node_modules/
-*.tmp
-/build/out
+$ noahsark commit --ref=2026-09-21
+...
+$ noahsark status
+staged: 20 objects, 6004049 bytes
+next: pack a disc, run: noahsark pack
 ```
 
-`commit` prints how many paths the excludes kept out. `--one-file-system`
-keeps the walk off any other mounted filesystem; the mount point itself
-still appears in the snapshot, as an empty directory.
+## 3. Pack
 
-*... Three days pass. You edit one small file. Commit again with a new
-`<REF>`.*
-
-```
-ref 2026-09-17 -> <id>
-new objects: 5, existing objects: 2
-staged: 12 objects, 3002580 bytes
-```
-
-The commit added few bytes. This is too little for a disc. Do not pack.
-
-*... Four more days pass. You add a large file. Commit again.*
-
-```
-ref 2026-09-21 -> <id>
-new objects: 5, existing objects: 4
-staged: 17 objects, 6003916 bytes
-```
-
-Commit as often as you want. One pack takes all the commits that wait.
-`noahsark status --repo=<REPO>` prints the same `staged:` line without a
-commit, and tells you what to do next.
-
-*... The `staged:` bytes come near to the size of one disc, or a fixed
-interval is over, for example one month. Pack now.*
-
-## 4. Pack one disc
-
-```sh
-noahsark pack --repo=<REPO>
-```
-
-This selects the staged objects that fit one disc and writes the
-complete disc root into `<REPO>/staging/plans/<disc uuid>/tree`. Add
-`--out=<DISC_DIR>` to choose the directory; it must be empty or absent.
-Add `--label=<LABEL>` to choose the label. Add `--capacity=<CAPACITY>`
-for one disc of a different size than `pack.capacity`.
-
-`<CAPACITY>` is a preset or a byte size such as `1GB` or `4GiB`. `G` is a
-power of 10 and `Gi` is a power of 2. A number without a unit is refused:
-give a unit.
+Pack when the `staged:` bytes come near to the size of one disc, or when a
+fixed interval is over, for example one month. Buy one type of media and
+keep it. `pack.capacity` in the config holds its size:
 
 | Preset | Media | Bytes |
 |---|---|---:|
-| `dvd+r` | DVD+R | 4,700,372,992 |
-| `dvd-r` | DVD-R | 4,707,319,808 |
+| `dvd+r` | DVD+R (`dvd-r` for DVD-R) | 4,700,372,992 |
 | `bd25` | BD-R 25 GB | 25,025,314,816 |
-| `bd50` | BD-R DL 50 GB | 50,050,629,632 |
-| `bd100` | BD-R XL 100 GB | 100,103,356,416 |
-| `bd128` | BD-R XL 128 GB | 128,001,769,472 |
+| `bd50` | BD-R DL 50 GB (also `bd100`, `bd128`) | 50,050,629,632 |
 
-To read the real size of a blank disc:
-
-```sh
-dvd+rw-mediainfo <DEVICE> | grep 'Free Blocks'
-```
-
-If the block count is less than the preset, multiply it by 2048 and give
-that byte size to `--physical-capacity`. `pack` refuses a `--capacity`
-above `--physical-capacity`.
-
-To find out how many discs to buy before burning anything, run
-`noahsark pack --repo=<REPO> --capacity=<CAPACITY> --dry-run`. It prints
-the object count and bytes for each predicted disc, and a total, without
-writing anything.
-
-Expected result:
+`noahsark pack --dry-run` prints how many discs the staged data needs.
 
 ```
-packed disc 0 "2026-09-21 disc 0": 7 objects, 3001388 bytes
-uuid: 330db42b-893f-388c-6565-0eec93b1841b
-tree: /srv/noahsark/repo/staging/plans/330db42b.../tree
+$ noahsark pack
+packed disc 0 "2026-09-14 disc 0": 20 objects, 6004049 bytes
+uuid: 4a060bd4-ca9f-2d06-263e-b907483b8230
+tree: /srv/ark/repo/staging/plans/4a060bd4.../tree
 next steps:
-  sudo noahsark image build --out=<IMAGE> <DISC_DIR>
-  growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=<IMAGE>
+  sudo noahsark image build --out=/srv/ark/.../tree.img /srv/ark/.../tree
+  growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/.../tree.img
   noahsark disc burned 0
   noahsark verify <MOUNT>
 remaining staged: 0 objects, 0 bytes
 ```
 
-The `next steps:` block gives the commands of steps 5 to 7, filled in.
-Run them in that order. With `--repo` on the `pack` command, the block
-repeats `--repo` on each line.
+The `next steps:` block is step 4 with your paths filled in. If
+`remaining staged` is above 0, the data did not fit one disc: complete
+step 4 for this disc, then pack again.
 
-The default label is the name of the newest ref on the disc and the disc
-number, for example `2026-09-21 disc 0`.
+## 4. Burn, mark, verify, second copy
 
-- `remaining staged: 0 objects, 0 bytes`: all data is packed.
-- A remaining count above 0, for example
-  `remaining staged: 18 objects, 32003176 bytes`: the data did not fit one
-  disc. This is normal, and the exit code is still 0. Do steps 5 to 9 for
-  this disc. Then go to step 10.
-- `capacity ... holds not one object`, exit code 2: the capacity is too
-  small for even the smallest staged object. The message names that object
-  and the capacity to use instead.
-- `staged <KIND> <ID> is damaged; run commit again ...`, exit code 1: a
-  staged object file does not hold the right bytes. Commit again, then
-  pack again.
-
-`pack` always packs all staged snapshots and carries all their refs.
-`--ref` on `pack` is optional.
-
-## 5. Burn the disc
-
-Build a UDF image, then burn it. `image build` needs root because it
-loop-mounts the image.
-
-```sh
-sudo noahsark image build --out=<IMAGE> <DISC_DIR>
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z <DEVICE>=<IMAGE>
-```
-
-`image build` takes the image length from the `DISC.bin` of `<DISC_DIR>`.
-You never repeat the capacity.
-
-`image build` refuses an existing `<IMAGE>`. Add `--force` to replace
-it. The burn command leaves the disc open. Do not add `-dvd-compat`.
-
-Optional check before the burn: loop-mount the image and verify it.
-
-```sh
-sudo mount -o loop -t udf <IMAGE> <MOUNT>
-noahsark verify <MOUNT>
-sudo umount <MOUNT>
-```
-
-Alternative without an image and without root: burn the directory.
-
-```sh
-growisofs -speed=4 -use-the-force-luke=spare:min,tty \
-    -Z <DEVICE> -R -iso-level 4 -V NOAHSARK <DISC_DIR>
-```
-
-Always use `-R -iso-level 4`. Do not use `-J` alone: Joliet cuts the
-68-character object file names. With this alternative, you cannot verify
-an image before the burn. Restore and verify read the disc the same way.
-
-## 6. Mark the disc burned
-
-```sh
-noahsark disc burned --repo=<REPO> <DISC>
-```
-
-This tells the repository that the burn occurred. The tool never
-concludes this by itself. Expected result:
-`disc 0 2026-09-21 disc 0: marked burned, N objects`.
-
-If the burn was bad, undo the mark:
-`noahsark disc burned --repo=<REPO> --undo <DISC>`. The tool refuses the
-undo after a successful verify.
-
-## 7. Verify the disc
-
-```sh
-sudo mkdir -p <MOUNT>
-sudo mount <DEVICE> <MOUNT>
-noahsark verify --repo=<REPO> <MOUNT>
-sudo umount <MOUNT>
-```
-
-This reads every object back and checks it. Expected result:
+Copy the first three lines from the `next steps:` block. `image build`
+needs root because it loop-mounts the image file. The burn leaves the disc
+open. Do not add `-dvd-compat`. The tool never concludes by itself that a
+burn occurred: only `disc burned` records it. After the burn, eject the
+disc and load it again, then mount and verify it.
 
 ```
-disc 0 "2026-09-21 disc 0": 7 objects, ok
-verify: marked 7 object(s) CLEAN (disc 330db42b-...)
+$ sudo noahsark image build --out=/srv/ark/.../tree.img /srv/ark/.../tree
+$ growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/.../tree.img
+$ noahsark disc burned 0
+disc 0 2026-09-14 disc 0: marked burned, 20 objects
+$ sudo mkdir -p /mnt/ark
+$ sudo mount /dev/sr0 /mnt/ark
+$ noahsark verify /mnt/ark
+disc 0 "2026-09-14 disc 0": 20 objects, ok
+verify: marked 20 object(s) CLEAN (disc 4a060bd4-ca9f-2d06-263e-b907483b8230)
 verify: copy 1 of 2 verified; verify the second copy before gc
+$ sudo umount /mnt/ark
 ```
 
-Exit code 0.
-
-- `verify: disc 0 is not marked burned`: do step 6, then verify again.
-- A mount failure or a verify failure: discard the disc. Burn a new disc
-  from the same `<IMAGE>` or `<DISC_DIR>` and verify it. There is no
-  recovery of an unmountable disc.
-
-## 8. Burn the second copy
-
-Load a second blank disc. Run the same burn command from step 5 again,
-with the same `<IMAGE>` or `<DISC_DIR>`. Then do step 7 for this disc.
-Do not pack again. Do not do step 6 again.
-
-Two identical discs are the redundancy of this backup. The second verify
-is necessary: `gc` frees the staged data only after two successful
-verifies. Expected result of this second verify:
-`verify: 2 of 2 copies verified`.
-
-The two copies carry the same disc uuid, thus the tool counts successful
-verify passes and cannot see which physical disc you put in the drive.
-
-Keep one copy only? Then put `gc.min_verified_copies = 1` in
-`<REPO>/config`. One verify is then sufficient for `gc`.
-
-## 9. Label and store
-
-```sh
-noahsark status --repo=<REPO>
-```
-
-Expected result:
+If the burn fails, run `noahsark disc burned --undo 0`, then burn a new
+disc. If the disc does not mount or `verify` fails, discard it and burn a
+new one. Two identical discs are the redundancy of this backup. Load a second
+blank disc and run the same `growisofs` line again. Do not pack again. Do
+not run `disc burned` again. Mount and verify the second disc:
 
 ```
+$ noahsark verify /mnt/ark
+disc 0 "2026-09-14 disc 0": 20 objects, ok
+verify: 2 of 2 copies verified
+$ noahsark status
 staged: 0 objects, 0 bytes
-disc 0 "2026-09-21 disc 0"  verified  330db42b-893f-388c-6565-0eec93b1841b
+disc 0 "2026-09-14 disc 0"  verified  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: nothing to do
 ```
 
-Each disc gets one word: `packed`, `burned`, `verified 1/2`, `verified`
-or `on disc only`. The `next:` line names the one action to take next.
-`verified` means that both copies passed `verify`. After `gc` frees the
-staged files, the word becomes `on disc only`: the disc holds every
-object and staging holds no file for them. This is normal, and it is what
-a recovered disc shows too.
+The states of a disc are `packed`, `burned`, `verified 1/2`, `verified`
+and `on disc only`. `on disc only` is the normal last state: the disc holds
+the data and `gc` has freed the staged copy.
 
-For the exact counts, add `--json`.
+## 5. Sleeve and storage
 
-Write on each sleeve: the first 8 characters of the uuid, the `seq`, the
-label, the date, and `A` or `B`. Store copy B in a different building.
-Record the disc and the two locations in a text file near `<REPO>`.
+Write on each sleeve: the disc number, the label, the first 8 characters
+of the uuid, the date, and `A` or `B`. Store copy B in a different
+building. Keep a text file that lists each disc and its two locations.
+After the two verifies, you can delete the `tree.img` file.
 
-When the two copies are verified, you can delete `<DISC_DIR>` and
-`<IMAGE>`.
+*... Weeks pass. You commit at each interval. When it is time, do steps 3
+to 5 again. A new disc holds only the data that no earlier disc holds.
+Thus a restore can need the earlier discs too. Keep all of them.*
 
-## 10. Next disc
+## 6. Restore drill
 
-*... The last pack left data: `remaining staged` was above 0.*
-
-Do steps 4 to 9 again now, with a new `<IMAGE>`. In the example, the
-second pack prints `packed disc 1 "2026-09-21 disc 1"` and
-`remaining staged: 0 objects, 0 bytes`. Continue until
-`remaining staged: 0 objects, 0 bytes`. You can give a different
-`--capacity` for each disc.
-
-*... Weeks pass. The discs are in storage. You work as usual and commit
-at each interval (step 3).*
-
-When it is time to pack again, do steps 4 to 9. Each new disc holds
-only the objects that no earlier disc holds. Thus a restore needs the
-earlier discs too.
-
-This build cannot append to a burned disc. `append` is a later-phase
-command. More data always goes on a new disc. To seal a disc against
-later appends, add `--close` to `pack`. Then use the burn command that
-`pack` prints. See OPERATIONS.md, "Disc lifecycle and closing".
-
-## 11. Restore
-
-*... Months later, a file is lost, or you replace the machine.*
-
-Also do a restore drill every few months. Restore some paths and compare them
-with the source. `restore`, `ls`, `log` and `verify` with a disc root do
-not need `<REPO>`.
-
-### Find the snapshot and the discs
-
-```sh
-noahsark log --repo=<REPO>
-noahsark restore --repo=<REPO> --mount=<MOUNT> --dry-run <REF> <RESTORE_DIR>
-```
-
-`log` lists the snapshots, newest first, with their refs. The first
-column is the full snapshot id. `restore` and `ls` take that id in place
-of a `<REF>`. `restore --dry-run` lists the discs that the restore needs,
-by disc number: the number, the label, the uuid and the objects. It reads
-the local cache, not a disc, and writes nothing. It needs `--mount`: with
-every disc mounted together instead, there is no disc order to preview.
-If `<REPO>` is lost, use `noahsark log <MOUNT>` on the newest disc. Use a
-`<REF>` or a snapshot id where a command takes a snapshot.
-
-### One drive
-
-```sh
-sudo mount <DEVICE> <MOUNT>
-noahsark restore --repo=<REPO> --mount=<MOUNT> <REF> <RESTORE_DIR>
-```
-
-This mode needs `<REPO>`. `restore` prints the plan, reads the mounted
-disc, then ejects it. For each subsequent disc it prints:
+Do this drill now, and again every few months. It is also the procedure
+for a real loss. `noahsark log` lists the snapshots and their refs. Mount
+the disc, then:
 
 ```
-insert disc 1 "2026-09-21 run2" (uuid 85f302d6-...) into <MOUNT> and press Enter
+$ noahsark restore /mnt/ark 2026-09-21 /srv/drill
+restored snapshot 12205fcd... into /srv/drill
+$ diff -rq /srv/drill/srv/data /srv/data
 ```
 
-Load that disc, mount it at `<MOUNT>` and press Enter. A wrong disc
-gives `expected disc ..., found ...` and the same prompt again. Add
-`--no-eject` to keep the tray closed.
+The restored files are below `/srv/drill`, with the full source path.
+`diff` prints no line when the restore is correct. If `restore` prints
+`missing disc(s)`, the snapshot is on more than one disc: see "Restore".
 
-`restore` writes each file into a hidden `.<NAME>.noahsark-part` file
-next to it, and gives the file its final name when the last chunk
-arrives. Thus a name in `<RESTORE_DIR>` is always a complete file. A
-file whose data lies on two discs is normal: the second disc finishes
-it. `restore` needs no space outside `<RESTORE_DIR>`.
+# Part 2. Reference
 
-If the session stops, run the same command again. It continues from the
-part files and asks only for the discs that it still needs.
+## Commit: excludes and warnings
 
-### All discs mounted
+To exclude paths, add `--exclude=<PATTERN>` (repeatable), set
+`sources.exclude` in the config, or put a `.noahsarkignore` file in the
+source root, one pattern on each line. `*.tmp` or `node_modules` matches a
+name at any depth. `/cache` is anchored at the source root. A trailing `/`
+matches a directory only. There is no negation (`!`). `--one-file-system`
+keeps `commit` off other mounted filesystems. An `unstable <PATH>` line
+names a file that changed during the read: it is committed and flagged, so
+commit again when the source is quiet.
 
-Mount each disc, or copy each disc root, into its own directory below
-`<DISCS_DIR>`.
+## Restore
 
-```sh
-noahsark restore --discs-dir=<DISCS_DIR> <REF> <RESTORE_DIR>
-```
+`restore`, `ls`, `log` and `verify` with a disc root need no repository.
+If the repository is lost, run `noahsark log /mnt/ark` on the newest disc.
+Give a ref, or the snapshot id from the first column of `log`.
 
-You can also repeat `--disc=<MOUNT>` for each disc. If the snapshot is
-on one disc only, `noahsark restore <MOUNT> <REF> <RESTORE_DIR>` is
-sufficient.
+**Several discs together.** Mount or copy each disc root into its own
+directory below `/mnt/discs`, then run
+`noahsark restore --discs-dir=/mnt/discs 2026-09-21 /srv/restore`. You can
+also repeat `--disc=<MOUNT>` for each root.
 
-### Result
-
-Expected result: `restored snapshot <id> into <RESTORE_DIR>`, exit
-code 0. The files are below `<RESTORE_DIR><SOURCE>`. Compare them:
-
-```sh
-diff -rq <RESTORE_DIR><SOURCE> <SOURCE>
-```
-
-`restore` has one report. It names each path that it did not restore on
-one warning line, then prints one summary line:
+**One drive.** This mode needs the repository. `--dry-run` lists the discs
+and stops.
 
 ```
-noahsark: restore: warning: <PATH>: a path is already here; pass --overwrite to replace it
-noahsark: restore: warning: <PATH>: FIFO not restored; this build restores a file, a directory or a symlink only
-restored snapshot <id> into <RESTORE_DIR>
-not restored: 1 existing path(s), 1 unsupported entry(ies); see the warning(s) above
+$ noahsark restore --mount=/mnt/ark --dry-run 2026-09-17 /srv/restore
+disc 0 "2026-09-14 disc 0" (2d22d412-...): 1 objects, 11 bytes
+disc 1 "disc 1" (cb3bebe8-...): 1 objects, 3000000 bytes
+totals: 2 discs, 2 objects, 3000011 bytes
+$ noahsark restore --mount=/mnt/ark --no-eject 2026-09-17 /srv/restore
+...
+insert disc 1 "disc 1" (uuid cb3bebe8-...) into /mnt/ark and press Enter
 ```
 
-`restore` prints 20 warning lines at most, then one line with the count
-of the rest. The summary line counts each kind.
+`restore` asks for each disc one time, in its own order. Keep a second
+terminal open. While `restore` waits, run `sudo umount /mnt/ark` there,
+change the disc, run `sudo mount /dev/sr0 /mnt/ark`, then press Enter in
+the first terminal. A wrong disc gives `expected disc ..., found ...` and
+the same prompt again. Without `--no-eject`, `restore` tries to unmount
+and eject by itself. That fails for a user that is not root.
 
-- To restore only some paths, add `--include=<PATH>` one or more times.
-  Get the paths from `noahsark ls --recursive --repo=<REPO> <REF>`.
-- `restore` does not replace a path that exists, of any kind: a file, a
-  directory or a symlink. It leaves the path as it is and names it.
-  The exit code is 1. Add `--overwrite` to replace them. `restore`
-  never follows a symlink that it finds in `<RESTORE_DIR>`, so it never
-  writes outside that directory.
-- `restore` never deletes a directory tree, even with `--overwrite`. If
-  a non-empty directory stands where a symlink or a file must go, it
-  prints
-  `noahsark: restore: warning: <PATH>: symlink not created: a directory that is not empty is in the way; restore does not remove it`,
-  leaves that directory as it is, and continues with the rest of the
-  walk. The exit code is 1.
-- `restore` does not restore a device node, a FIFO or a socket. It
-  names each one by its kind, `FIFO`, `socket` or `device`, never by a
-  number. Every other file is restored, and an unsupported entry alone
-  does not change the exit code.
-- `resumed: N file(s) already restored` counts the files that were
-  already correct.
-- A file that `restore` cannot write, because an object on the disc does
-  not verify or because the write failed, is a failure: `restore` names
-  the file, writes no bad data into it, goes on to the next file, and
-  exits 1.
-- `restore` applies mode, times and, only when it runs as root, owner to
-  every restored path. A field that fails to apply prints
-  `noahsark: restore: warning: <PATH>: <FIELD> not applied: <ERROR>`,
-  and the exit code is 1. A restore that does not run as root never
-  attempts owner at all, so it never prints an owner warning and never
-  loses exit code 0 to it.
-- `noahsark ls --recursive --unstable-only ...` lists the files that a
-  commit flagged as unstable. A `!` in the first column marks them.
+A stopped one-drive restore leaves hidden `.<NAME>.noahsark-part` files.
+Run the same command again: it continues, and asks only for the discs that
+it still needs. A name without `.noahsark-part` is always a complete file.
 
-See OPERATIONS.md, "Restore".
+`restore` prints one report: a warning line for each path that it did not
+restore, then `restored snapshot ...`, then a summary such as
+`not restored: 1 existing path(s), 1 unsupported entry(ies)`.
 
-## 12. Free disk space
+- `FIFO not restored; ...`: an unsupported entry (FIFO, socket, device) is
+  a warning only. The exit code stays 0.
+- `a path is already here; pass --overwrite to replace it`, exit 1:
+  restore into an empty directory, or add `--overwrite`.
+- `--include=<PATH>` (repeatable) restores only that path. Get the paths
+  from `noahsark ls --recursive 2026-09-21`. A `!` marks an unstable file.
+- A damaged object: `restore` names the file, writes no bad data,
+  continues, and exits 1. Use the second copy of the disc.
 
-*... After many commits, the disk that holds `<REPO>/staging` becomes
-full.*
+## Free disk space: gc
 
-```sh
-noahsark gc --repo=<REPO> --dry-run
-noahsark gc --repo=<REPO>
-```
+Run `noahsark gc --dry-run`, then `noahsark gc`. When it is too early, the
+dry run prints `gc: nothing is eligible yet; earliest eligible date: ...`.
+`gc` deletes the staged data of a disc only after two successful verifies
+and 7 days after the first verify. The tool cannot tell the two copies
+apart: it counts each successful `verify`. If you keep one copy only,
+put `gc.min_verified_copies = 1` in the config. `--force-after=1h` shortens
+the 7 days for one run, and asks for confirmation. It does not change the
+verify count. Do not delete files in `staging` by hand.
 
-`gc` deletes staged objects that are verified (CLEAN), verified
-`gc.min_verified_copies` times (2 by default), and older than
-`staging.retain_after_clean`, 7 days by default. The retention counts
-from the first verify. Expected result of the dry run: the totals that
-`gc` would delete, or `gc: nothing is eligible yet` with the earliest
-date. A real `gc` exits with code 0, also when no object was eligible,
-and 1 when it could not delete a staged file.
+## Recovery
 
-`gc` prints one line for each disc it holds objects back for:
+**The repository is lost.** No burned data is lost. Do not run `init`.
+Rebuild the state from the discs before the next pack:
 
 ```
-gc: disc 330db42b-893f-388c-6565-0eec93b1841b: 1 of 2 copies verified; 42 object(s) held; verify the second copy
+$ noahsark recover --repo=/srv/ark/repo --discs-dir=/mnt/discs
+recover: 3 disc(s) read, repo /srv/ark/repo
+objects recorded: 19 on disc, 0 already known
+discs known: 3, refs restored: 3
+recover: ok
 ```
 
-Verify the second copy (step 8), then run `gc` again.
+With one drive, run `noahsark recover --repo=/srv/ark/repo --disc=/mnt/ark`
+one time for each disc, in any order. `rebuild is partial: disc ... not fed
+yet`, exit 1, names a disc that you must still give. Give every disc, the
+newest included. Then `status` shows each disc as `on disc only`. Do not
+mark or verify the discs again. Put `sources.root = /srv/data` and
+`pack.capacity` into the new config. A commit that was not packed before
+the loss is gone: commit again.
 
-- `--force-after=<DURATION>`, for example `1h`, shortens the retention
-  for one run. It does not pass by the verify count. It asks for
-  confirmation. In a script, pipe the answer in:
-  `echo y | noahsark gc --repo=<REPO> --force-after=1h`.
-- `gc` never trims the local cache.
-- `gc` records an object ON-DISC, and flushes that record, before it
-  unlinks the staged file. If the machine stops between the two, the
-  next `gc` frees the file that was left behind.
-- Do not delete files in `<REPO>/staging` by hand.
+**A disc is lost or bad.** Read from the other copy. Burn a new copy from
+`tree.img` if you kept it. If the two copies are lost, `restore` names the
+discs that it cannot find. Data that only those discs hold is lost.
 
-See OPERATIONS.md, "Staging state machine".
+For a complete new disc set, do part 1 with a new repository. Keep the
+old discs.
 
-## 13. Recovery
+## FEC
 
-### The repository directory is lost
+Two identical discs are the redundancy. FEC (Reed-Solomon parity) is an
+option and is off by default. Add `--fec` to `pack`, or set
+`fec.scheme = rs255-gf8` in the config. `--no-fec` overrides the config for
+one pack. `pack` then prints `fec: on`. FEC uses approximately 9% of the
+disc. `noahsark verify --heal --out=<DIR> <MOUNT>` writes a repaired disc
+root into `<DIR>`. It refuses a disc without FEC: `has no FEC`.
 
-*... The disk that holds `<REPO>` fails. Only the discs remain.*
+## Image build, rehearsal and other options
 
-No burned data is lost. Rebuild the state before the next pack.
-Otherwise `pack` writes all objects again. Do not run `init` first.
+- `image build` takes the image size from the packed tree. It refuses an
+  existing image file. Add `--force` to replace it.
+- **Rehearsal without a drive.** Use the packed `tree` directory in the
+  place of `/mnt/ark` in part 1. README.md, "Quick start", does this. To
+  test the image too, run `sudo mount -o loop -t udf <IMAGE> /mnt/ark`,
+  then `noahsark verify /mnt/ark`. The image file has the full disc size.
+- `pack --out=<DIR>` writes the tree into `<DIR>`. `--label=<TEXT>` sets
+  the label. `--capacity=<SIZE>` sets the size for one pack: a preset, or a
+  size with a unit such as `23GiB`. A number without a unit is an error.
+- **Burn the directory, without an image and without root.** This writes
+  ISO 9660 with Rock Ridge, not UDF. `verify` and `restore` read it the
+  same way. Always use `-R -iso-level 4`. Joliet (`-J`) cuts the names.
+  `growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK <TREE>`
+- `pack --close` prints a burn line that seals the disc. It is permanent.
 
-```sh
-noahsark recover --repo=<REPO> --discs-dir=<DISCS_DIR>
-```
+## Troubleshooting
 
-With one drive, run the command one time for each disc, in any order:
-
-```sh
-noahsark recover --repo=<REPO> --disc=<MOUNT>
-```
-
-Expected result: `recover: ok`, exit code 0. The message
-`recover is partial: disc <seq> "<label>" (<uuid>) not fed yet` with exit
-code 1 names a disc that you must still feed. An old disc does not know
-the newer discs. Thus compare `noahsark status --repo=<REPO>` with your
-disc record before you trust `ok`.
-
-Feed every disc, the newest one included, before you `pack` again. If
-the true newest disc was never fed, the next `pack` reuses its `seq`.
-That is a cosmetic duplicate only: the tool finds a disc by its uuid.
-Give the uuid, or a uuid prefix, when two discs share a `seq`.
-
-A recovered disc comes back as ON-DISC: the disc holds its objects, and
-staging holds no file for them. Do not run steps 6 and 7 again for such
-a disc. `status` prints `on disc only` for it. Add
-`sources.root = <SOURCE>` to `<REPO>/config`, or give `<SOURCE>` on each
-`commit`. A commit that was not packed before the loss is gone. Commit
-again.
-
-### A disc is lost or bad
-
-- One copy is lost: read from the other copy. Burn a new copy from
-  `<DISC_DIR>` or `<IMAGE>` if you kept it.
-- The two copies are lost: restore the data that the other discs hold.
-  `restore` names the objects that it cannot find.
-
-See OPERATIONS.md, "Failure and recovery actions".
-
-### Start a new disc set
-
-The tool never rewrites a burned disc. When the source has changed very
-much and you want a complete new set, do steps 2 to 9 with a new
-`<REPO>`. Keep the old discs. `consolidate` is a later-phase command.
-
-## 14. Options
-
-- **Rehearsal without a drive.** README.md, "Quick start", runs the full
-  cycle on a directory. To include the image path, use `--capacity=1GB`
-  for `pack`, then loop-mount the image as in step 5. `image build`
-  writes a file of the full capacity.
-- **FEC.** Reed-Solomon parity is off by default. Add `--fec` to `pack`,
-  or set `fec.scheme = rs255-gf8` in `<REPO>/config`. `--no-fec`
-  overrides the config for one pack. FEC uses approximately 9.4% of the
-  disc. `noahsark verify --heal <MOUNT>` repairs a run that has FEC. It
-  refuses a run without FEC. See OPERATIONS.md, "Verify and heal".
-- **Progress.** Long commands print a progress line to stderr. Use
-  `--quiet` or `--no-progress` to stop it.
-- **Upgrades.** A newer build reads the discs of an older build. A build
-  refuses, by name, a format version that it does not know.
-
-## 15. Troubleshooting
+Exit codes: 0 is success, 1 is a failure at run time, 2 is a usage error.
 
 | Message | Action |
 |---|---|
-| `growisofs`: `unexpected errno:No such file or directory` | `<DEVICE>` does not exist. Check the drive connection and the device name. |
-| `growisofs`: `unable to open64(...): Permission denied`, exit code 141 | Add your user to the `cdrom` group. Log in again. |
-| `growisofs`: `media is not recognized as recordable DVD` | Load a blank BD-R, DVD+R or DVD-R. |
-| `image build` refuses the `mkudffs` version | Upgrade `udftools` to 2.3 or later, or burn the directory (step 5, alternative). |
+| `no noahsark repository found` | Set `NOAHSARK_REPO`, or give `--repo`. |
+| `repository lock ... is held` | Wait for the other `noahsark` command to end. |
+| `pack`: `no capacity` | Put `pack.capacity = bd25` in the config, or give `--capacity`. |
+| `capacity: "7500000" has no unit` | Give a preset, or a size with a unit such as `25GB`. All commands refuse this config. |
+| `pack`: `capacity ... holds not one object` | The capacity is too small. The message names the capacity to use. |
+| `pack`: `staged chunk <ID> is damaged; run commit again ...` | A staged file is corrupt. Run `commit` again, then `pack` again. |
+| `commit`: `warning: <PATH>: FIFO, no content is backed up` | Normal for a FIFO, a socket or a device: no content, exit 0. Exclude the path to stop the warning. |
+| `commit`: `skipped: 1`, exit 1 | A file vanished, or a permission stopped the read. The rest is committed. Fix the cause and commit again. |
+| `commit`: `no SOURCE given and no source root in the config` | Put `sources.root = /srv/data` in the config, or give the source as an argument. |
+| `verify`: `disc 0 is not marked burned; run: noahsark disc burned 0` | The disc is good, but the repository does not know the burn. Run that command, then `verify` again. |
+| `disc burned --undo`: `is verified (CLEAN) and cannot be returned to packed` | A verified disc stays verified. No action. |
+| `matches no disc` or `matches more than one disc` | Give the disc number, or the first 8 characters of the uuid, from the list in the message. |
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
-| `verify`: disc `is not in repository <REPO>` | Make sure that `--repo` names the repository that packed the disc. If it does, run `recover --disc=<MOUNT>`. |
-| `pack`: `capacity: "7500000" has no unit` | A capacity needs a unit or a preset name. Use `bd25`, or a size such as `25GB` or `10GiB`. |
-| `pack`: `capacity ... holds not one object`, exit code 2 | The capacity is too small for even the smallest staged object. The message names that object and the capacity to use. |
-| `pack`: `staged <KIND> <ID> is damaged` | A staged object file does not hold the right bytes. Run `commit` again, then `pack` again. |
-| `pack`: `no capacity` | Set `pack.capacity` in `<REPO>/config`, or give `--capacity`. |
-| `gc`: `C of 2 copies verified; N object(s) held` | Only one copy passed `verify`. Burn and verify the second copy (step 8), then run `gc` again. With one copy only, set `gc.min_verified_copies = 1` in `<REPO>/config`. |
-| `pack`: `remaining staged`, exit code 0 | The disc packed correctly; the data that did not fit waits for the next disc. Do step 10. |
-| `restore --overwrite`: `warning: <PATH>: symlink not created: a directory that is not empty is in the way; restore does not remove it` | A directory holds the path of a symlink or a file in the snapshot. `restore` never deletes a directory tree; it skips `<PATH>` and continues. Move or remove that directory, then restore again to replace it. |
-| `restore`: `warning: <PATH>: a path is already here; pass --overwrite to replace it`, exit code 1 | `<RESTORE_DIR>` already holds that path. Restore into an empty directory, or add `--overwrite`. |
-| `restore`: `<PATH>: <OBJECT>: content id does not verify`, exit code 1 | The object on the disc is damaged. `restore` writes no bad data and continues with the next file. Use the second copy of the disc, or `verify --heal` when the run has FEC. |
-| `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |
-| `<RESTORE_DIR>` holds hidden `.<NAME>.noahsark-part` files | A restore stopped before those files were complete. Run the same `restore` again: it completes them and removes them. Delete one by hand only when you give up that file. |
-| `restore`: `missing disc(s)`, exit code 1 | The message lists each disc by its number, its label and its uuid. Find that disc. Restore again with it included. |
-| `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
-| `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |
-| `restore` or `ls`: ref `is not on the provided disc(s)` | A newer disc holds the ref. Give more discs. |
-| `is neither a snapshot id nor a known ref name` | The local cache does not know the name. Run `log` to list the names. |
-| `no snapshot given; name a ref, or a snapshot id from noahsark log`, exit code 2 | The `<SNAPSHOT>` argument is empty, often an unset shell variable. Give a ref name, or the snapshot id from the first column of `log`. |
-| `restore`: `no such disc root: <PATH>` | The first argument of `restore <DISC-ROOT> <SNAPSHOT> <RESTORE_DIR>` must be a mounted disc or an unpacked disc directory. Check the path. |
-| `log`: `roots: (none)` | The root tree is on a disc that you did not give. Give all discs, or run `recover`. |
-| `restore --dry-run`: `cache: no disc is cached yet` | Run `recover` with a disc, then try `--dry-run` again. |
-| `<DISC>`: `matches more than one disc` | Two discs carry the same `seq`. Give the uuid, or the first 8 characters of it, from the list in the message. |
-| `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
-| `repository lock <REPO>/lock is held; another noahsark command runs on this repository`, exit code 1 | Wait for the other noahsark command to end, then run the command again. |
+| `gc`: `1 of 2 copies verified; N object(s) held` | Verify the second copy (step 4), then run `gc` again. |
+| `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them with `--disc` or `--discs-dir`, or use `--mount`. |
+| `ref ... is not on the provided disc(s)` | A newer disc holds the ref. Give the newest disc too. |
+| `restore`: `umount ... failed; run restore with sudo, or pass --no-eject` | Add `--no-eject`, and unmount in the second terminal. |
+| `restore`: `stdin closed while waiting for the next disc` | Run `restore` in a terminal, not in a pipe. Run it again to continue. |
+| `image build`: `mkudffs: ... executable file not found` | Install `udftools` 2.3 or later. |
+| `growisofs`: `unable to open64(...): Permission denied` | Add your user to the `cdrom` group. Log in again. |
+| `growisofs`: `media is not recognized as recordable DVD` | Load a blank BD-R, DVD+R or DVD-R. |
