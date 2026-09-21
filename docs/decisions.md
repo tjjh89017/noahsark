@@ -257,274 +257,75 @@ favour of always populating and refusing loudly when root is missing.
 
 ## 16. CLI reference
 
-`cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
-`pack`, `image build`, `verify`, `restore`, `ls`, `log`,
-`recover`, `status`, `disc burned` and `gc`. Every command
-below keeps OPERATIONS.md's name; a flag is reduced or renamed only
-when the Go packages this build calls have no way to honour it yet,
-since no ref log, locality planner or burn plan exists in this build.
-`disc burned` is not an OPERATIONS.md command; it is this build's
-stand-in for the missing `burn` step, explained in "4. Staging state
-machine" above. A staging state log (`internal/stage`) and a local
-cache (`internal/cache`) do now exist, so `ls`, `log` and `restore`'s
-disc-swap mode resolve SNAPSHOT through the cache when no disc is
-given, and `disc burned`, `verify` and `gc` drive the staging state
-machine; the paragraphs below on those commands describe both paths.
+OPERATIONS.md's "CLI reference" lists the commands and the options of this
+build. This entry keeps only the reasons that the code does not show.
 
-`-h` and `--help` on any command exit 0 and print that command's
-positionals and flags; they never count as a usage error. A flag must
-come before a command's positional arguments; one placed after is
-refused by name (`flags must come before positional arguments`)
-instead of being silently read back as a positional string, since
-Go's own `flag` package stops parsing flags at the first positional
-argument. `--no-progress` and `--quiet`/`-q` are accepted by every
-command, before or after the command name, and turn off the progress
-line long-running commands write to stderr; progress is on by default
-only when the real process stderr is a terminal.
+`-h` and `--help` on any command exit 0. A flag must come before the
+positional arguments of a command; one placed after is refused by name,
+because Go's `flag` package stops parsing at the first positional argument
+and would read the flag back as a positional string. An unknown command and
+an unknown flag are refused by the standard library's own `flag` package and
+the command dispatch, exit code 2.
 
-A command name this build does not implement, and a flag no command
-defines, are both refused by the standard library's own `flag` package
-and command dispatch, exit code 2; neither carries a table naming a
-phase or a "not yet in this build" reason, since a build that does not
-implement a command or a flag says so the same way regardless of why.
-An unknown config key is refused with one generic message naming the
-key and the config file.
+The config is a flat `key = value` file, the simplest format the standard
+library parses without a third-party dependency. The loader refuses an
+unknown key by name and does not accept and ignore it. `sources.root` holds
+one path, because `internal/object`'s `Writer.Commit` takes one source
+directory (see the "6.14 Snapshot" entry above).
 
-`init` accepts `--repo` and `--source`. Every other OPERATIONS.md
-`init` flag (`--hash`, `--chunker`, `--fs-profile`, `--preset`,
-`--repo-uuid`, `--next-run-seq`, `--next-disc-seq`, `--scan-discs`) is
-not defined, so passing one is a plain usage error naming the flag:
-the fixed decisions already collapse the first four to one value, and
-the sequence-recovery flags have no multi-disc state yet to scan.
-`init` writes a flat `key = value` config file, the
-simplest format the standard library parses without a third-party
-dependency, holding `repo.uuid`, `staging.dir` (section 17.1 and
-17.5), and, when `--source` is given, `sources.root` (section 17.9):
-every other Phase 1 key needs behaviour (hash choice, chunker profile,
-excludes, locality, metadata policy) this build does not implement, so
-the config loader refuses any other key by name rather than accept and
-ignore it. `sources.root` is repeatable in OPERATIONS.md, since a
-snapshot's root tree may hold one entry per source root; this build
-stores only one, because `internal/object`'s `Writer.Commit` takes one
-source directory (see the "6.14 Snapshot" entry above), so `init`
-takes one `--source` flag, not a repeated one, and writes the path
-`filepath.Abs` resolved at init time. Capacity is not among the
-repository's own settings: a disc's capacity is locked in at that
-disc's first write, not a value that holds for the whole repository,
-so the config carries no default and every `pack` gives `--capacity`
-on its own command line (section 17.12).
-
-`commit` accepts an optional source path, `--ref`, and `-m` (a message
-stored on the snapshot). With no source path on the command line,
-`commit` reads the `sources.root` `init --source` stored; a path given
-on the command line overrides it; neither present is a usage error
-naming both ways to supply one. More than one source path on the
-command line is still refused, matching the single root this build
-stores and commits. Every other OPERATIONS.md `commit` flag (`--from`,
-`--copy-first`, `--out`, `--catalog`, `--checksum`/`--full-scan`,
-`--force`, `--source`, `--source-root`, `--exclude`,
-`--one-file-system`, `--source-type`, `--retry-unstable`) is not
-defined, so passing one is a plain usage error naming the flag: the
-quick check, metadata TLVs, and exclude rules they need do not exist
-in `internal/object`'s `Writer` (see the "6.14 Snapshot" entry above).
-`commit`'s own `--source`
-flag (a filesystem snapshot mount) is unrelated to `init --source`,
-which only seeds the config; the two are never confused because they
-belong to different commands. Commit records the new
-snapshot under the given ref (default `LATEST`, so a commit with no
-`--ref` moves `LATEST`; a commit with `--ref=NAME` moves only `NAME`,
-never `LATEST`) in a flat local ref file, `<repo>/refs.txt`, standing in
-for the local ref log of section 2.1 and 5.1, since no ref history or
-state log exists in this build. `commit` exits 1 when any file was
-unstable or skipped, matching OPERATIONS.md's exit code table; the data
-is still committed and safe either way, only flagged or left out of
+`commit` records the new snapshot under the given ref (default `LATEST`; a
+commit with `--ref=NAME` moves only `NAME`, never `LATEST`) in a flat local
+ref file, `<repo>/refs.txt`. `commit` exits 1 when any file was unstable or
+skipped; the data is still committed and safe, only flagged or left out of
 this one snapshot.
 
-`pack` cannot select objects by `disc.min_fill` or `disc.max_wait`,
-because `pack` does not read the staging state log to age objects by.
-It instead takes
-the snapshot(s) to place explicitly, by `--ref` (resolved through the
-local ref file) or repeated `--snapshot`. With neither given, `pack`
-does not default to `LATEST`: a repository whose every commit names its
-own `--ref` (a date, say) never creates a `LATEST` ref at all, and
-`pack` must not fail looking for one. Instead it carries forward every
-ref not yet moved onto a run (see `addPendingRefs`, and section 8
-below), the same set a `--ref`ed pack's own carry-forward step already
-adds; `LATEST` is used only as a last resort, when that leaves nothing
-pending and `LATEST` itself resolves.
-`--capacity` accepts an integer
-suffixed `GiB`/`MiB`/`KiB` (binary) or `GB`/`MB`/`KB` (decimal, the
-marketing convention optical media capacities like "25GB" are named
-in), converted to whole sectors at FORMAT.md's 2048-byte sector size,
-rounding up, or a preset name for the real, drive-reported sector count
-of common write-once media, since a marketing size is not the real
-capacity a drive reports:
+With neither `--ref` nor `--snapshot`, `pack` does not default to `LATEST`: a
+repository whose every commit names its own `--ref` never creates a `LATEST`
+ref, and `pack` must not fail looking for one. It carries forward every ref
+not yet moved onto a run (see `addPendingRefs`).
 
-| Preset | Media | Sectors | Bytes |
-|---|---|---:|---:|
-| `dvd+r` | DVD+R | 2,295,104 | 4,700,372,992 |
-| `dvd-r` | DVD-R | 2,298,496 | 4,707,319,808 |
-| `bd25` | BD-R, 25 GB | 12,219,392 | 25,025,314,816 |
-| `bd50` | BD-R DL, 50 GB | 24,438,784 | 50,050,629,632 |
-| `bd100` | BD-R XL, 100 GB | 48,878,592 | 100,103,356,416 |
-| `bd128` | BD-R XL, 128 GB | 62,500,864 | 128,001,769,472 |
+`--capacity` refuses a bare number. It reads as a byte count, it once meant
+sectors, and the two are a factor of 2048 apart with nothing in the output to
+say which one was taken. A preset name gives the real, drive-reported sector
+count, since a marketing size is not the real capacity. `pack` has no
+`--media` flag: the media type that DISC.bin records follows the `--capacity`
+preset, else `BD-R-SL-25`.
 
-A bare number is refused. It reads as a byte count, it once meant
-sectors, and the two are a factor of 2048 apart with nothing in the
-output to say which one was taken. The error lists the presets and shows
-a size example.
+`image build` takes the packed tree directory and reads the image length from
+the `DISC.bin` of that tree. It never calls `sudo`: when the calling process
+is not root it prints the exact `sudo noahsark image build ...` line to run.
 
-`--capacity` falls back to the config key `pack.capacity`, so a
-repository that always burns one medium needs no capacity flag; a pack
-of a different medium still gives `--capacity` on the command line.
-`--physical-capacity` takes the same forms and sets the disc's physical capacity,
-`capacity_sectors` in the superblock, separately from `--capacity`,
-which sets the forced limit, `capacity_forced_sectors`; it defaults to
-`--capacity`, so a pack that does not force a smaller limit than the
-physical disc needs only `--capacity`. `--disc` is refused by name: it
-means continuing an existing disc, Phase 2 append, which
-`internal/image`'s `Build` does not support. `--reserve`,
-`--extra-reserve`, `--preset`, `--now` and `--dry-run` are not defined,
-since `Build` has no such options.
+`verify DISC-ROOT` takes a mounted disc path or a packed tree. Mounting an
+image file needs root, which `verify` never assumes.
 
-`--label` sets the disc's on-disc label text. `pack` has no `--media`
-flag: the media type DISC.bin records is always derived, the type of
-the matching `--capacity` preset, else `BD-R-SL-25`; a byte-size or
-raw-sector `--capacity` never names a real medium to record, so there
-was never a case where an explicit `--media` chose something the
-preset derivation could not. `--out` sets the packed tree directory; it defaults to
-`<repo>/staging/plans/<disc uuid>/tree` and is refused when it already
-holds files, so `pack` never overwrites another run's tree by
-accident. `--fec` and `--no-fec` override `fec.scheme` for one pack and
-are mutually exclusive. `--close` changes only the burn command line
-`pack` prints (`spare:none` and `-dvd-compat` instead of `spare:min`
-and no `-dvd-compat`): this build does not burn or track disc state, so
-`--close` has no other effect. `pack` refuses outright, exit 1, when
-nothing is left staged to pack, since a run with nothing in it burns
-no useful bytes.
-
-`pack` ends by printing a "next steps" block: the exact `sudo noahsark
-image build`, `growisofs`, and `noahsark verify` command lines for the
-run it just packed, so a user need not compose them by hand. The
-`growisofs` line always follows FORMAT.md's and OPERATIONS.md's
-open-by-default rule, `spare:min` and no `-dvd-compat`, unless `--close`
-was given.
-
-`image build` takes the packed tree directory directly, in place of
-OPERATIONS.md's `--run=SEQ`, because no run-sequence state exists to
-resolve a run number against; the tree directory is what `pack --out`
-already printed. `--capacity` is required for the same reason `pack`
-requires it: `MakeImage` needs an explicit sector length, and there is
-no stored run capacity to default to. Populating the image it builds
-needs a loop mount, which needs root; `image build` never calls `sudo`
-itself, so when the calling process is not root it removes the partial
-image and prints the exact `sudo noahsark image build ...` line to run
-instead, rather than leaving an unpopulated image behind or silently
-elevating itself.
-
-`verify DISC-ROOT` takes a mounted disc path or an unpacked NOAHSARK
-tree positionally, the root `internal/image`'s `Read` and
-`internal/restore`'s `Heal` already accept, rather than OPERATIONS.md's
-raw image file plus `--mapfile` and `--image`: mounting an image file
-needs root, which `verify` never assumes, so it takes an
-already-mounted path (or a plain packed tree, for testing with no
-mount at all) instead of mounting one itself, and takes exactly one,
-so there is no separate `--image` form of the same argument to keep in
-sync. `--out` stays, since `--heal --out=DIR` needs it to write the
-healed copy somewhere other than in place. `--level`, `--drive`,
-`--report`, `--disc`, `--run` and `--mapfile` are not defined, since no
-drive or repository state exists for them to select among.
-
-`restore` takes `DISC-ROOT SNAPSHOT OUT-DIR` positionally, in place of
-OPERATIONS.md's `restore SNAPSHOT TARGET`, because resolving `SNAPSHOT`
-through a repository's catalog and cache needs both, and neither exists
-in this build; the caller instead names the disc root directly, the
-same root `internal/restore`'s `Restore` already takes. SNAPSHOT itself
-accepts a ref name as well as a snapshot id, resolved against the given
-discs' REFS table the same way `ls` and `log` resolve it. `--no-xattr`
-and `--no-acl` are Phase 2 and refused by name; `--translate-acl` is
-Phase 2 and refused by name. `--include` (repeatable, a snapshot-relative
-path, restoring everything under it when it names a directory) and
-`--overwrite` are implemented: `restore` otherwise leaves an existing
-path alone rather than overwrite it, reports `skipped N existing
-path(s)` and exits 1 when any were left alone, so a repeated restore
-never silently overwrites unless asked. `--mount`, `--no-eject` and
-`--dry-run` are now defined, for the disc-swap mode. Every other restore flag
-(`--drives`, `--no-owner`, `--numeric-owner`, `--no-flags`,
-`--no-times`, `--no-hardlinks`, `--metadata-strict`, `--report`,
-`--report-replay`, `--strict-unstable`) is Phase 1 but not defined,
-since `Restore` takes no such option today.
-
-`restore` reports a metadata failure (a mode, times or owner field that
-Chmod, Chtimes or Chown could not apply) as one warning line per field,
-capped at 20 lines with the rest folded into a count line, plus a
-`metadata not applied: N field(s)` summary and exit code 1, matching
-OPERATIONS.md's `metadata_not_applied` event and its restore exit code
-table. It has no JSON loss report yet: OPERATIONS.md's `{path, field,
-reason, errno}` records, `--report`, `--report-replay` and
-`--metadata-strict` stay unimplemented, listed above with the other
-not-yet-defined restore flags. Owner is attempted only when the restore
-runs as root; an unprivileged restore skips it outright rather than
-attempting and reporting `EPERM`, matching the design's rule that
-`--no-owner` is implied when the restore is not privileged. A symlink
-entry gets owner only, through a no-follow `Lchown`; it gets no Chmod or
-Chtimes, since both would follow the link onto its target, and this
-build has no no-follow time call without adding `golang.org/x/sys` as a
-direct dependency.
+A symlink entry gets owner only at restore, through a no-follow `Lchown`; it
+gets no Chmod or Chtimes, since both would follow the link onto its target,
+and this build has no no-follow time call without adding `golang.org/x/sys`
+as a direct dependency.
 
 `ls`, `log` and `restore`'s disc-swap mode resolve SNAPSHOT through
 `internal/cache` when no disc root, `--disc` or `--discs-dir` is given:
-`looksLikeDiscRoot` tells a `DISC-ROOT` positional apart from a
-snapshot id or ref name by testing whether the argument is an existing
-directory, since a disc root always is one and the other two never are
-in ordinary use. `ls` and `log` keep their old disc-reading path
-unchanged when a disc is named; the disc-swap mode reads the cache
-only, matching OPERATIONS.md's "reads nothing from a disc beyond the
-catalog." All three report the same incomplete-cache message and exit
-code 1 through the shared `reportSourceError`/`formatIncompleteError`
-helpers, resolving the disc to insert through `cache.LocateObject` and
-`cache.DiscRow` where a cached disc's INDEX or DISCS table allows it.
+`looksLikeDiscRoot` tells a `DISC-ROOT` positional apart from a snapshot id or
+ref name by testing whether the argument is an existing directory.
 
-`internal/plan.Build` groups every object a restore of SNAPSHOT (or of
-`--include`'s paths alone) would need by the disc that holds it,
-walking cached tree and blob objects; a blob the cache does not hold
-still counts as one object, since blob caching only covers what pack
-or recover processed after it was added, and its own absence is not,
-by itself, an incomplete cache the way a missing tree is. `restore`'s
-disc-swap mode and `restore --dry-run` both call it and print the same
-disc list before any disc is read. `--drives`, `--score` and `--target`
-are not defined, since no multi-drive planner or byte-vs-object
-scoring exists yet, and this build records no persisted restore plan.
+`internal/plan.Build` groups every chunk that a restore of SNAPSHOT (or of
+the `--include` paths alone) needs by the disc that holds it, walking cached
+tree and blob objects. `restore`'s disc-swap mode and `restore --dry-run` both
+call it and print the same disc list before any disc is read.
 
-None of these reductions change any byte a conforming writer puts on a
-disc or a conforming reader accepts; they change only which command-line
-surface reaches the same Go calls the rest of this implementation
-already exposes.
+`status` reads the local disc ledger (`discs.bin`, the same rows a DISCS
+table carries) and the staging state log. A counter answers a question the
+operator did not ask; the state word and the `next:` line answer the one they
+did. `--json` keeps the exact numbers.
 
-`status` reads the local disc ledger (`discs.bin`, the same rows a
-DISCS table carries) and the staging state log, since no catalog exists
-in this build either. It folds each disc's runs together and prints one
-line per disc_uuid: the seq and the label of the newest run, one word
-for the disc's state, and the uuid. It prints the same staged total line
-`commit` prints, then one `next:` line naming the action to take next.
-A counter answers a question the operator did not ask; the state word
-and the `next:` line answer the one they did. `--json` keeps the exact
-numbers: the object counts, the capacity, the used bytes and the verify
-count.
-`disc label` and `disc mark-degraded` need a `notes.bin` this build does
-not keep, so both are refused with a clear message rather than silently
-doing nothing.
+The on-disc DISCS row a run carries for itself always writes `used_sectors`
+zero, the same way it leaves `run_hash` zero: the run's own final size is not
+known until the run is written. The local ledger row, built after the run is
+written, carries the real value, so every later run's copy of DISCS (and
+`status`) sees it from the next pack on.
 
-The on-disc DISCS row a run carries for itself always writes
-`used_sectors` zero, the same way it leaves `run_hash` zero: the run's
-own final size is not known until the run is written. The local ledger
-row, built after the run is written, carries the real value, so every
-later run's copy of DISCS (and `status`) sees it from the next pack
-on.
-
-Burning the folder `pack` produces directly, without running `image
-build`, is a documented, supported use: see docs/guide.md, "Burn
-the disc".
+Burning the folder `pack` produces directly, without running `image build`,
+is a documented, supported use: see docs/guide.md.
 
 ## 7.6 In-flight change detection
 
@@ -921,8 +722,7 @@ that folds names, can reuse this same tolerance instead of a new rule.
 
 With no `DISC-ROOT`, `--disc` or `--discs-dir`, and exactly `SNAPSHOT`
 and `OUT-DIR` left over, `restore` resolves `SNAPSHOT` through the
-local cache and builds a plan with `internal/plan.Build`, the package
-`cmd/noahsark/cmd_plan.go` used to own alone. It then walks the plan's
+local cache and builds a plan with `internal/plan.Build`. It then walks the plan's
 discs in order, one at a time, prompting the operator between them: the
 single-drive shape OPERATIONS.md's disc-major order describes, driven
 like an old multi-volume installer instead of needing every disc
@@ -993,7 +793,7 @@ pause before it prompts. `--mount` has no config default: OPERATIONS.md's
 configuration reference names no `restore.mount` key, so the flag is
 required in this mode.
 
-There is no staging budget and no persisted plan file: the disc-swap
+The disc-swap
 loop walks the tree one time for each disc, in plan order, and reads
 each disc in one pass. A read error on one chunk fails that one file
 and the walk continues; only an error the disc source marks with
@@ -1064,25 +864,3 @@ writer's work; `stage.OpenReadOnly` leaves the file untouched, so this
 can never happen. `restore`'s all-discs-at-once mode never resolves a
 repository at all in this build, so it takes no lock, the same as
 `verify` and `image build` with no `--repo`.
-
-## 16. CLI reference, `init --next-run-seq`, `--next-disc-seq` and `--scan-discs`
-
-`pack` now takes the next `run_seq` and `disc_seq` from the disc
-ledger's highest recorded numbers, not from its row count, so a ledger
-`recover` rebuilt with a gap (a disc known only through a
-sibling's DISCS table, never itself fed) cannot hand out a number a
-known disc already carries. This build still cannot know the numbers
-of a disc that both the repository and the disc itself are lost
-together: nothing surviving names it. `init --next-run-seq`,
-`--next-disc-seq` and `--scan-discs`, OPERATIONS.md's own answer to
-that case, are not in this build yet, matching "16. CLI reference"
-above. Instead, `recover` warns on stderr, on every successful
-run, which disc it treats as the newest fed and which numbers the next
-`pack` assigns, so the operator can feed the true newest disc first
-and catch the gap before it is baked into a new run. `recover`
-also refuses outright, before writing anything, when a disc it is fed
-would take a `run_seq` or `disc_seq` the ledger already has under a
-different disc uuid: the two discs' uuids differ even when their
-sequence numbers now collide, so the refusal cannot merge them by
-mistake, but nothing prevents the collision itself without the
-Backlog options above.
