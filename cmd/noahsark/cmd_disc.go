@@ -125,20 +125,20 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 
 		if *undo {
 			if n := countInState(stageLog, stage.Clean, discUUID); n > 0 {
-				_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: disc %s is verified (CLEAN) and cannot be returned to packed\n", uuidText(discUUID))
+				_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: %s is verified and cannot be returned to packed\n", discNameShort(row.DiscSeq, label))
 				return 1
 			}
 			n := undoDiscBurn(stageLog, discUUID)
-			_, _ = fmt.Fprintf(stdout, "disc %d %s: undo: returned to packed, %d objects\n", row.DiscSeq, label, n)
+			_, _ = fmt.Fprintf(stdout, "%s: undo: returned to packed, %d objects\n", discNameShort(row.DiscSeq, label), n)
 			continue
 		}
 
 		n := markDiscBurned(stageLog, discUUID)
 		if n == 0 {
-			_, _ = fmt.Fprintf(stdout, "disc %d %s: already burned, 0 objects to mark\n", row.DiscSeq, label)
+			_, _ = fmt.Fprintf(stdout, "%s: already burned, 0 objects to mark\n", discNameShort(row.DiscSeq, label))
 			continue
 		}
-		_, _ = fmt.Fprintf(stdout, "disc %d %s: marked burned, %d objects\n", row.DiscSeq, label, n)
+		_, _ = fmt.Fprintf(stdout, "%s: marked burned, %d objects\n", discNameShort(row.DiscSeq, label), n)
 	}
 	return 0
 }

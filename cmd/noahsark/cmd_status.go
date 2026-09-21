@@ -65,6 +65,9 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 2
 	}
+	if refuseBadConfig("status", cfg, stderr, "gc.min_verified_copies") {
+		return 2
+	}
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {

@@ -113,9 +113,9 @@ func TestCommitWithNeitherArgNorConfigFails(t *testing.T) {
 	}
 }
 
-// TestReadConfigRefusesSecondSourceRoot checks that the loader refuses a
-// config file that repeats sources.root, since this build stores only
-// one source root.
+// TestReadConfigRefusesSecondSourceRoot checks that a config file that
+// repeats sources.root stops commit, which reads the key, and leaves
+// status, which does not, working.
 func TestReadConfigRefusesSecondSourceRoot(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+writeFixtureSource(t)); code != 0 {
@@ -132,8 +132,12 @@ func TestReadConfigRefusesSecondSourceRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := readConfig(configFile); err == nil {
-		t.Fatal("readConfig: want an error for a repeated sources.root, got none")
+	code, out := runCmd(t, "commit", "--repo="+repo)
+	if code != 2 || !strings.Contains(out, "only one source root") {
+		t.Fatalf("commit: exit %d: %s, want exit 2 and the repeated sources.root fault", code, out)
+	}
+	if code, out := runCmd(t, "status", "--repo="+repo); code != 0 {
+		t.Fatalf("status: exit %d: %s, want status to run with a key it never reads", code, out)
 	}
 }
 

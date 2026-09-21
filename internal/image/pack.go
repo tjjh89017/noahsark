@@ -511,28 +511,34 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}, nil
 }
 
-// DryRunDisc is one disc DryRun predicts: the object count and byte
-// length pack would place on it.
+// DryRunDisc is one disc DryRun predicts: the disc number and label it
+// will carry, and the object count and byte length pack will place on
+// it.
 type DryRunDisc struct {
+	DiscSeq     uint64
+	Label       string
 	ObjectCount int
 	ObjectBytes uint64
 }
 
-// DryRun predicts how many discs Pack would need, at opts's capacity, to
+// DryRun predicts the discs Pack would write, at opts's capacity, to
 // place every object still STAGED, without writing anything: no output
 // tree, no state record, no cache entry, no ledger row, and no sequence
 // number is consumed. It calls the same selectRun that Pack uses, once
 // for each disc it predicts, against a shrinking in-memory candidate
 // list, so the prediction never depends on a second packing rule.
 //
-// The predicted fixed per-disc overhead (DISC.bin, DISCS.bin, REFS.bin,
-// and the snapshot catalog) is built once, the same way Pack builds it
-// for its first disc, and reused unchanged for every later predicted
-// disc. A real pack's DISCS table grows by one row on every real disc,
-// which this loop does not simulate, so the real pack's fixed files can
-// end up a little larger than predicted here; the caller should say the
-// numbers are an estimate for that reason.
-func DryRun(opts PackOptions) ([]DryRunDisc, error) {
+// Each predicted disc gets the number the ledger will hand it and the
+// label labelFor builds for that number, and the DISCS table grows by
+// one row for each predicted disc, exactly as a real pack grows it. The
+// predicted fixed per-disc overhead is therefore the overhead the real
+// pack of that disc will have.
+//
+// A capacity that holds no further object stops the prediction. DryRun
+// then returns the discs it predicted so far together with the error,
+// because a loop of real packs writes exactly those discs and then
+// refuses in the same way.
+func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDisc, error) {
 	if opts.StagingDir == "" {
 		return nil, fmt.Errorf("staging directory is required")
 	}
@@ -587,29 +593,10 @@ func DryRun(opts PackOptions) ([]DryRunDisc, error) {
 	if err != nil {
 		return nil, err
 	}
-	runSeq, discSeq := NextSeqNumbers(ledger.Rows)
-
-	discBuf, _, err := buildDisc(opts.asBuildOptions(), packTime, discSeq)
-	if err != nil {
-		return nil, err
-	}
 	refsLedger, err := LoadRefsLedger(opts.StagingDir, opts.RepoUUID)
 	if err != nil {
 		return nil, err
 	}
-	newRefRecords := refRecordsFromSnapshots(opts.Snapshots, runSeq)
-	mergedRefRecords := mergeRefRecords(refsLedger.Records, newRefRecords)
-	refsBuf, _, err := encodeRefsTable(opts.RepoUUID, mergedRefRecords)
-	if err != nil {
-		return nil, err
-	}
-	discsBuf, _, err := buildDiscs(opts.asBuildOptions(), packTime, runSeq, discSeq, ledger.Rows)
-	if err != nil {
-		return nil, err
-	}
-	var label [64]byte
-	labelLen := copy(label[:], opts.Label)
-	readmeBuf := buildReadme(opts.asBuildOptions(), packTime, label[:labelLen])
 
 	snapObjOrder := append([]object.ID(nil), allSnapshotIDs...)
 	sort.Slice(snapObjOrder, func(i, j int) bool { return lessBytes(snapObjOrder[i][:], snapObjOrder[j][:]) })
@@ -617,33 +604,57 @@ func DryRun(opts PackOptions) ([]DryRunDisc, error) {
 	for _, id := range snapObjOrder {
 		snapobjBlocks += blockCount(uint64(len(snapshotBytes[id])))
 	}
-
-	fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
-		blockCount(uint64(len(readmeBuf))) +
-		blockCount(uint64(len(FormatTxt))) +
-		blockCount(uint64(len(DecoderPy))) +
-		blockCount(uint64(len(refsBuf))) +
-		blockCount(uint64(len(discsBuf))) +
-		snapobjBlocks
 	fixedFileCount := 8 + len(snapObjOrder)
 
+	rows := append([]format.DiscsRow(nil), ledger.Rows...)
 	var discs []DryRunDisc
 	for len(candidates) > 0 {
-		selected, _, err := selectRun(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
+		runSeq, discSeq := NextSeqNumbers(rows)
+		discOpts := opts
+		if labelFor != nil {
+			discOpts.Label = labelFor(discSeq)
+		}
+
+		discBuf, _, err := buildDisc(discOpts.asBuildOptions(), packTime, discSeq)
 		if err != nil {
-			return nil, err
+			return discs, err
+		}
+		newRefRecords := refRecordsFromSnapshots(discOpts.Snapshots, runSeq)
+		refsBuf, _, err := encodeRefsTable(discOpts.RepoUUID, mergeRefRecords(refsLedger.Records, newRefRecords))
+		if err != nil {
+			return discs, err
+		}
+		discsBuf, _, err := buildDiscs(discOpts.asBuildOptions(), packTime, runSeq, discSeq, rows)
+		if err != nil {
+			return discs, err
+		}
+		var label [64]byte
+		labelLen := copy(label[:], discOpts.Label)
+		readmeBuf := buildReadme(discOpts.asBuildOptions(), packTime, label[:labelLen])
+
+		fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
+			blockCount(uint64(len(readmeBuf))) +
+			blockCount(uint64(len(FormatTxt))) +
+			blockCount(uint64(len(DecoderPy))) +
+			blockCount(uint64(len(refsBuf))) +
+			blockCount(uint64(len(discsBuf))) +
+			snapobjBlocks
+
+		selected, _, err := selectRun(discOpts, candidates, fixedBlocksExclIndex, fixedFileCount)
+		if err != nil {
+			return discs, err
 		}
 		if len(selected) == 0 {
-			needed, needErr := minimumSectorsToPlaceOne(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
+			needed, needErr := minimumSectorsToPlaceOne(discOpts, candidates, fixedBlocksExclIndex, fixedFileCount)
 			if needErr != nil {
-				return nil, needErr
+				return discs, needErr
 			}
-			smallest, err := smallestCandidate(opts.StagingDir, candidates)
+			smallest, err := smallestCandidate(discOpts.StagingDir, candidates)
 			if err != nil {
-				return nil, err
+				return discs, err
 			}
-			return nil, &ErrCapacityTooSmall{
-				TargetSectors: opts.TargetCapacitySectors, NeededSectors: needed,
+			return discs, &ErrCapacityTooSmall{
+				TargetSectors: discOpts.TargetCapacitySectors, NeededSectors: needed,
 				SmallestID: smallest.ID, SmallestKind: smallest.Kind, SmallestBytes: smallest.ByteLen,
 			}
 		}
@@ -654,7 +665,10 @@ func DryRun(opts PackOptions) ([]DryRunDisc, error) {
 			selectedSet[u.ID] = true
 			objectBytes += u.ByteLen
 		}
-		discs = append(discs, DryRunDisc{ObjectCount: len(selected), ObjectBytes: objectBytes})
+		discs = append(discs, DryRunDisc{
+			DiscSeq: discSeq, Label: discOpts.Label,
+			ObjectCount: len(selected), ObjectBytes: objectBytes,
+		})
 
 		remaining := candidates[:0:0]
 		for _, u := range candidates {
@@ -663,6 +677,7 @@ func DryRun(opts PackOptions) ([]DryRunDisc, error) {
 			}
 		}
 		candidates = remaining
+		rows = append(rows, newDiscsRow(discOpts.asBuildOptions(), packTime, runSeq, discSeq))
 	}
 	return discs, nil
 }

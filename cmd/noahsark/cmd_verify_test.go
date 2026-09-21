@@ -80,8 +80,8 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	if !strings.Contains(out, "not marked burned") || !strings.Contains(out, "run: noahsark disc burned 0") {
 		t.Fatalf("verify (unburned) output %q missing the not-marked-burned line for disc 0", out)
 	}
-	if strings.Contains(out, "marked 0 object(s) CLEAN") {
-		t.Fatalf("verify (unburned) output %q prints marked 0 object(s) CLEAN; want it omitted when nothing was BURNED", out)
+	if strings.Contains(out, "0 object(s) verified on") {
+		t.Fatalf("verify (unburned) output %q prints a zero verified count; want the line omitted when nothing was BURNED", out)
 	}
 	if i := strings.Index(out, ", ok"); i < 0 || i > strings.Index(out, "not marked burned") {
 		t.Fatalf("verify (unburned) output %q, want the not-marked-burned hint after the ok line", out)
@@ -126,8 +126,8 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify (burned): exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "marked") || !strings.Contains(out, "CLEAN") || strings.Contains(out, "marked 0 object") {
-		t.Fatalf("verify (burned) output %q did not mark objects CLEAN", out)
+	if !strings.Contains(out, "object(s) verified on") || strings.Contains(out, "0 object(s) verified on") {
+		t.Fatalf("verify (burned) output %q did not report the objects verified", out)
 	}
 	if strings.Contains(out, "not marked burned") {
 		t.Fatalf("verify (burned) output %q still warned about an unmarked disc", out)
@@ -140,8 +140,8 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify (mounted, second pass): exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "marked") && strings.Contains(out, "CLEAN") {
-		t.Fatalf("verify (mounted, second pass) output %q, want no marked-CLEAN line when nothing was BURNED", out)
+	if strings.Contains(out, "object(s) verified on") {
+		t.Fatalf("verify (mounted, second pass) output %q, want no verified-count line when nothing was BURNED", out)
 	}
 }
 
@@ -225,7 +225,7 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("disc burned --undo (verified disc): exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "verified (CLEAN)") || !strings.Contains(out, "cannot be returned to packed") {
+	if !strings.Contains(out, "is verified and cannot be returned to packed") {
 		t.Fatalf("disc burned --undo output %q missing the verified-disc refusal", out)
 	}
 
@@ -372,11 +372,11 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("verify (corrupt): exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "returned") || !strings.Contains(out, "PACKED") {
-		t.Fatalf("verify (corrupt) output %q missing the returned-to-PACKED line", out)
+	if !strings.Contains(out, "object(s) returned to packed") {
+		t.Fatalf("verify (corrupt) output %q missing the returned-to-packed line", out)
 	}
-	if strings.Contains(out, "returned 0 object") {
-		t.Fatalf("verify (corrupt) output %q returned no objects to PACKED", out)
+	if strings.Contains(out, "0 object(s) returned to packed") {
+		t.Fatalf("verify (corrupt) output %q returned no object to packed", out)
 	}
 
 	flipByte(t, chunkPath, 70) // undo the corruption
@@ -389,8 +389,8 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify (repaired): exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "marked") || !strings.Contains(out, "CLEAN") || strings.Contains(out, "marked 0 object") {
-		t.Fatalf("verify (repaired) output %q did not mark objects CLEAN", out)
+	if !strings.Contains(out, "object(s) verified on") || strings.Contains(out, "0 object(s) verified on") {
+		t.Fatalf("verify (repaired) output %q did not report the objects verified", out)
 	}
 }
 

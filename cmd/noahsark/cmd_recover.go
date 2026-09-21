@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -186,11 +187,13 @@ func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	if len(notFed) > 0 {
 		for _, row := range notFed {
 			label := string(row.Label[:row.LabelLen])
-			_, _ = fmt.Fprintf(stdout, "rebuild is partial: disc %s (%s) not fed yet\n", uuidText(row.DiscUUID), label)
+			_, _ = fmt.Fprintf(stdout, "rebuild is partial: %s not fed yet\n", discName(row.DiscSeq, label, row.DiscUUID))
 		}
+		printConfigToComplete(stdout, repoDir, cfg)
 		return 1
 	}
 
+	printConfigToComplete(stdout, repoDir, cfg)
 	_, _ = fmt.Fprintln(stdout, "recover: ok")
 	return 0
 }
@@ -438,4 +441,22 @@ func mergeRefs(records []format.RefRecord) map[string]string {
 func uuidText(u [16]byte) string {
 	h := hex.EncodeToString(u[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// printConfigToComplete names the keys a rebuilt config does not carry.
+// recover reads the discs, and no disc holds the source path or the
+// media size, so the operator writes those two keys back by hand.
+func printConfigToComplete(stdout io.Writer, repoDir string, cfg repoConfig) {
+	var missing []string
+	if cfg.SourceRoot == "" {
+		missing = append(missing, "sources.root")
+	}
+	if cfg.PackCapacity == "" {
+		missing = append(missing, "pack.capacity")
+	}
+	if len(missing) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(stdout, "config: put %s into %s; no disc carries them\n",
+		strings.Join(missing, " and "), configPath(repoDir))
 }

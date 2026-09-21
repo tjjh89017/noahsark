@@ -64,10 +64,11 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
 			return 1
 		}
+		blocks := 0
 		for _, r := range reports {
-			_, _ = fmt.Fprintf(stdout, "stripe %d: repaired data columns %v, parity columns %v\n", r.Stripe, r.DataColumns, r.ParityColumns)
+			blocks += len(r.DataColumns) + len(r.ParityColumns)
 		}
-		_, _ = fmt.Fprintf(stdout, "heal: %d stripe(s) repaired\n", len(reports))
+		_, _ = fmt.Fprintf(stdout, "heal: repaired %d block(s)\n", blocks)
 		if *healOut != "" {
 			target = *healOut
 		}
@@ -87,6 +88,11 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	var outcome bytes.Buffer
 	var trailingHint string
 	if repoDir, err := discoverRepo(*repoFlag); err == nil {
+		if cfg, cfgErr := readConfig(configPath(repoDir)); cfgErr == nil {
+			if refuseBadConfig("verify", cfg, stderr, configKeysForVerify...) {
+				return 2
+			}
+		}
 		lk, code, ok := lockRepo("verify", repoDir, stderr)
 		if !ok {
 			return code
@@ -95,8 +101,8 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, &outcome, stderr)
 		if notInRepo {
 			releaseLock(lk)
-			_, _ = fmt.Fprintf(stderr, "noahsark: verify: disc %s (%s) is not in repository %s; check --repo, or run noahsark recover --disc=%s to add it\n",
-				uuidText(ident.DiscUUID), ident.Label, repoDir, target)
+			_, _ = fmt.Fprintf(stderr, "noahsark: verify: %s is not in repository %s; check --repo, or run noahsark recover --disc=%s to add it\n",
+				ident.name(), repoDir, target)
 			return 1
 		}
 		releaseLock(lk)
@@ -127,8 +133,12 @@ func labelText(b []byte) string {
 // lets a failed verify still resolve which disc to move back to PACKED.
 type discIdentity struct {
 	DiscUUID [16]byte
+	DiscSeq  uint64
 	Label    string
 }
+
+// name renders the disc the way every operator message names one.
+func (d discIdentity) name() string { return discName(d.DiscSeq, d.Label, d.DiscUUID) }
 
 // identifyDiscAndRun reads DISC.bin and the newest run's RUN.bin under
 // target, and reports the disc identity, and whether both were
@@ -154,17 +164,17 @@ func identifyDiscAndRun(target string) (discIdentity, bool) {
 	runsDir := filepath.Join(base, names.Resolve(base, "runs"))
 	runDir, err := image.NewestRunDir(runsDir)
 	if err != nil {
-		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
+		return discIdentity{DiscUUID: disc.DiscUUID, DiscSeq: disc.DiscSeq, Label: label}, false
 	}
 	runBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "RUN.bin")))
 	if err != nil {
-		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
+		return discIdentity{DiscUUID: disc.DiscUUID, DiscSeq: disc.DiscSeq, Label: label}, false
 	}
 	var run format.Run
 	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
-		return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, false
+		return discIdentity{DiscUUID: disc.DiscUUID, DiscSeq: disc.DiscSeq, Label: label}, false
 	}
-	return discIdentity{DiscUUID: disc.DiscUUID, Label: label}, true
+	return discIdentity{DiscUUID: disc.DiscUUID, DiscSeq: disc.DiscSeq, Label: label}, true
 }
 
 // applyVerifyOutcome updates repoDir's staging state and disc ledger for
@@ -209,7 +219,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 
 	if verifyErr != nil {
 		n := markVerifyFailed(stageLog, ident.DiscUUID)
-		_, _ = fmt.Fprintf(stdout, "verify: disc %s failed; returned %d object(s) from BURNED to PACKED\n", uuidText(ident.DiscUUID), n)
+		_, _ = fmt.Fprintf(stdout, "verify: %s failed; %d object(s) returned to packed\n", ident.name(), n)
 		return "", false
 	}
 
@@ -228,7 +238,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		}
 	}
 	if n > 0 {
-		_, _ = fmt.Fprintf(stdout, "verify: marked %d object(s) CLEAN (disc %s)\n", n, uuidText(ident.DiscUUID))
+		_, _ = fmt.Fprintf(stdout, "verify: %d object(s) verified on %s\n", n, ident.name())
 	}
 	if haveClean {
 		_, _ = fmt.Fprintln(stdout, verifyCountLine(count, cfg.MinVerifiedCopies))
@@ -240,7 +250,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		// staged files, or recover read the disc into an empty
 		// staging. The verify still read every object back; there is
 		// simply no staging state left to move.
-		_, _ = fmt.Fprintf(stdout, "verify: disc %s holds no staged object; nothing to mark\n", uuidText(ident.DiscUUID))
+		_, _ = fmt.Fprintf(stdout, "verify: %s holds no staged object; nothing to mark\n", ident.name())
 		return "", false
 	}
 	if stillPacked == 0 {

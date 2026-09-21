@@ -66,12 +66,21 @@ func (r *Result) MissingObjectCount() int {
 // under id snapID), restricted to includes (the whole snapshot when
 // includes is empty). It reads only the cache, never a disc.
 func Build(c *cache.Cache, snap *format.Snapshot, snapID object.ID, includes []string) (*Result, error) {
+	return BuildForChunks(c, snap, snapID, includes, nil)
+}
+
+// BuildForChunks is Build, restricted further to the chunks keep names.
+// A chunk the destination already holds is left out of the plan
+// entirely, so a rerun lists only the discs it still needs. A nil keep
+// plans every chunk. Every tree, blob and snapshot object is resolved
+// whatever keep says, so a missing one is still reported.
+func BuildForChunks(c *cache.Cache, snap *format.Snapshot, snapID object.ID, includes []string, keep map[object.ID]bool) (*Result, error) {
 	w, err := collectObjects(c, snap, includes)
 	if err != nil {
 		return nil, err
 	}
 	w.add(snapID, format.ObjectKindSnapshot)
-	return group(c, w.needed, w.order), nil
+	return group(c, w.needed, w.order, keep), nil
 }
 
 // collectObjects walks the cached trees under includes (the whole
@@ -286,13 +295,16 @@ func rootPathOf(e format.TreeEntry) string {
 // Within one disc, objects keep order's relative order: the walk's
 // depth-first, file-by-file discovery order, so a blob's own chunks
 // stay adjacent in each DiscEntry.Objects.
-func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []object.ID) *Result {
+func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []object.ID, keep map[object.ID]bool) *Result {
 	byDisc := make(map[[16]byte]*DiscEntry)
 	missingByDisc := make(map[[16]byte]int)
 	missingDiscUnknown := 0
 
 	r := &Result{}
 	for _, id := range order {
+		if keep != nil && needed[id] == format.ObjectKindChunk && !keep[id] {
+			continue
+		}
 		loc, found := c.LocateObject(id)
 		if !found {
 			missingDiscUnknown++

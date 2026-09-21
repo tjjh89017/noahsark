@@ -54,6 +54,9 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
 	}
+	if refuseBadConfig("commit", cfg, stderr, configKeysForCommit...) {
+		return 2
+	}
 
 	lk, code, ok := lockRepo("commit", repoDir, stderr)
 	if !ok {
@@ -138,7 +141,9 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	}
 	printSpecialWarnings(stdout, sum.Special)
 	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
-	_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
+	if sum.Excluded > 0 {
+		_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
+	}
 
 	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
 	if err != nil {

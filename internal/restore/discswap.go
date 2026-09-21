@@ -68,12 +68,11 @@ type Assembler struct {
 }
 
 // pendingFile is what the assembler keeps for one file it has not
-// finished: how many blob entries still owe their bytes, and whether
-// the part file was already on disk when this run first opened it.
+// finished: how many blob entries still owe their bytes, and whether a
+// part file from an earlier run was already on disk.
 // Nothing here grows with the file's size or with the snapshot's.
 type pendingFile struct {
 	remaining int
-	opened    bool
 	resume    bool
 }
 
@@ -276,7 +275,7 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 				return nil
 			}
 		}
-		pf = &pendingFile{remaining: len(entries)}
+		pf = a.register(part, entries)
 		a.pending[dest] = pf
 	}
 
@@ -304,16 +303,31 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 	return nil
 }
 
+// register counts how many blob entries of one file still owe their
+// bytes. A part file a killed run left behind is read one time here,
+// and every chunk it already holds is taken out of the count, whatever
+// disc that chunk came from. A later walk therefore finishes the file
+// even when the restore never asks for that disc again.
+func (a *Assembler) register(part string, entries []format.BlobEntry) *pendingFile {
+	f, err := os.Open(part)
+	if err != nil {
+		return &pendingFile{remaining: len(entries)}
+	}
+	defer func() { _ = f.Close() }()
+	remaining := 0
+	for _, be := range entries {
+		if !a.chunkInPlace(f, be) {
+			remaining++
+		}
+	}
+	return &pendingFile{remaining: remaining, resume: true}
+}
+
 // writePart opens the part file, sets its final size, and writes every
 // chunk of this disc into it at the chunk's own offset. A chunk whose
 // bytes are already in the part file, from a run that was killed, is
 // checked against its content id and skipped.
 func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, wanted []format.BlobEntry, d DiscChunks, prog *progress.Reporter) error {
-	if !pf.opened {
-		_, err := os.Lstat(part)
-		pf.resume = err == nil
-		pf.opened = true
-	}
 	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
 		return err
@@ -325,7 +339,7 @@ func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, 
 	for _, be := range wanted {
 		id := object.ID(be.ContentID)
 		if pf.resume && a.chunkInPlace(f, be) {
-			pf.remaining--
+			// register already took this chunk out of remaining.
 			continue
 		}
 		payload, err := d.Read(id)
@@ -507,21 +521,36 @@ func ReadChunkFromRoot(root string, id object.ID) ([]byte, error) {
 	return payload, err
 }
 
-// ReadDiscUUID reads and decodes DISC.bin from a mounted disc root or
-// unpacked NOAHSARK tree, returning the disc's uuid.
-func ReadDiscUUID(root string) ([16]byte, error) {
+// DiscIdentity is how a disc names itself to the operator: its number,
+// its label and its uuid, all read from its own DISC.bin.
+type DiscIdentity struct {
+	Seq   uint64
+	Label string
+	UUID  [16]byte
+}
+
+// ReadDiscIdentity reads and decodes DISC.bin from a mounted disc root
+// or unpacked NOAHSARK tree.
+func ReadDiscIdentity(root string) (DiscIdentity, error) {
 	names := image.NewNameCache()
 	base, err := findNoahsark(root, names)
 	if err != nil {
-		return [16]byte{}, err
+		return DiscIdentity{}, err
 	}
 	buf, err := os.ReadFile(filepath.Join(base, names.Resolve(base, "DISC.bin")))
 	if err != nil {
-		return [16]byte{}, err
+		return DiscIdentity{}, err
 	}
 	var disc format.Disc
 	if err := disc.Decode(buf); err != nil {
-		return [16]byte{}, err
+		return DiscIdentity{}, err
 	}
-	return disc.DiscUUID, nil
+	n := min(int(disc.LabelLen), len(disc.Label))
+	return DiscIdentity{Seq: disc.DiscSeq, Label: string(disc.Label[:n]), UUID: disc.DiscUUID}, nil
+}
+
+// ReadDiscUUID returns the uuid of the disc at root.
+func ReadDiscUUID(root string) ([16]byte, error) {
+	id, err := ReadDiscIdentity(root)
+	return id.UUID, err
 }

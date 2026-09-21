@@ -42,8 +42,8 @@ func TestPackDryRunWritesNothing(t *testing.T) {
 	if m[1] != "1" {
 		t.Fatalf("total line = %q, want 1 disc for a small fixture at 64MiB", m[0])
 	}
-	if !strings.Contains(out, "estimate") {
-		t.Fatalf("pack --dry-run output %q should say the numbers are an estimate", out)
+	if !strings.Contains(out, "next: run noahsark pack 1 time(s)") {
+		t.Fatalf("pack --dry-run output %q should end with the one action for the operator", out)
 	}
 
 	// No ledger file, no run tree, and the same staged total.
