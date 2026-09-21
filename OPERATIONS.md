@@ -670,19 +670,51 @@ snapshot preserves size, mtime and ctime. The snapshot records the path that
 `commit` read. The planned `--source-root` option of section 7.10 records the
 original path instead.
 
+### 7.8 Excludes
+
+`commit --exclude=PATTERN` (repeatable), the config key `sources.exclude`
+(repeatable, one pattern on each key), and a `.noahsarkignore` file in the
+source root together name every path `commit` leaves out of the tree. All
+three sources are read; a path excluded by any one of them is excluded. Order
+never matters: the rule set has no negation, so no pattern can undo another.
+
+The pattern language is small and gitignore-style:
+
+- one pattern on each line; `#` starts a comment; an empty line is ignored;
+- a pattern with no `/` matches a name at every depth (`*.tmp`,
+  `node_modules`);
+- a pattern with a `/` is anchored at the source root (`/cache`,
+  `build/out`);
+- a trailing `/` matches a directory only;
+- `*` and `?` do not cross `/`; `**` crosses directories; `[abc]` classes
+  work as in Go's `path.Match`;
+- a leading `./` is stripped before matching;
+- negation (`!`) is not supported. A pattern that starts with `!` is a usage
+  error for `--exclude`, a config error for `sources.exclude`, and a
+  `.noahsarkignore` error naming the file and the line.
+
+A matched directory is not walked: its contents never reach the tree, and
+`commit` never opens a file inside it. `commit` prints one summary line with
+the number of paths the excludes kept out. `.noahsarkignore` itself is a
+normal file in the source root: it is backed up like any other file, unless
+a pattern also happens to exclude it. The exclude rule set is not stored on
+the snapshot; the tree it produces simply has no entry for an excluded path.
+
+### 7.9 One file system
+
+`commit --one-file-system` keeps the walk on the source root's own
+filesystem: a directory whose device differs from the root's is not walked.
+Its own entry stays in the tree, recorded as an empty directory, so the
+mount point itself is still visible in a restore. `commit` prints one line
+naming each mount point it skipped this way. This build compares device ids
+at commit time only; it takes no config key, since a backup either always
+wants every mount crossed or never wants one crossed, decided per command.
+
 ### 7.10 Planned, not built
 
 These options are design text. The build does not have them, and it refuses
 each one as an unknown option. They are the only planned `commit` options.
 
-- `commit --exclude=PATTERN`, repeatable, the config key `sources.exclude`,
-  repeatable, and a per-directory exclude file, named by `sources.ignore_file`
-  with the default `.noahsarkignore`. The pattern language and the order of
-  the three rule sources are in FORMAT.md's "Exclude pattern language". An
-  excluded path is not in the tree at all. The exclude rules are stored in the
-  snapshot as a TLV, so a later `ls` can explain why a file is absent.
-- `commit --one-file-system`, and the config key `sources.one_file_system`
-  with the default true. The walker does not cross a mount point.
 - `commit --checksum`, and the config key `commit.checksum`. It disables the
   quick check: `commit` reads and hashes every file again.
 - `commit --source-root=PATH`. It records `PATH` in the snapshot as the root
@@ -748,15 +780,27 @@ state log never claims a run the local disk does not hold. A sync error is a
 failure at run time: `pack` records nothing, and the run and disc sequence
 numbers stay free for the next `pack`.
 
-### 8.9 Planned, not built
+### 8.9 Dry run
 
-This option is design text. The build does not have it, and it refuses it as
-an unknown option. It is the only planned `pack` option.
+`pack --dry-run` answers "how many discs does the staged data need, at this
+capacity?" without changing anything: it writes no run tree, no state
+record, no cache entry and no ledger row, and it uses no run or disc
+sequence number. It calls the same object-selection code a real `pack`
+does, once for each disc it predicts, against a shrinking in-memory
+candidate list taken from what is STAGED now. It prints, for each predicted
+disc, the object count and the bytes, and a total line.
 
-- `pack --dry-run`. It selects the objects and prints the capacity budget, the
-  objects and bytes of the run, and the objects and bytes that stay STAGED. It
-  writes no disc root and no state record, and it uses no sequence number. It
-  answers the question "how many discs does the staged data need?".
+The predicted numbers are an estimate: a real, repeated `pack` grows the
+DISCS table by one row on every later disc, and `--dry-run` does not
+simulate that growth, so the real per-disc fixed files (`DISC.bin`,
+`DISCS.bin`, `REFS.bin`) can end up a little larger than predicted, most
+often on a run whose object selection sits right at the capacity edge.
+`pack --dry-run` says as much in its own output.
+
+`pack --dry-run` only reads the staging store and the ledgers, so it takes
+no repository lock, matching the rule that a read-only command takes none.
+Every other `pack` path writes the state log, the staging store or the
+ledgers, so it still takes the lock.
 
 ---
 
@@ -1439,7 +1483,8 @@ when the directory already holds a repository.
 ### 16.3 `commit`
 
 ```
-noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [SOURCE]
+noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE]
+                 [--exclude=PATTERN]... [--one-file-system] [SOURCE]
 ```
 
 Runs the commit flow of section 7.1. With no `SOURCE`, it uses the configured
@@ -1464,9 +1509,15 @@ code.
 |---|---|
 | `-m` | Commit message, stored as a snapshot TLV. |
 | `--ref` | The ref to move. Default `LATEST`. |
+| `--exclude` | An exclude pattern, in the language of section 7.8. Repeatable. A bad pattern is a usage error naming the pattern. |
+| `--one-file-system` | Do not cross a mount point (section 7.9). |
 
-The config key `commit.retry_unstable` sets the retry count. Section 7.10
-lists the planned options.
+The config key `commit.retry_unstable` sets the retry count. The config key
+`sources.exclude` adds an exclude pattern; it is repeatable, one pattern on
+each key. A `.noahsarkignore` file in the source root adds more, in the
+language of section 7.8. `commit` prints one line with the number of paths
+the excludes kept out, and one line for each mount point `--one-file-system`
+skipped. Section 7.10 lists the planned options.
 
 Exit: 0 on success, also when the tree is unchanged and no snapshot was
 written. 1 on a failure at run time, also when some files could not be read or
@@ -1480,7 +1531,7 @@ The report lists every unstable path and says which branch was taken.
 ```
 noahsark pack [--repo=PATH] [--ref=NAME | --snapshot=ID...] [--capacity=SIZE]
               [--physical-capacity=SIZE] [--label=TEXT]
-              [--out=DIR] [--fec | --no-fec] [--close]
+              [--out=DIR] [--fec | --no-fec] [--close] [--dry-run]
 ```
 
 Selects objects for the next run under the rules of section 8, and writes the
@@ -1520,17 +1571,23 @@ invocation, and it starts a new disc for each run.
 | `--fec` | Write the Reed-Solomon checksum column and parity for this run. Overrides `fec.scheme`. |
 | `--no-fec` | Write no FEC for this run. Overrides `fec.scheme`. `--fec` and `--no-fec` together are an error. |
 | `--close` | Seal the disc: `spare:none` and `-dvd-compat`, no POW, full capacity. `--close` changes only the burn command that `pack` prints. |
+| `--dry-run` | Predict how many discs the STAGED data needs at this capacity, and stop (section 8.9). Writes nothing; takes no repository lock. |
 
 FEC is optional and off by default. Two identical discs are the primary
 redundancy.
 
-Section 8.9 lists the planned option.
+`pack --dry-run` prints one line for each predicted disc, `disc N: objects,
+bytes`, then a `total:` line, then a line saying the numbers are an
+estimate. It takes no `--out`, `--label`, `--fec`, `--no-fec` or `--close`:
+those govern a disc root this call never writes.
 
 Exit: 0 on success, whether or not objects stay STAGED for the next disc:
 that is not a failure, the disc was packed correctly, and the `remaining
-staged:` line says how much waits. 1 on a failure at run time, also when
-nothing was STAGED to pack. 2 for a usage error, a refused option, an
-`--out` directory that holds files, or a capacity too small for the run.
+staged:` line says how much waits. `--dry-run` exits 0 the same way, even
+when it predicts zero discs because nothing is STAGED. 1 on a failure at
+run time, also when nothing was STAGED to pack. 2 for a usage error, a
+refused option, an `--out` directory that holds files, or a capacity too
+small for the run.
 
 ### 16.12 `verify`
 
@@ -1896,8 +1953,8 @@ CLI option always overrides the file.
 A build must refuse an unknown key with a clear message that names the key.
 
 The build reads these keys: `repo.uuid`, `staging.dir`, `sources.root`,
-`commit.restat_after_read`, `commit.retry_unstable`, `fec.scheme`,
-`pack.capacity`, `cache.dir`,
+`sources.exclude`, `commit.restat_after_read`, `commit.retry_unstable`,
+`fec.scheme`, `pack.capacity`, `cache.dir`,
 `cache.format_version`, `restore.staging_budget`,
 `staging.retain_after_clean` and `gc.min_verified_copies`. It refuses each
 other key of the tables below. Those keys name the values that the build
@@ -1962,12 +2019,16 @@ Every key appears exactly once, in exactly one table below.
 | Key | Type | Default | Changes disc bytes | Meaning |
 |---|---|---|---|---|
 | `sources.root` | path | unset | no | The absolute source root. `commit` uses it when no `SOURCE` is given. |
-| `sources.exclude` | pattern, repeatable | unset | yes | An exclude pattern in the language of FORMAT.md's "Exclude pattern language". Planned, not built (section 7.10). |
-| `sources.ignore_file` | string | `.noahsarkignore` | yes | Per-directory exclude file name. Empty disables it. Planned, not built (section 7.10). |
-| `sources.one_file_system` | boolean | true | yes | Do not cross a mount point. Planned, not built (section 7.10). |
+| `sources.exclude` | pattern, repeatable | unset | no | An exclude pattern in the language of section 7.8. Repeatable: one key line for each pattern. |
 | `commit.checksum` | boolean | false | no | Always rehash. Equivalent to `--checksum` on every commit. Planned, not built (section 7.10). |
 | `commit.restat_after_read` | boolean | true | no | In-flight change detection. Never set it false on a live source. |
 | `commit.retry_unstable` | integer | 1 | no | Re-reads of an unstable file before the rule of section 7.6 applies. |
+
+`commit` also reads exclude patterns from `.noahsarkignore` in the source
+root (section 7.8) and from `--exclude`; the file name is fixed, not a
+config key, so the source root only ever has one to find. `--one-file-system`
+(section 7.9) is a `commit` flag only; it has no config key, since crossing
+or not crossing a mount is a per-command decision, not a repository-wide one.
 
 ### 17.12 Staging and cache
 

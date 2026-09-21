@@ -77,6 +77,14 @@ type Summary struct {
 	// OnDisc reported as already on a disc never gets a staging file to
 	// walk into.
 	Reachable []ID
+	// Excluded counts every path an exclude pattern kept out of the
+	// tree: a file, or a directory whose contents were never walked.
+	Excluded int
+	// MountPoints lists every directory the walker did not cross into
+	// because OneFileSystem was set and the directory's device differed
+	// from the source root's. Each one is recorded as an empty
+	// directory in the tree.
+	MountPoints []string
 }
 
 // UnstablePath names one path the in-flight change detection flagged, and
@@ -140,6 +148,21 @@ type Writer struct {
 	// SnapshotMetaMessage TLV. Empty means no message TLV is written.
 	Message string
 
+	// Exclude, when set, keeps a matched path out of the tree entirely.
+	// A matched directory is not walked. A nil Exclude excludes nothing.
+	Exclude *Matcher
+
+	// OneFileSystem, when true, does not cross a mount point: a
+	// directory whose device differs from the source root's is recorded
+	// as an empty directory instead of being walked.
+	OneFileSystem bool
+
+	// DeviceID returns a path's device id, for OneFileSystem. Defaults
+	// to deviceID, which reads syscall.Stat_t.Dev. A caller replaces
+	// this to simulate a mount point without a real one, or to detect
+	// a platform that carries no device id.
+	DeviceID func(info os.FileInfo) (dev uint64, ok bool)
+
 	// Known reports whether id already belongs to the repository: the
 	// staging state log carries a record for it. A nil Known leaves an
 	// object's Summary count to writeObjectFile's own on-disk check
@@ -159,6 +182,8 @@ type Writer struct {
 
 	reachable map[ID]uint64
 	rootAbs   string
+	rootDev   uint64
+	rootDevOK bool
 }
 
 // NewWriter returns a Writer that stages objects under stagingDir using
@@ -172,6 +197,7 @@ func NewWriter(stagingDir string) *Writer {
 		RetryUnstable:   defaultRetryUnstable,
 		Stat:            os.Lstat,
 		Open:            func(path string) (io.ReadCloser, error) { return os.Open(path) },
+		DeviceID:        deviceID,
 	}
 }
 
@@ -193,6 +219,18 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 
 	w.reachable = make(map[ID]uint64)
 	w.rootAbs = absRoot
+	w.rootDev, w.rootDevOK = 0, false
+	if w.OneFileSystem {
+		deviceIDFn := w.DeviceID
+		if deviceIDFn == nil {
+			deviceIDFn = deviceID
+		}
+		dev, ok := deviceIDFn(rootInfo)
+		if !ok {
+			return ID{}, Summary{}, fmt.Errorf("object: one-file-system: this platform reports no device id")
+		}
+		w.rootDev, w.rootDevOK = dev, true
+	}
 	var sum Summary
 
 	total := regularFileBytes(absRoot)
@@ -267,6 +305,10 @@ func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 	entries := make([]format.TreeEntry, 0, len(des))
 	for _, de := range des {
 		childPath := filepath.Join(dirPath, de.Name())
+		if w.Exclude != nil && w.Exclude.Match(filepath.ToSlash(w.relPath(childPath)), de.IsDir()) {
+			sum.Excluded++
+			continue
+		}
 		te, err := w.commitEntry(childPath, de.Name(), sum)
 		if se, ok := asSkip(err); ok {
 			sum.Skipped = append(sum.Skipped, SkippedPath{Path: w.relPath(childPath), Reason: se.reason})
@@ -302,6 +344,15 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 	switch {
 	case mode.IsDir():
 		te.EntryType = format.EntryTypeDirectory
+		if w.rootDevOK && w.crossesMount(info) {
+			sum.MountPoints = append(sum.MountPoints, w.relPath(path))
+			id, err := w.writeTree(nil, sum)
+			if err != nil {
+				return te, err
+			}
+			te.ContentID = id
+			return te, nil
+		}
 		id, err := w.commitDir(path, sum)
 		if err != nil {
 			return te, err
@@ -783,6 +834,30 @@ func permBits(info os.FileInfo) uint32 {
 		return uint32(info.Mode().Perm())
 	}
 	return uint32(st.Mode) & 07777
+}
+
+// crossesMount reports whether info's directory sits on a different
+// device than the source root, using the Writer's DeviceID seam. A
+// platform that reports no device id for info never crosses: Commit
+// already refused OneFileSystem for such a platform before the walk
+// started, so this only runs where a device id is available.
+func (w *Writer) crossesMount(info os.FileInfo) bool {
+	deviceIDFn := w.DeviceID
+	if deviceIDFn == nil {
+		deviceIDFn = deviceID
+	}
+	dev, ok := deviceIDFn(info)
+	return ok && dev != w.rootDev
+}
+
+// deviceID reads a path's device id from syscall.Stat_t.Dev. It reports
+// ok false on a platform whose os.FileInfo carries no *syscall.Stat_t.
+func deviceID(info os.FileInfo) (dev uint64, ok bool) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Dev), true
 }
 
 // rdevMajorMinor decodes a device entry's major and minor numbers from

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tjjh89017/noahsark/internal/object"
 )
 
 // configFileName is the config file name inside a repository directory.
@@ -65,6 +67,10 @@ type repoConfig struct {
 	// keeps the staged bytes until the second identical disc passes
 	// verify.
 	MinVerifiedCopies int
+	// ExcludePatterns is sources.exclude: every exclude pattern the
+	// config file names, in the order it names them. The key is
+	// repeatable: one line for each pattern.
+	ExcludePatterns []object.Pattern
 }
 
 // knownConfigKeys names every key this build reads. A key present in the
@@ -82,6 +88,7 @@ var knownConfigKeys = map[string]bool{
 	"restore.staging_budget":     true,
 	"staging.retain_after_clean": true,
 	"gc.min_verified_copies":     true,
+	"sources.exclude":            true,
 }
 
 // defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
@@ -230,6 +237,12 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: gc.min_verified_copies: must be at least 1")
 			}
 			c.MinVerifiedCopies = n
+		case "sources.exclude":
+			pat, err := object.ParsePattern(value)
+			if err != nil {
+				return repoConfig{}, fmt.Errorf("config: sources.exclude: %s: %w", path, err)
+			}
+			c.ExcludePatterns = append(c.ExcludePatterns, pat)
 		}
 	}
 	if err := sc.Err(); err != nil {
