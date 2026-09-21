@@ -42,8 +42,8 @@ func TestPackWithNothingStagedSucceeds(t *testing.T) {
 // TestPackAfterGCSaysNothingToPackNotNeverCommitted packs, burns and
 // verifies a disc, then runs gc with retention forced to zero so every
 // staging object, snapshot files included, is deleted. A pack run
-// after that still has a LATEST ref naming the old snapshot, so it
-// must say "nothing to pack", the same as an ordinary already-packed
+// after that still has a ref naming the old snapshot, so it must say
+// "nothing to pack", the same as an ordinary already-packed
 // repository, not "no snapshot has been committed".
 func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	work := t.TempDir()

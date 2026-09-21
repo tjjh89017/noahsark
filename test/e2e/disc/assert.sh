@@ -13,14 +13,26 @@ assert_dirs_equal() {
 	fi
 }
 
+# assert_empty_dir_restored ROOT SRC fails unless the empty directory
+# gen_small_tree wrote is a directory under the restored tree.
+assert_empty_dir_restored() {
+	local root="$1" src="$2"
+	if [ ! -d "$root$src/adir" ]; then
+		fail "restored tree at $root$src has no adir/ directory"
+	fi
+}
+
 # assert_listing_matches MOUNT WORK diffs the Go reader's snapshot
 # listing against reference/decoder.py's, over the newest snapshot on a
 # mounted disc tree at MOUNT.
 assert_listing_matches() {
-	local mnt="$1" work="$2"
+	local mnt="$1" work="$2" snap
 	go run "$ROOT/test/e2e/disc/cmd/ci-list" "$mnt" >"$work/go-list.txt"
+	# ci-list names the snapshot it walked, by the digest alone; the
+	# decoder takes the multihash text form, which adds the 1220 prefix.
+	snap="1220$(awk '/^# snapshot /{print $3}' "$work/go-list.txt")"
 	python3 "$ROOT/reference/decoder.py" summary "$mnt"
-	python3 "$ROOT/reference/decoder.py" list "$mnt" --snapshot LATEST >"$work/py-list.txt"
+	python3 "$ROOT/reference/decoder.py" list "$mnt" --snapshot "$snap" >"$work/py-list.txt"
 	python3 "$ROOT/reference/decoder.py" verify "$mnt"
 
 	grep -v '^#' "$work/go-list.txt" | sort >"$work/go-paths.sorted.txt"

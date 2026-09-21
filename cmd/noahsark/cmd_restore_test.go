@@ -13,9 +13,9 @@ func TestRestoreAcceptsARefName(t *testing.T) {
 	treeDir, snapID, src := lsFixture(t)
 
 	restoredDir := filepath.Join(t.TempDir(), "restored")
-	code, out := runCmd(t, "restore", treeDir, "LATEST", restoredDir)
+	code, out := runCmd(t, "restore", treeDir, defaultRefName(), restoredDir)
 	if code != 0 {
-		t.Fatalf("restore LATEST: exit %d: %s", code, out)
+		t.Fatalf("restore by ref name: exit %d: %s", code, out)
 	}
 	compareTrees(t, filepath.Join(restoredDir, src), src)
 

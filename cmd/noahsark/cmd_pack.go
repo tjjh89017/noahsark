@@ -25,8 +25,8 @@ import (
 // disc.max_wait), locality presets and burn-plan output do not exist in
 // this build, so pack instead takes the snapshot(s) to place explicitly,
 // by --ref or repeated --snapshot; with neither given, it carries
-// forward every pending ref, falling back to LATEST only when that
-// leaves nothing. See docs/decisions.md, "16. CLI reference".
+// forward every pending ref. See docs/decisions.md, "16. CLI
+// reference".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... [--capacity=SIZE] [--physical-capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close] [--dry-run]",
 		"Pack staged objects onto the next disc.", stderr)
@@ -110,8 +110,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --ref and --snapshot are mutually exclusive")
 		return 2
 	}
-	explicitTarget := *ref != "" || len(snapIDs) > 0
-
 	var snapshots []image.SnapshotRef
 	now := time.Now()
 	if *ref != "" {
@@ -144,14 +142,14 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 
 	// With no --ref and no --snapshot, addPendingRefs above already
-	// carried forward every ref pack has not yet moved onto a run. Fall
-	// back to LATEST only when that left nothing pending, and only when
-	// LATEST itself resolves; a repository whose commits always name
-	// their own --ref never creates a LATEST ref, and pack must not
-	// fail on that account.
-	if !explicitTarget && len(snapshots) == 0 {
-		if id, latestErr := resolveRef(repoDir, "LATEST"); latestErr == nil {
-			snapshots = append(snapshots, image.SnapshotRef{Name: "LATEST", ID: id, Time: now})
+	// carried forward every ref pack has not yet moved onto a run. When
+	// that left nothing, name the newest ref of the repository, so a
+	// pack after gc reports an already-packed repository instead of one
+	// that never had a commit.
+	if len(snapshots) == 0 {
+		if newest := newestRef(cfg.StagingDir, allRepoRefs(repoDir)); newest != nil {
+			newest.Time = now
+			snapshots = append(snapshots, *newest)
 		}
 	}
 
@@ -382,6 +380,21 @@ func defaultLabel(repoDir string, cfg repoConfig, snapshots []image.SnapshotRef,
 		return fmt.Sprintf("disc %d", discSeq)
 	}
 	return fmt.Sprintf("%s disc %d", name, discSeq)
+}
+
+// newestRef returns the ref whose snapshot was committed last, by the
+// same rule newestRefName applies, or nil when snapshots is empty.
+func newestRef(stagingDir string, snapshots []image.SnapshotRef) *image.SnapshotRef {
+	name := newestRefName(stagingDir, snapshots)
+	if name == "" {
+		return nil
+	}
+	for i := range snapshots {
+		if snapshots[i].Name == name {
+			return &snapshots[i]
+		}
+	}
+	return nil
 }
 
 // newestRefName returns the name of the ref whose snapshot was

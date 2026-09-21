@@ -140,7 +140,7 @@ func (s *pendingScan) chunkInPlace(f *os.File, be placedChunk) bool {
 	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
 		return false
 	}
-	return object.ComputeID(buf) == object.ID(be.ContentID)
+	return object.ComputeID(format.ObjectKindChunk, buf) == object.ID(be.ContentID)
 }
 
 // joinComponents joins every component under parent, refusing any that

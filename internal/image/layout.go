@@ -15,8 +15,8 @@ import (
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
-// SnapshotRef binds a name to a snapshot id, for one REFS record. Name is
-// typically "LATEST".
+// SnapshotRef binds a name to a snapshot id, for one REFS record. Name
+// is typically the commit date, as YYYY-MM-DD.
 type SnapshotRef struct {
 	Name string
 	ID   object.ID

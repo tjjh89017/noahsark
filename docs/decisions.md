@@ -3,7 +3,7 @@
 Each entry records a reading of FORMAT.md chosen by the implementation. Each
 entry is named by the FORMAT.md heading it reads.
 
-## 10.3 Checksum column
+## 9.3 Checksum column
 
 `ChecksumRecord.Encode` computes and writes `header_crc32c` over bytes 0 to
 15. `Decode` verifies it and refuses a mismatch.
@@ -19,7 +19,7 @@ raw is always a valid outcome of the minimum-gain rule, so this does not
 change what a reader accepts. Compressing them is future work, not a
 disallowed one.
 
-## 6.14 Snapshot
+## 6.13 Snapshot
 
 `internal/object`'s `Writer.Commit` takes one source directory and no parent
 snapshot, so every commit it writes is a root snapshot: `parent` all zero.
@@ -33,7 +33,7 @@ hole punching on restore) is deferred to Phase 2. In Phase 1, a hole is
 ordinary zero data: the writer never probes `SEEK_HOLE`, and it never
 claims sparse detection happened.
 
-## 10.5 Decode rule
+## 9.5 Decode rule
 
 `internal/fec`'s `Codec.Decode` takes an explicit set of surviving shards
 and applies the base algebraic rule: it picks the `k` shards with the
@@ -48,14 +48,14 @@ not change which parity bytes a conforming writer produces or which stripe
 a conforming reader accepts as decoded; it only fixes which package runs
 the retry loop.
 
-## 6.6 Tree entry fixed header and 6.7 Entry flags
+## 6.5 Tree entry fixed header and 6.6 Entry flags
 
 `internal/object`'s writer always sets `CTIME_ABSENT` clear, matching the
 default `metadata.ctime` true; no config layer exists yet at this layer to
 override it. The tree entry has no atime field and no birth time field;
 FORMAT.md stores neither.
 
-## 11.1 INDEX, Files table order and self-reference
+## 10.1 INDEX, Files table order and self-reference
 
 Section 11.1 states Files table rows follow "FEC stream order", then lists
 `checksum.bin`, every parity file and `RUN2.bin` as the explicit exceptions
@@ -138,7 +138,7 @@ place, so healing `INDEX.bin`'s own bytes is out of scope for this
 implementation (see the object-row-by-position decision below), and this
 CI check does not exercise it.
 
-## 11.1 INDEX, Objects table: resolving an object row's file by position
+## 10.1 INDEX, Objects table: resolving an object row's file by position
 
 `internal/image`'s `StreamFiles`, used by both `Read`'s parity
 verification and `internal/restore`'s `Heal`, resolves an object row's
@@ -232,18 +232,19 @@ The config is a flat `key = value` file, the simplest format the standard
 library parses without a third-party dependency. The loader refuses an
 unknown key by name and does not accept and ignore it. `sources.root` holds
 one path, because `internal/object`'s `Writer.Commit` takes one source
-directory (see the "6.14 Snapshot" entry above).
+directory (see the "6.13 Snapshot" entry above).
 
-`commit` records the new snapshot under the given ref (default `LATEST`; a
-commit with `--ref=NAME` moves only `NAME`, never `LATEST`) in a flat local
-ref file, `<repo>/refs.txt`. `commit` exits 1 when any file was unstable or
+`commit` records the new snapshot under the given ref in a flat local ref
+file, `<repo>/refs.txt`. With no `--ref` the ref name is the local date of
+today, `YYYY-MM-DD`; a second commit on the same day moves that name to the
+newer snapshot, and `log` still reaches the older one. `commit` exits 1 when any file was unstable or
 skipped; the data is still committed and safe, only flagged or left out of
 this one snapshot.
 
-With neither `--ref` nor `--snapshot`, `pack` does not default to `LATEST`: a
-repository whose every commit names its own `--ref` never creates a `LATEST`
-ref, and `pack` must not fail looking for one. It carries forward every ref
-not yet moved onto a run (see `addPendingRefs`).
+With neither `--ref` nor `--snapshot`, `pack` carries forward every ref not
+yet moved onto a run (see `addPendingRefs`). When that leaves nothing, it
+names the newest ref of the repository, so a pack after `gc` reports an
+already-packed repository instead of one that never had a commit.
 
 `--capacity` refuses a bare number. It reads as a byte count, it once meant
 sectors, and the two are a factor of 2048 apart with nothing in the output to
@@ -461,7 +462,7 @@ and rebound it, with `MarkPacked`, to the new disc, silently losing
 cross-disc dedup for every object a burn-and-verify cycle had already
 completed.
 
-## 8. Packing and locality, and 11.1 INDEX Prereqs
+## 8. Packing and locality, and 10.1 INDEX Prereqs
 
 `pack` no longer requires the caller to name which snapshot to pack in
 full; it always processes the whole STAGED pool across every snapshot
@@ -521,7 +522,7 @@ not free either way, since it waits for bytes an unflushed `pack` only
 left to background writeback: the same 512 MiB packs in 5.3 s with no
 flush at all.
 
-## 11.3 DISCS and 12. Disc lifecycle, closing and appending
+## 10.3 DISCS and 12. Disc lifecycle, closing and appending
 
 This build keeps a local ledger of every disc it has packed,
 `<repo>/staging/discs.bin`, reusing `DISCS.bin`'s own container format
@@ -560,7 +561,7 @@ its single positional `DISC-ROOT` form; a multi-disc restore instead
 repeats `--disc`, or names `--discs-dir`, a directory whose immediate
 subdirectories are disc roots.
 
-## 10. Forward error correction
+## 9. Forward error correction
 
 `internal/fec.Codec` encodes and decodes with the
 `github.com/klauspost/reedsolomon` backend, built with
@@ -585,7 +586,7 @@ library is the sole implementation from here on; the worked example
 from FORMAT.md (k=3, m=2, p0=0xE0, p1=0xAD) stays as a test in
 `internal/fec` to confirm the library still matches the spec.
 
-## 10. Forward error correction, FEC scheme registry value 0
+## 9. Forward error correction, FEC scheme registry value 0
 
 The user's decision: FEC becomes optional and is off by default. The
 primary redundancy is burning two identical discs; FEC is a reserve
@@ -618,7 +619,7 @@ Both are covered by tests in `internal/image`.
 `image.Read` skips the parity-header and checksum/parity recomputation
 checks when `run.FECScheme` is not `rs255-gf8`, and verifies every
 object's content id and every Files row's file hash either way, per
-FORMAT.md's new "10.8 Scheme 0: no FEC" subsection. `restore.Heal`
+FORMAT.md's new "9.6 Scheme 0: no FEC" subsection. `restore.Heal`
 reads the run header first and refuses a non-`rs255-gf8` run with an
 error naming the run seq, before opening any FEC file.
 

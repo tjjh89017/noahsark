@@ -150,13 +150,18 @@ gen_fixture2() {
 }
 
 # gen_small_tree DIR writes a small, varied source tree at DIR: text
-# files worth diffing by content, not just by size.
+# files worth diffing by content, not just by size. It also writes an
+# empty directory beside an empty file, and a file of eight zero bytes.
+# Those three payloads collide unless the content id covers the object
+# kind, so a restore of this tree proves the ids stay apart.
 gen_small_tree() {
 	local dir="$1"
-	mkdir -p "$dir/sub"
+	mkdir -p "$dir/sub" "$dir/adir"
 	echo "content of a, for the disc e2e suite" >"$dir/a.txt"
 	echo "content of b, also for the disc e2e suite, a bit longer than a" >"$dir/sub/b.txt"
 	head -c 65536 /dev/urandom >"$dir/sub/c.bin"
+	: >"$dir/zfile"
+	head -c 8 /dev/zero >"$dir/zeros8.bin"
 }
 
 # mount_populate IMAGE TREE_DIR MOUNTPOINT loop-mounts a UDF image mkudffs

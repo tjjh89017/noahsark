@@ -1,5 +1,5 @@
 // Command ci-restore is CI-only tooling, not a NoahsArk command surface.
-// It resolves the LATEST snapshot from a disc tree's REFS table and
+// It resolves the first snapshot of a disc tree's REFS table and
 // restores it into an output directory, so CI can run the same restore
 // check against a real UDF image.
 //

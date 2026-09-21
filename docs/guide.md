@@ -50,15 +50,19 @@ and never mounts a disc. You do that.
 *... Days pass. You add, change and delete files in `/srv/data`.*
 
 ```
-$ noahsark commit --ref=2026-09-14
-snapshot 122009a2...
-ref 2026-09-14 -> 122009a2...
+$ noahsark commit
+snapshot 12201b03...
+ref 2026-09-14 -> 12201b03...
 new objects: 8, existing objects: 0
 unstable: 0, skipped: 0
-staged: 8 objects, 3001470 bytes
+staged: 8 objects, 3001350 bytes
 ```
 
-`commit` stages a snapshot. It writes no disc. Each `commit` reads every
+`commit` stages a snapshot and moves one ref. With no `--ref` the ref name
+is the local date of today, `YYYY-MM-DD`. A second commit on the same day
+moves that name to the newer snapshot; `log` still lists the older one, and
+`ls`, `log` and `restore` still take its snapshot id. Give `--ref=NAME` for
+a name of your own. It writes no disc. Each `commit` reads every
 file of the source from start to end, thus it takes as long as a full read
 of the source. Commit as often as you
 want: a later commit stages only the new data. `status` always ends with
@@ -67,7 +71,7 @@ the one action to do next.
 *... Days pass. You edit one file and commit. Then you add photographs.*
 
 ```
-$ noahsark commit --ref=2026-09-21
+$ noahsark commit
 ...
 $ noahsark status
 staged: 20 objects, 6004049 bytes

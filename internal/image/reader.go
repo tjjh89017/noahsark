@@ -256,7 +256,7 @@ func verifyOneObject(path string, id object.ID) (int64, error) {
 	if err := oh.Decode(head[format.CommonHeaderLen:]); err != nil {
 		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
-	got, err := object.HashStreamed(f, oh.Compression, oh.StoredLen)
+	got, err := object.HashStreamed(oh.Kind, f, oh.Compression, oh.StoredLen)
 	if err != nil {
 		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}

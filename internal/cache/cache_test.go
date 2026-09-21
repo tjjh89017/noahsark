@@ -154,18 +154,18 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	missingID := object.ComputeID([]byte("a tree that is never written to the cache"))
+	missingID := object.ComputeID(format.ObjectKindChunk, []byte("a tree that is never written to the cache"))
 	rootTree := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Name:      []byte("child"),
 		ContentID: missingID,
 	})
-	rootID := object.ComputeID(rootTree)
+	rootID := object.ComputeID(format.ObjectKindChunk, rootTree)
 	if err := c.WriteTree(rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
 
-	snapID := object.ComputeID([]byte("snapshot payload"))
+	snapID := object.ComputeID(format.ObjectKindChunk, []byte("snapshot payload"))
 	snapBuf := encodeTestSnapshot(t, rootID)
 	if err := c.WriteSnapshot(snapID, snapBuf); err != nil {
 		t.Fatal(err)
@@ -202,17 +202,17 @@ func TestCheckCompleteResolvesDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	missingID := object.ComputeID([]byte("a tree only another disc stores"))
+	missingID := object.ComputeID(format.ObjectKindChunk, []byte("a tree only another disc stores"))
 	rootTree := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Name:      []byte("child"),
 		ContentID: missingID,
 	})
-	rootID := object.ComputeID(rootTree)
+	rootID := object.ComputeID(format.ObjectKindChunk, rootTree)
 	if err := c.WriteTree(rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
-	snapID := object.ComputeID([]byte("snapshot payload 2"))
+	snapID := object.ComputeID(format.ObjectKindChunk, []byte("snapshot payload 2"))
 	if err := c.WriteSnapshot(snapID, encodeTestSnapshot(t, rootID)); err != nil {
 		t.Fatal(err)
 	}
@@ -251,9 +251,9 @@ func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
 
 	discA := [16]byte{0xaa}
 	discB := [16]byte{0xbb}
-	objA := object.ComputeID([]byte("object stored on disc A"))
-	objB := object.ComputeID([]byte("object stored on disc B"))
-	prereqOnly := object.ComputeID([]byte("object only a prereq row names"))
+	objA := object.ComputeID(format.ObjectKindChunk, []byte("object stored on disc A"))
+	objB := object.ComputeID(format.ObjectKindChunk, []byte("object stored on disc B"))
+	prereqOnly := object.ComputeID(format.ObjectKindChunk, []byte("object only a prereq row names"))
 	const sharedRunSeq = 5
 
 	idxA := encodeTestIndex(t, sharedRunSeq,

@@ -26,7 +26,7 @@ func testRefsTable() RefsTable {
 		},
 		RecordCount: 2,
 		Records: []RefRecord{
-			{SnapshotID: snapshotIDN(1), TimeSec: 1700000000, TimeNsec: 123456, NameLen: 6, Name: nameArray("LATEST")},
+			{SnapshotID: snapshotIDN(1), TimeSec: 1700000000, TimeNsec: 123456, NameLen: 10, Name: nameArray("2026-09-13")},
 			{SnapshotID: snapshotIDN(2), TimeSec: 1700000100, TimeNsec: 0, NameLen: 5, Name: nameArray("daily")},
 		},
 	}

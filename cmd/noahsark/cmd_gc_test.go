@@ -240,8 +240,8 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 	discA := [16]byte{0xaa}
 	discB := [16]byte{0xbb}
 	const sharedRunSeq = 5
-	onDiscA := object.ComputeID([]byte("an object disc A holds"))
-	onDiscB := object.ComputeID([]byte("an object staged for disc B, named by disc A's INDEX alone"))
+	onDiscA := object.ComputeID(format.ObjectKindChunk, []byte("an object disc A holds"))
+	onDiscB := object.ComputeID(format.ObjectKindChunk, []byte("an object staged for disc B, named by disc A's INDEX alone"))
 
 	for _, staged := range []struct {
 		id   object.ID

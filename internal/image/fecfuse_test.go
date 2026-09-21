@@ -119,7 +119,7 @@ func stageMixedFixture(t *testing.T) (string, []SnapshotRef) {
 
 	return stagingDir, []SnapshotRef{
 		{Name: "FIRST", ID: first, Time: fixedClock()},
-		{Name: "LATEST", ID: second, Time: fixedClock().Add(time.Hour)},
+		{Name: "2026-09-13", ID: second, Time: fixedClock().Add(time.Hour)},
 	}
 }
 
@@ -201,6 +201,12 @@ func TestBuildMixedFixtureFECOffMatchesFECOn(t *testing.T) {
 		rel, err := filepath.Rel(offDir, path)
 		if err != nil {
 			return err
+		}
+		if rel == filepath.Join("NOAHSARK", "README.txt") {
+			// README.txt names the parity geometry and the parity files
+			// on a disc that has them, and says "parity: none" on one
+			// that has none: it differs by design.
+			return nil
 		}
 		if rel == filepath.Join("NOAHSARK", "runs", "0000000001", "RUN.bin") ||
 			rel == filepath.Join("NOAHSARK", "runs", "0000000001", "RUN2.bin") ||

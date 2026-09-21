@@ -55,9 +55,8 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 }
 
 // TestPackWithNoRefCarriesEveryPendingDateRef commits twice, each with
-// its own --ref=DATE naming a real label, and never touches LATEST.
-// Packing with no --ref and no --snapshot must carry both pending refs
-// rather than fail looking for a LATEST ref that was never created.
+// its own --ref=DATE naming a real label. Packing with no --ref and no
+// --snapshot must carry both pending refs.
 func TestPackWithNoRefCarriesEveryPendingDateRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -80,8 +79,8 @@ func TestPackWithNoRefCarriesEveryPendingDateRef(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack with no --ref: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, `ref "LATEST" not found`) {
-		t.Fatalf("pack output %q, must not fail looking for LATEST", out)
+	if strings.Contains(out, "not found") {
+		t.Fatalf("pack output %q, must not look for a ref that was never created", out)
 	}
 }
 

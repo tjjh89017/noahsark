@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
@@ -19,7 +20,7 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := object.ComputeID([]byte("gone"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("gone"))
 	if err := l.EnsureStaged(id); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := object.ComputeID([]byte("present"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("present"))
 	if err := l.EnsureStaged(id); err != nil {
 		t.Fatal(err)
 	}

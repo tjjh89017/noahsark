@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
@@ -79,7 +80,7 @@ func TestAppendSurfacesCloseErrorAndKeepsStateConsistent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("payload"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("payload"))
 
 	withFailingClose(t)
 	if err := l.EnsureStaged(id); !errors.Is(err, errInjectedClose) {
@@ -145,7 +146,7 @@ func TestMarkOnDiscSyncsBeforeClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("gc-me"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("gc-me"))
 
 	calls := withSyncRecorder(t, nil)
 	if err := l.MarkOnDisc(id); err != nil {
@@ -165,7 +166,7 @@ func TestMarkOnDiscSurfacesSyncError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("gc-me"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("gc-me"))
 
 	withSyncRecorder(t, errInjectedSync)
 	if err := l.MarkOnDisc(id); !errors.Is(err, errInjectedSync) {
@@ -188,7 +189,7 @@ func TestCommitAppendDoesNotSync(t *testing.T) {
 	}
 
 	calls := withSyncRecorder(t, nil)
-	if err := l.EnsureStaged(object.ComputeID([]byte("staged"))); err != nil {
+	if err := l.EnsureStaged(object.ComputeID(format.ObjectKindChunk, []byte("staged"))); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(*calls, ","); got != "close" {

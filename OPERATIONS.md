@@ -272,7 +272,10 @@ The command then stops and does not act on that record.
 
 ## 5. Refs
 
-A ref is a name for a snapshot. The default ref is `LATEST`.
+A ref is a name for a snapshot. With no `--ref`, `commit` moves the ref
+named by the local date of today, as `YYYY-MM-DD`. Two commits on one day
+move that one name to the newer snapshot; `log` still reaches the older
+snapshot. No ref name is reserved.
 
 1. `commit` moves one ref in `refs.txt`, after it has written the snapshot
    object and recorded every object as STAGED.
@@ -858,12 +861,12 @@ noahsark log     [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
 | `init` | `--repo` | The directory to create. Default: the current directory. |
 | `init` | `--source` | The source root. `init` stores the absolute path as `sources.root`. |
 | `commit` | `-m` | The commit message, stored on the snapshot. |
-| `commit` | `--ref` | The ref to move. Default `LATEST`. |
+| `commit` | `--ref` | The ref to move. Default: the local date of today, `YYYY-MM-DD`. |
 | `commit` | `--exclude` | An exclude pattern ("Excludes"). Repeatable. |
 | `commit` | `--one-file-system` | Do not cross a mount point. |
 | `pack` | `--capacity` | The target capacity ("Capacity"). Default: `pack.capacity`. |
 | `pack` | `--physical-capacity` | The capacity of the medium ("Forced capacity"). Default: the `--capacity` value. |
-| `pack` | `--label` | The human label. Default: the name of the ref whose snapshot is newest, then `disc SEQ`, for example `LATEST disc 0`. |
+| `pack` | `--label` | The human label. Default: the name of the ref whose snapshot is newest, then `disc SEQ`, for example `2026-09-21 disc 0`. |
 | `pack` | `--out` | The directory that receives the disc root. It must be empty or absent. Default `<staging.dir>/plans/<disc uuid>/tree`. |
 | `pack` | `--fec`, `--no-fec` | Write, or do not write, FEC for this run. They override `fec.scheme`. |
 | `pack` | `--close` | Print the sealed burn command. Nothing else changes. |

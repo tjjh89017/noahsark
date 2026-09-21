@@ -25,7 +25,7 @@ func buildFixtureTreeNoFEC(t *testing.T, srcDir string) (treeDir string, snapID 
 	treeDir = t.TempDir()
 	opts := image.BuildOptions{
 		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "LATEST", ID: snapID, Time: fixedClock()}},
+		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors:   1 << 21,
 		PhysicalCapacitySectors: 1 << 21,
 		OutputDir:               treeDir,

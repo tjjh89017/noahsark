@@ -78,7 +78,7 @@ func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer, want obje
 		return err
 	}
 
-	got, payloadLen, err := copyAndHashPayload(w, in, oh.Compression, oh.StoredLen)
+	got, payloadLen, err := copyAndHashPayload(format.ObjectKindChunk, w, in, oh.Compression, oh.StoredLen)
 	if err != nil {
 		return stagedDamaged(want, format.ObjectKindChunk)
 	}
@@ -92,12 +92,12 @@ func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer, want obje
 }
 
 // copyAndHashPayload writes the rest of in to w and returns the content
-// id of the payload those same bytes carry, plus how many bytes it
-// copied. The hash side runs through a pipe because the payload may be
+// id of an object of kind kind whose payload those same bytes carry,
+// plus how many bytes it copied. The hash side runs through a pipe because the payload may be
 // compressed and the decompressor pulls its input: the bytes therefore
 // pass a decoder that holds one chunk's window, never the whole object
 // and never the whole run.
-func copyAndHashPayload(w io.Writer, in io.Reader, code format.Compression, storedLen uint64) (id [32]byte, n uint64, err error) {
+func copyAndHashPayload(kind format.ObjectKind, w io.Writer, in io.Reader, code format.Compression, storedLen uint64) (id [32]byte, n uint64, err error) {
 	type hashResult struct {
 		id  [32]byte
 		err error
@@ -105,7 +105,7 @@ func copyAndHashPayload(w io.Writer, in io.Reader, code format.Compression, stor
 	pr, pw := io.Pipe()
 	done := make(chan hashResult, 1)
 	go func() {
-		got, hashErr := object.HashStreamed(pr, code, storedLen)
+		got, hashErr := object.HashStreamed(kind, pr, code, storedLen)
 		if hashErr != nil {
 			_ = pr.CloseWithError(hashErr)
 		} else {

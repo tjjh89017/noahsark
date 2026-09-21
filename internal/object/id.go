@@ -6,16 +6,25 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/tjjh89017/noahsark/internal/format"
 )
 
-// ID is a content id: the SHA-256 digest of an object's uncompressed
-// payload bytes. Nothing else enters the id.
+// ID is a content id: the SHA-256 digest of one object kind byte and the
+// object's uncompressed payload bytes. Nothing else enters the id. The
+// kind byte keeps the ids of two kinds apart, so an empty file's blob
+// and an empty directory's tree never share one id.
 type ID [32]byte
 
-// ComputeID returns the content id of payload, the object's uncompressed
-// payload bytes.
-func ComputeID(payload []byte) ID {
-	return sha256.Sum256(payload)
+// ComputeID returns the content id of an object of kind kind whose
+// uncompressed payload bytes are payload.
+func ComputeID(kind format.ObjectKind, payload []byte) ID {
+	h := sha256.New()
+	h.Write([]byte{byte(kind)})
+	h.Write(payload)
+	var id ID
+	copy(id[:], h.Sum(nil))
+	return id
 }
 
 // multihashSHA256Code and multihashDigestLen are the two multihash varint

@@ -135,7 +135,7 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 	capSectors := (uint64(768<<20) + image.SectorSize - 1) / image.SectorSize
 	opts := image.BuildOptions{
 		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "LATEST", ID: snapID, Time: fixedClock()}},
+		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors:   capSectors,
 		PhysicalCapacitySectors: capSectors,
 		OutputDir:               treeDir,

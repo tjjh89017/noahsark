@@ -17,7 +17,7 @@ disc sequence: {disc_seq}
 label: {label}
 hash algorithm: {hash_algo}
 pack time: {created}
-parity geometry: k={fec_k} data columns, m={fec_m} parity columns
+{parity_identity}
 
 3. HOW TO FIND THINGS
 ---------------------
@@ -28,8 +28,7 @@ parity geometry: k={fec_k} data columns, m={fec_m} parity columns
 /NOAHSARK/runs/<seq>/RUN.bin    run header, 512 bytes
 /NOAHSARK/runs/<seq>/INDEX.bin  file order and the object table
 /NOAHSARK/runs/<seq>/catalog/   REFS.bin and DISCS.bin
-/NOAHSARK/runs/<seq>/checksum.bin   per-block digests, if parity exists
-/NOAHSARK/runs/<seq>/parity/        one file per parity column
+{parity_files}
 /NOAHSARK/runs/<seq>/RUN2.bin   run header copy
 /NOAHSARK/objects/<ab>/<name>   chunks, blobs, trees
 /NOAHSARK/snapshots/<name>      snapshot objects
@@ -39,30 +38,35 @@ run directory.
 
 4. HOW AN OBJECT IS NAMED
 -------------------------
-The name of an object is the hash of its uncompressed payload bytes and
-nothing else. The kind, the compression and the object header do not enter
-the name. The name on disc is the lowercase hex of the multihash: two prefix
-bytes, then the digest. 1220 means SHA-256, the prefix on every object of
-this disc, so the name is 68 hex characters. <ab> is the first two hex
-characters of the digest, which is characters 5 and 6 of the file name.
+The name of an object is the hash of one kind byte and then the object's
+uncompressed payload bytes. Nothing else enters the name. The kind byte is 1
+for a chunk, 2 for a blob, 3 for a tree and 4 for a snapshot, the same value
+the object header holds at its offset 0. Two objects of different kinds never
+share a name, even when their payload bytes are equal: an empty file and an
+empty directory are the common case. The compression and the header bytes do
+not enter the name. The name on disc is the lowercase hex of the multihash:
+two prefix bytes, then the digest. 1220 means SHA-256, the prefix on every
+object of this disc, so the name is 68 hex characters. <ab> is the first two
+hex characters of the digest, which is characters 5 and 6 of the file name.
 
 5. HOW TO READ AN OBJECT
 ------------------------
 An object file starts with a 32-byte common header, then a 32-byte object
-header. In the object header, at byte offset 3 of that 32-byte header, is
-the compression id: 0 means none and 1 means zstd. At offset 8 is
-payload_len, a little-endian unsigned 64-bit number. At offset 16 is
-stored_len. Skip the 64 header bytes total, take the next stored_len bytes,
-decompress them with the named algorithm into exactly payload_len bytes,
-hash the result with SHA-256, and compare that digest with the digest in the
-name. They must be equal. If they are not, the bytes are damaged; see
-part 7.
+header. In the object header, at byte offset 0 of that 32-byte header, is
+the kind byte. At offset 3 is the compression id: 0 means none and 1 means
+zstd. At offset 8 is payload_len, a little-endian unsigned 64-bit number. At
+offset 16 is stored_len. Skip the 64 header bytes total, take the next
+stored_len bytes, decompress them with the named algorithm into exactly
+payload_len bytes, hash the kind byte and then the result with SHA-256, and
+compare that digest with the digest in the name. They must be equal. If they
+are not, the bytes are damaged; see part 7.
 
 6. HOW TO WALK A SNAPSHOT
 -------------------------
 Read catalog/REFS.bin, which is a table of named pointers, and take the
-newest record for the name LATEST: the one with the highest time. It gives
-a snapshot id. Read that snapshot object. Its body names a root tree id.
+record with the highest time. To pick an older state, take a record by its
+name and time. The record gives a snapshot id. Read that snapshot object.
+Its body names a root tree id.
 Read that tree object: it is a list of directory entries, each with a name,
 the POSIX metadata, and either a tree id for a subdirectory or a blob id for
 a file. Read the blob object: it holds the ordered chunk ids of that file.
@@ -72,17 +76,7 @@ names that disc by its uuid, and catalog/DISCS.bin gives its label.
 
 7. HOW TO REPAIR
 ----------------
-If the run directory holds no parity/ directory, this disc has no parity;
-use the second copy of the disc. Otherwise the run carries Reed-Solomon
-parity over its own data files, concatenated in the order INDEX.bin lists
-them, each padded to 2048 bytes: the FEC stream. The stream is cut into
-{fec_k} equal columns of L blocks of 2048 bytes each; FORMAT.txt says how to
-derive L from the run header. Stripe i is block i of every column.
-checksum.bin is one more column: its block i holds an 8-byte digest of each
-of the {fec_k} data blocks of stripe i, so a damaged block can be found. The
-{fec_m} files under parity/ are the parity columns. Any {fec_k} of the
-{fec_k} data plus {fec_m} parity blocks of one stripe reconstruct the rest.
-FORMAT.txt gives the field arithmetic, the matrix and a worked example.
+{parity_repair}
 
 8. WHERE THE BYTE LAYOUTS ARE
 -----------------------------
@@ -94,7 +88,11 @@ a damaged disc that has parity, with no NoahsArk software.
 REFERENCE/decoder.py in this directory is a runnable Python 3 program that
 does the extraction in code: it parses DISC.bin, RUN.bin, INDEX.bin and
 every object header, verifies content ids, walks a snapshot and prints the
-listing.
+listing. It verifies and it restores. It does not repair: the forward error
+correction part of FORMAT.txt is the full recipe for a repair. Its restore,
+verify and list commands take more than one disc root: mount every disc of
+the repository and name each root on the one command line, because a
+snapshot can span several discs.
 
 9. THE FORMAT RULES
 --------------------

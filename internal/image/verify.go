@@ -46,7 +46,7 @@ func verifyObjectID(want object.ID, kind format.ObjectKind, data []byte) error {
 	}
 	payload := data[format.CommonHeaderLen+format.ObjectHeaderLen:]
 
-	if object.ComputeID(payload) != want {
+	if object.ComputeID(kind, payload) != want {
 		return stagedDamaged(want, kind)
 	}
 	return nil

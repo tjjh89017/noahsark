@@ -64,7 +64,7 @@ func TestSnapshotArgFormsFromLog(t *testing.T) {
 	mountDisc(t, mountDir, treeDir)
 
 	outRoot := t.TempDir()
-	for i, arg := range []string{logged, "LATEST"} {
+	for i, arg := range []string{logged, defaultRefName()} {
 		if code, out := runCmd(t, "restore", treeDir, arg, filepath.Join(outRoot, string(rune('a'+i)))); code != 0 {
 			t.Fatalf("restore %q: exit %d, want 0: %s", arg, code, out)
 		}

@@ -26,8 +26,8 @@ Usage:
     decoder.py restore <disc-root> --snapshot NAME --out DIR
 
 <disc-root> is the directory that contains NOAHSARK, or the NOAHSARK
-directory itself. NAME is a ref name (for example LATEST), or the 68-hex-
-character snapshot content id text form.
+directory itself. NAME is a ref name (a commit date, for example
+2026-09-21), or the 68-hex-character snapshot content id text form.
 
 Exit status is nonzero when any verification check fails.
 """
@@ -382,7 +382,9 @@ def decode_object_bytes(
     else:
         raise FormatError(f"{where}: unsupported compression id {compression}")
 
-    text_form = "1220" + sha256(payload).hexdigest()
+    # The content id covers one kind byte and then the payload, so an
+    # empty file's blob and an empty directory's tree never share an id.
+    text_form = "1220" + sha256(bytes([kind]) + payload).hexdigest()
     return ObjectFile(common, obj_header, payload, text_form)
 
 
