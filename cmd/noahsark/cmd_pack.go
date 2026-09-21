@@ -241,6 +241,12 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 				capacityArg, exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
 			return 2
 		}
+		if errors.Is(err, image.ErrNothingToPack) {
+			// Nothing left to write is not a failure: pack did
+			// everything the repository's state allows.
+			_, _ = fmt.Fprintln(stdout, "pack:", err)
+			return 0
+		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
@@ -252,7 +258,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: cache:", err)
 	}
 
-	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d objects, %d bytes\n",
+	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d object(s) on the disc, %d bytes\n",
 		result.DiscSeq, discLabel, result.ObjectCount, result.ObjectBytes)
 	_, _ = fmt.Fprintf(stdout, "uuid: %s\n", uuidText(discUUID))
 	_, _ = fmt.Fprintf(stdout, "tree: %s\n", absOut)
@@ -313,6 +319,10 @@ func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, 
 				exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
 			return 2
 		}
+		if errors.Is(err, image.ErrNothingToPack) {
+			_, _ = fmt.Fprintln(stdout, "pack:", err)
+			return 0
+		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
@@ -325,11 +335,11 @@ func printDryRunDiscs(stdout io.Writer, discs []image.DryRunDisc) {
 	var totalObjects int
 	var totalBytes uint64
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "disc %d %q: %d objects, %d bytes\n", d.DiscSeq, d.Label, d.ObjectCount, d.ObjectBytes)
+		_, _ = fmt.Fprintf(stdout, "disc %d %q: %d object(s) on the disc, %d bytes\n", d.DiscSeq, d.Label, d.ObjectCount, d.ObjectBytes)
 		totalObjects += d.ObjectCount
 		totalBytes += d.ObjectBytes
 	}
-	_, _ = fmt.Fprintf(stdout, "total: %d disc(s), %d objects, %d bytes\n", len(discs), totalObjects, totalBytes)
+	_, _ = fmt.Fprintf(stdout, "total: %d disc(s), %d object(s) on the discs, %d bytes\n", len(discs), totalObjects, totalBytes)
 	if len(discs) > 0 {
 		_, _ = fmt.Fprintf(stdout, "next: run noahsark pack %d time(s), one disc for each pack\n", len(discs))
 	}

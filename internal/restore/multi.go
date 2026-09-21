@@ -1,6 +1,7 @@
 package restore
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -466,12 +467,16 @@ func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *
 		src.wp.failed(dest, fmt.Errorf("tree %s: %w", treeID.TextForm(), err))
 		return nil
 	}
+	taken := make(map[string]bool, len(t.Entries))
+	for _, e := range t.Entries {
+		taken[string(e.Name)] = true
+	}
 	for _, e := range t.Entries {
 		childFS, include := stepInto(fs, []string{string(e.Name)})
 		if !include {
 			continue
 		}
-		if err := src.restoreEntry(dest, e, prog, childFS); err != nil {
+		if err := src.restoreEntry(dest, e, prog, childFS, taken); err != nil {
 			return err
 		}
 	}
@@ -483,7 +488,7 @@ func (src *multiSource) restoreDirContents(treeID object.ID, dest string, prog *
 // entry's own children. An entry that fails alone is recorded and the
 // walk goes on to the next entry; only a failure that stops the whole
 // walk is returned.
-func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState) error {
+func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progress.Reporter, fs *filterState, taken map[string]bool) error {
 	name := string(e.Name)
 	child, err := joinSafe(dir, name)
 	if err != nil {
@@ -502,17 +507,14 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 		applyMetadata(sub, e, src.wp)
 		return nil
 	case format.EntryTypeRegular:
-		written, err := src.restoreFile(child, object.ID(e.ContentID), e, prog)
+		part, err := joinSafe(dir, partName(name, taken))
 		if err != nil {
 			src.wp.failed(child, err)
 			return nil
 		}
-		if !written {
-			// The path already existed, or its data is not reachable.
-			// Leave it exactly as found.
-			return nil
+		if err := src.restoreFile(child, part, object.ID(e.ContentID), e, prog); err != nil {
+			src.wp.failed(child, err)
 		}
-		applyMetadata(child, e, src.wp)
 		return nil
 	case format.EntryTypeSymlink:
 		target, err := symlinkTarget(e)
@@ -532,40 +534,45 @@ func (src *multiSource) restoreEntry(dir string, e format.TreeEntry, prog *progr
 
 // restoreFile reassembles blobID's chunks into dest, in blob entry
 // order, verifying every chunk's content id before it writes the bytes.
-// It reports written false, and leaves dest as found, when the path
-// already exists and --overwrite was not given, or when no provided disc
-// holds the blob.
-func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.TreeEntry, prog *progress.Reporter) (written bool, err error) {
+// The bytes go into the part file at part; dest gets its name only
+// after every chunk is in place, so a file under the snapshot's own
+// name is always complete.
+//
+// It leaves dest as found, and writes nothing, when the path already
+// exists and --overwrite was not given, or when no provided disc holds
+// the blob.
+func (src *multiSource) restoreFile(dest, part string, blobID object.ID, e format.TreeEntry, prog *progress.Reporter) error {
 	raw, _, ok := src.read(blobID, false)
 	if !ok {
 		// The blob itself is unreachable; read has already recorded a
 		// missing disc, or badObject names the damage.
-		if err := src.badObject(blobID); err != nil {
-			return false, err
-		}
-		return false, nil
+		return src.badObject(blobID)
 	}
 	var blob format.Blob
 	if _, err := blob.Decode(raw); err != nil {
-		return false, fmt.Errorf("blob %s: %w", blobID.TextForm(), err)
+		return fmt.Errorf("blob %s: %w", blobID.TextForm(), err)
 	}
 
 	entries := placeChunks(blob.Entries)
 
-	f, skipped, err := openForWrite(dest, e, entries, src.wp)
-	if err != nil {
-		return false, err
-	}
-	if skipped {
-		return false, nil
+	if !src.wp.overwrite {
+		if resumed, found := existingFileStatus(dest, e, entries); found {
+			if resumed {
+				src.wp.resume()
+				removePart(part)
+			} else {
+				src.wp.skip(dest)
+			}
+			return nil
+		}
 	}
 
 	// A chunk no provided disc holds, or one whose bytes are damaged,
-	// leaves the file partly written. That file stays in place: the
-	// missing-disc error, or the damage recorded here, names what is
-	// needed to finish it.
+	// leaves the file short. Every disc is provided in this mode, so no
+	// later run can finish it: the part file goes away and the file is
+	// reported as not restored.
 	var chunkErr error
-	complete, err := writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
+	complete, err := writeChunks(part, e.Size, entries, prog, func(id object.ID) ([]byte, bool, error) {
 		_, payload, ok := src.read(id, false)
 		if !ok && chunkErr == nil {
 			chunkErr = src.badObject(id)
@@ -573,10 +580,21 @@ func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.Tree
 		return payload, ok, nil
 	})
 	if err != nil {
-		return false, err
+		removePart(part)
+		return err
 	}
 	if !complete {
-		return false, chunkErr
+		removePart(part)
+		if chunkErr != nil {
+			return fmt.Errorf("%w; the part file is removed", chunkErr)
+		}
+		return errNoChunk
 	}
-	return true, nil
+	finishPart(dest, part, e, src.wp)
+	return nil
 }
+
+// errNoChunk names a file whose chunks are not all on the provided
+// discs. The missing-disc error names the disc to add; this line names
+// the file that waits for it.
+var errNoChunk = errors.New("a chunk of this file is on a disc that was not provided; the part file is removed")

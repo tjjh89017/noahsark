@@ -129,7 +129,7 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stdout, "%s: already burned, 0 objects to mark\n", discNameShort(row.DiscSeq, label))
 			continue
 		}
-		_, _ = fmt.Fprintf(stdout, "%s: marked burned, %d objects\n", discNameShort(row.DiscSeq, label), n)
+		_, _ = fmt.Fprintf(stdout, "%s: marked burned, %d object(s) marked\n", discNameShort(row.DiscSeq, label), n)
 	}
 	return 0
 }

@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// TestPackRefusesNothingToPack packs a repository in full, then packs
-// the same ref again with nothing left staged. The second pack must
-// refuse rather than write an empty run, and must exit 1.
-func TestPackRefusesNothingToPack(t *testing.T) {
+// TestPackWithNothingStagedSucceeds packs a repository in full, then
+// packs the same ref again with nothing left staged. The second pack
+// must write no run, say why, and exit 0: nothing to do is success.
+func TestPackWithNothingStagedSucceeds(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -28,8 +28,8 @@ func TestPackRefusesNothingToPack(t *testing.T) {
 
 	secondTree := filepath.Join(work, "tree2")
 	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondTree)
-	if code != 1 {
-		t.Fatalf("second pack: exit %d, want 1: %s", code, out)
+	if code != 0 {
+		t.Fatalf("second pack: exit %d, want 0: %s", code, out)
 	}
 	if !strings.Contains(out, "nothing to pack") {
 		t.Fatalf("second pack: output %q missing \"nothing to pack\"", out)
@@ -68,8 +68,8 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 
 	secondTree := filepath.Join(work, "tree2")
 	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondTree)
-	if code != 1 {
-		t.Fatalf("pack after gc: exit %d, want 1: %s", code, out)
+	if code != 0 {
+		t.Fatalf("pack after gc: exit %d, want 0: %s", code, out)
 	}
 	if !strings.Contains(out, "nothing to pack") {
 		t.Fatalf("pack after gc: output %q missing \"nothing to pack\"", out)
@@ -362,5 +362,21 @@ func TestPackCloseFlagSealsBurnLine(t *testing.T) {
 	}
 	if !strings.Contains(out, "spare:none") {
 		t.Fatalf("pack --close output %q missing spare:none", out)
+	}
+}
+
+// TestPackOnANewRepositorySucceeds checks that pack before the first
+// commit writes no run, says why, and exits 0.
+func TestPackOnANewRepositorySucceeds(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "nothing to pack") || !strings.Contains(out, "no snapshot has been committed") {
+		t.Fatalf("pack output %q, want the nothing-to-pack reason", out)
 	}
 }

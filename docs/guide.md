@@ -58,7 +58,9 @@ unstable: 0, skipped: 0
 staged: 8 objects, 3001470 bytes
 ```
 
-`commit` stages a snapshot. It writes no disc. Commit as often as you
+`commit` stages a snapshot. It writes no disc. Each `commit` reads every
+file of the source from start to end, thus it takes as long as a full read
+of the source. Commit as often as you
 want: a later commit stages only the new data. `status` always ends with
 the one action to do next.
 
@@ -89,11 +91,11 @@ predicts exactly what the next packs write.
 
 ```
 $ noahsark pack --dry-run
-disc 0 "2026-09-21 disc 0": 20 objects, 6004049 bytes
-total: 1 disc(s), 20 objects, 6004049 bytes
+disc 0 "2026-09-21 disc 0": 20 object(s) on the disc, 6004049 bytes
+total: 1 disc(s), 20 object(s) on the discs, 6004049 bytes
 next: run noahsark pack 1 time(s), one disc for each pack
 $ noahsark pack
-packed disc 0 "2026-09-21 disc 0": 20 objects, 6004049 bytes
+packed disc 0 "2026-09-21 disc 0": 20 object(s) on the disc, 6004049 bytes
 uuid: 4a060bd4-ca9f-2d06-263e-b907483b8230
 tree: /srv/ark/repo/staging/plans/4a060bd4.../tree
 next steps:
@@ -120,7 +122,7 @@ disc and load it again, then mount and verify it.
 $ sudo noahsark image build --out=/srv/ark/.../tree.img /srv/ark/.../tree
 $ growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/.../tree.img
 $ noahsark disc burned 0
-disc 0 "2026-09-21 disc 0": marked burned, 20 objects
+disc 0 "2026-09-21 disc 0": marked burned, 20 object(s) marked
 $ sudo mkdir -p /mnt/ark
 $ sudo mount /dev/sr0 /mnt/ark
 $ noahsark verify /mnt/ark
@@ -131,8 +133,13 @@ $ sudo umount /mnt/ark
 ```
 
 If the burn fails, run `noahsark disc burned --undo 0`, then burn a new
-disc. If the disc does not mount or `verify` fails, discard it and burn a
-new one. Two identical discs are the redundancy of this backup. Load a second
+disc. If the disc does not mount or `verify` fails, `verify` removes the
+burn mark and prints
+`next: burn a new disc from the same tree, then run: noahsark disc burned 0`.
+Discard the disc, burn a new one from the same tree, run that
+`disc burned` line, then `verify` again.
+
+Two identical discs are the redundancy of this backup. Load a second
 blank disc and run the same `growisofs` line again. Do not pack again. Do
 not run `disc burned` again. Mount and verify the second disc:
 
@@ -227,9 +234,12 @@ the list. A wrong disc gives
 `expected disc 1 "..." (...), found disc 0 "..." (...)` and the same
 prompt again.
 
-A stopped one-drive restore leaves hidden `.<NAME>.noahsark-part` files.
-Run the same command again: it lists and asks for only the discs that it
-still needs. A name without `.noahsark-part` is always a complete file.
+Both modes write into a hidden `.<NAME>.noahsark-part` file and give the
+file its final name only when every chunk is in place. A name without
+`.noahsark-part` is always a complete file. A stopped one-drive restore
+leaves its part files: run the same command again, and it lists and asks
+for only the discs that it still needs. The all-discs mode keeps no part
+file, because every disc is already there.
 
 ```
 $ noahsark restore --mount=/mnt/ark 2026-09-21 /srv/restore
@@ -248,8 +258,36 @@ restore, then `restored snapshot ...`, then a summary such as
   restore into an empty directory, or add `--overwrite`.
 - `--include=<PATH>` (repeatable) restores only that path. Get the paths
   from `noahsark ls --recursive 2026-09-21`. A `!` marks an unstable file.
+  The first column of that listing holds the `!` mark, thus every path
+  starts one space in and carries no leading `/`. Copy the path itself.
+  `--include` takes it with or without a leading `/`:
+
+  ```
+  $ noahsark ls --recursive 2026-09-21
+   srv/data/
+   srv/data/notes.txt
+   srv/data/photos/
+   srv/data/photos/2026-09-20.jpg
+  $ noahsark restore --include=/srv/data/photos /mnt/ark 2026-09-21 /srv/drill
+  ```
 - A damaged object: `restore` names the file, writes no bad data,
-  continues, and exits 1. Use the second copy of the disc.
+  continues, and exits 1. Use the second copy of the disc. The file gets no
+  name in the output directory, thus a file that is there is complete.
+
+## Read a disc with no noahsark
+
+Every disc carries `NOAHSARK/REFERENCE/decoder.py`. It needs Python 3 and
+nothing else. Mount every disc the snapshot needs and name each mount point
+on one line: a later disc holds only the data no earlier disc holds.
+
+```
+$ python3 /mnt/ark/NOAHSARK/REFERENCE/decoder.py list /mnt/ark /mnt/ark2 --snapshot=2026-09-21
+$ python3 /mnt/ark/NOAHSARK/REFERENCE/decoder.py restore /mnt/ark /mnt/ark2 --snapshot=2026-09-21 --out=/srv/rescue
+restore: wrote snapshot into /srv/rescue
+```
+
+`verify` names a disc you did not mount in a `NOTE` line and still passes;
+a damaged object is a `FAIL`. The decoder never repairs.
 
 ## Free disk space: gc
 
@@ -261,6 +299,13 @@ apart: it counts each successful `verify`. If you keep one copy only,
 put `gc.min_verified_copies = 1` in the config. `--force-after=1h` shortens
 the 7 days for one run, and asks for confirmation. It does not change the
 verify count. Do not delete files in `staging` by hand.
+
+`gc` frees two things, and counts them apart: the staged object files, and
+the plan directory `staging/plans/<disc uuid>/` of a disc whose objects are
+all on the disc. The plan directory holds the packed tree and the image, so
+it is the larger of the two. You may delete the image file yourself as soon
+as both copies of the disc are burned; `gc` then finds less to free. A
+`pack --out=DIR` outside `staging` is yours: `gc` never touches it.
 
 ## Recovery
 
@@ -277,8 +322,10 @@ recover: ok
 
 With one drive, run `noahsark recover --repo=/srv/ark/repo --disc=/mnt/ark`
 one time for each disc, in any order. `rebuild is partial: disc 1 "..." (...) not fed
-yet`, exit 1, names a disc that you must still give. Give every disc, the
-newest included. Then `status` shows each disc as `on disc only`. Do not
+yet`, exit 1, names a disc that you must still give. Until you give it,
+`status` shows that disc as `not fed` and `next:` names `recover` again.
+Give every disc, the newest included. Then `status` shows each disc as
+`on disc only`. Do not
 mark or verify the discs again. `recover` ends with
 `config: put sources.root and pack.capacity into <REPO>/config; no disc
 carries them`: no disc holds the source path or the media size, so write
@@ -337,7 +384,7 @@ Exit codes: 0 is success, 1 is a failure at run time, 2 is a usage error.
 | `verify`: `disc 0 is not marked burned; run: noahsark disc burned 0` | The disc is good, but the repository does not know the burn. Run that command, then `verify` again. |
 | `disc burned --undo`: `is verified and cannot be returned to packed` | A verified disc stays verified. No action. |
 | `matches no disc` or `matches more than one disc` | Give the disc number, or the first 8 characters of the uuid, from the list in the message. |
-| A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
+| A disc does not mount, or `verify` fails | `verify` removes the burn mark. Discard the disc, burn a new one from the same tree, run `noahsark disc burned N`, then `verify`. Use the other copy until then. |
 | `gc`: `1 of 2 copies verified; N object(s) held` | Verify the second copy (step 4), then run `gc` again. |
 | `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them with `--disc` or `--discs-dir`, or use `--mount`. |
 | `ref ... is not on the provided disc(s)` | A newer disc holds the ref. Give the newest disc too. |

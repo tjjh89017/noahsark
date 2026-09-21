@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-var dryRunTotalRe = regexp.MustCompile(`total: (\d+) disc\(s\), (\d+) objects, (\d+) bytes`)
+var dryRunTotalRe = regexp.MustCompile(`total: (\d+) disc\(s\), (\d+) object\(s\) on the discs, (\d+) bytes`)
 
 // TestPackDryRunWritesNothing checks that --dry-run leaves the repository
 // exactly as a plain "commit" left it: no packed tree, no state record,

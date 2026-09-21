@@ -195,7 +195,8 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 }
 
 // TestStatusEmptyRepository checks status on a repository with no
-// commit and no pack: the staged line and the next line only.
+// commit and no pack: the staged line, and a next line that names
+// commit.
 func TestStatusEmptyRepository(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -207,7 +208,7 @@ func TestStatusEmptyRepository(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: exit %d: %s", code, out)
 	}
-	if out != "staged: 0 objects, 0 bytes\nnext: nothing to do\n" {
+	if out != "staged: 0 objects, 0 bytes\nnext: commit your files, run: noahsark commit <SOURCE>\n" {
 		t.Fatalf("status output = %q", out)
 	}
 }

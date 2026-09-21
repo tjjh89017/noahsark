@@ -49,7 +49,7 @@ func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 	if !strings.Contains(out, "delete") || !strings.Contains(out, "bytes?") {
 		t.Fatalf("gc output %q missing the confirmation prompt", out)
 	}
-	if strings.Contains(out, "deleted 0 object") {
+	if strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
 	}
 }
@@ -89,7 +89,7 @@ func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after decline): exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 object") {
+	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run (after decline) output %q, want the object still eligible", out)
 	}
 }
@@ -128,7 +128,7 @@ func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after empty stdin): exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 object") {
+	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run output %q, want the object still eligible", out)
 	}
 }
@@ -157,7 +157,7 @@ func TestGCForceAfterDryRunSkipsConfirmation(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --force-after=1h --dry-run: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 object") {
+	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run output %q, want more than 0 objects reported", out)
 	}
 	if strings.Contains(out, "bytes?") {

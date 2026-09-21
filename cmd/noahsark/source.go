@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
@@ -25,22 +28,142 @@ type snapshotSource interface {
 	ParseSnapshotArg(string) (object.ID, error)
 }
 
-// cacheSource adapts a *cache.Cache to snapshotSource, so ls, log and
-// plan can read a snapshot with no disc root given.
+// cacheSource resolves a snapshot from the repository alone, with no
+// disc present. It looks in the staging store first and in the local
+// cache second, so a snapshot that commit has just written lists before
+// the first pack. ls, log and plan use it.
 type cacheSource struct {
-	c *cache.Cache
+	c          *cache.Cache
+	repoDir    string
+	stagingDir string
 }
 
-func (s *cacheSource) Tree(id object.ID) (*format.Tree, error) { return s.c.ReadTree(id) }
+// Tree reads one tree object: the staged file first, then the cache. An
+// id that neither holds names both places, so the operator knows
+// whether to pack or to recover.
+func (s *cacheSource) Tree(id object.ID) (*format.Tree, error) {
+	if buf, err := os.ReadFile(image.StagedPath(s.stagingDir, id, format.ObjectKindTree)); err == nil {
+		var t format.Tree
+		if _, err := t.Decode(buf); err != nil {
+			return nil, fmt.Errorf("staged tree %s: %w", id.TextForm(), err)
+		}
+		return &t, nil
+	}
+	t, err := s.c.ReadTree(id)
+	if err != nil {
+		return nil, &notHeldError{kind: "tree", id: id}
+	}
+	return t, nil
+}
 
-func (s *cacheSource) Snapshot(id object.ID) (*format.Snapshot, error) { return s.c.ReadSnapshot(id) }
+// Snapshot reads one snapshot object: the staged file first, then the
+// cache.
+func (s *cacheSource) Snapshot(id object.ID) (*format.Snapshot, error) {
+	if buf, err := os.ReadFile(image.StagedPath(s.stagingDir, id, format.ObjectKindSnapshot)); err == nil {
+		var snap format.Snapshot
+		if _, err := snap.Decode(buf); err != nil {
+			return nil, fmt.Errorf("staged snapshot %s: %w", id.TextForm(), err)
+		}
+		return &snap, nil
+	}
+	snap, err := s.c.ReadSnapshot(id)
+	if err != nil {
+		return nil, &notHeldError{kind: "snapshot", id: id}
+	}
+	return snap, nil
+}
 
-func (s *cacheSource) Refs() (*format.RefsTable, error) { return s.c.Refs() }
+// Refs merges the repository's own ref file over the cached REFS table.
+// The ref file is the authoritative local state: commit writes it, and
+// a pack has not yet carried the newest names into any disc's REFS.
+func (s *cacheSource) Refs() (*format.RefsTable, error) {
+	cached, cacheErr := s.c.Refs()
+	local, localErr := readRefs(s.repoDir)
+	if cacheErr != nil && (localErr != nil || len(local) == 0) {
+		// Nothing local and nothing cached: the repository holds no ref
+		// at all, and the cache's own message names the fix.
+		return nil, cacheErr
+	}
+	merged := cached
+	if merged == nil {
+		merged = &format.RefsTable{}
+	}
+	if localErr != nil {
+		return merged, nil
+	}
+	byName := make(map[string]int, len(merged.Records))
+	for i, r := range merged.Records {
+		byName[string(r.Name[:r.NameLen])] = i
+	}
+	for name, text := range local {
+		id, err := parseSnapshotID(text)
+		if err != nil {
+			continue
+		}
+		rec := format.RefRecord{SnapshotID: id, NameLen: uint16(min(len(name), format.RefNameLen))}
+		copy(rec.Name[:], name)
+		if snap, err := s.Snapshot(id); err == nil {
+			rec.TimeSec, rec.TimeNsec = snap.TimeSec, snap.TimeNsec
+		}
+		if i, ok := byName[name]; ok {
+			merged.Records[i] = rec
+			continue
+		}
+		merged.Records = append(merged.Records, rec)
+	}
+	sort.Slice(merged.Records, func(i, j int) bool {
+		a, b := merged.Records[i], merged.Records[j]
+		return string(a.Name[:a.NameLen]) < string(b.Name[:b.NameLen])
+	})
+	merged.RecordCount = uint64(len(merged.Records))
+	return merged, nil
+}
 
-func (s *cacheSource) SnapshotIDs() ([]object.ID, error) { return s.c.ListSnapshots() }
+// SnapshotIDs lists every snapshot the repository knows: the staged
+// ones and the cached ones, deduplicated.
+func (s *cacheSource) SnapshotIDs() ([]object.ID, error) {
+	seen := make(map[object.ID]bool)
+	var ids []object.ID
+	add := func(id object.ID) {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(s.stagingDir, "snapshots"))
+	if err == nil {
+		for _, e := range entries {
+			if id, err := object.ParseID(e.Name()); err == nil {
+				add(id)
+			}
+		}
+	}
+	cached, err := s.c.ListSnapshots()
+	if err != nil && len(ids) == 0 {
+		return nil, err
+	}
+	for _, id := range cached {
+		add(id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
+	return ids, nil
+}
+
+// notHeldError reports an object that neither the staging store nor the
+// local cache holds. It names both places, because the fix differs: an
+// object that was never packed waits for pack, and one that was packed
+// and freed comes back with recover.
+type notHeldError struct {
+	kind string
+	id   object.ID
+}
+
+func (e *notHeldError) Error() string {
+	return fmt.Sprintf("%s %s is neither staged nor cached; run pack, or run recover with the disc that holds it", e.kind, e.id.TextForm())
+}
 
 // ParseSnapshotArg resolves arg as a snapshot id, or, failing that, as a
-// name in the cached REFS table, the same rule restore.Source uses. A
+// name in the merged ref set, the same rule restore.Source uses. A
 // ref found in neither is reported as a *refNotFoundError, so a caller
 // that knows discs were named on the command line (restore --mount) can
 // reword the message; ls, log and plan, which never name a disc here,
@@ -52,7 +175,7 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	if id, err := object.ParseID(arg); err == nil {
 		return id, nil
 	}
-	refs, err := s.c.Refs()
+	refs, err := s.Refs()
 	if err != nil {
 		return object.ID{}, &cacheReadError{err: err}
 	}
@@ -122,7 +245,7 @@ func openCacheSource(repoFlag string) (*cacheSource, *cache.Cache, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &cacheSource{c: c}, c, nil
+	return &cacheSource{c: c, repoDir: repoDir, stagingDir: cfg.StagingDir}, c, nil
 }
 
 // looksLikeDiscRoot reports whether s names an existing directory: a

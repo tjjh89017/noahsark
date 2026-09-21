@@ -85,7 +85,7 @@ func TestGCRetentionGate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run (before retention): exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "would delete 0 object") {
+	if !strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run (before retention) output %q, want 0 objects", out)
 	}
 	if !strings.Contains(out, "gc: nothing is eligible yet") {
@@ -102,7 +102,7 @@ func TestGCRetentionGate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after retention): exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 object") {
+	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run (after retention) output %q, want more than 0 objects", out)
 	}
 	objDir := filepath.Join(repo, "staging", "objects")
@@ -120,7 +120,7 @@ func TestGCRetentionGate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "deleted 0 object") {
+	if strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
 	}
 	after1, err := countFiles(objDir)
@@ -163,7 +163,7 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 object") {
+	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run output %q, want more than 0 objects", out)
 	}
 	if !gcDiscLineRe.MatchString(out) {
@@ -220,7 +220,7 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	if !strings.Contains(out, "skipped") {
 		t.Fatalf("gc output %q missing the skipped line", out)
 	}
-	if !strings.Contains(out, "deleted 0 object") {
+	if !strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc output %q, want 0 objects deleted", out)
 	}
 }
@@ -402,3 +402,85 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 // gcDiscLineRe matches gc's grouped summary line, which names the disc
 // the way every other command names one.
 var gcDiscLineRe = regexp.MustCompile(`would delete: disc \d+ "[^"]*" \([0-9a-f-]+\): \d+ object\(s\)`)
+
+// TestGCFreesThePlanDirectory checks that gc keeps a disc's plan
+// directory while the disc is packed or not verified two times, names
+// it with its bytes in --dry-run, and removes it once every object of
+// the disc is ON-DISC.
+func TestGCFreesThePlanDirectory(t *testing.T) {
+	oldClock := gcClock
+	defer func() { gcClock = oldClock }()
+
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
+
+	before := time.Now()
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	stagedTree := packedTreeDir(t, packOut)
+	planDir := filepath.Dir(stagedTree)
+	discUUID := packedDiscUUID(t, packOut)
+
+	// A packed disc keeps its plan directory: the operator has not
+	// burned it yet.
+	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+		t.Fatalf("gc (packed): exit %d: %s", code, out)
+	}
+	if _, err := os.Stat(planDir); err != nil {
+		t.Fatalf("gc removed the plan directory of a packed disc: %v", err)
+	}
+
+	mounted := filepath.Join(work, "mounted")
+	copyTree(t, stagedTree, mounted)
+	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+		t.Fatalf("disc burned: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+		t.Fatalf("verify copy 1: exit %d: %s", code, out)
+	}
+
+	// One verify of two: the plan directory stays.
+	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+		t.Fatalf("gc (one verify): exit %d: %s", code, out)
+	}
+	if _, err := os.Stat(planDir); err != nil {
+		t.Fatalf("gc removed the plan directory after one verify: %v", err)
+	}
+
+	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+		t.Fatalf("verify copy 2: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	if code != 0 {
+		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "plan directory "+planDir) {
+		t.Fatalf("gc --dry-run output %q, want the plan directory line", out)
+	}
+	if strings.Contains(out, "would delete 0 disc plan directory") {
+		t.Fatalf("gc --dry-run output %q, want one plan directory", out)
+	}
+	if _, err := os.Stat(planDir); err != nil {
+		t.Fatalf("gc --dry-run removed the plan directory: %v", err)
+	}
+
+	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+		t.Fatalf("gc: exit %d: %s", code, out)
+	}
+	if _, err := os.Stat(planDir); !os.IsNotExist(err) {
+		t.Fatalf("gc kept the plan directory of an ON-DISC disc: %v", err)
+	}
+}

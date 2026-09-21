@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -119,15 +122,22 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 	}
+	planDirs := gcPlanDirs(stageLog, cfg.StagingDir, candidates)
 	objDeleted, objBytes, failures := gcApplyStagingObjects(stageLog, candidates, *dryRun)
+	dirDeleted, dirBytes, dirFailures := gcApplyPlanDirs(planDirs, *dryRun)
+	failures = append(failures, dirFailures...)
 
 	verb := "deleted"
 	if *dryRun {
 		verb = "would delete"
 	}
-	_, _ = fmt.Fprintf(stdout, "gc: staging: %s %d object(s), %d bytes\n", verb, objDeleted, objBytes)
+	_, _ = fmt.Fprintf(stdout, "gc: staging: %s %d staged object(s), %d bytes\n", verb, objDeleted, objBytes)
+	_, _ = fmt.Fprintf(stdout, "gc: plans: %s %d disc plan directory(ies), %d bytes\n", verb, dirDeleted, dirBytes)
 	if *dryRun {
 		printDryRunGroupSummary(candidates, discNames, stdout)
+		for _, d := range planDirs {
+			_, _ = fmt.Fprintf(stdout, "would delete: %s: plan directory %s, %d bytes\n", discNameOf(discNames, d.discUUID), d.path, d.bytes)
+		}
 	}
 	printHeldForCopies(stdout, stageLog, discNames, cfg.MinVerifiedCopies)
 	if uncached > 0 {
@@ -144,7 +154,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if objDeleted == 0 && *dryRun && uncached == 0 {
+	if objDeleted == 0 && dirDeleted == 0 && *dryRun && uncached == 0 {
 		printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean, cfg.MinVerifiedCopies)
 	}
 	// Nothing eligible, whether reported by --dry-run or found true by a
@@ -482,4 +492,88 @@ func discNameOf(names map[[16]byte]string, uuid [16]byte) string {
 		return name
 	}
 	return "disc " + uuidText(uuid)
+}
+
+// gcPlanDir is one disc's plan directory: the disc tree that pack wrote
+// by default, and the image that image build put beside it.
+type gcPlanDir struct {
+	discUUID [16]byte
+	path     string
+	bytes    uint64
+}
+
+// gcPlanDirs lists the plan directory of every disc whose objects are
+// all ON-DISC, pending included, since pending is what this run is
+// about to record. The directory holds a second copy of bytes the disc
+// itself now holds, thus gc frees it under the same rules as a staged
+// file.
+//
+// A disc that is packed or burned, or that has fewer verifies than
+// gc.min_verified_copies, keeps its directory: the operator may still
+// have to build the image again, or burn the second copy. A pack with
+// --out outside staging writes no plan directory, so gc never touches
+// the operator's own output.
+func gcPlanDirs(l *stage.Log, stagingDir string, pending []gcObj) []gcPlanDir {
+	total := l.OnDiscCountByDisc()
+	done := l.CountByDiscInState(stage.OnDiscOnly)
+	for _, o := range pending {
+		if o.needsRecord {
+			done[o.discUUID]++
+		}
+	}
+	var dirs []gcPlanDir
+	for uuid, n := range total {
+		if n == 0 || done[uuid] != n {
+			continue
+		}
+		path := planDirPath(stagingDir, uuid)
+		bytes, ok := dirBytes(path)
+		if !ok {
+			continue
+		}
+		dirs = append(dirs, gcPlanDir{discUUID: uuid, path: path, bytes: bytes})
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].path < dirs[j].path })
+	return dirs
+}
+
+// planDirPath is the directory pack writes a disc's tree under, by
+// default.
+func planDirPath(stagingDir string, discUUID [16]byte) string {
+	return filepath.Join(stagingDir, "plans", hex.EncodeToString(discUUID[:]))
+}
+
+// dirBytes sums the size of every regular file below path. It reports
+// ok false when path does not exist.
+func dirBytes(path string) (uint64, bool) {
+	if _, err := os.Stat(path); err != nil {
+		return 0, false
+	}
+	var total uint64
+	_ = filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
+			total += uint64(info.Size())
+		}
+		return nil
+	})
+	return total, true
+}
+
+// gcApplyPlanDirs removes (or, under dryRun, only counts) every plan
+// directory gcPlanDirs listed.
+func gcApplyPlanDirs(dirs []gcPlanDir, dryRun bool) (deleted int, bytesFreed uint64, failures []gcFailure) {
+	for _, d := range dirs {
+		if !dryRun {
+			if err := os.RemoveAll(d.path); err != nil {
+				failures = append(failures, gcFailure{path: d.path, err: err})
+				continue
+			}
+		}
+		deleted++
+		bytesFreed += d.bytes
+	}
+	return deleted, bytesFreed, failures
 }

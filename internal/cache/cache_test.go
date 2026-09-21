@@ -380,3 +380,58 @@ func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
 	}
 	return buf
 }
+
+// TestNewestCachedDiscBreaksATie caches two discs that one second holds
+// both of: the newest is the one whose own DISCS table has more rows,
+// whatever the uuid order. A tie on the row count too takes the higher
+// uuid, so the answer never changes between runs.
+func TestNewestCachedDiscBreaksATie(t *testing.T) {
+	const sameSecond = 1_700_000_000
+
+	low := [16]byte{0x11}
+	high := [16]byte{0xee}
+
+	t.Run("more rows wins over a higher uuid", func(t *testing.T) {
+		c, err := cache.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTieDisc(t, c, high, sameSecond, []format.DiscsRow{{DiscSeq: 0, DiscUUID: high, CreatedSec: sameSecond}})
+		writeTieDisc(t, c, low, sameSecond, []format.DiscsRow{
+			{DiscSeq: 0, DiscUUID: high, CreatedSec: sameSecond},
+			{DiscSeq: 1, DiscUUID: low, CreatedSec: sameSecond},
+		})
+		discs, err := c.Discs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(discs.Rows) != 2 {
+			t.Fatalf("Discs returned %d row(s), want the 2-row table of the later pack", len(discs.Rows))
+		}
+	})
+
+	t.Run("the higher uuid is the last rule", func(t *testing.T) {
+		c, err := cache.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeTieDisc(t, c, low, sameSecond, []format.DiscsRow{{DiscSeq: 3, DiscUUID: low, CreatedSec: sameSecond}})
+		writeTieDisc(t, c, high, sameSecond, []format.DiscsRow{{DiscSeq: 4, DiscUUID: high, CreatedSec: sameSecond}})
+		discs, err := c.Discs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(discs.Rows) != 1 || discs.Rows[0].DiscUUID != high {
+			t.Fatalf("Discs returned %v, want the table of the higher uuid", discs.Rows)
+		}
+	})
+}
+
+// writeTieDisc caches one disc whose own DISCS table holds rows.
+func writeTieDisc(t *testing.T, c *cache.Cache, uuid [16]byte, runSeq uint64, rows []format.DiscsRow) {
+	t.Helper()
+	idx := encodeTestIndex(t, runSeq, nil, nil, nil)
+	if err := c.WriteDisc(uuid, idx, encodeTestRefs(t), encodeTestDiscs(t, rows)); err != nil {
+		t.Fatal(err)
+	}
+}

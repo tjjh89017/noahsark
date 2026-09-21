@@ -80,10 +80,17 @@ class Report:
 
     def __init__(self):
         self.failures = []
+        self.notes = []
 
     def fail(self, where: str, message: str):
         self.failures.append(f"{where}: {message}")
         print(f"FAIL {where}: {message}", file=sys.stderr)
+
+    def note(self, where: str, message: str):
+        """Something this run cannot check, and that is not damage: an
+        object that lives on a disc the command was not given."""
+        self.notes.append(f"{where}: {message}")
+        print(f"NOTE {where}: {message}", file=sys.stderr)
 
     def ok(self) -> bool:
         return not self.failures
@@ -1111,6 +1118,142 @@ class Repo:
 
 
 # ---------------------------------------------------------------------------
+# DiscSet: every disc root one command was given, read as one.
+
+
+class DiscSet:
+    """Every disc root a command was given, in the order given. An
+    object that another given root holds is found there, so a snapshot
+    that spans several discs reads as one. The first root is the one
+    whose runs `verify` and `summary` report first."""
+
+    def __init__(self, paths):
+        self.repos = [Repo(p) for p in paths]
+        self.primary = self.repos[0]
+        self.root = self.primary.root
+        self.names = self.primary.names
+        self.newest_seq = self.primary.newest_seq
+        self.run_seqs = self.primary.run_seqs
+        self.disc = self.primary.disc
+
+    def index(self, seq=None, run=None):
+        return self.primary.index(seq or self.newest_seq, run)
+
+    def discs(self, seq=None, idx=None):
+        return self.primary.discs(seq, idx)
+
+    def read_object(self, content_id_hex: str, under: str = "objects", report: Report = None):
+        """The first given root that holds the object answers. A root
+        that holds it but cannot expand it is damage, and its error is
+        raised once every root has been tried."""
+        damage = None
+        for repo in self.repos:
+            path = object_path(repo.root, content_id_hex, repo.names, under)
+            if not os.path.exists(path):
+                continue
+            try:
+                return read_object_file(path, report)
+            except (FormatError, OSError) as e:
+                damage = damage or e
+        if damage is not None:
+            raise damage
+        raise FileNotFoundError(object_path(self.root, content_id_hex, self.names, under))
+
+    def holds(self, content_id_hex: str, under: str = "objects") -> bool:
+        return any(
+            os.path.exists(object_path(r.root, content_id_hex, r.names, under))
+            for r in self.repos
+        )
+
+    def refs(self, seq=None, idx=None):
+        """The REFS of every given disc, merged by ref name, newest
+        record of each name. A disc packed before a ref was made carries
+        a shorter table, so no one disc's copy is trusted alone."""
+        if len(self.repos) == 1:
+            return self.primary.refs(seq, idx)
+        merged = {}
+        for repo in self.repos:
+            for r in repo.refs()["records"]:
+                cur = merged.get(r["name"])
+                if cur is None or latest_ref([cur, r], r["name"]) is r:
+                    merged[r["name"]] = r
+        return {"repo_uuid": self.primary.disc["repo_uuid"], "records": list(merged.values())}
+
+    def snapshot_names(self):
+        names = set()
+        for repo in self.repos:
+            names.update(repo.snapshot_names())
+        return sorted(names)
+
+    def read_snapshot(self, name: str, report: Report = None):
+        if len(name) in (64, 68) and all(c in "0123456789abcdef" for c in name):
+            obj = self.read_object(name, under="snapshots", report=report)
+        else:
+            ref = latest_ref(self.refs()["records"], name)
+            if ref is None:
+                raise FormatError(f"no ref named {name!r} in REFS")
+            obj = self.read_object(ref["snapshot_id"], under="snapshots", report=report)
+        if obj.payload is None:
+            raise FormatError(f"snapshot {name!r} could not be expanded")
+        snap = parse_snapshot(obj.payload, f"snapshot {name!r}", obj)
+        snap["content_id"] = obj.content_id_hex
+        return snap
+
+    def given_uuids(self):
+        return {r.disc["disc_uuid"] for r in self.repos}
+
+    def other_disc(self, content_id_hex: str):
+        """Names the disc that holds content_id_hex, when a Prereqs row
+        of some given disc names it and that disc was not given. Returns
+        the operator's own words for the disc: number, label and uuid."""
+        want = text_form(content_id_hex)
+        given = self.given_uuids()
+        for repo in self.repos:
+            try:
+                idx = repo.index(repo.newest_seq)
+            except (FormatError, OSError):
+                continue
+            for pr in idx.get("prereqs", []):
+                if text_form(pr["content_id"]) != want or pr["disc_uuid"] in given:
+                    continue
+                return describe_disc(repo, pr["disc_uuid"]) + ", which was not given"
+        # No Prereqs row names it. The object still belongs to a disc of
+        # this repository; DISCS names every disc that exists.
+        others = self.ungiven_discs()
+        if others:
+            return "a disc that was not given; DISCS names " + ", ".join(others)
+        return None
+
+    def ungiven_discs(self):
+        """Every disc a given disc's DISCS table names, and that was not
+        itself given, in disc number order."""
+        given = self.given_uuids()
+        seen = {}
+        for repo in self.repos:
+            try:
+                rows = repo.discs()["rows"]
+            except (FormatError, OSError):
+                continue
+            for row in rows:
+                if row["disc_uuid"] in given:
+                    continue
+                seen[row["disc_uuid"]] = (row["disc_seq"], describe_disc(repo, row["disc_uuid"]))
+        return [text for _, text in sorted(seen.values())]
+
+
+def describe_disc(repo: Repo, uuid: bytes) -> str:
+    """disc NUMBER "LABEL" (UUID), from repo's own DISCS table when it
+    names the disc, and the uuid alone when it does not."""
+    try:
+        for row in repo.discs()["rows"]:
+            if row["disc_uuid"] == uuid:
+                return f'disc {row["disc_seq"]} "{row["label"]}" ({uuid.hex()})'
+    except (FormatError, OSError):
+        pass
+    return f"disc {uuid.hex()}"
+
+
+# ---------------------------------------------------------------------------
 # Walking a snapshot: pre-order, in tree entry order, descending into a
 # directory before the next sibling entry.
 
@@ -1135,16 +1278,27 @@ def unescape_root_name(name: bytes) -> str:
     return out.decode("utf-8", errors="surrogateescape")
 
 
-def walk_tree(repo: Repo, tree_id_hex: str, path_prefix: str, report: Report, visit):
+def walk_tree(repo, tree_id_hex: str, path_prefix: str, report: Report, visit, missing_note=False):
     """Depth-first, pre-order walk of one tree, in tree entry order. visit
-    is called with (path, entry) for every entry before its children."""
+    is called with (path, entry) for every entry before its children.
+    With missing_note, a tree that no given disc holds, and that a
+    Prereqs row puts on another disc, is a note that names that disc,
+    not a failure; damaged bytes stay a failure."""
     try:
         obj = repo.read_object(tree_id_hex, under="objects", report=report)
         if obj.payload is None:
             report.fail(tree_id_hex, "tree did not verify or could not be expanded, walk stopped here")
             return
         tree = parse_tree(obj.payload, f"tree {tree_id_hex}", obj)
-    except (FormatError, OSError) as e:
+    except OSError as e:
+        where = repo.other_disc(tree_id_hex)
+        if missing_note and where:
+            report.note(tree_id_hex, f"tree is on {where}; not checked")
+        else:
+            extra = f"; it is on {where}" if where else ""
+            report.fail(tree_id_hex, f"tree could not be read, walk stopped here: {e}{extra}")
+        return
+    except FormatError as e:
         report.fail(tree_id_hex, f"tree could not be read, walk stopped here: {e}")
         return
     for entry in tree["entries"]:
@@ -1157,7 +1311,7 @@ def walk_tree(repo: Repo, tree_id_hex: str, path_prefix: str, report: Report, vi
         child_path = display_name if path_prefix == "" else f"{path_prefix}/{display_name}"
         visit(child_path, entry)
         if entry["entry_type"] == 2:
-            walk_tree(repo, entry["content_id"], child_path, report, visit)
+            walk_tree(repo, entry["content_id"], child_path, report, visit, missing_note)
 
 
 def iter_file_chunks(repo: Repo, blob_id_hex: str, report: Report):
@@ -1228,7 +1382,7 @@ def cmd_summary(args):
 
 def cmd_list(args):
     report = Report()
-    repo = Repo(args.disc_root)
+    repo = DiscSet(args.disc_root)
 
     if args.snapshot is None:
         names_by_snapshot = {}
@@ -1265,8 +1419,25 @@ def cmd_list(args):
 
 def cmd_verify(args):
     report = Report()
-    repo = Repo(args.disc_root)
+    discs_given = DiscSet(args.disc_root)
+    for repo in discs_given.repos:
+        verify_one_disc(repo, report)
 
+    for name in discs_given.snapshot_names():
+        try:
+            snap = discs_given.read_snapshot(name, report=report)
+            walk_tree(discs_given, snap["root_tree"], "", report, lambda p, e: None, True)
+        except (FormatError, OSError) as e:
+            report.fail(f"snapshot {name}", str(e))
+
+    if report.ok():
+        print("verify: all checks passed")
+    else:
+        print(f"verify: {len(report.failures)} check(s) failed", file=sys.stderr)
+    return 0 if report.ok() else 1
+
+
+def verify_one_disc(repo: Repo, report: Report):
     for seq in repo.run_seqs:
         try:
             run = repo.run_header(seq)
@@ -1328,19 +1499,6 @@ def cmd_verify(args):
             except OSError:
                 report.fail(f"object {cid}", "object file not found")
 
-    for name in repo.snapshot_names():
-        try:
-            snap = repo.read_snapshot(name, report=report)
-            walk_tree(repo, snap["root_tree"], "", report, lambda p, e: None)
-        except (FormatError, OSError) as e:
-            report.fail(f"snapshot {name}", str(e))
-
-    if report.ok():
-        print("verify: all checks passed")
-    else:
-        print(f"verify: {len(report.failures)} check(s) failed", file=sys.stderr)
-    return 0 if report.ok() else 1
-
 
 # ---------------------------------------------------------------------------
 # restore
@@ -1353,29 +1511,15 @@ def restore_symlink(dest: str, target: bytes):
     os.symlink(target_str, dest)
 
 
-def describe_missing_object(cid_hex: str, idx: dict, discs: dict) -> str:
-    """Adds context to an object-not-found message: when cid_hex is a
-    Prereqs row of the run's INDEX, names the disc uuid that stores it
-    and, when DISCS gives one, that disc's label, so the person knows
-    which disc to load. A row names a disc by uuid, never by run number."""
-    want = text_form(cid_hex)
-    for p in idx.get("prereqs", []):
-        if text_form(p["content_id"]) != want:
-            continue
-        uuid = p["disc_uuid"]
-        for row in discs.get("rows", []):
-            if row["disc_uuid"] == uuid and row["label"]:
-                return (
-                    f"; it is a prerequisite stored on disc {uuid.hex()} "
-                    f"labelled {row['label']}"
-                )
-        return f"; it is a prerequisite stored on disc {uuid.hex()}"
-    return ""
+def describe_missing_object(cid_hex: str, repo) -> str:
+    """Adds context to an object-not-found message: names the disc that
+    holds the object, when a Prereqs row of a given disc puts it on a
+    disc that was not given."""
+    where = repo.other_disc(cid_hex)
+    return f"; it is on {where}" if where else ""
 
 
-def restore_file(
-    repo: Repo, dest: str, blob_id_hex: str, report: Report, idx: dict, discs: dict
-) -> bool:
+def restore_file(repo, dest: str, blob_id_hex: str, report: Report) -> bool:
     """Writes one regular file's chunks into dest, in file order. Writes
     to a temporary name beside dest and renames it into place only on
     full success, and removes the temporary file on any failure, so a
@@ -1387,7 +1531,7 @@ def restore_file(
         report.fail(
             dest,
             f"blob {blob_id_hex} could not be read: {e}"
-            f"{describe_missing_object(blob_id_hex, idx, discs)}",
+            f"{describe_missing_object(blob_id_hex, repo)}",
         )
         return False
 
@@ -1402,7 +1546,7 @@ def restore_file(
                     report.fail(
                         dest,
                         f"chunk {content_id_hex} could not be read: {e}"
-                        f"{describe_missing_object(content_id_hex, idx, discs)}",
+                        f"{describe_missing_object(content_id_hex, repo)}",
                     )
                     ok = False
                     break
@@ -1458,23 +1602,9 @@ def apply_metadata(dest: str, entry):
 
 def cmd_restore(args):
     report = Report()
-    repo = Repo(args.disc_root)
+    repo = DiscSet(args.disc_root)
     snap = repo.read_snapshot(args.snapshot, report=report)
     os.makedirs(args.out, exist_ok=True)
-
-    # The Prereqs table of the run's INDEX, and DISCS, let a failure name
-    # the disc that holds a missing object. Their own failure to parse is
-    # not fatal to restore; it only costs that extra context in a message.
-    try:
-        idx = repo.index(repo.newest_seq)
-    except (FormatError, OSError) as e:
-        report.fail(args.disc_root, f"could not read INDEX for prerequisite context: {e}")
-        idx = {"prereqs": [], "files": []}
-    try:
-        discs = repo.discs(repo.newest_seq, idx)
-    except (FormatError, OSError) as e:
-        report.fail(args.disc_root, f"could not read DISCS for prerequisite context: {e}")
-        discs = {"rows": []}
 
     counts = {"files": 0, "failed": 0}
 
@@ -1503,7 +1633,7 @@ def cmd_restore(args):
             elif entry_type == 1:
                 counts["files"] += 1
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
-                if restore_file(repo, dest, entry["content_id"], report, idx, discs):
+                if restore_file(repo, dest, entry["content_id"], report):
                     apply_metadata(dest, entry)
                 else:
                     counts["failed"] += 1
@@ -1550,16 +1680,16 @@ def build_parser():
     sp.set_defaults(func=cmd_summary)
 
     sp = sub.add_parser("list", help="list snapshots, or walk one snapshot's tree")
-    sp.add_argument("disc_root")
+    sp.add_argument("disc_root", nargs="+", help="one or more disc roots")
     sp.add_argument("--snapshot", help="ref name or snapshot content id")
     sp.set_defaults(func=cmd_list)
 
     sp = sub.add_parser("verify", help="verify every structure and object this decoder can reach")
-    sp.add_argument("disc_root")
+    sp.add_argument("disc_root", nargs="+", help="one or more disc roots")
     sp.set_defaults(func=cmd_verify)
 
     sp = sub.add_parser("restore", help="restore one snapshot into an output directory")
-    sp.add_argument("disc_root")
+    sp.add_argument("disc_root", nargs="+", help="one or more disc roots")
     sp.add_argument("--snapshot", required=True, help="ref name or snapshot content id")
     sp.add_argument("--out", required=True, help="output directory")
     sp.set_defaults(func=cmd_restore)

@@ -135,21 +135,30 @@ func symlinkTarget(e format.TreeEntry) (string, error) {
 	return "", fmt.Errorf("symlink %q has no target TLV", e.Name)
 }
 
-// writeChunks writes every blob entry's payload into f at the entry's
-// own file offset, then closes f. It reports the close error on the
-// success path, because a write can fail at close alone.
+// writeChunks writes every blob entry's payload into the part file at
+// part, at the entry's own file offset. The part file is created, sized
+// to the file's final size, and closed here; it never carries the final
+// name, so a reader never sees a half-written file under the name the
+// snapshot gives it.
 //
 // fetch reads one chunk payload. It reports ok false for a payload no
 // provided disc holds; writeChunks then leaves that part of the file
 // unwritten and reports complete false, so a caller that restores
 // across discs can carry on.
-func writeChunks(f *os.File, entries []placedChunk, prog *progress.Reporter, fetch func(object.ID) (payload []byte, ok bool, err error)) (complete bool, err error) {
+func writeChunks(part string, size uint64, entries []placedChunk, prog *progress.Reporter, fetch func(object.ID) (payload []byte, ok bool, err error)) (complete bool, err error) {
+	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Truncate(int64(size)); err != nil {
+		return false, err
+	}
 	complete = true
 	for _, be := range entries {
 		id := object.ID(be.ContentID)
 		payload, ok, err := fetch(id)
 		if err != nil {
-			_ = f.Close()
 			return false, err
 		}
 		if !ok {
@@ -157,17 +166,12 @@ func writeChunks(f *os.File, entries []placedChunk, prog *progress.Reporter, fet
 			continue
 		}
 		if uint64(len(payload)) != be.Length {
-			_ = f.Close()
 			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d", id.TextForm(), len(payload), be.Length)
 		}
 		if _, err := f.WriteAt(payload, int64(be.Offset)); err != nil {
-			_ = f.Close()
 			return false, err
 		}
 		prog.Add(int64(len(payload)))
 	}
-	if err := f.Close(); err != nil {
-		return complete, err
-	}
-	return complete, nil
+	return complete, f.Close()
 }

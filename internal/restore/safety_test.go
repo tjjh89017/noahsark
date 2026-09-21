@@ -304,18 +304,15 @@ func assertEmptyDir(t *testing.T, dir string) {
 	}
 }
 
-// TestWriteChunksReportsCloseError asserts that the shared chunk writer
-// reports the file's close error instead of dropping it.
-func TestWriteChunksReportsCloseError(t *testing.T) {
-	f, err := os.Create(filepath.Join(t.TempDir(), "f"))
-	if err != nil {
+// TestWriteChunksReportsOpenError asserts that the shared chunk writer
+// reports a part file it cannot open instead of dropping the error.
+func TestWriteChunksReportsOpenError(t *testing.T) {
+	part := filepath.Join(t.TempDir(), "part")
+	if err := os.Mkdir(part, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	_, err = writeChunks(f, nil, nil, func(object.ID) ([]byte, bool, error) { return nil, false, nil })
+	_, err := writeChunks(part, 0, nil, nil, func(object.ID) ([]byte, bool, error) { return nil, false, nil })
 	if err == nil {
-		t.Fatal("writeChunks: want the close error")
+		t.Fatal("writeChunks: want the open error")
 	}
 }

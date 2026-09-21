@@ -58,6 +58,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 
 	target := imagePath
 	if *heal {
+		if *healOut == "" {
+			_, _ = fmt.Fprintf(stdout, "heal: no --out; repairing %s in place\n", imagePath)
+		}
 		reports, err := restore.HealWithProgress(imagePath, *healOut, prog)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
@@ -218,7 +221,8 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 
 	if verifyErr != nil {
 		n := markVerifyFailed(stageLog, ident.DiscUUID)
-		_, _ = fmt.Fprintf(stdout, "verify: %s failed; %d object(s) returned to packed\n", ident.name(), n)
+		_, _ = fmt.Fprintf(stdout, "verify: %s failed; the burn mark is removed; %d object(s) returned to packed\n", ident.name(), n)
+		_, _ = fmt.Fprintf(stdout, "next: burn a new disc from the same tree, then run: noahsark disc burned %d\n", ident.DiscSeq)
 		return "", false
 	}
 
@@ -364,6 +368,11 @@ func discVerifyCount(l *stage.Log, discUUID [16]byte) (uint8, bool) {
 func verifyCountLine(count uint8, minCopies int) string {
 	if int(count) < minCopies {
 		return fmt.Sprintf("verify: copy %d of %d verified; verify the second copy before gc", count, minCopies)
+	}
+	if int(count) > minCopies {
+		// A third verify of the same disc passes the count gc asks
+		// for. "3 of 2" reads as a fault; the disc is simply verified.
+		return "verify: verified"
 	}
 	return fmt.Sprintf("verify: %d of %d copies verified", count, minCopies)
 }

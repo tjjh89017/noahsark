@@ -126,7 +126,7 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "would delete 0 object") {
+	if !strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run output %q, want 0 objects", out)
 	}
 	if !strings.Contains(out, "1 of 2 copies verified") || !strings.Contains(out, "verify the second copy") {
@@ -163,7 +163,7 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc after the second verify: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "deleted 0 object") {
+	if strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc after the second verify output %q, want more than 0 objects deleted", out)
 	}
 	if strings.Contains(out, "copies verified;") {
@@ -209,7 +209,7 @@ func TestGCMinVerifiedCopiesOne(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "deleted 0 object") {
+	if strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
 	}
 }

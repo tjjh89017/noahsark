@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -50,46 +49,6 @@ func existingFileStatus(dest string, e format.TreeEntry, entries []placedChunk) 
 		return false, true
 	}
 	return fileAlreadyRestored(dest, fi, e, entries), true
-}
-
-// openForWrite creates dest for a restore write, following the path
-// safety rule of OPERATIONS.md's metadata restore policy: without
-// --overwrite, an existing path counts as resumed or skipped by
-// existingFileStatus, the one rule every restore mode shares; with
-// --overwrite, the existing path is unlinked first and then created.
-// A file created this way is always new, so O_TRUNC is never needed.
-// An unlink that fails, most often because dest is a non-empty
-// directory, leaves dest exactly as found and reports it through wp's
-// report, instead of stopping the restore.
-func openForWrite(dest string, e format.TreeEntry, entries []placedChunk, wp *writePolicy) (f *os.File, skipped bool, err error) {
-	if wp != nil && wp.overwrite {
-		if _, statErr := os.Lstat(dest); statErr == nil {
-			if err := unlinkExisting("file", dest); err != nil {
-				wp.blocked("file", dest, err)
-				return nil, true, nil
-			}
-		} else if !os.IsNotExist(statErr) {
-			return nil, false, statErr
-		}
-	} else if resumed, found := existingFileStatus(dest, e, entries); found {
-		if resumed {
-			wp.resume()
-		} else {
-			wp.skip(dest)
-		}
-		return nil, true, nil
-	}
-	f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			// Raced with something else creating dest since the check
-			// above; treat it as an ordinary conflict.
-			wp.skip(dest)
-			return nil, true, nil
-		}
-		return nil, false, err
-	}
-	return f, false, nil
 }
 
 // joinSafe joins name under dir and refuses a result that escapes dir.

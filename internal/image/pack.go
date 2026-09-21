@@ -2,6 +2,7 @@ package image
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,11 @@ import (
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+// ErrNothingToPack marks a pack that has nothing left to write: no
+// commit yet, or every staged object already on a disc. It is not a
+// failure, so pack prints the reason and exits with success.
+var ErrNothingToPack = errors.New("nothing to pack")
 
 // discsLedgerName is the local repository ledger of every disc pack has
 // already built. It reuses DISCS.bin's own container format directly,
@@ -190,7 +196,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		// from refs.txt before Pack runs, still names that snapshot
 		// then, so this case is left to the "nothing to pack" message
 		// below instead of being reported as never committed.
-		return nil, fmt.Errorf("no snapshot has been committed")
+		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
 	}
 
 	onDisc := func(id object.ID) bool {
@@ -220,9 +226,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 	if len(candidates) == 0 {
 		if len(opts.Snapshots) == 0 {
-			return nil, fmt.Errorf("nothing to pack: no staged object remains")
+			return nil, fmt.Errorf("%w: no staged object remains", ErrNothingToPack)
 		}
-		return nil, fmt.Errorf("nothing to pack: every object of %s is already on a disc", refNamesText(opts.Snapshots))
+		return nil, fmt.Errorf("%w: every object of %s is already on a disc", ErrNothingToPack, refNamesText(opts.Snapshots))
 	}
 
 	ledger, err := LoadDiscsLedger(opts.StagingDir, opts.RepoUUID)
@@ -512,7 +518,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		return nil, err
 	}
 	if len(allSnapshotIDs) == 0 && len(opts.Snapshots) == 0 {
-		return nil, fmt.Errorf("no snapshot has been committed")
+		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
 	}
 
 	onDisc := func(id object.ID) bool {
