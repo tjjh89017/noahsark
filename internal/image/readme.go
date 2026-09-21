@@ -74,7 +74,7 @@ func labelText(label []byte) string {
 // and the first run's RUN.bin. hash_algo and chunker_profile name the
 // first run's header fields; the superblock carries no such fields of
 // its own.
-func buildReadme(opts BuildOptions, packTime time.Time, label []byte) []byte {
+func buildReadme(opts BuildOptions, packTime time.Time, label []byte, discSeq uint64) []byte {
 	_, tzOffset := packTime.Zone()
 	sign := "+"
 	if tzOffset < 0 {
@@ -88,7 +88,7 @@ func buildReadme(opts BuildOptions, packTime time.Time, label []byte) []byte {
 		"{version_minor}", "0",
 		"{repo_uuid}", uuidText(opts.RepoUUID),
 		"{disc_uuid}", uuidText(opts.DiscUUID),
-		"{disc_seq}", fmt.Sprintf("%d", buildDiscSeq),
+		"{disc_seq}", fmt.Sprintf("%d", discSeq),
 		"{label}", labelText(label),
 		"{media_type}", mediaTypeNames[opts.MediaType],
 		"{fs_profile}", fsProfileNames[format.DiscFSProfileOneshot],

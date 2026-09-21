@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -353,6 +354,66 @@ func TestRestoreDiscSwapNeverEjects(t *testing.T) {
 		t.Fatalf("restore output %q missing the prompt to swap discs", out)
 	}
 	compareTrees(t, filepath.Join(outDir, src), src)
+}
+
+// TestRestoreDiscSwapDiscFromEarlierRunNotNeeded checks that a disc this
+// repository already knows, left in the drive from an earlier run, but
+// not part of the current restore's plan, draws a calm "not needed"
+// line rather than an "expected ... found ..." mismatch, and never that
+// line on the first look.
+func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	firstSnap := snapshotIDFromCommit(t, out)
+	firstDisc := filepath.Join(work, "disc0")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+firstDisc); code != 0 {
+		t.Fatalf("pack 0: exit %d: %s", code, out)
+	}
+
+	// A second snapshot, packed to its own disc: known to this
+	// repository's cache, but not needed to restore the first snapshot.
+	// The cache picks the newest cached disc by created_sec, a whole
+	// second; sleeping past a second boundary keeps that pick
+	// deterministic rather than a tie broken by uuid.
+	time.Sleep(1100 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("more content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("second commit: exit %d: %s", code, out)
+	}
+	secondDisc := filepath.Join(work, "disc1")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondDisc); code != 0 {
+		t.Fatalf("pack 1: exit %d: %s", code, out)
+	}
+
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	mountDisc(t, mountDir, secondDisc) // in the drive, not needed for firstSnap
+	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+		func() { mountDisc(t, mountDir, firstDisc) },
+	}})
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	code, out = runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, firstSnap, outDir)
+	if code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "expected disc") {
+		t.Fatalf("restore output %q reported an expected/found mismatch for a disc that is simply not needed", out)
+	}
+	if !strings.Contains(out, "is not needed") {
+		t.Fatalf("restore output %q, want a calm \"is not needed\" line", out)
+	}
 }
 
 // TestRestoreDiscSwapStillReportsAGenuineMismatch checks that only the

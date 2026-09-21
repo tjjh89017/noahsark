@@ -155,7 +155,7 @@ type packUnit struct {
 }
 
 // Pack selects the STAGED objects for exactly one run within
-// opts.TargetCapacitySectors, in Phase 1 locality order (a snapshot's
+// opts.TargetCapacitySectors, in this build's locality order (a snapshot's
 // tree and blob objects with their chunks, where the budget allows),
 // writes the run's NOAHSARK tree the same way Build does, and appends
 // every object it packed as Packed to opts.StageLog. Every snapshot
@@ -253,7 +253,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 	var label [64]byte
 	labelLen := copy(label[:], opts.Label)
-	readmeBuf := buildReadme(opts.asBuildOptions(), packTime, label[:labelLen])
+	readmeBuf := buildReadme(opts.asBuildOptions(), packTime, label[:labelLen], discSeq)
 	readmeHash := sha256.Sum256(readmeBuf)
 	formatHash := sha256.Sum256(FormatTxt)
 	decoderHash := sha256.Sum256(DecoderPy)
@@ -630,7 +630,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		}
 		var label [64]byte
 		labelLen := copy(label[:], discOpts.Label)
-		readmeBuf := buildReadme(discOpts.asBuildOptions(), packTime, label[:labelLen])
+		readmeBuf := buildReadme(discOpts.asBuildOptions(), packTime, label[:labelLen], discSeq)
 
 		fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
 			blockCount(uint64(len(readmeBuf))) +
@@ -706,8 +706,8 @@ const selectRunMaxIterations = 20
 // and every selected object, each padded to a whole fec.BlockSize
 // block) stay within the run's data budget: the whole FEC stripes that
 // fit opts.TargetCapacitySectors once the filesystem overhead of the
-// run's own file count is set aside. See OPERATIONS.md's capacity
-// estimator. Because the file count that sets the overhead is itself
+// run's own file count is set aside, matching OPERATIONS.md's capacity
+// budget rules. Because the file count that sets the overhead is itself
 // the count of objects selected, selectRun iterates to a fixed point.
 // It returns the selected units and the set of external ids they
 // reference that this run does not store.

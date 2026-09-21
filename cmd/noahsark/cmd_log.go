@@ -144,7 +144,7 @@ func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Write
 	// committed in the same second tie on it; sort by the record's own
 	// full-precision time instead, so that tie is already broken by
 	// real recency rather than only by display rounding. A further tie
-	// there (the same nanosecond, or Phase 1's constant generation 1)
+	// there (the same nanosecond, or this build's constant generation 1)
 	// falls back to generation descending, then snapshot id ascending,
 	// the same order FORMAT.md uses for a run's snapshots, so the
 	// result is stable across runs of log instead of depending on

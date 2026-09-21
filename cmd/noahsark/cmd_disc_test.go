@@ -33,10 +33,10 @@ func TestDiscListPointsAtStatus(t *testing.T) {
 	}
 }
 
-// TestDiscLabelAndMarkDegradedRefused checks that "disc label" and
-// "disc mark-degraded" are refused with a clear message, not silently
-// ignored.
-func TestDiscLabelAndMarkDegradedRefused(t *testing.T) {
+// TestDiscUnknownSubcommandRefused checks that a subcommand this build
+// does not have, such as the old "label" and "mark-degraded", is
+// refused as an unknown subcommand rather than silently ignored.
+func TestDiscUnknownSubcommandRefused(t *testing.T) {
 	for _, args := range [][]string{
 		{"disc", "label", "00000000-0000-0000-0000-000000000000", "TEXT"},
 		{"disc", "mark-degraded", "00000000-0000-0000-0000-000000000000"},
@@ -45,8 +45,8 @@ func TestDiscLabelAndMarkDegradedRefused(t *testing.T) {
 		if code != 2 {
 			t.Fatalf("%v: exit %d, want 2: %s", args, code, out)
 		}
-		if !strings.Contains(out, "not in this build") {
-			t.Fatalf("%v: output %q, want \"not in this build\"", args, out)
+		if !strings.Contains(out, "unknown subcommand") {
+			t.Fatalf("%v: output %q, want \"unknown subcommand\"", args, out)
 		}
 	}
 }

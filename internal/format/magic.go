@@ -22,7 +22,7 @@ var (
 	MagicBlob     = magicFromString("BLOB")
 	MagicTree     = magicFromString("TREE")
 	MagicSnapshot = magicFromString("SNAPSHOT")
-	// MagicBundle is reserved for a later version. A Phase 1 writer never
+	// MagicBundle is reserved for a later version. This build's writer never
 	// emits it; a reader refuses it.
 	MagicBundle   = magicFromString("BUNDLE")
 	MagicDisc     = magicFromString("DISC")
@@ -58,7 +58,7 @@ const (
 type HashAlgo uint32
 
 const (
-	// HashAlgoSHA256 is the only algorithm a Phase 1 writer emits.
+	// HashAlgoSHA256 is the only algorithm this build's writer emits.
 	HashAlgoSHA256 HashAlgo = 0x12
 	// HashAlgoBLAKE3 is reserved for a later version.
 	HashAlgoBLAKE3 HashAlgo = 0x1e
@@ -91,7 +91,7 @@ const (
 // DiscFSProfile is the disc filesystem profile registry.
 type DiscFSProfile uint8
 
-// DiscFSProfileOneshot is the default and only Phase 1 profile.
+// DiscFSProfileOneshot is the default and only profile this build writes.
 const DiscFSProfileOneshot DiscFSProfile = 0
 
 // MediaType is the media type registry. It is informational; a reader
@@ -110,7 +110,7 @@ const (
 // FECScheme is the FEC scheme registry.
 type FECScheme uint8
 
-// FECSchemeNone is the default Phase 1 scheme: no checksum column and no
+// FECSchemeNone is the default scheme: no checksum column and no
 // parity. Burning two identical discs is the primary redundancy; FEC is
 // a reserve feature a run opts into.
 const FECSchemeNone FECScheme = 0

@@ -16,7 +16,7 @@ import (
 // configFileName is the config file name inside a repository directory.
 const configFileName = "config"
 
-// repoConfig holds the Phase 1 config keys this build honours. Every
+// repoConfig holds the config keys this build honours. Every
 // other key OPERATIONS.md's configuration reference names needs behaviour
 // this build does not implement, so the loader refuses it by name rather
 // than silently ignoring it.
@@ -44,9 +44,6 @@ type repoConfig struct {
 	// CacheDir is cache.dir: an override for the local cache location.
 	// Empty means the default of cache.ResolveDir.
 	CacheDir string
-	// CacheFormatVersion is cache.format_version. A cache whose stored
-	// version differs is deleted and rebuilt, never migrated.
-	CacheFormatVersion int
 	// PackCapacity is pack.capacity: the capacity pack uses when its own
 	// command line names none. It keeps the text the operator wrote, so
 	// a preset name still selects the media type it names.
@@ -87,9 +84,9 @@ func (c repoConfig) checkKeys(keys ...string) error {
 // of every other key, so a fault in one key stops one command only.
 var (
 	configKeysForCommit = []string{"sources.root", "commit.restat_after_read", "commit.retry_unstable", "sources.exclude"}
-	configKeysForPack   = []string{"pack.capacity", "fec.scheme", "cache.dir", "cache.format_version"}
-	configKeysForGC     = []string{"staging.retain_after_clean", "gc.min_verified_copies", "cache.dir", "cache.format_version"}
-	configKeysForVerify = []string{"gc.min_verified_copies", "cache.dir", "cache.format_version"}
+	configKeysForPack   = []string{"pack.capacity", "fec.scheme", "cache.dir"}
+	configKeysForGC     = []string{"staging.retain_after_clean", "gc.min_verified_copies", "cache.dir"}
+	configKeysForVerify = []string{"gc.min_verified_copies", "cache.dir"}
 )
 
 // knownConfigKeys names every key this build reads. A key present in the
@@ -103,18 +100,14 @@ var knownConfigKeys = map[string]bool{
 	"fec.scheme":                 true,
 	"pack.capacity":              true,
 	"cache.dir":                  true,
-	"cache.format_version":       true,
 	"staging.retain_after_clean": true,
 	"gc.min_verified_copies":     true,
 	"sources.exclude":            true,
 }
 
-// defaultRetryUnstable is commit.retry_unstable's Phase 1 default, applied
+// defaultRetryUnstable is commit.retry_unstable's default, applied
 // when the config file does not set the key.
 const defaultRetryUnstable = 1
-
-// defaultCacheFormatVersion is cache.format_version's Phase 1 default.
-const defaultCacheFormatVersion = 1
 
 // defaultRetainAfterClean is staging.retain_after_clean's default: 7
 // days.
@@ -161,11 +154,10 @@ func readConfig(path string) (repoConfig, error) {
 	defer func() { _ = f.Close() }()
 
 	c := repoConfig{
-		RestatAfterRead:    true,
-		RetryUnstable:      defaultRetryUnstable,
-		CacheFormatVersion: defaultCacheFormatVersion,
-		RetainAfterClean:   defaultRetainAfterClean,
-		MinVerifiedCopies:  defaultMinVerifiedCopies,
+		RestatAfterRead:   true,
+		RetryUnstable:     defaultRetryUnstable,
+		RetainAfterClean:  defaultRetainAfterClean,
+		MinVerifiedCopies: defaultMinVerifiedCopies,
 	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -226,13 +218,6 @@ func readConfig(path string) (repoConfig, error) {
 			c.PackCapacity = value
 		case "cache.dir":
 			c.CacheDir = value
-		case "cache.format_version":
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				c.bad(key, fmt.Errorf("config: cache.format_version: %w", err))
-				break
-			}
-			c.CacheFormatVersion = n
 		case "staging.retain_after_clean":
 			d, err := parseRetentionDuration(value)
 			if err != nil {
