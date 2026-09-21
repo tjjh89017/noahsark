@@ -1,7 +1,9 @@
 package restore
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,61 +17,114 @@ import (
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
-// Manifest is a restore's file and directory list, built from the local
-// cache alone (OPERATIONS.md "14. Restore"'s disc-swap mode reads the
-// snapshot's trees and blobs from the cache; only chunk payloads still
-// need a disc). Every directory and symlink is created as soon as the
-// manifest is built; every regular file waits until its chunks are
-// spooled.
-type Manifest struct {
-	outDir       string
-	files        []*pendingFile
-	filesByChunk map[object.ID][]*pendingFile
-	dirsForMeta  []dirMeta
-	wp           *writePolicy
+// partSuffix ends the name of the hidden file a restore writes a file's
+// bytes into until the file is complete.
+const partSuffix = ".noahsark-part"
+
+// DiscChunks is one inserted disc, as the assembler reads it. Has
+// answers from the disc's own object list, with no disc access; Read
+// returns one verified chunk payload and may make the operator insert
+// the disc first.
+type DiscChunks interface {
+	Has(id object.ID) bool
+	Read(id object.ID) ([]byte, error)
 }
 
-// pendingFile is one regular file the manifest still owes: its
-// destination path, its chunk list in file order, and the chunk ids it
-// is still waiting on.
+// FatalDiscError marks a disc read error that stops the whole restore,
+// such as a prompt for the disc that cannot be answered. Every other
+// read error fails one file and the walk goes on.
+type FatalDiscError struct{ Err error }
+
+func (e *FatalDiscError) Error() string { return e.Err.Error() }
+func (e *FatalDiscError) Unwrap() error { return e.Err }
+
+// Assembler restores one snapshot from the local cache and one disc at
+// a time, with no spool: it walks the snapshot's tree one time for each
+// disc and writes each chunk of that disc straight into the part file
+// of the file that holds it.
+//
+// It reads every tree and blob from the cache. Only chunk payloads come
+// from a disc.
+type Assembler struct {
+	c           *cache.Cache
+	snap        *format.Snapshot
+	outDir      string
+	includes    []string
+	wp          *writePolicy
+	dirsForMeta []dirMeta
+	// pending holds one record for each file in scope that is not
+	// complete yet, by destination path. A file that the first walk
+	// finished, resumed or skipped is absent, and a later walk then
+	// reads neither its blob nor its bytes.
+	pending map[string]*pendingFile
+	// firstDisc is true until the first walk ends. The first walk
+	// creates the directories and the symlinks, and decides every
+	// existing destination; a later walk creates nothing.
+	firstDisc bool
+	// chunkBuf backs the content check of a resumed part file. It grows
+	// to the largest chunk the restore meets, never past the maximum
+	// chunk size.
+	chunkBuf []byte
+}
+
+// pendingFile is what the assembler keeps for one file it has not
+// finished: how many blob entries still owe their bytes, and whether
+// the part file was already on disk when this run first opened it.
+// Nothing here grows with the file's size or with the snapshot's.
 type pendingFile struct {
-	path      string
-	entries   []format.BlobEntry
-	remaining map[object.ID]bool
-	treeEntry format.TreeEntry
-	written   bool
+	remaining int
+	opened    bool
+	resume    bool
 }
 
-// dirMeta is one directory the manifest already created, recorded so
-// its metadata can be applied in a deferred pass, deepest first, once
-// every file underneath it is written.
+// dirMeta is one directory the walk created, recorded so its metadata
+// can be applied in a deferred pass, deepest first, after the last
+// disc.
 type dirMeta struct {
 	path string
 	e    format.TreeEntry
 }
 
-// BuildManifest reads snap's tree from the cache, restricted to
-// includes (the whole snapshot when includes is empty), creates every
-// directory and symlink under outDir, and returns the regular files
-// still waiting on chunk data. A blob the cache does not hold is a hard
-// error: this build has no path to fetch a blob object from a mounted
-// disc during the disc-swap walk.
-func BuildManifest(c *cache.Cache, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (*Manifest, error) {
-	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
-	if err != nil {
-		return nil, err
-	}
-	fs, err := newFilterState(includes)
-	if err != nil {
-		return nil, err
-	}
+// errIncomplete names a file no disc of this restore could finish.
+var errIncomplete = errors.New("not every chunk of this file was read; the part file is kept for a later run")
+
+// NewAssembler prepares a disc-swap restore of snap into outDir,
+// restricted to includes (the whole snapshot when includes is empty).
+// It creates outDir and reads nothing else until the first Disc call.
+func NewAssembler(c *cache.Cache, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (*Assembler, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, err
 	}
-	m := &Manifest{
-		outDir:       outDir,
-		filesByChunk: make(map[object.ID][]*pendingFile),
-		wp:           &writePolicy{overwrite: overwrite},
+	return &Assembler{
+		c:         c,
+		snap:      snap,
+		outDir:    outDir,
+		includes:  includes,
+		wp:        &writePolicy{overwrite: overwrite},
+		pending:   make(map[string]*pendingFile),
+		firstDisc: true,
+	}, nil
+}
+
+// Disc walks the snapshot one time against d, and writes every chunk d
+// holds into the part file of the file that holds it. A file whose last
+// chunk lands here gets its final name before Disc moves to the next
+// file.
+//
+// A read error on one chunk fails that file alone and the walk goes on.
+// Only a *FatalDiscError, and a failure that stops the walk itself, is
+// returned.
+func (a *Assembler) Disc(d DiscChunks, prog *progress.Reporter) error {
+	if !a.firstDisc && len(a.pending) == 0 {
+		return nil
+	}
+	rootTree, err := a.c.ReadTree(object.ID(a.snap.RootTree))
+	if err != nil {
+		return err
+	}
+	filter, err := newFilterState(a.includes)
+	if err != nil {
+		return err
 	}
 	for _, e := range rootTree.Entries {
 		if e.EntryType != format.EntryTypeDirectory {
@@ -79,35 +134,55 @@ func BuildManifest(c *cache.Cache, snap *format.Snapshot, outDir string, include
 		if rootPath == "" {
 			continue
 		}
-		childFS, include := stepInto(fs, splitPath(rootPath))
+		childFilter, include := stepInto(filter, splitPath(rootPath))
 		if !include {
 			continue
 		}
-		dest, ok, err := ensureDir(outDir, splitPath(rootPath), m.wp)
+		dest, ok, err := a.dir(a.outDir, splitPath(rootPath))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if !ok {
 			continue
 		}
-		if err := m.walkDir(c, object.ID(e.ContentID), dest, childFS); err != nil {
-			return nil, err
+		if err := a.walkDir(object.ID(e.ContentID), dest, childFilter, d, prog); err != nil {
+			return err
 		}
-		m.dirsForMeta = append(m.dirsForMeta, dirMeta{dest, e})
+		if a.firstDisc {
+			a.dirsForMeta = append(a.dirsForMeta, dirMeta{dest, e})
+		}
 	}
-	if unmatched := unmatchedIncludes(fs, includes); len(unmatched) > 0 {
-		return nil, &UnmatchedIncludeError{Paths: unmatched}
+	if a.firstDisc {
+		if unmatched := unmatchedIncludes(filter, a.includes); len(unmatched) > 0 {
+			return &UnmatchedIncludeError{Paths: unmatched}
+		}
 	}
-	return m, nil
+	a.firstDisc = false
+	return nil
 }
 
-func (m *Manifest) walkDir(c *cache.Cache, treeID object.ID, dest string, fs *filterState) error {
-	t, err := c.ReadTree(treeID)
+// dir makes or enters every component under parent. The first walk
+// creates what is missing and reports a path it cannot use; a later
+// walk enters the same directories again, with no second report of a
+// path the first walk already reported.
+func (a *Assembler) dir(parent string, components []string) (string, bool, error) {
+	if a.firstDisc {
+		return ensureDir(parent, components, a.wp)
+	}
+	return ensureDir(parent, components, nil)
+}
+
+func (a *Assembler) walkDir(treeID object.ID, dest string, filter *filterState, d DiscChunks, prog *progress.Reporter) error {
+	t, err := a.c.ReadTree(treeID)
 	if err != nil {
 		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
 	}
+	taken := make(map[string]bool, len(t.Entries))
 	for _, e := range t.Entries {
-		childFS, include := stepInto(fs, []string{string(e.Name)})
+		taken[string(e.Name)] = true
+	}
+	for _, e := range t.Entries {
+		childFilter, include := stepInto(filter, []string{string(e.Name)})
 		if !include {
 			continue
 		}
@@ -118,161 +193,255 @@ func (m *Manifest) walkDir(c *cache.Cache, treeID object.ID, dest string, fs *fi
 		}
 		switch e.EntryType {
 		case format.EntryTypeDirectory:
-			sub, ok, err := ensureDir(dest, []string{name}, m.wp)
+			sub, ok, err := a.dir(dest, []string{name})
 			if err != nil {
 				return err
 			}
 			if !ok {
 				continue
 			}
-			if err := m.walkDir(c, object.ID(e.ContentID), sub, childFS); err != nil {
+			if err := a.walkDir(object.ID(e.ContentID), sub, childFilter, d, prog); err != nil {
 				return err
 			}
-			m.dirsForMeta = append(m.dirsForMeta, dirMeta{sub, e})
+			if a.firstDisc {
+				a.dirsForMeta = append(a.dirsForMeta, dirMeta{sub, e})
+			}
 		case format.EntryTypeRegular:
-			if err := m.addFile(c, child, object.ID(e.ContentID), e); err != nil {
+			part, err := joinSafe(dest, partName(name, taken))
+			if err != nil {
+				return err
+			}
+			if err := a.file(child, part, object.ID(e.ContentID), e, d, prog); err != nil {
 				return err
 			}
 		case format.EntryTypeSymlink:
+			if !a.firstDisc {
+				continue
+			}
 			target, err := symlinkTarget(e)
 			if err != nil {
 				return err
 			}
-			if err := restoreSymlink(child, target, e, m.wp); err != nil {
-				m.wp.failed(child, err)
+			if err := restoreSymlink(child, target, e, a.wp); err != nil {
+				a.wp.failed(child, err)
 			}
 		default:
-			m.wp.unsupported(child, e.EntryType)
+			if a.firstDisc {
+				a.wp.unsupported(child, e.EntryType)
+			}
 		}
 	}
 	return nil
 }
 
-// addFile registers one regular file. A killed disc-swap restore can
-// leave a file already fully written from an earlier run; with overwrite
-// not requested, such a file counts as resumed rather than skipped, so a
-// rerun reports success once every other file is in place. A file whose
-// size, mtime, or content disagrees with the tree entry counts as
-// skipped, the ordinary conflict a caller resolves with --overwrite.
-func (m *Manifest) addFile(c *cache.Cache, dest string, blobID object.ID, e format.TreeEntry) error {
-	blob, err := c.ReadBlob(blobID)
+// partName returns the part-file name of a file called name in a
+// directory whose own entry names are taken. The snapshot itself can
+// hold a file of the plain part name; the suffix then carries a number,
+// so a restore never writes into a path the snapshot owns. The names
+// come from the tree, thus every run picks the same one.
+func partName(name string, taken map[string]bool) string {
+	candidate := "." + name + partSuffix
+	for i := 2; taken[candidate]; i++ {
+		candidate = fmt.Sprintf(".%s%s%d", name, partSuffix, i)
+	}
+	return candidate
+}
+
+// file restores one regular file as far as d can take it. The first
+// walk decides an existing destination and registers the file; a later
+// walk works only on a file that is still pending.
+func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry, d DiscChunks, prog *progress.Reporter) error {
+	pf, known := a.pending[dest]
+	if !known && !a.firstDisc {
+		return nil
+	}
+	blob, err := a.c.ReadBlob(blobID)
 	if err != nil {
 		return fmt.Errorf("blob %s: not held by the cache; disc-swap restore needs every blob cached: %w", blobID.TextForm(), err)
 	}
 	entries := append([]format.BlobEntry(nil), blob.Entries...)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
 
-	if !m.wp.overwrite {
-		if resumed, found := existingFileStatus(dest, e, entries); found {
-			if resumed {
-				m.wp.resume()
-			} else {
-				m.wp.skip(dest)
+	if !known {
+		if !a.wp.overwrite {
+			if resumed, found := existingFileStatus(dest, e, entries); found {
+				if resumed {
+					a.wp.resume()
+					// A run killed between link and unlink is the one way
+					// the final name and the part file both exist.
+					removePart(part)
+				} else {
+					a.wp.skip(dest)
+				}
+				return nil
 			}
-			return nil
 		}
+		pf = &pendingFile{remaining: len(entries)}
+		a.pending[dest] = pf
 	}
 
-	pf := &pendingFile{path: dest, entries: entries, remaining: make(map[object.ID]bool), treeEntry: e}
+	var wanted []format.BlobEntry
 	for _, be := range entries {
-		id := object.ID(be.ContentID)
-		pf.remaining[id] = true
-		m.filesByChunk[id] = append(m.filesByChunk[id], pf)
+		if d.Has(object.ID(be.ContentID)) {
+			wanted = append(wanted, be)
+		}
 	}
-	m.files = append(m.files, pf)
+	if len(wanted) == 0 && pf.remaining > 0 {
+		return nil
+	}
+	if err := a.writePart(part, pf, e, wanted, d, prog); err != nil {
+		if _, fatal := errors.AsType[*FatalDiscError](err); fatal {
+			return err
+		}
+		a.wp.failed(dest, err)
+		delete(a.pending, dest)
+		return nil
+	}
+	if pf.remaining == 0 {
+		a.finish(dest, part, e)
+		delete(a.pending, dest)
+	}
 	return nil
 }
 
-// NeedsChunk reports whether some still-unwritten file is still waiting
-// on id specifically: a chunk already spooled for a file that also
-// needs other, not-yet-spooled chunks reports false here, so a resumed
-// run does not re-fetch what it already has.
-func (m *Manifest) NeedsChunk(id object.ID) bool {
-	for _, pf := range m.filesByChunk[id] {
-		if !pf.written && pf.remaining[id] {
-			return true
-		}
+// writePart opens the part file, sets its final size, and writes every
+// chunk of this disc into it at the chunk's own offset. A chunk whose
+// bytes are already in the part file, from a run that was killed, is
+// checked against its content id and skipped.
+func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, wanted []format.BlobEntry, d DiscChunks, prog *progress.Reporter) error {
+	if !pf.opened {
+		_, err := os.Lstat(part)
+		pf.resume = err == nil
+		pf.opened = true
 	}
-	return false
-}
-
-// MarkSpooled records that id's chunk payload is now in spoolDir.
-func (m *Manifest) MarkSpooled(id object.ID) {
-	for _, pf := range m.filesByChunk[id] {
-		delete(pf.remaining, id)
+	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return err
 	}
-}
-
-// WriteReady writes every pending file whose chunks are all spooled,
-// reading each chunk from spoolDir, and frees a spooled chunk once
-// every file that needed it is written. It reports how many files it
-// wrote and how many spool bytes it freed, so a caller tracking the
-// spool's size can keep a running total without re-statting spoolDir.
-func (m *Manifest) WriteReady(spoolDir string, prog *progress.Reporter) (written int, freedBytes uint64, err error) {
-	for _, pf := range m.files {
-		if pf.written || len(pf.remaining) > 0 {
+	defer func() { _ = f.Close() }()
+	if err := f.Truncate(int64(e.Size)); err != nil {
+		return err
+	}
+	for _, be := range wanted {
+		id := object.ID(be.ContentID)
+		if pf.resume && a.chunkInPlace(f, be) {
+			pf.remaining--
 			continue
 		}
-		freed, err := m.writeFile(spoolDir, pf, prog)
+		payload, err := d.Read(id)
 		if err != nil {
-			return written, freedBytes, err
+			return err
 		}
-		written++
-		freedBytes += freed
+		if uint64(len(payload)) != be.Length {
+			return fmt.Errorf("chunk %s: length %d, blob entry says %d", id.TextForm(), len(payload), be.Length)
+		}
+		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
+			return err
+		}
+		prog.Add(int64(len(payload)))
+		pf.remaining--
 	}
-	return written, freedBytes, nil
+	return f.Close()
 }
 
-func (m *Manifest) writeFile(spoolDir string, pf *pendingFile, prog *progress.Reporter) (freedBytes uint64, err error) {
-	f, skipped, err := openForWrite(pf.path, pf.treeEntry, pf.entries, m.wp)
-	if err != nil {
-		return 0, err
+// chunkInPlace reports whether f already holds be's own bytes at be's
+// offset, by the same content id check a restore uses everywhere else.
+func (a *Assembler) chunkInPlace(f *os.File, be format.BlobEntry) bool {
+	if uint64(cap(a.chunkBuf)) < be.Length {
+		a.chunkBuf = make([]byte, be.Length)
 	}
-	if !skipped {
-		// A file that fails here is recorded and the assembly goes on
-		// to the next file, the same rule the disc-root walk follows.
-		err := writeChunksFrom(f, pf.entries, prog, spoolDir)
-		if err != nil {
-			m.wp.failed(pf.path, err)
+	buf := a.chunkBuf[:be.Length]
+	if _, err := f.ReadAt(buf, int64(be.FileOffset)); err != nil {
+		return false
+	}
+	return object.ComputeID(buf) == object.ID(be.ContentID)
+}
+
+// finish gives a complete part file its final name, then applies the
+// file's metadata. link fails when the final name exists, so the
+// no-overwrite rule holds with no race; with overwrite, the path in the
+// way is unlinked first, and a directory that holds entries is never
+// removed.
+func (a *Assembler) finish(dest, part string, e format.TreeEntry) {
+	if a.wp.overwrite {
+		if _, err := os.Lstat(dest); err == nil {
+			if err := unlinkExisting("file", dest); err != nil {
+				a.wp.blocked("file", dest, err)
+				removePart(part)
+				return
+			}
+		}
+	}
+	if err := linkPart(part, dest); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			a.wp.skip(dest)
 		} else {
-			applyMetadata(pf.path, pf.treeEntry, m.wp)
+			a.wp.failed(dest, err)
 		}
+		removePart(part)
+		return
 	}
-	pf.written = true
-	for _, be := range pf.entries {
-		id := object.ID(be.ContentID)
-		if !m.NeedsChunk(id) {
-			_ = os.Remove(SpoolObjectPath(spoolDir, id))
-			freedBytes += be.Length
-		}
-	}
-	return freedBytes, nil
+	removePart(part)
+	applyMetadata(dest, e, a.wp)
 }
 
-// writeChunksFrom writes every blob entry's spooled payload into f, and
-// closes f.
-func writeChunksFrom(f *os.File, entries []format.BlobEntry, prog *progress.Reporter, spoolDir string) error {
-	_, err := writeChunks(f, entries, prog, func(id object.ID) ([]byte, bool, error) {
-		data, err := os.ReadFile(SpoolObjectPath(spoolDir, id))
-		if err != nil {
-			return nil, false, fmt.Errorf("chunk %s: %w", id.TextForm(), err)
-		}
-		return data, true, nil
-	})
-	return err
+// linkFile is os.Link, a seam a test drives the no-hard-link fallback
+// through.
+var linkFile = os.Link
+
+// linkPart makes dest a second name for part. A filesystem with no hard
+// link falls back to a check and a rename; that fallback has a small
+// race, because another process can create dest between the check and
+// the rename.
+func linkPart(part, dest string) error {
+	err := linkFile(part, dest)
+	if err == nil || !linkUnsupported(err) {
+		return err
+	}
+	if _, statErr := os.Lstat(dest); statErr == nil {
+		return fs.ErrExist
+	}
+	return os.Rename(part, dest)
+}
+
+// linkUnsupported reports whether err says the filesystem has no hard
+// link. EXDEV is not among them: the part file sits in the destination
+// directory itself.
+func linkUnsupported(err error) bool {
+	return errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.ENOSYS)
+}
+
+// removePart unlinks a part file this restore wrote. It removes a
+// regular file only, so a symlink or a directory that stands at the
+// part name is left exactly as found.
+func removePart(part string) {
+	fi, err := os.Lstat(part)
+	if err != nil || !fi.Mode().IsRegular() {
+		return
+	}
+	_ = os.Remove(part)
 }
 
 // Finish applies directory metadata in a deferred pass, deepest
-// directory first, matching OPERATIONS.md's restore pipeline.
-func (m *Manifest) Finish() {
-	for _, d := range slices.Backward(m.dirsForMeta) {
-		applyMetadata(d.path, d.e, m.wp)
+// directory first, and names every file no disc could complete. Its
+// part file stays for a later run.
+func (a *Assembler) Finish() {
+	for _, d := range slices.Backward(a.dirsForMeta) {
+		applyMetadata(d.path, d.e, a.wp)
+	}
+	paths := make([]string, 0, len(a.pending))
+	for path := range a.pending {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		a.wp.failed(path, errIncomplete)
 	}
 }
 
-// Report is what this manifest's restore did not do, in the one form
-// every restore mode reports through.
-func (m *Manifest) Report() Report { return m.wp.report }
+// Report is what this restore did not do, in the one form every restore
+// mode reports through.
+func (a *Assembler) Report() Report { return a.wp.report }
 
 // fileAlreadyRestored reports whether dest, an existing regular file,
 // already holds e's data: either its size and mtime match e exactly, the
@@ -323,42 +492,6 @@ func contentMatches(dest string, entries []format.BlobEntry) bool {
 		}
 	}
 	return true
-}
-
-// Pending reports whether any file is still waiting on chunk data.
-func (m *Manifest) Pending() bool {
-	for _, pf := range m.files {
-		if !pf.written {
-			return true
-		}
-	}
-	return false
-}
-
-// MissingObjects returns the content id of every chunk at least one
-// unwritten file is still waiting on, deduplicated and sorted.
-func (m *Manifest) MissingObjects() []object.ID {
-	seen := make(map[object.ID]bool)
-	var out []object.ID
-	for _, pf := range m.files {
-		if pf.written {
-			continue
-		}
-		for id := range pf.remaining {
-			if !seen[id] {
-				seen[id] = true
-				out = append(out, id)
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TextForm() < out[j].TextForm() })
-	return out
-}
-
-// SpoolObjectPath returns the path a chunk's payload is spooled to
-// under spoolDir.
-func SpoolObjectPath(spoolDir string, id object.ID) string {
-	return filepath.Join(spoolDir, id.TextForm())
 }
 
 // ReadChunkFromRoot reads and verifies one chunk object from a mounted

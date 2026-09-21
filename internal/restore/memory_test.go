@@ -151,6 +151,41 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 	return treeDir, snapID
 }
 
+// TestDiscSwapRestoreMemoryBounded asserts the peak of one disc-swap
+// restore over a fixture of many chunks. The assembler holds one
+// disc's object id set, one chunk and one file's blob entries, so its
+// peak follows the chunk size, never the size of the data.
+func TestDiscSwapRestoreMemoryBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("memory assertion test, skipped under -short")
+	}
+	treeDir, snapID := buildMemoryFixtureTree(t)
+	c := cacheOfTree(t, treeDir)
+	snap, err := c.ReadSnapshot(snapID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(t.TempDir(), "out")
+	a, err := NewAssembler(c, snap, outDir, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sampler := startPeakMemSampler()
+	if err := a.Disc(&treeDisc{root: treeDir}, nil); err != nil {
+		t.Fatal(err)
+	}
+	a.Finish()
+	peak := sampler.Stop()
+	if rep := a.Report(); rep.Failed() {
+		t.Fatalf("restore reported %s", rep.Summary())
+	}
+	t.Logf("disc-swap restore peak heap+stack: %d bytes (%.1f MiB)", peak, float64(peak)/(1<<20))
+	if peak > memPeakBudget {
+		t.Fatalf("the restore peaked at %d bytes, want under %d (%.1f MiB budget)", peak, memPeakBudget, float64(memPeakBudget)/(1<<20))
+	}
+}
+
 func TestHealMemoryBounded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("memory assertion test, skipped under -short")

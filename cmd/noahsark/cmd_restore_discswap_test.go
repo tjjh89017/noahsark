@@ -85,7 +85,7 @@ func restoreDryRunDiscSeqs(t *testing.T, flagsAndSnapshot ...string) []int {
 // restore --dry-run would, restricted to include, returning the
 // disc_seq of every disc that plan assigns at least one chunk object
 // to. A disc the plan names only for a tree or blob object never needs
-// a physical visit: BuildManifest resolves those from the cache, so
+// a physical visit: the assembler resolves those from the cache, so
 // this is the set of discs a disc-swap restore of include would
 // actually prompt for.
 func chunkDiscSeqs(t *testing.T, repo, snapID, include string) []int {
@@ -283,8 +283,11 @@ func TestRestoreDiscSwapResume(t *testing.T) {
 	}
 	compareTrees(t, filepath.Join(outDir, src), src)
 
-	if _, err := os.Stat(filepath.Join(repo, "staging", "restore", snapID)); !os.IsNotExist(err) {
-		t.Fatalf("staging/restore/%s still exists after a successful restore: %v", snapID, err)
+	if _, err := os.Stat(filepath.Join(repo, "staging", "restore")); !os.IsNotExist(err) {
+		t.Fatalf("restore wrote %s in the repository; it writes only below the output directory: %v", filepath.Join(repo, "staging", "restore"), err)
+	}
+	if left := partFilesUnder(t, outDir); len(left) > 0 {
+		t.Fatalf("part file(s) left after a successful restore: %v", left)
 	}
 }
 
@@ -438,7 +441,7 @@ func TestRestoreSnapshotIDPrefixNamesItself(t *testing.T) {
 // exactly the discs that hold a needed chunk: the same discs a
 // disc-swap restore of that scope actually reads. A disc the plan
 // names only because it holds a needed tree or blob object, never read
-// from a disc since BuildManifest resolves those from the cache, would
+// from a disc since the assembler resolves those from the cache, would
 // otherwise make the dry-run list a disc restore never asks for.
 func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())

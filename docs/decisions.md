@@ -929,31 +929,58 @@ like an old multi-volume installer instead of needing every disc
 mounted at once. `restore --dry-run` builds and prints the same plan
 and stops there.
 
-`internal/restore.BuildManifest` reads every tree and blob the
-restore needs straight from the cache: `CheckComplete` already proved
-every tree is cached, and a blob is cached for any snapshot `pack` or
+`internal/restore.Assembler` reads every tree and blob the restore
+needs straight from the cache: `CheckComplete` already proved every
+tree is cached, and a blob is cached for any snapshot `pack` or
 `recover` has touched since blob caching was added. Only chunk
 payloads still need a disc, so a mounted disc is read for its assigned
 chunk objects alone (`internal/restore.ReadChunkFromRoot`, the same
 canonical `objects/<fanout>/<id>` path `Restore` and `RestoreMulti`
-already use); every directory and symlink is created immediately, and
-regular files wait in a `pendingFile` list, keyed by the chunk ids they
-still need, until every chunk has arrived. A chunk shared by several
-files (dedup) stays spooled until the last file needing it is written,
-then is deleted; a blob the cache does not hold is a hard error in this
+already use). A blob the cache does not hold is a hard error in this
 mode, since there is no path yet to fetch a blob object from a mounted
 disc mid-walk.
 
-Spooled chunk payloads live flat under
-`staging/restore/<snapshot-id>/objects/<id>`, keyed by content id alone
-(no run or disc structure), since a chunk's payload is content-addressed
-already. On start, `restore` marks every object already sitting there
-as spooled and tries to finish any file that completes as a result,
-printing `resuming: N object(s) already spooled`; a disc every one of
-whose assigned chunks is already resolved (by an earlier interrupted
-run, or by `--include` narrowing the manifest so that disc holds
-nothing the manifest still needs) is skipped with no detection and no
-prompt.
+There is no spool. `Assembler.Disc` walks the snapshot's tree one time
+for each disc: for each regular file in scope it reads the blob from
+the cache, and for each chunk of that file that is on this disc it
+reads the chunk, verifies it and `WriteAt`s it into the file's part
+file at the chunk's own offset. The first walk creates every directory
+and symlink, and decides each existing destination with
+`existingFileStatus`; a later walk creates nothing and touches only the
+files that are not complete yet. Each byte is copied one time, and
+nothing the restore holds grows with the size of the snapshot: one
+disc's object id set, one chunk, and the blob entries of one file.
+
+For each file that is not complete the assembler keeps one small record
+(how many blob entries still owe their bytes, and whether the part file
+was already on disk when this run first opened it). That record holds
+no chunk id and no path list, so a snapshot of any size costs the same
+per unfinished file. The record is dropped when the file gets its final
+name.
+
+The part file is `<dir>/.<name>.noahsark-part`, opened with
+`O_CREATE|O_NOFOLLOW` (never `O_EXCL`: a later disc opens it again) in
+the directory `ensureDir` already made with the no-follow rule. A
+snapshot that itself holds a file of that name gets a numbered suffix
+instead, decided from the directory's own tree entries, thus the same
+name each run. `Truncate` sets the final size one time, so a sparse
+tail is right. The final name appears through `link(part, final)` and
+then `unlink(part)`: `link` fails with `EEXIST`, so the no-overwrite
+rule holds with no race and a half-written file never carries the final
+name. `--overwrite` unlinks the path in the way first, and never
+removes a directory tree. `linkPart` falls back to `Lstat` and
+`Rename` when the filesystem has no hard link (`EPERM`, `ENOTSUP`,
+`ENOSYS`); that fallback has a small race, and `linkFile` is the seam a
+test drives it through.
+
+At each open of a part file left by an earlier run, each chunk of this
+disc is checked against its content id and skipped when it is already
+there. So a rerun asks only for the discs that still hold a chunk some
+incomplete file needs: `mountedDisc.Read` prompts at the first chunk it
+must actually read, and a disc that owes nothing any more is never
+detected and never prompted for. A killed run leaves hidden part files;
+the next successful run completes them and unlinks them. A restore
+never removes a part file it did not write or need.
 
 Disc detection (`cmd/noahsark`'s `detectDisc`) reads
 `--mount`'s `NOAHSARK/DISC.bin` and compares its uuid: a match prints
@@ -967,12 +994,11 @@ configuration reference names no `restore.mount` key, so the flag is
 required in this mode.
 
 There is no staging budget and no persisted plan file: the disc-swap
-loop spools what one disc's plan entry needs in a single pass, reads
-the next disc, and so on, one pass for each disc. `Manifest.WriteReady`
-frees a chunk's spooled bytes as soon as the last file needing it is
-written, so the spool never holds more than what the discs already
-read, and not yet freed, still owe; nothing here grows with the size of
-the snapshot, only with one disc's own share of it.
+loop walks the tree one time for each disc, in plan order, and reads
+each disc in one pass. A read error on one chunk fails that one file
+and the walk continues; only an error the disc source marks with
+`restore.FatalDiscError`, such as a prompt that cannot be answered,
+stops the whole restore.
 
 `ejectDrive`'s permission hint used to string-match `umount`'s own
 stderr for "permission denied" or "must be superuser", which is
@@ -985,7 +1011,7 @@ output is instead folded into the generic warning for every other
 failure, so it is not lost, just no longer parsed.
 
 A destination file that already exists, with `--overwrite` not given,
-is not automatically a conflict in this mode: `internal/restore.Manifest`
+is not automatically a conflict in this mode: the assembler
 checks it against the tree entry it must match, either by size and
 mtime (the way `applyMetadata` leaves a file this restore wrote itself)
 or by hashing dest's bytes at each blob entry's own offset and length
@@ -993,9 +1019,17 @@ and comparing against that entry's content id, which needs no disc
 access. A match counts as resumed, not skipped, so a rerun after a
 killed session reports `resumed: N file(s) already restored` and exits
 0 once nothing else is wrong; only a genuine mismatch still counts as
-skipped and keeps the exit-1, `--overwrite`-to-replace behavior. Once
-every file is written and the run finishes, the now-empty
-`staging/restore/<snapshot-id>/` directory is removed.
+skipped and keeps the exit-1, `--overwrite`-to-replace behavior. A
+resumed file also gets its own leftover part file removed: a run killed
+between `link` and `unlink` is the one way both names can exist at
+once.
+
+`RestoreMulti` keeps its own write path (`openForWrite` and
+`writeChunks`). It has every disc at one time, so it writes each file
+one time, and it leaves a file that a missing disc cut short in place
+on purpose, with the missing-disc error naming what would finish it.
+Part files would change that behavior and would not remove a line, so
+the two engines stay apart.
 
 ## 6. Concurrency and locking
 
@@ -1010,13 +1044,14 @@ rule.
 Every state-writing command this build has takes the lock before it
 opens the state log: `init` (on the directory it just created),
 `commit`, `pack`, `gc` (`--dry-run` included, since it still replays the
-log to report what it would delete), `disc burned`, `recover` and
-`restore`'s single-drive disc-swap mode. `verify` takes it only when
+log to report what it would delete), `disc burned` and `recover`.
+`verify` takes it only when
 `--repo` resolves to a repository; with no `--repo` it never touches any
 repository's state, the same reasoning that already applies to `image
 build`, and to `ls` and `log` reading straight from a disc instead of
-the cache. `ls`, `log`, `status` and `restore --dry-run` take no lock at
-all.
+the cache. `ls`, `log`, `status` and every mode of `restore` take no
+lock at all: with no spool, a restore writes only below its own output
+directory.
 
 `status` is the one lock-free command that still opens the state
 log, so it uses `stage.OpenReadOnly` instead of `stage.Open`: both

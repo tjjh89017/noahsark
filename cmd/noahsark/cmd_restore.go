@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
-	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
 	"github.com/tjjh89017/noahsark/internal/progress"
@@ -30,7 +29,7 @@ var restoreStdin io.Reader = os.Stdin
 //
 // With neither, and exactly SNAPSHOT and OUT-DIR left over, restore
 // resolves SNAPSHOT through the local cache and walks the disc-swap
-// loop of OPERATIONS.md's "14.2 Disc-major order": one disc at a time,
+// loop of OPERATIONS.md's disc-major order: one disc at a time,
 // in plan order, prompting the operator to insert the next one. This is
 // the single-drive path; see docs/decisions.md.
 func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
@@ -46,7 +45,7 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	overwrite := fs.Bool("overwrite", false, "unlink an existing path first and then create it; without this, an existing path is left alone")
 	mountFlag := fs.String("mount", "", "the directory where the drive is mounted; required for the disc-swap mode")
 	noEject := fs.Bool("no-eject", false, "do not eject after each disc")
-	dryRun := fs.Bool("dry-run", false, "print the disc list the restore needs and stop; writes nothing, takes no lock; needs --mount")
+	dryRun := fs.Bool("dry-run", false, "print the disc list the restore needs and stop; reads no disc and writes nothing; needs --mount")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -224,25 +223,19 @@ func resolveDiscRoots(discFlags stringList, discsDir string, positional []string
 
 // errStdinClosed is returned when the disc-swap loop's prompt cannot
 // read another line, the same signal a killed session leaves behind:
-// the caller reports it as a failed restore, with whatever was already
-// spooled left in place for a later resume.
+// the caller reports it as a failed restore, with every part file left
+// in place for a later run.
 var errStdinClosed = fmt.Errorf("stdin closed while waiting for the next disc")
 
 // cmdRestoreDiscSwap runs the single-drive restore of OPERATIONS.md's
-// "14.2 Disc-major order": build the plan, print the disc list, then
+// disc-major order: build the plan, print the disc list, then
 // read one disc at a time, prompting the operator between discs.
-// dryRun prints the disc list and stops there, before any disc is read
-// and before the repository lock is taken.
+// dryRun prints the disc list and stops there, before any disc is read.
+// The mode writes only below OUT-DIR, so it takes no repository lock.
 func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mountDir string, noEject, dryRun bool, snapshotArg, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if mountDir == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount is required; OPERATIONS.md's configuration reference names no restore.mount key")
 		return 2
-	}
-
-	repoDir, err := discoverRepo(repoFlag)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
 	}
 
 	src, c, err := openCacheSource(repoFlag)
@@ -264,12 +257,12 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}
-	return cmdRestoreDiscSwapRun(c, repoDir, snapID, includes, overwrite, mountDir, noEject, dryRun, outDir, stdout, stderr, prog)
+	return cmdRestoreDiscSwapRun(c, snapID, includes, overwrite, mountDir, noEject, dryRun, outDir, stdout, stderr, prog)
 }
 
 // cmdRestoreDiscSwapRun is cmdRestoreDiscSwap's body once snapID and
 // includes are known.
-func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, includes []string, overwrite bool, mountDir string, noEject, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+func cmdRestoreDiscSwapRun(c *cache.Cache, snapID object.ID, includes []string, overwrite bool, mountDir string, noEject, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if err := c.CheckComplete(snapID); err != nil {
 		if ie, ok := err.(*cache.IncompleteError); ok {
 			_, _ = fmt.Fprintln(stderr, formatIncompleteError("restore", ie))
@@ -297,41 +290,16 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		return 0
 	}
 
-	lk, code, ok := lockRepo("restore", repoDir, stderr)
-	if !ok {
-		return code
-	}
-	defer releaseLock(lk)
-
-	m, err := restore.BuildManifest(c, snap, outDir, includes, overwrite)
+	a, err := restore.NewAssembler(c, snap, outDir, includes, overwrite)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 2
-	}
-
-	spoolRoot := filepath.Join(repoDir, "staging", "restore", snapID.TextForm())
-	spoolDir := filepath.Join(spoolRoot, "objects")
-	if err := os.MkdirAll(spoolDir, 0o755); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 2
-	}
-	resumed, err := resumeSpool(spoolDir, m, prog)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 2
-	}
-	if resumed > 0 {
-		_, _ = fmt.Fprintf(stdout, "resuming: %d object(s) already spooled\n", resumed)
+		return 1
 	}
 
 	scanner := bufio.NewScanner(restoreStdin)
 	var prevDiscUUID [16]byte
 	havePrevDisc := false
 	for _, d := range result.Discs {
-		wanted := wantedChunkEntries(d, m)
-		if len(wanted) == 0 {
-			continue
-		}
 		// With --no-eject, the disc detectDisc reads first is still the
 		// one this loop just finished: that is not a wrong disc, only
 		// the operator not having swapped it out yet, so it does not
@@ -340,53 +308,63 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, repoDir string, snapID object.ID, inc
 		if noEject && havePrevDisc {
 			skipUUID, haveSkipUUID = prevDiscUUID, true
 		}
-		if err := detectDisc(mountDir, c, d, scanner, stdout, stderr, skipUUID, haveSkipUUID); err != nil {
+		md := newMountedDisc(mountDir, d, func() error {
+			return detectDisc(mountDir, c, d, scanner, stdout, stderr, skipUUID, haveSkipUUID)
+		})
+		if err := a.Disc(md, prog); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-			return 2
+			return 1
+		}
+		if !md.read {
+			// Every chunk this disc holds is already in place, from an
+			// earlier run of the same restore or outside the --include
+			// scope. The operator is never asked for it.
+			continue
 		}
 		prevDiscUUID, havePrevDisc = d.DiscUUID, true
-
-		// One pass: every chunk this disc owes the manifest is spooled
-		// before the disc is read again, matching OPERATIONS.md's
-		// "read every needed object from it in one pass".
-		for _, o := range wanted {
-			payload, err := restore.ReadChunkFromRoot(mountDir, o.ID)
-			if err != nil {
-				_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-				return 2
-			}
-			if err := os.WriteFile(restore.SpoolObjectPath(spoolDir, o.ID), payload, 0o644); err != nil {
-				_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-				return 2
-			}
-			m.MarkSpooled(o.ID)
-		}
-		if _, _, err := m.WriteReady(spoolDir, prog); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-			return 2
-		}
 		if !noEject {
 			ejectDrive(mountDir, stderr)
 		}
 	}
 
-	if m.Pending() {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: not every file could be assembled; missing object(s):")
-		for _, id := range m.MissingObjects() {
-			_, _ = fmt.Fprintln(stderr, " ", id.TextForm())
-		}
-		return 2
-	}
-	m.Finish()
-	rep := m.Report()
+	a.Finish()
+	rep := a.Report()
 	printProblems(stderr, rep)
-	if code := printRestoreResult(stdout, rep, snapID, outDir); code != 0 {
-		return code
+	return printRestoreResult(stdout, rep, snapID, outDir)
+}
+
+// mountedDisc is one plan disc, read through the operator's drive. It
+// detects the disc at the first chunk the walk must read from it, so a
+// disc the restore no longer needs is never asked for.
+type mountedDisc struct {
+	mountDir string
+	ids      map[object.ID]bool
+	detect   func() error
+	read     bool
+}
+
+func newMountedDisc(mountDir string, d plan.DiscEntry, detect func() error) *mountedDisc {
+	ids := make(map[object.ID]bool, len(d.Objects))
+	for _, o := range d.Objects {
+		ids[o.ID] = true
 	}
-	if err := removeEmptySpoolRoot(spoolRoot); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+	return &mountedDisc{mountDir: mountDir, ids: ids, detect: detect}
+}
+
+func (m *mountedDisc) Has(id object.ID) bool { return m.ids[id] }
+
+// Read returns one verified chunk payload, after the operator has put
+// this disc in the drive. A prompt that cannot be answered stops the
+// whole restore; a chunk that does not read or does not verify fails
+// its own file only.
+func (m *mountedDisc) Read(id object.ID) ([]byte, error) {
+	if !m.read {
+		if err := m.detect(); err != nil {
+			return nil, &restore.FatalDiscError{Err: err}
+		}
+		m.read = true
 	}
-	return 0
+	return restore.ReadChunkFromRoot(m.mountDir, id)
 }
 
 // printPlanText prints one line per disc, by disc number and then by
@@ -417,62 +395,6 @@ func printPlanText(stdout io.Writer, r *plan.Result) {
 		len(r.Discs), r.TotalObjects, r.TotalBytes)
 }
 
-// removeEmptySpoolRoot removes a disc-swap restore's staging/restore/
-// <snapshot> directory once every file has been assembled and no spool
-// object remains under it. A failed or still-pending restore leaves the
-// directory in place, so a later resume still finds its spooled objects.
-func removeEmptySpoolRoot(spoolRoot string) error {
-	if err := os.Remove(filepath.Join(spoolRoot, "objects")); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.Remove(spoolRoot); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// wantedChunkEntries returns the chunk objects d's plan entry assigns
-// that the manifest still needs, in their existing plan order. Only
-// chunk payloads are read from a mounted disc: BuildManifest already
-// resolved every tree and blob from the cache.
-func wantedChunkEntries(d plan.DiscEntry, m *restore.Manifest) []plan.ObjectEntry {
-	var out []plan.ObjectEntry
-	for _, o := range d.Objects {
-		if o.Kind != format.ObjectKindChunk {
-			continue
-		}
-		if m.NeedsChunk(o.ID) {
-			out = append(out, o)
-		}
-	}
-	return out
-}
-
-// resumeSpool marks every object already spooled from an earlier,
-// interrupted run, and assembles any file that completes as a result.
-// It returns how many spooled objects it found, so the caller can
-// report "resuming: N object(s) already spooled".
-func resumeSpool(spoolDir string, m *restore.Manifest, prog *progress.Reporter) (count int, err error) {
-	entries, err := os.ReadDir(spoolDir)
-	if err != nil {
-		return 0, err
-	}
-	if len(entries) == 0 {
-		return 0, nil
-	}
-	for _, e := range entries {
-		id, err := object.ParseID(e.Name())
-		if err != nil {
-			continue
-		}
-		m.MarkSpooled(id)
-	}
-	if _, _, err := m.WriteReady(spoolDir, prog); err != nil {
-		return len(entries), err
-	}
-	return len(entries), nil
-}
-
 // discSwapRetries is how many times detectDisc retries an unreadable
 // DISC.bin before it prompts the operator, and the pause between tries.
 const discSwapRetries = 3
@@ -480,7 +402,7 @@ const discSwapRetries = 3
 var discSwapRetryPause = 300 * time.Millisecond
 
 // detectDisc waits until the disc d names is in the drive at mountDir,
-// OPERATIONS.md's "14.6 Disc detection": no prompt when the expected
+// OPERATIONS.md's disc detection rule: no prompt when the expected
 // disc is already there; a prompt, and a mismatch report, otherwise.
 // skipUUID, when haveSkipUUID is true, is a disc uuid the very first
 // read must not report as a mismatch even though it is not d's own
