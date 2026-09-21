@@ -50,15 +50,6 @@ type repoConfig struct {
 	// command line names none. It keeps the text the operator wrote, so
 	// a preset name still selects the media type it names.
 	PackCapacity string
-	// RestoreStagingBudget is restore.staging_budget, in bytes: the
-	// peak staging/restore/ size a restore must stay under. A
-	// disc-swap restore splits a disc's reads into passes so spool
-	// usage never exceeds this.
-	RestoreStagingBudget uint64
-	// RestoreStagingBudgetSet reports whether the config named
-	// restore.staging_budget. plan prints a pass split only when the
-	// operator asked for a budget, not for the default one.
-	RestoreStagingBudgetSet bool
 	// RetainAfterClean is staging.retain_after_clean: how long an
 	// object stays CLEAN before gc may free its staged file.
 	RetainAfterClean time.Duration
@@ -85,7 +76,6 @@ var knownConfigKeys = map[string]bool{
 	"pack.capacity":              true,
 	"cache.dir":                  true,
 	"cache.format_version":       true,
-	"restore.staging_budget":     true,
 	"staging.retain_after_clean": true,
 	"gc.min_verified_copies":     true,
 	"sources.exclude":            true,
@@ -97,10 +87,6 @@ const defaultRetryUnstable = 1
 
 // defaultCacheFormatVersion is cache.format_version's Phase 1 default.
 const defaultCacheFormatVersion = 1
-
-// defaultRestoreStagingBudget is restore.staging_budget's Phase 1
-// default: 16 GiB.
-const defaultRestoreStagingBudget = 16 * 1024 * 1024 * 1024
 
 // defaultRetainAfterClean is staging.retain_after_clean's default: 7
 // days.
@@ -147,12 +133,11 @@ func readConfig(path string) (repoConfig, error) {
 	defer func() { _ = f.Close() }()
 
 	c := repoConfig{
-		RestatAfterRead:      true,
-		RetryUnstable:        defaultRetryUnstable,
-		CacheFormatVersion:   defaultCacheFormatVersion,
-		RestoreStagingBudget: defaultRestoreStagingBudget,
-		RetainAfterClean:     defaultRetainAfterClean,
-		MinVerifiedCopies:    defaultMinVerifiedCopies,
+		RestatAfterRead:    true,
+		RetryUnstable:      defaultRetryUnstable,
+		CacheFormatVersion: defaultCacheFormatVersion,
+		RetainAfterClean:   defaultRetainAfterClean,
+		MinVerifiedCopies:  defaultMinVerifiedCopies,
 	}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -215,13 +200,6 @@ func readConfig(path string) (repoConfig, error) {
 				return repoConfig{}, fmt.Errorf("config: cache.format_version: %w", err)
 			}
 			c.CacheFormatVersion = n
-		case "restore.staging_budget":
-			n, err := parseByteSize(value)
-			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: restore.staging_budget: %w", err)
-			}
-			c.RestoreStagingBudget = n
-			c.RestoreStagingBudgetSet = true
 		case "staging.retain_after_clean":
 			d, err := parseRetentionDuration(value)
 			if err != nil {

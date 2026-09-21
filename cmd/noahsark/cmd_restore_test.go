@@ -129,25 +129,18 @@ func TestRestoreMountWithDiscRootIsAnError(t *testing.T) {
 	}
 }
 
-// TestRestorePlanWithSnapshotIsAnError checks that "restore --plan=FILE
-// --mount=DIR SNAPSHOT OUT-DIR" is refused by name, instead of printing
-// only the usage line: --plan already fixes the snapshot.
-func TestRestorePlanWithSnapshotIsAnError(t *testing.T) {
+// TestRestoreDryRunWithoutMountIsAnError checks that "restore --dry-run"
+// with no --mount is refused by name, instead of falling into the
+// all-discs-at-once dispatch and reporting a missing disc.
+func TestRestoreDryRunWithoutMountIsAnError(t *testing.T) {
 	_, snapID, _ := lsFixture(t)
 	restoredDir := filepath.Join(t.TempDir(), "restored")
-	planFile := filepath.Join(t.TempDir(), "plan.json")
-	if err := os.WriteFile(planFile, []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	code, out := runCmd(t, "restore", "--plan="+planFile, "--mount=/mnt/drive", snapID, restoredDir)
+	code, out := runCmd(t, "restore", "--dry-run", snapID, restoredDir)
 	if code != 2 {
-		t.Fatalf("restore --plan --mount SNAPSHOT OUT-DIR: exit %d, want 2: %s", code, out)
+		t.Fatalf("restore --dry-run (no --mount): exit %d, want 2: %s", code, out)
 	}
-	if !strings.Contains(out, "--plan takes no SNAPSHOT") {
-		t.Fatalf("restore --plan --mount SNAPSHOT OUT-DIR output %q, want the --plan-takes-no-SNAPSHOT message", out)
-	}
-	if !strings.Contains(out, "usage: noahsark restore") {
-		t.Fatalf("restore --plan --mount SNAPSHOT OUT-DIR output %q, want the usage line too", out)
+	if !strings.Contains(out, "--dry-run needs --mount") {
+		t.Fatalf("restore --dry-run (no --mount) output %q, want the --dry-run-needs---mount message", out)
 	}
 }

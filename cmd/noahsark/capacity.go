@@ -60,8 +60,8 @@ func parseCapacity(s string) (uint64, error) {
 		s, strings.Join(capacityPresetNames(), ", "))
 }
 
-// byteSizeUnits lists the unit suffixes --capacity and --staging-budget
-// both accept on a size value, matched case-insensitively. A suffix with
+// byteSizeUnits lists the unit suffixes --capacity accepts on a size
+// value, matched case-insensitively. A suffix with
 // no "i" (k, M, G, T, kB, MB, GB, TB) is decimal: a power of 10, the
 // convention optical media capacities and disc drives are marketed in.
 // A suffix with an "i" (Ki, Mi, Gi, Ti, KiB, MiB, GiB, TiB) is binary: a
@@ -102,25 +102,6 @@ func cutSizeUnit(s string) (numPart string, scale uint64, ok bool) {
 		}
 	}
 	return "", 0, false
-}
-
-// parseByteSize parses a plain byte count, or a number followed by one of
-// byteSizeUnits' suffixes, into a byte count. Unlike parseCapacity, a bare
-// integer here is bytes, not sectors: --staging-budget and
-// restore.staging_budget are plain byte quantities, not media capacities.
-func parseByteSize(s string) (uint64, error) {
-	if numPart, scale, ok := cutSizeUnit(s); ok {
-		n, err := strconv.ParseFloat(numPart, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid size %q", s)
-		}
-		return uint64(n * float64(scale)), nil
-	}
-	n, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid size %q, expected a byte count or a size like 4GiB", s)
-	}
-	return n, nil
 }
 
 // capacityPresetNames lists capacityPresets' keys, sorted, for help text

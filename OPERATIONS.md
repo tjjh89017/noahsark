@@ -128,7 +128,7 @@ Discovery runs in this order. The first hit wins.
 
 A command that needs a repository and finds none reports it and refuses to
 run. `init`, `commit`, `pack`, `gc` and `disc` treat a missing repository as
-a usage error and exit with code 2. `ls`, `log`, `plan` and `restore`'s
+a usage error and exit with code 2. `ls`, `log` and `restore`'s
 disc-swap mode read through the local cache instead, so there a missing
 repository is a failure at run time, code 1. `recover` creates the
 repository directory instead of failing when it finds none. `verify` with no
@@ -195,7 +195,7 @@ or with the disc roots given on the command line.
 |---|---|
 | `commit` | Works. With no cached INDEX, no exact lookup is possible, thus `commit` stages each chunk again. |
 | `pack` | Works. It packs the staged objects. |
-| `plan`, `restore --mount` | Need the cache. The operator runs `recover` first. |
+| `restore --mount` | Needs the cache. The operator runs `recover` first. |
 | `restore` with disc roots | Works from the given discs alone. It needs no repository. |
 | `verify` | Works from the disc root alone. |
 | `ls`, `log` | With a disc root, read the discs. With none, need the cache. |
@@ -522,10 +522,11 @@ them are **informative**; they are the Linux way to meet the rule.
    the state log, the staging store, the ledgers or the config takes a
    non-blocking exclusive advisory lock on it before it reads the state log,
    and holds it until it exits. Those commands are `init`, `commit`, `pack`,
-   `gc`, `disc burned`, `recover`, the disc-swap mode of `restore`, and
-   `verify` when it has a repository.
-2. A read-only command takes no lock: `plan`, `ls`, `log`, `status`,
-   `verify` with no repository, `restore` with disc roots, and `image build`.
+   `gc`, `disc burned`, `recover`, the disc-swap mode of `restore` (except
+   `--dry-run`), and `verify` when it has a repository.
+2. A read-only command takes no lock: `ls`, `log`, `status`,
+   `verify` with no repository, `restore` with disc roots, `restore --dry-run`,
+   and `image build`.
 3. A command that cannot get its lock fails at once: it exits with code 1,
    with a message that names the lock file and says that another noahsark
    command runs on this repository. It never waits.
@@ -1175,48 +1176,13 @@ The switch count equals the number of discs in the plan.
 File-major order is forbidden as an anti-pattern. If consecutive files live on
 different discs, each file boundary can cost a switch.
 
-### 14.3 Staging budget
-
-`restore.staging_budget` declares the limit. If the predicted peak exceeds it,
-the planner splits the restore into several passes and accepts re-visiting a
-disc. The extra switches appear in the plan.
-
-Four measures keep the peak small:
-
-1. Enforce packing rule 1 at write time.
-2. Free per file, not per disc.
-3. Order the plan discs by the number of files each disc completes, given the
-   discs already visited, descending.
-4. Place a multi-disc split so that its discs are adjacent in plan order.
-
-### 14.4 The plan file
-
-The plan is printed and persisted before any read. The plan must fail up front
-when a required disc is missing from the inventory.
-
-The plan is one JSON object with these fields.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `format` | string | Always `noahsark-restore-plan`. |
-| `version` | integer | 1. |
-| `repo_uuid` | string | Hyphenated lowercase uuid. |
-| `snapshot` | string | Multihash text form of the snapshot. |
-| `include` | array of strings | The `--include` paths, absent when none. |
-| `files`, `objects` | integer | Files and distinct objects to restore. |
-| `bytes` | integer | Uncompressed bytes to restore. |
-| `peak_staging_bytes` | integer | Predicted peak of `staging/restore/`. |
-| `switches` | integer | Number of disc changes. |
-| `passes` | integer | 1, or more when the staging budget forces several passes. |
-| `discs` | array of objects | In plan order. |
-| `discs[].order`, `discs[].pass` | integer | 0-based position in the plan, and 0-based pass. |
-| `discs[].disc_uuid` | string | The disc. |
-| `discs[].disc_seq` | integer | 0-based. |
-| `discs[].label` | string | On-disc label. |
-| `discs[].bytes_to_read`, `discs[].objects_to_read` | integer | Counts. |
-| `missing_discs` | array of objects | `disc_uuid`, `disc_seq`, `label`, `objects` (integer). Non-empty means the plan failed. |
-
-A field may be added later. A reader ignores a field it does not know.
+Before it reads the first disc, `restore` prints the plan: the disc number,
+the label, the uuid and the object count of each disc that the plan needs,
+then a totals line. `restore --dry-run` prints that same list and stops: it
+writes nothing, and it takes no lock. Building the list needs the local
+cache, so `--dry-run` works only with `--mount`; the all-discs-at-once modes
+read every given disc together, with no disc order to preview, and refuse
+`--dry-run` by name.
 
 ### 14.6 Disc detection
 
@@ -1232,8 +1198,7 @@ mounts a device.
 
 Do not prompt when the expected disc is detected. Print one line and continue.
 
-Prompt only when the wrong disc is inserted, when the disc is unreadable, or
-when `--interactive` is set.
+Prompt only when the wrong disc is inserted or when the disc is unreadable.
 
 ### 14.7 Restore pipeline
 
@@ -1242,8 +1207,8 @@ snapshot id
  -> object set: read the snapshot, trees and blobs (metadata only),
       from the cache or from the given discs
  -> run map: the INDEX Objects tables give the exact run of each object
- -> disc plan: unique-element reduction, greedy, tie-breaks; print and
-      persist the plan; fail on a missing disc
+ -> disc plan: unique-element reduction, greedy, tie-breaks; print the
+      plan; fail on a missing disc
  -> for each disc:
       detect -> read needed objects into staging/restore/
       -> verify each object's content id (a mismatch fails that file)
@@ -1408,7 +1373,7 @@ at run time, code 1.
 
 ### 16.1 Commands and global options
 
-The commands are `init`, `commit`, `pack`, `verify`, `plan`, `restore`,
+The commands are `init`, `commit`, `pack`, `verify`, `restore`,
 `recover`, `gc`, `ls`, `log`, `status`, `disc burned` and
 `image build`. A build refuses an unknown command and an unknown option by
 name and exits with code 2.
@@ -1639,38 +1604,6 @@ Exit: 0 clean. 1 on a failure at run time: the check or the heal failed, or
 the repository does not know the disc. 2 for a usage error or a refused
 option.
 
-### 16.15 `plan`
-
-```
-noahsark plan [--repo=PATH] [--include=PATH]... [--out=FILE]
-              [--staging-budget=SIZE] SNAPSHOT
-```
-
-Computes the restore plan of section 14.4 and prints it. It reads the local
-cache only, and it takes no disc. `SNAPSHOT` is a snapshot id or a ref name.
-
-The printed plan lists each disc that the restore needs: the disc number, the
-label, the uuid, the objects and the bytes to read. The list follows the disc
-number, then the uuid: the operator looks a disc up by the number on its
-sleeve. The pass split and the peak staging bytes appear only when a staging
-budget was set, by `--staging-budget` or by `restore.staging_budget`.
-
-An object the plan cannot place is reported on a `missing:` line. The line
-names the disc uuid when a cached INDEX names the disc that holds the object.
-It says `disc unknown` when no cached INDEX names that disc.
-
-| Option | Meaning |
-|---|---|
-| `--include` | Plan only this snapshot-relative path. When it names a directory, plan everything below it. Repeatable. |
-| `--out` | Write the JSON plan to this file. `restore --plan` reads it. |
-| `--staging-budget` | Peak staging allowed. Overrides `restore.staging_budget`. The value takes the unit suffixes of `pack --capacity`. |
-
-Exit: 0 when the plan accounts for every object. 1 on a failure at run time,
-also when the cache is incomplete for the snapshot, when an object has no
-disc the cache knows, or when nothing is cached yet. 2 for a usage error, an
-unknown snapshot id or ref name, or when one file alone needs more staging
-than the budget.
-
 ### 16.16 `restore`
 
 ```
@@ -1678,10 +1611,7 @@ noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
 noahsark restore [--include=PATH]... [--overwrite]
                  (--disc=ROOT... | --discs-dir=DIR) SNAPSHOT OUT-DIR
 noahsark restore [--repo=PATH] [--include=PATH]... [--overwrite] --mount=DIR
-                 [--no-eject] [--interactive] [--staging-budget=SIZE]
-                 SNAPSHOT OUT-DIR
-noahsark restore [--repo=PATH] --plan=FILE --mount=DIR [--overwrite]
-                 [--no-eject] [--interactive] [--staging-budget=SIZE] OUT-DIR
+                 [--no-eject] [--dry-run] SNAPSHOT OUT-DIR
 ```
 
 Runs the restore pipeline of section 14.7. `SNAPSHOT` is a snapshot id, as
@@ -1695,15 +1625,18 @@ There are two modes.
 - **All discs at once.** The first two forms read every given disc root
   together. They need no repository. They resolve a ref name from the ref
   tables of the given discs. One `DISC-ROOT` is sufficient when one disc holds
-  the full snapshot.
-- **Disc swap, one drive.** The `--mount` forms need the repository. They
-  resolve `SNAPSHOT` through the local cache, print the plan, and read one disc
-  at a time from `DIR`. Between discs, `restore` ejects the disc, names the
-  subsequent disc by `disc_seq`, label and uuid, and waits for Enter. The
-  operator mounts each disc at `DIR`. A wrong disc gives the expected and the
-  found disc, then the same prompt. A repeated command continues, and asks only
-  for the discs that it still needs. `--mount` does not go together with a
-  `DISC-ROOT`, `--disc` or `--discs-dir`.
+  the full snapshot. `--dry-run` is refused here by name: this mode has no
+  local cache to build a disc list from.
+- **Disc swap, one drive.** The `--mount` form needs the repository. It
+  resolves `SNAPSHOT` through the local cache, prints the plan (section
+  14.2), and reads one disc at a time from `DIR`. Between discs, `restore`
+  ejects the disc, names the subsequent disc by `disc_seq`, label and uuid,
+  and waits for Enter. The operator mounts each disc at `DIR`. A wrong disc
+  gives the expected and the found disc, then the same prompt. A repeated
+  command continues, and asks only for the discs that it still needs.
+  `--mount` does not go together with a `DISC-ROOT`, `--disc` or
+  `--discs-dir`. `--dry-run` prints the plan and stops there, writing
+  nothing and taking no lock.
 
 `restore` leaves an existing path alone unless `--overwrite` is given. It
 reports in one form, whichever mode it ran in:
@@ -1727,23 +1660,22 @@ it only when it met a problem.
 |---|---|
 | `--disc` | A disc root to read. Repeatable. |
 | `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
-| `--plan` | Resume a persisted plan that `plan --out` wrote. It fixes the snapshot, thus this form takes no `SNAPSHOT`. It requires `--mount`. |
 | `--include` | Restore only these paths. Repeatable. A path is relative to the snapshot. A directory includes everything below it. |
-| `--staging-budget` | Peak staging allowed. Overrides `restore.staging_budget`. |
-| `--interactive` | Prompt on every disc, not only on a mismatch. |
 | `--mount` | The directory a single drive is mounted at, for the one-drive disc-swap mode: no `DISC-ROOT`, `--disc`, or `--discs-dir`, one disc read at a time, with a prompt between discs. Required in that mode; there is no config default. |
+| `--dry-run` | Print the disc list (section 14.2) and stop. Writes nothing, takes no lock. Needs `--mount`; refused in the all-discs-at-once modes. |
 | `--no-eject` | Do not eject after each disc. |
 | `--overwrite` | Unlink an existing path first and then create it. |
 
 Exit: 0 when everything applied, and always for an unsupported entry (a
 device node, a FIFO or a socket): `restore` still names each one on a
-warning line, but that alone never changes the exit code. 1 on a failure at
-run time, also when `restore` left an existing path alone without
-`--overwrite`, when a file did not restore, when a metadata field was not
-applied, or when a required disc is missing: not among the given discs, or
-absent from the cache the disc-swap mode reads through; `restore` names the
-missing disc by uuid. 2 for a usage error or a refused option, an empty or
-unknown `SNAPSHOT` included.
+warning line, but that alone never changes the exit code. `--dry-run` also
+exits 0 once it has printed the disc list. 1 on a failure at run time, also
+when `restore` left an existing path alone without `--overwrite`, when a
+file did not restore, when a metadata field was not applied, or when a
+required disc is missing: not among the given discs, or absent from the
+cache the disc-swap mode reads through; `restore` names the missing disc by
+uuid. 2 for a usage error or a refused option, an empty or unknown
+`SNAPSHOT` included, or `--dry-run` given outside the disc-swap mode.
 
 ### 16.17 `recover`
 
@@ -1955,8 +1887,8 @@ A build must refuse an unknown key with a clear message that names the key.
 The build reads these keys: `repo.uuid`, `staging.dir`, `sources.root`,
 `sources.exclude`, `commit.restat_after_read`, `commit.retry_unstable`,
 `fec.scheme`, `pack.capacity`, `cache.dir`,
-`cache.format_version`, `restore.staging_budget`,
-`staging.retain_after_clean` and `gc.min_verified_copies`. It refuses each
+`cache.format_version`, `staging.retain_after_clean` and
+`gc.min_verified_copies`. It refuses each
 other key of the tables below. Those keys name the values that the build
 holds as constants. The second pass of GitHub issue #26 decides which of
 them stay.
@@ -2045,12 +1977,6 @@ or not crossing a mount is a per-command decision, not a repository-wide one.
 | Key | Type | Default | Changes disc bytes | Meaning |
 |---|---|---|---|---|
 | `pack.capacity` | preset or size | unset | no | The target capacity `pack` uses when its own command line gives no `--capacity`. It takes the forms of `pack --capacity`, so a bare number is a config error. |
-
-### 17.13 Restore
-
-| Key | Type | Default | Changes disc bytes | Meaning |
-|---|---|---|---|---|
-| `restore.staging_budget` | bytes | 16 GiB | no | Peak staging allowed. The planner falls back to multi-pass above it. |
 
 ---
 

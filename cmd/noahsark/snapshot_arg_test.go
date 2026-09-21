@@ -45,9 +45,10 @@ func firstColumn(t *testing.T, out string) string {
 
 // TestSnapshotArgFormsFromLog covers the forms the operator guide shows
 // for a snapshot argument: a ref name, and the snapshot id that log
-// prints in its first column. restore, ls and plan must all accept
-// both.
+// prints in its first column. restore, ls and restore --dry-run must
+// all accept both.
 func TestSnapshotArgFormsFromLog(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, treeDir, snapID := snapshotArgFixture(t)
 
 	code, out := runCmd(t, "log", "--repo="+repo)
@@ -59,6 +60,9 @@ func TestSnapshotArgFormsFromLog(t *testing.T) {
 		t.Fatalf("log printed %q in its first column, commit printed %q", logged, snapID)
 	}
 
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	mountDisc(t, mountDir, treeDir)
+
 	outRoot := t.TempDir()
 	for i, arg := range []string{logged, "LATEST"} {
 		if code, out := runCmd(t, "restore", treeDir, arg, filepath.Join(outRoot, string(rune('a'+i)))); code != 0 {
@@ -67,8 +71,8 @@ func TestSnapshotArgFormsFromLog(t *testing.T) {
 		if code, out := runCmd(t, "ls", treeDir, arg); code != 0 {
 			t.Fatalf("ls %q: exit %d, want 0: %s", arg, code, out)
 		}
-		if code, out := runCmd(t, "plan", "--repo="+repo, arg); code != 0 {
-			t.Fatalf("plan %q: exit %d, want 0: %s", arg, code, out)
+		if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--dry-run", arg, filepath.Join(outRoot, "dry-run")); code != 0 {
+			t.Fatalf("restore --dry-run %q: exit %d, want 0: %s", arg, code, out)
 		}
 		if code, out := runCmd(t, "log", "--repo="+repo, arg); code != 0 {
 			t.Fatalf("log %q: exit %d, want 0: %s", arg, code, out)
@@ -88,7 +92,7 @@ func TestSnapshotArgEmptyNamesItself(t *testing.T) {
 		{"restore", "--disc=" + treeDir, "", filepath.Join(t.TempDir(), "out")},
 		{"ls", treeDir, ""},
 		{"ls", "--repo=" + repo, ""},
-		{"plan", "--repo=" + repo, ""},
+		{"restore", "--repo=" + repo, "--mount=" + t.TempDir(), "--dry-run", "", filepath.Join(t.TempDir(), "out")},
 		{"log", "--repo=" + repo, ""},
 	}
 	for _, args := range cases {

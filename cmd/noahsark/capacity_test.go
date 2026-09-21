@@ -39,13 +39,16 @@ func TestParseCapacityPresets(t *testing.T) {
 	}
 }
 
-// TestParseByteSizeUnits checks every decimal and binary unit suffix
+// TestCutSizeUnitSuffixes checks every decimal and binary unit suffix
 // byteSizeUnits accepts, in each case's own casing, upper case and
-// lower case, against the exact byte count that suffix must produce.
-func TestParseByteSizeUnits(t *testing.T) {
+// lower case, against the exact scale that suffix must carry.
+// parseCapacity is the one caller left of cutSizeUnit; this test covers
+// the full suffix table directly, since parseCapacity's own tests below
+// exercise only "G" and "Gi".
+func TestCutSizeUnitSuffixes(t *testing.T) {
 	cases := []struct {
-		in   string
-		want uint64
+		in    string
+		scale uint64
 	}{
 		// Decimal: a power of 10, with or without the trailing "B".
 		{"1k", 1_000},
@@ -56,7 +59,6 @@ func TestParseByteSizeUnits(t *testing.T) {
 		{"1MB", 1_000_000},
 		{"1GB", 1_000_000_000},
 		{"1TB", 1_000_000_000_000},
-		{"25G", 25_000_000_000},
 		// Binary: a power of 2, with or without the trailing "B".
 		{"1Ki", 1 << 10},
 		{"1Mi", 1 << 20},
@@ -66,16 +68,18 @@ func TestParseByteSizeUnits(t *testing.T) {
 		{"1MiB", 1 << 20},
 		{"1GiB", 1 << 30},
 		{"1TiB", 1 << 40},
-		{"4GiB", 4 * (1 << 30)},
 	}
 	for _, c := range cases {
 		for _, in := range []string{c.in, strings.ToUpper(c.in), strings.ToLower(c.in)} {
-			got, err := parseByteSize(in)
-			if err != nil {
-				t.Fatalf("parseByteSize(%q): %v", in, err)
+			numPart, scale, ok := cutSizeUnit(in)
+			if !ok {
+				t.Fatalf("cutSizeUnit(%q): no suffix matched", in)
 			}
-			if got != c.want {
-				t.Errorf("parseByteSize(%q) = %d, want %d", in, got, c.want)
+			if scale != c.scale {
+				t.Errorf("cutSizeUnit(%q) scale = %d, want %d", in, scale, c.scale)
+			}
+			if numPart == "" {
+				t.Errorf("cutSizeUnit(%q) numPart is empty", in)
 			}
 		}
 	}
