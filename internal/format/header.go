@@ -124,6 +124,28 @@ func (h *ObjectHeader) Decode(buf []byte) error {
 	return nil
 }
 
+// DecodeObjectFileHeader decodes the common header and the object header
+// from head, the first CommonHeaderLen+ObjectHeaderLen bytes of an object
+// file, and checks header_crc32c over the common header and bytes 0 to 23
+// of the object header. A kind's own Decode (Chunk, Blob, Tree, Snapshot)
+// redoes this same check as part of decoding its own fixed body; a caller
+// that only wants the header, before it commits to a kind's fixed body,
+// calls this function instead so the check cannot drift between callers.
+func DecodeObjectFileHeader(head []byte) (CommonHeader, ObjectHeader, error) {
+	var ch CommonHeader
+	if err := ch.Decode(head); err != nil {
+		return ch, ObjectHeader{}, err
+	}
+	var oh ObjectHeader
+	if err := oh.Decode(head[CommonHeaderLen:]); err != nil {
+		return ch, oh, err
+	}
+	if crc32c(head[0:objectHeaderCRCOffset]) != oh.HeaderCRC32C {
+		return ch, oh, ErrCRC
+	}
+	return ch, oh, nil
+}
+
 // The header_len values this version's writer records for the four
 // object kinds: the common header, the object header, and the kind's own
 // fixed body.

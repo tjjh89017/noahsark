@@ -502,7 +502,11 @@ The operator tries the heal sources in this order.
    copy.
 2. **On-disc RS parity**, when the run has FEC. `verify --heal --out=DIR`
    writes the healed disc root into `DIR`, and then checks `DIR`. `--heal`
-   refuses a run that has no FEC.
+   refuses a run that has no FEC. A healed tree lives on the hard disk, not on
+   a disc, so it is not a verified copy: `--heal` never raises an object's
+   verify count and never moves it to CLEAN, whatever `DIR` checks clean as.
+   The operator burns the healed tree to a new disc, then runs a plain
+   `verify` of that disc to raise the count.
 3. **Another disc that holds the same content id.** `restore` with all the
    discs finds it through INDEX.
 4. **The original source path**, if it still exists. `commit` stores it again.
@@ -739,7 +743,10 @@ repository does not know the disc. 2 for `--heal` with no `--out`.
 UUID` line for each disc, and one `next:` line with the one action to take.
 `STATE` is `not fed`, `packed`, `burned`, `verified C/N`, `verified` or `on
 disc only`. `C` is the lowest verify count of the CLEAN objects of the disc,
-and `N` is `gc.min_verified_copies`.
+and `N` is `gc.min_verified_copies`. When every disc is otherwise settled but
+the config carries no `sources.root` or no `pack.capacity`, `next:` names the
+missing key or keys instead of claiming there is nothing left to do: `commit`
+and `pack` need them, and a config `recover` rebuilt carries neither.
 
 **`gc`** prints `gc: staging: deleted N staged object(s), B bytes` and `gc:
 plans: deleted N disc plan directory(ies), B bytes`. When nothing is eligible,

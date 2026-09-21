@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -96,7 +97,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	for _, d := range discs {
 		_, _ = fmt.Fprintf(stdout, "disc %d %q  %s  %s\n", d.Seq, d.Label, discStateWord(d), d.UUID)
 	}
-	_, _ = fmt.Fprintln(stdout, nextStepLine(discs, stagedObjects))
+	_, _ = fmt.Fprintln(stdout, nextStepLine(discs, stagedObjects, cfg))
 	return 0
 }
 
@@ -131,8 +132,11 @@ func notFed(d discSummary) bool {
 
 // nextStepLine names the one action to take next, in the order of the
 // disc cycle: feed a disc to recover, burn, verify, verify the second
-// copy, pack, commit. A repository with nothing waiting says so.
-func nextStepLine(discs []discSummary, stagedObjects int) string {
+// copy, pack, commit. A repository with nothing waiting, but whose
+// config still needs sources.root or pack.capacity before commit or pack
+// can run (a recover leaves the config this way), says so instead of
+// claiming nothing is left to do.
+func nextStepLine(discs []discSummary, stagedObjects int, cfg repoConfig) string {
 	for _, d := range discs {
 		if notFed(d) {
 			return fmt.Sprintf("next: mount disc %d, then run: noahsark recover <MOUNT>", d.Seq)
@@ -159,7 +163,24 @@ func nextStepLine(discs []discSummary, stagedObjects int) string {
 	if len(discs) == 0 {
 		return "next: commit your files, run: noahsark commit <SOURCE>"
 	}
+	if missing := missingConfigKeys(cfg); len(missing) > 0 {
+		return fmt.Sprintf("next: put %s into the config before commit or pack can run", strings.Join(missing, " and "))
+	}
 	return "next: nothing to do"
+}
+
+// missingConfigKeys names sources.root and pack.capacity, whichever the
+// config does not carry. A repository a recover rebuilt leaves both
+// unset: no disc carries the source path or the media size.
+func missingConfigKeys(cfg repoConfig) []string {
+	var missing []string
+	if cfg.SourceRoot == "" {
+		missing = append(missing, "sources.root")
+	}
+	if cfg.PackCapacity == "" {
+		missing = append(missing, "pack.capacity")
+	}
+	return missing
 }
 
 // summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in

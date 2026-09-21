@@ -254,6 +254,69 @@ func TestVerifyHealReportsBlocks(t *testing.T) {
 	}
 }
 
+// TestVerifyHealNeverCountsAsACopy reproduces the reported bug: verify
+// the real disc once (copy 1 of 2), then heal it into a directory on the
+// hard disk. Before this fix, the healed directory's own verify raised
+// the count to "2 of 2 copies verified", though no second disc exists.
+// A heal must leave the count, and the CLEAN object count, exactly as
+// the one real verify left them, and it must tell the operator to burn
+// and verify a real second disc instead.
+func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--fec")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	mounted := filepath.Join(work, "mounted")
+	copyTree(t, packedTreeDir(t, packOut), mounted)
+	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, packedDiscUUID(t, packOut)); code != 0 {
+		t.Fatalf("disc burned: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	if code != 0 {
+		t.Fatalf("verify copy 1: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "verify: copy 1 of 2 verified; verify the second copy before gc") {
+		t.Fatalf("verify copy 1 output %q, want the copy 1 of 2 line", out)
+	}
+	cleanAfterVerify, verifiedAfterVerify := discListCounts(t, repo)
+
+	healed := filepath.Join(work, "healed")
+	code, out = runCmd(t, "verify", "--repo="+repo, "--heal", "--out="+healed, mounted)
+	if code != 0 {
+		t.Fatalf("verify --heal: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "heal: repaired 0 block(s)") {
+		t.Fatalf("verify --heal output %q, want the repaired-blocks line", out)
+	}
+	if !strings.Contains(out, "burn the healed tree to a new disc") {
+		t.Fatalf("verify --heal output %q, want it to say to burn the healed tree and verify that disc", out)
+	}
+	if strings.Contains(out, "copies verified") {
+		t.Fatalf("verify --heal output %q, want no verify-count line: a heal is not a copy", out)
+	}
+
+	cleanAfterHeal, verifiedAfterHeal := discListCounts(t, repo)
+	if cleanAfterHeal != cleanAfterVerify {
+		t.Fatalf("clean objects = %d after heal, want %d unchanged", cleanAfterHeal, cleanAfterVerify)
+	}
+	if verifiedAfterHeal != verifiedAfterVerify {
+		t.Fatalf("verified copies = %q after heal, want %q unchanged", verifiedAfterHeal, verifiedAfterVerify)
+	}
+	if verifiedAfterHeal != "1/2" {
+		t.Fatalf("verified copies = %q after heal, want 1/2", verifiedAfterHeal)
+	}
+}
+
 // TestVerifyHealRefusesWithNoOut checks that --heal with no --out is a
 // usage error: healing in place is no longer supported.
 func TestVerifyHealRefusesWithNoOut(t *testing.T) {
