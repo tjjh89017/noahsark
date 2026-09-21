@@ -105,7 +105,7 @@ func markStagedFromCommit(t *testing.T, stagingDir string, snapID object.ID, l *
 func packOpts(stagingDir string, snapID object.ID, outDir string, capacitySectors uint64, discUUID byte, l *stage.Log) PackOptions {
 	return PackOptions{
 		StagingDir:              stagingDir,
-		Snapshots:               []SnapshotRef{{Name: "LATEST", ID: snapID, Time: fixedClock()}},
+		Snapshots:               []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors:   capacitySectors,
 		PhysicalCapacitySectors: capacitySectors,
 		OutputDir:               outDir,
@@ -345,7 +345,7 @@ func TestPackRefusesATruncatedStagedChunk(t *testing.T) {
 	snapID := commitNamedFixture(t, stagingDir, "only")
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
-	chunkID := object.ComputeID([]byte("content of only"))
+	chunkID := object.ComputeID(format.ObjectKindChunk, []byte("content of only"))
 	chunkPath := filepath.Join(stagingDir, "objects", chunkID.FanoutByte(), chunkID.TextForm())
 	if _, err := os.Stat(chunkPath); err != nil {
 		t.Fatalf("fixture assumption failed, no chunk at %s: %v", chunkPath, err)
@@ -382,7 +382,7 @@ func TestPackRefusesAStagedChunkWithAFlippedByte(t *testing.T) {
 	snapID := commitNamedFixture(t, stagingDir, "only")
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
-	chunkID := object.ComputeID([]byte("content of only"))
+	chunkID := object.ComputeID(format.ObjectKindChunk, []byte("content of only"))
 	chunkPath := filepath.Join(stagingDir, "objects", chunkID.FanoutByte(), chunkID.TextForm())
 	data, err := os.ReadFile(chunkPath)
 	if err != nil {

@@ -96,7 +96,9 @@ func readVerified(base string, id object.ID, snapshot bool, cache *image.NameCac
 }
 
 // readVerifiedAt is readVerified against an explicit file path, for a
-// caller that already knows where an object's file is.
+// caller that already knows where an object's file is. The kind byte of
+// the id comes from the object header, whose CRC covers it; a file that
+// names another kind gives another id and fails this check.
 func readVerifiedAt(path string, id object.ID) (raw, payload []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -122,7 +124,7 @@ func readVerifiedAt(path string, id object.ID) (raw, payload []byte, err error) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
 	}
-	if object.ComputeID(payload) != id {
+	if object.ComputeID(oh.Kind, payload) != id {
 		return nil, nil, fmt.Errorf("%s: content id does not verify", id.TextForm())
 	}
 	return data, payload, nil

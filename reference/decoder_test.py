@@ -80,6 +80,12 @@ DISC0 = os.path.join(TWO_DISCS_FIXTURE, "disc0")
 DISC1 = os.path.join(TWO_DISCS_FIXTURE, "disc1")
 
 
+def only_ref_name(root: str) -> str:
+    """The ref name of a one-snapshot fixture: commit gives a ref the
+    date of the day it ran, so no test may hard-code the name."""
+    return decoder.Repo(root).refs()["records"][0]["name"]
+
+
 def golden(name: str) -> bytes:
     with open(os.path.join(TESTDATA, name), "rb") as f:
         return f.read()
@@ -434,7 +440,7 @@ class RefsTest(unittest.TestCase):
         self.assertEqual(r0["snapshot_id"], self.snapshot_id_n(1).hex())
         self.assertEqual(r0["time_sec"], 1700000000)
         self.assertEqual(r0["time_nsec"], 123456)
-        self.assertEqual(r0["name"], "LATEST")
+        self.assertEqual(r0["name"], "2026-09-13")
         self.assertEqual(r1["snapshot_id"], self.snapshot_id_n(2).hex())
         self.assertEqual(r1["time_sec"], 1700000100)
         self.assertEqual(r1["name"], "daily")
@@ -450,18 +456,18 @@ class RefsTest(unittest.TestCase):
 
     def test_latest_ref(self):
         t = decoder.parse_refs(golden("refs.golden"), "t")
-        r = decoder.latest_ref(t["records"], "LATEST")
+        r = decoder.latest_ref(t["records"], "2026-09-13")
         self.assertEqual(r["snapshot_id"], self.snapshot_id_n(1).hex())
         self.assertIsNone(decoder.latest_ref(t["records"], "nonexistent"))
 
     def test_newest_ref_is_the_highest_time_then_snapshot_id(self):
         records = [
-            {"name": "LATEST", "time_sec": 5, "time_nsec": 0, "snapshot_id": "ff" * 32},
-            {"name": "LATEST", "time_sec": 5, "time_nsec": 7, "snapshot_id": "00" * 32},
-            {"name": "LATEST", "time_sec": 5, "time_nsec": 7, "snapshot_id": "01" * 32},
-            {"name": "LATEST", "time_sec": 4, "time_nsec": 9, "snapshot_id": "ee" * 32},
+            {"name": "2026-09-13", "time_sec": 5, "time_nsec": 0, "snapshot_id": "ff" * 32},
+            {"name": "2026-09-13", "time_sec": 5, "time_nsec": 7, "snapshot_id": "00" * 32},
+            {"name": "2026-09-13", "time_sec": 5, "time_nsec": 7, "snapshot_id": "01" * 32},
+            {"name": "2026-09-13", "time_sec": 4, "time_nsec": 9, "snapshot_id": "ee" * 32},
         ]
-        self.assertEqual(decoder.latest_ref(records, "LATEST")["snapshot_id"], "01" * 32)
+        self.assertEqual(decoder.latest_ref(records, "2026-09-13")["snapshot_id"], "01" * 32)
 
 
 class DiscsTest(unittest.TestCase):
@@ -540,7 +546,7 @@ def chunk_path(fixture_root, name=b"hello.txt"):
     """The path of the one chunk object that holds the file named name.
     Found by walking the snapshot, so no object id is hard-coded."""
     repo = decoder.Repo(fixture_root)
-    snap = repo.read_snapshot("LATEST")
+    snap = repo.read_snapshot(only_ref_name(fixture_root))
     entry = find_entry(repo, snap, name)
     chunks = list(decoder.iter_file_chunks(repo, entry["content_id"], decoder.Report()))
     assert len(chunks) == 1, "the fixture file must be one chunk"
@@ -572,7 +578,7 @@ class Scheme0FixtureTest(unittest.TestCase):
         names = repo.snapshot_names()
         self.assertEqual(len(names), 1)
         self.assertEqual(len(names[0]), 68)
-        ref = decoder.latest_ref(repo.refs()["records"], "LATEST")
+        ref = decoder.latest_ref(repo.refs()["records"], only_ref_name(SCHEME0_FIXTURE))
         self.assertEqual(decoder.text_form(ref["snapshot_id"]), names[0])
 
 
@@ -615,7 +621,7 @@ class CaseFoldedFixtureTest(unittest.TestCase):
 
     def test_list_matches_original_tree(self):
         def listing(root):
-            args = types.SimpleNamespace(disc_root=[root], snapshot="LATEST")
+            args = types.SimpleNamespace(disc_root=[root], snapshot=only_ref_name(root))
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 code = decoder.cmd_list(args)
@@ -724,7 +730,7 @@ class CopiedFixture(unittest.TestCase):
         self.out = os.path.join(tmp, "out")
 
     def restore(self):
-        args = types.SimpleNamespace(disc_root=[self.root], snapshot="LATEST", out=self.out)
+        args = types.SimpleNamespace(disc_root=[self.root], snapshot=only_ref_name(self.root), out=self.out)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             code = decoder.cmd_restore(args)

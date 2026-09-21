@@ -477,7 +477,7 @@ func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
 // writeChunk writes one chunk object for payload, applying the
 // minimum-gain compression rule, and returns its content id.
 func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
-	id := ComputeID(payload)
+	id := ComputeID(format.ObjectKindChunk, payload)
 	w.recordReachable(id, uint64(len(payload)))
 
 	if w.OnDisc != nil && w.OnDisc(id) {
@@ -525,7 +525,7 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 		return ID{}, err
 	}
 	payload := buf[format.CommonHeaderLen+format.ObjectHeaderLen:]
-	id := ComputeID(payload)
+	id := ComputeID(format.ObjectKindBlob, payload)
 	w.recordReachable(id, uint64(len(payload)))
 
 	if w.OnDisc != nil && w.OnDisc(id) {
@@ -561,7 +561,7 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 		return ID{}, err
 	}
 	payload := buf[format.CommonHeaderLen+format.ObjectHeaderLen:]
-	id := ComputeID(payload)
+	id := ComputeID(format.ObjectKindTree, payload)
 	w.recordReachable(id, uint64(len(payload)))
 
 	if w.OnDisc != nil && w.OnDisc(id) {
@@ -608,7 +608,7 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 		return ID{}, err
 	}
 	payload := buf[format.CommonHeaderLen+format.ObjectHeaderLen:]
-	id := ComputeID(payload)
+	id := ComputeID(format.ObjectKindSnapshot, payload)
 
 	s.Object.PayloadLen = uint64(len(payload))
 	s.Object.StoredLen = uint64(len(payload))

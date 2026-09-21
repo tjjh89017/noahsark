@@ -226,13 +226,13 @@ func TestLsUnstableOnlyMarksAFlaggedEntry(t *testing.T) {
 // it resolves a snapshot id text form.
 func TestLsAcceptsARefName(t *testing.T) {
 	treeDir, _, src := lsFixture(t)
-	code, out := runCmd(t, "ls", treeDir, "LATEST")
+	code, out := runCmd(t, "ls", treeDir, defaultRefName())
 	if code != 0 {
-		t.Fatalf("ls LATEST: exit %d: %s", code, out)
+		t.Fatalf("ls by ref name: exit %d: %s", code, out)
 	}
 	want := " " + rootPath(src) + "/\n"
 	if out != want {
-		t.Fatalf("ls LATEST output = %q, want %q", out, want)
+		t.Fatalf("ls by ref name output = %q, want %q", out, want)
 	}
 }
 

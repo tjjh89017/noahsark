@@ -33,7 +33,7 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		{"log: unknown flag", []string{"log", "--repo=" + repo, "--no-such-flag"}},
 		{"verify: missing DISC-ROOT", []string{"verify", "--repo=" + repo}},
 		{"restore: unknown flag", []string{"restore", "--repo=" + repo, "--no-such-flag"}},
-		{"restore: --dry-run without --mount", []string{"restore", "--repo=" + repo, "--dry-run", "LATEST", filepath.Join(work, "out")}},
+		{"restore: --dry-run without --mount", []string{"restore", "--repo=" + repo, "--dry-run", defaultRefName(), filepath.Join(work, "out")}},
 		{"disc: unknown subcommand", []string{"disc", "bogus"}},
 		{"disc burned: missing DISC", []string{"disc", "burned", "--repo=" + repo}},
 		{"recover: unknown flag", []string{"recover", "--repo=" + repo, "--no-such-flag"}},

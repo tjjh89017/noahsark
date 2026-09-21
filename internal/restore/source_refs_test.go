@@ -206,7 +206,7 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, oldSnap, l)
 	firstOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "LATEST", ID: oldSnap, Time: multiFixedClock()}},
+		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: oldSnap, Time: multiFixedClock()}},
 		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
 		OutputDir: firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
@@ -218,7 +218,7 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, newSnap, l)
 	secondOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "LATEST", ID: newSnap, Time: multiFixedClock().Add(time.Second)}},
+		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: newSnap, Time: multiFixedClock().Add(time.Second)}},
 		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
 		OutputDir: secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: multiFixedClock, StageLog: l,
@@ -231,12 +231,12 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenSource(%v): %v", order, err)
 		}
-		got, err := src.ParseSnapshotArg("LATEST")
+		got, err := src.ParseSnapshotArg("2026-09-13")
 		if err != nil {
-			t.Fatalf("ParseSnapshotArg(LATEST), order %v: %v", order, err)
+			t.Fatalf("ParseSnapshotArg by ref name, order %v: %v", order, err)
 		}
 		if got != newSnap {
-			t.Fatalf("order %v: LATEST resolved to %s, want the newest record %s", order, got.TextForm(), newSnap.TextForm())
+			t.Fatalf("order %v: the ref resolved to %s, want the newest record %s", order, got.TextForm(), newSnap.TextForm())
 		}
 	}
 }

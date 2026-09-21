@@ -197,7 +197,7 @@ func TestRestoreDryRunEmptyCacheNamesTheFix(t *testing.T) {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runRestoreDryRun(t, repo, "LATEST")
+	code, out := runRestoreDryRun(t, repo, defaultRefName())
 	if code == 0 {
 		t.Fatalf("restore --dry-run (empty cache): exit 0, want a failure: %s", out)
 	}

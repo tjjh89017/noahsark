@@ -229,6 +229,7 @@ scenario_cli() {
 	"$BIN" verify "$mnt"
 	"$BIN" restore "$mnt" "$snap" "$restored"
 	assert_dirs_equal "$restored$src" "$src"
+	assert_empty_dir_restored "$restored" "$src"
 	umount_if_mounted "$mnt"
 	log "cli PASS"
 }

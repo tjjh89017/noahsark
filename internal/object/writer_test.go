@@ -527,8 +527,8 @@ func mustWriteBytes(t *testing.T, path string, content []byte) {
 }
 
 // recomputeID rebuilds the content id of a decoded object the same way
-// the writer computed it: the hash of the bytes after the common header
-// and the object header.
+// the writer computed it: the hash of the object's kind byte and the
+// bytes after the common header and the object header.
 func recomputeID(v any) (ID, error) {
 	switch t := v.(type) {
 	case *format.Chunk:
@@ -536,25 +536,25 @@ func recomputeID(v any) (ID, error) {
 		if err != nil {
 			return ID{}, err
 		}
-		return ComputeID(payload), nil
+		return ComputeID(format.ObjectKindChunk, payload), nil
 	case *format.Blob:
 		buf := make([]byte, t.EncodedLen())
 		if _, err := t.Encode(buf); err != nil {
 			return ID{}, err
 		}
-		return ComputeID(buf[format.CommonHeaderLen+format.ObjectHeaderLen:]), nil
+		return ComputeID(format.ObjectKindBlob, buf[format.CommonHeaderLen+format.ObjectHeaderLen:]), nil
 	case *format.Tree:
 		buf := make([]byte, t.EncodedLen())
 		if _, err := t.Encode(buf); err != nil {
 			return ID{}, err
 		}
-		return ComputeID(buf[format.CommonHeaderLen+format.ObjectHeaderLen:]), nil
+		return ComputeID(format.ObjectKindTree, buf[format.CommonHeaderLen+format.ObjectHeaderLen:]), nil
 	case *format.Snapshot:
 		buf := make([]byte, t.EncodedLen())
 		if _, err := t.Encode(buf); err != nil {
 			return ID{}, err
 		}
-		return ComputeID(buf[format.CommonHeaderLen+format.ObjectHeaderLen:]), nil
+		return ComputeID(format.ObjectKindSnapshot, buf[format.CommonHeaderLen+format.ObjectHeaderLen:]), nil
 	default:
 		return ID{}, errUnexpectedType
 	}
@@ -633,7 +633,7 @@ func TestCommitRewritesATruncatedExistingObject(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "a.txt"), content)
 
 	staging := t.TempDir()
-	id := ComputeID([]byte(content))
+	id := ComputeID(format.ObjectKindChunk, []byte(content))
 	objPath := filepath.Join(staging, "objects", id.FanoutByte(), id.TextForm())
 	if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
 		t.Fatal(err)

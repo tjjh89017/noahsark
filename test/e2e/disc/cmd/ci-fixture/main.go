@@ -97,7 +97,7 @@ func main() {
 
 	opts := image.BuildOptions{
 		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "LATEST", ID: snapID, Time: fixedClock()}},
+		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors:   targetSectors,
 		PhysicalCapacitySectors: physicalSectors,
 		OutputDir:               treeDir,

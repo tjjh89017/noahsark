@@ -3,12 +3,24 @@ package main
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+// commitClock gives the local time commit takes the default ref name
+// from. A test replaces it to fix the date.
+var commitClock = time.Now
+
+// defaultRefName is the ref a commit moves with no --ref: the local
+// date of today, as YYYY-MM-DD. A second commit on the same day moves
+// the same name to the newer snapshot; log still reaches the older one.
+func defaultRefName() string {
+	return commitClock().Format("2006-01-02")
+}
 
 // newWriter builds the Writer cmdCommit commits through. A test replaces
 // it to reach the Writer's Stat seam before Commit runs.
@@ -23,7 +35,7 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]",
 		"Commit a source directory tree as a new snapshot.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
-	ref := fs.String("ref", "LATEST", "ref to move")
+	ref := fs.String("ref", defaultRefName(), "ref to move; the default is the local date of today, YYYY-MM-DD")
 	message := fs.String("m", "", "commit message, stored on the snapshot")
 	var excludeFlags stringList
 	fs.Var(&excludeFlags, "exclude", "exclude pattern, gitignore-style; repeatable")

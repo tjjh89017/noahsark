@@ -59,7 +59,7 @@ func buildFixtureRun(t *testing.T) (runRoot string, snapID object.ID) {
 	outDir := filepath.Join(t.TempDir(), "run")
 	opts := image.PackOptions{
 		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "LATEST", ID: snapID, Time: fixedClock()}},
+		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors:   capacitySectors,
 		PhysicalCapacitySectors: capacitySectors,
 		OutputDir:               outDir,

@@ -1,6 +1,6 @@
 # NoahsArk design notes
 
-Document version 0.5.0.
+Document version 0.5.2.
 
 Sections other than the change log and Deferred designs still describe
 document version 3.2 and are updated later.
@@ -141,7 +141,7 @@ forgotten snapshot stay readable by content id, and the connectivity check
 still finds them, so a `forget` is reversible while the discs exist. The
 format already carries what such a command needs: the ref table is a reflog
 (FORMAT.md section 6.18), and the snapshot table has a `flags` byte
-(FORMAT.md section 11.4). No structure changes when the command arrives.
+(FORMAT.md section 10.4). No structure changes when the command arrives.
 Local staging retention (`staging.retain_after_clean`, OPERATIONS.md section
 4.5) is a different thing: it governs the local copy of an object that a disc
 already holds.
@@ -192,7 +192,7 @@ extents, the catalog copies, the manifests, the filters and the parity layout
 are all present in Phase 1. Later phases add no format change. A Phase 3
 reader reads a Phase 1 disc. A Phase 1 reader reads a Phase 3 disc, unless
 that disc uses a feature bit that Phase 1 does not know, or a disc filesystem
-profile that Phase 1 does not implement; FORMAT.md section 12.6 holds that
+profile that Phase 1 does not implement; FORMAT.md section 11.6 holds that
 rule.
 
 | Phase | Content |
@@ -231,11 +231,11 @@ slower implementation still conforms.
 | Staging space for a commit | The new chunks only, never a second copy of the source. | rule | OPERATIONS.md 7.1 |
 | FEC encoder working set | 512 MiB to 1 GiB per band, at `fec.band_stripes` 2048. | budget | section 2.9 |
 | FEC encode time, 25 GB run | Under 2 minutes on one core. Never the bottleneck against a 4x burn. | budget | section 2.9 |
-| Parity overhead per run | `m / (k + 1 + m)` = 9.02 percent of the stripe. | rule | FORMAT.md 10.1 |
-| Catalog cost per run | Under 0.16 percent of a 25 GB disc at 2,000 runs. | budget | FORMAT.md 11.1, 11.7 |
+| Parity overhead per run | `m / (k + 1 + m)` = 9.02 percent of the stripe. | rule | FORMAT.md 9.1 |
+| Catalog cost per run | Under 0.16 percent of a 25 GB disc at 2,000 runs. | budget | FORMAT.md 10.1, 11.7 |
 | Catalog cap per run | `catalog.max_bytes`, default 512 MiB. | rule | FORMAT.md 11.7 |
-| Manifest cost per run | 64 bytes per object, about 0.0015 percent of the disc. | rule | FORMAT.md 11.2 |
-| Filter false-positive rate | 2^-16 per run. | rule | FORMAT.md 11.1 |
+| Manifest cost per run | 64 bytes per object, about 0.0015 percent of the disc. | rule | FORMAT.md 10.2 |
+| Filter false-positive rate | 2^-16 per run. | rule | FORMAT.md 10.1 |
 | UDF overhead per object, P4 | About 3.1 KiB, under 0.1 percent of a 25 GB disc. | budget | FORMAT.md 4.3 |
 | Restore memory and spool | No spool. Nothing that `restore` holds grows with the snapshot size. | rule | OPERATIONS.md 14.2 |
 | Restore disc switches | One per disc in the plan, which is the minimum. | rule | OPERATIONS.md 14.2 |
@@ -255,7 +255,7 @@ What is **not** defended, stated plainly:
 
 - **No encryption.** Every object payload is plaintext. Possession of a disc
   is access to every byte on it. The fields are reserved and unused;
-  FORMAT.md section 6.19 holds them.
+  FORMAT.md section 6.16 holds them.
 - **No signing and no authentication of origin.** Nothing proves who wrote a
   disc. A content id proves that bytes match a name; it proves nothing about
   the author. An adversary who can write a whole coherent disc set, with a
@@ -396,7 +396,7 @@ not NoahsArk. The same radial spread is achieved by ordinary files, because
 copy order equals LBA order: `RUN.bin` first, a header copy at the start of
 each parity file, and `RUN2.bin` last.
 
-**The endianness and alignment test.** FORMAT.md section 13 requires a
+**The endianness and alignment test.** FORMAT.md section 12 requires a
 golden-file test per structure. The mechanics: the test writes a structure with
 known values and compares the bytes to a checked-in file, and it also reads the
 checked-in file and compares the fields. Both directions are needed. The first
@@ -470,11 +470,11 @@ section 3.7 defines it.
 
 Digests are never truncated. A digest is 256 bits. The 8-byte truncated digests
 of the FEC checksum column are not content ids; they detect media decay only.
-FORMAT.md section 10.3 holds that rule.
+FORMAT.md section 9.3 holds that rule.
 
 ### 2.3 Chunking
 
-Rule: FORMAT.md sections 4.1 to 4.9.
+Rule: FORMAT.md sections 4.1 to 4.7.
 
 The chunker is FastCDC, 2020 variant, with a 64-bit Gear hash and
 normalization level 2. The five techniques of FastCDC, in the order that
@@ -497,7 +497,7 @@ matters:
 
 The Gear table and the mask constants are frozen. A changed table gives
 different cut points and silently ends dedup against every existing disc.
-FORMAT.md sections 4.8 and 4.9 hold them.
+FORMAT.md sections 4.6 and 4.7 hold them.
 
 **Why P4 is the default.** `max = 4 * avg` and `min = avg / 4` in every
 profile. That is the FastCDC paper ratio and it keeps normalization level 2 in
@@ -537,7 +537,7 @@ it is unnecessary: an all-zero region produces identical maximum-size zero
 chunks, which deduplicate to one object in the whole repository. The restorer
 detects an all-zero chunk and punches a hole. `SEEK_HOLE` and `SEEK_DATA`
 remain available as a read-speed optimization that does not change the format;
-FORMAT.md section 4.6 holds the rule.
+FORMAT.md section 4.4 holds the rule.
 
 ### 2.4 Compression
 
@@ -566,7 +566,7 @@ Rule: FORMAT.md section 6.
 The object graph:
 
 ```
-     ref "LATEST"
+     ref "2026-09-21"
          |
          v
      snapshot #42 --parent--> snapshot #41 --parent--> ... --> snapshot #1
@@ -598,7 +598,7 @@ amplification. A separate node object would cost one object read per file
 instead of one per directory. On a medium with 100 ms seeks, that is the
 difference between usable and unusable. A separate node also saves nothing on a
 metadata-only change, because the parent tree changes either way. Section 5.10
-gives the worked size example, and FORMAT.md section 6.6 gives the layout.
+gives the worked size example, and FORMAT.md section 6.5 gives the layout.
 
 Rejected: **git-style metadata-free trees.** They push every POSIX field into a
 second structure, which costs the read amplification above and gives nothing
@@ -617,7 +617,7 @@ the graph and hoping is exactly wrong for a backup system: a snapshot must be
 provably complete or provably incomplete. The partial-clone discipline was
 adopted instead: a run declares that it is partial and lists its prerequisites
 with the run that holds each, so "on another disc" is never indistinguishable
-from "corrupt". FORMAT.md section 11.3 holds the prerequisite list.
+from "corrupt". FORMAT.md section 10.3 holds the prerequisite list.
 
 ### 2.6 Disc and run model
 
@@ -811,7 +811,7 @@ The worked examples are in sections 5.1 to 5.4.
 
 ### 2.9 Forward error correction
 
-Rule: FORMAT.md section 10.
+Rule: FORMAT.md section 9.
 
 **Why the design is what it is.** The drive already has a strong
 error-correction layer. Blu-ray uses a two-code picket scheme inside every
@@ -912,7 +912,7 @@ image takes under two minutes against a burn that takes about an hour at 4x.
 
 ### 2.10 Filters, manifests and the catalog
 
-Rule: FORMAT.md section 11.
+Rule: FORMAT.md section 10.
 
 **The index-free promise.** A local index is an accelerator. The discs answer
 every question without it. The promise rests on three structures that every run
@@ -990,7 +990,7 @@ It must be used only when the bundle exceeds 64 MiB. At the numbers in section
 **Manifest fan-out.** A writer must use a 16-bit fan-out, 65536 entries and
 256 KiB, once a run holds more than 1,000,000 objects. It removes 8
 binary-search steps and costs 256 KiB of sequential read. Optical seeks cost
-about 100 ms each, so the trade is clear. FORMAT.md section 11.2 holds the
+about 100 ms each, so the trade is clear. FORMAT.md section 10.2 holds the
 rule and the feature bit.
 
 **The dedup rule.** FORMAT.md section 11.9 states it: never drop chunk data on
@@ -1129,7 +1129,7 @@ ssh nas "find /srv/data -printf '%y\t%s\t%T@\t%C@\t%m\t%U\t%G\t%D\t%i\t%n\t%p\n'
 ```
 
 `%D`, `%i` and `%n` are the device number, the inode number and the link
-count. Phase 1 does not use them to group hardlinks (FORMAT.md section 6.14);
+count. Phase 1 does not use them to group hardlinks (FORMAT.md section 6.13);
 they are kept in the listing for a later phase. The listing is diffed
 against the parent snapshot's trees, exactly as `sync` does, and only the
 changed files are read over the mount. It removes the per-file round trips of
@@ -1194,7 +1194,7 @@ discs" to "shortest makespan".
 
 ### 2.14 File metadata
 
-Rule: FORMAT.md section 6.6 for the field set and the encodings,
+Rule: FORMAT.md section 6.5 for the field set and the encodings,
 OPERATIONS.md section 15 for the restore policy.
 
 The **format** defines every field from the start. The **implementation** is
@@ -1295,9 +1295,9 @@ which restored ACEs were always marked explicit instead of inherited.
 
 ### 2.15 Evolution and conformance
 
-Rule: FORMAT.md sections 12.4 to 12.6.
+Rule: FORMAT.md sections 11.4 to 11.6.
 
-The interop matrix of FORMAT.md section 12.6 is also the test matrix for
+The interop matrix of FORMAT.md section 11.6 is also the test matrix for
 interop: **each cell is one CI case**, built by writing an image with one build
 and reading it with another. `Y` means full use. `~` means partial use, with
 the loss named. `N` means a clean refusal that names the reason. An empty
@@ -1340,7 +1340,7 @@ detection and loss columns below are the informative half.
 
 ### 2.17 Testing
 
-Rule: OPERATIONS.md section 22 holds the test list, and FORMAT.md section 13
+Rule: OPERATIONS.md section 22 holds the test list, and FORMAT.md section 12
 holds the golden vectors.
 
 **Image-first principle.** Every burn test uses an image file first.
@@ -1591,24 +1591,24 @@ FORMAT.md section 12.8 is the index that governs that column.
 | OC016 | Chunker profile | P4 (1 MiB / 4 MiB / 16 MiB) | FORMAT.md 4.3; a constant of the build, OPERATIONS.md 7.1 | Yes | Argued from object counts and UDF overhead, not required. |
 | OC018 | Compression level | zstd 3 | FORMAT.md 5.3; a constant of the build, OPERATIONS.md 7.1 | Yes | "The balance point". |
 | OC019 | Compression minimum gain | 0.05 | FORMAT.md 5.4; a constant of the build, OPERATIONS.md 7.1 | Yes | 5 percent chosen on a restore-cost argument. |
-| OC020 | `k = 231`, `m = 23` | fixed for version 1 | FORMAT.md 10.1, 10.2 | Yes | Chosen as "the knee of the curve" at about 10 percent parity, from an informative comparison table. |
-| OC021 | Checksum column digest width | first 8 bytes of BLAKE3-256 | FORMAT.md 10.3 | Yes | 2^-64 per sector asserted as sufficient for decay detection. |
+| OC020 | `k = 231`, `m = 23` | fixed for version 1 | FORMAT.md 9.1, 9.2 | Yes | Chosen as "the knee of the curve" at about 10 percent parity, from an informative comparison table. |
+| OC021 | Checksum column digest width | first 8 bytes of BLAKE3-256 | FORMAT.md 9.3 | Yes | 2^-64 per sector asserted as sufficient for decay detection. |
 | OC031 | Object fan-out levels | 1 | FORMAT.md 3.5 | Yes | Both 1 and 2 are acceptable; 1 is chosen. |
-| OC033 | Filter seed search bound | at most 100 attempts, seeds 0..99 | FORMAT.md 11.1 | Yes | Round bound; failure is declared a writer defect. |
-| OC034 | Filter geometry constants | `ln(n)/ln(3.33) + 2.25`, `0.875 + 0.25 * ln(1e6)/ln(n)`, cap 262144 | FORMAT.md 11.1 | Yes | Taken from the reference construction, binding only for the golden vector. |
+| OC033 | Filter seed search bound | at most 100 attempts, seeds 0..99 | FORMAT.md 10.1 | Yes | Round bound; failure is declared a writer defect. |
+| OC034 | Filter geometry constants | `ln(n)/ln(3.33) + 2.25`, `0.875 + 0.25 * ln(1e6)/ln(n)`, cap 262144 | FORMAT.md 10.1 | Yes | Taken from the reference construction, binding only for the golden vector. |
 | OC045 | `staging.retain_after_clean` | 7 days | OPERATIONS.md 4.5, 17 | No | Round retention. |
 | OC057 | `commit.retry_unstable` | 1 | OPERATIONS.md 7.6, 17 | No | One retry chosen arbitrarily. |
 | OC058 | The speed in the printed burn line, and the M-DISC speed | 4, 2 | OPERATIONS.md 10.2 | No | Conservative speeds. |
 | OC060 | `README.txt` and `FORMAT.txt` caps | 16 KiB and 64 KiB | FORMAT.md 8.4, 8.5 | Yes | Normative caps chosen with headroom, not derived. |
-| OC061 | Gear seed string | `"noahsark/gear/v1"` | FORMAT.md 4.8 | Yes | An arbitrary but frozen 16-byte seed. |
-| OC062 | Cauchy parameter choice | `x_j = k + j`, `y_i = i` | FORMAT.md 10.2 | Yes | One of many valid Cauchy assignments; frozen by fiat. |
-| OC063 | `spread_mask` distribution rule | `1 << (63 - floor(j * 32 / n))`, high 32 bits only | FORMAT.md 4.9 | Yes | A specific spreading rule; other spreads would also restore the window. |
+| OC061 | Gear seed string | `"noahsark/gear/v1"` | FORMAT.md 4.6 | Yes | An arbitrary but frozen 16-byte seed. |
+| OC062 | Cauchy parameter choice | `x_j = k + j`, `y_i = i` | FORMAT.md 9.2 | Yes | One of many valid Cauchy assignments; frozen by fiat. |
+| OC063 | `spread_mask` distribution rule | `1 << (63 - floor(j * 32 / n))`, high 32 bits only | FORMAT.md 4.7 | Yes | A specific spreading rule; other spreads would also restore the window. |
 | OC064 | Append rewrite bound per earlier stripe | `floor(m / 2)` blocks | FORMAT.md 10.6 | Yes | Half of `m` chosen to keep a run above the `CRITICAL` line. |
 | OC065 | Run directory zero padding | 10 decimal digits, so `run_seq` is capped at 9,999,999,999 | FORMAT.md 8.3, 2.10 | Yes | The width is a formatting choice that becomes a format limit. |
 | OC066 | Ref name limit | 1 to 40 bytes | FORMAT.md 6.18, 2.10 | Yes | Declared part of the format without derivation. |
-| OC067 | Disc label widths | 64 bytes in the superblock, 48 in the disc directory | FORMAT.md 7.5, 11.6, 2.10 | Yes | Two different widths for one label. |
+| OC067 | Disc label widths | 64 bytes in the superblock, 48 in the disc directory | FORMAT.md 7.4, 10.6, 2.10 | Yes | Two different widths for one label. |
 | OC070 | On-disc name and path caps | 126 characters, under 220 characters | FORMAT.md 8.7, 2.10 | Yes | 126 is half of a UDF limit; 220 is a Windows `MAX_PATH` margin. |
-| OC072 | Filter false-positive target | 2^-16 per run, via BinaryFuse16 | FORMAT.md 11.1 | Yes | Chosen from a 2,000-run spurious-hit calculation. |
+| OC072 | Filter false-positive target | 2^-16 per run, via BinaryFuse16 | FORMAT.md 10.1 | Yes | Chosen from a 2,000-run spurious-hit calculation. |
 
 ---
 
@@ -1860,7 +1860,7 @@ the table itself.
 ### 4.8 dvdisaster comparison
 
 The column-and-stripe layout is similar to dvdisaster RS03. The code itself is
-defined in FORMAT.md section 10.2 and nowhere else.
+defined in FORMAT.md section 9.2 and nowhere else.
 
 Never copy dvdisaster's hardcoded BD sizes, 11,826,176 and 23,652,352 sectors.
 They are smaller than the real discs and would waste about 3 percent of every
@@ -1898,7 +1898,7 @@ section 8.2 holds the knobs.
 **Reed-Solomon and Cauchy matrices.** Reed and Solomon, "Polynomial Codes over
 Certain Finite Fields", J. SIAM 1960, gives the code. Blömer et al., ICSI
 TR-95-048, 1995, gives the XOR-based erasure-resilient construction over a
-Cauchy generator matrix that FORMAT.md section 10.2 pins.
+Cauchy generator matrix that FORMAT.md section 9.2 pins.
 
 ---
 
@@ -2262,7 +2262,7 @@ Single drive, `restore.rate_mb_s` 20 and `restore.switch_seconds` 60:
 This section describes the reference implementation's language, source layout,
 coding style and dependency choices. None of it is part of the on-disc format:
 a conforming implementation may use any language, any project layout, any
-comment style and any package set, or none. FORMAT.md section 12.4 states the
+comment style and any package set, or none. FORMAT.md section 11.4 states the
 format-level requirements that do bind every implementation.
 
 Two implementation rules are informative and belong here rather than in
@@ -2279,7 +2279,7 @@ external tools; every read verifies; errors carry the id. FORMAT.md section
 
 **Vendored tables.** The Gear table and the mask constants are part of the
 on-disc format. Vendor them. Do not import them from a dependency that could
-change them. FORMAT.md sections 4.8 and 4.9 hold the generation rules.
+change them. FORMAT.md sections 4.6 and 4.7 hold the generation rules.
 
 **External tool version pinning.** Check the versions of `growisofs`,
 `mkudffs`, `udfinfo`, `genisoimage` and `ddrescue` at startup. Refuse to burn
@@ -2319,10 +2319,10 @@ package at all.**
 
 | Need | Package |
 |---|---|
-| Reed-Solomon `rs255-gf8` (FORMAT.md 10.2) | `github.com/klauspost/reedsolomon` |
+| Reed-Solomon `rs255-gf8` (FORMAT.md 9.2) | `github.com/klauspost/reedsolomon` |
 | zstd | `github.com/klauspost/compress/zstd` |
 | BLAKE3 | `lukechampine.com/blake3` or `github.com/zeebo/blake3` |
-| BinaryFuse16 (FORMAT.md 11.1) | `github.com/FastFilter/xorfilter` |
+| BinaryFuse16 (FORMAT.md 10.1) | `github.com/FastFilter/xorfilter` |
 | Watch mode (Phase 3) | `github.com/fsnotify/fsnotify` |
 | CLI | any |
 
@@ -2518,11 +2518,11 @@ disagree, FORMAT.md wins for the on-disc format.
 
 | Topic | Reference |
 |---|---|
-| FastCDC | W. Xia et al., "The Design of Fast Content-Defined Chunking for Data Deduplication Based Storage Systems", IEEE Transactions on Parallel and Distributed Systems, 2020. FORMAT.md sections 4.1 to 4.9. |
-| BinaryFuse filters | T. M. Graf and D. Lemire, "Binary Fuse Filters: Fast and Smaller Than Xor Filters", ACM Journal of Experimental Algorithmics, 2022. FORMAT.md section 11.1. |
+| FastCDC | W. Xia et al., "The Design of Fast Content-Defined Chunking for Data Deduplication Based Storage Systems", IEEE Transactions on Parallel and Distributed Systems, 2020. FORMAT.md sections 4.1 to 4.7. |
+| BinaryFuse filters | T. M. Graf and D. Lemire, "Binary Fuse Filters: Fast and Smaller Than Xor Filters", ACM Journal of Experimental Algorithmics, 2022. FORMAT.md section 10.1. |
 | Capping | M. Lillibridge, K. Eshghi and D. Bhagwat, "Improving Restore Speed for Backup Systems that Use Inline Chunk-Based Deduplication", USENIX FAST 2013. Section 2.11. |
-| Reed-Solomon codes | I. S. Reed and G. Solomon, "Polynomial Codes over Certain Finite Fields", Journal of SIAM, 1960. FORMAT.md section 10.1. |
-| Cauchy generator matrices | J. Blömer et al., "An XOR-Based Erasure-Resilient Coding Scheme", ICSI TR-95-048, 1995. FORMAT.md section 10.2. |
+| Reed-Solomon codes | I. S. Reed and G. Solomon, "Polynomial Codes over Certain Finite Fields", Journal of SIAM, 1960. FORMAT.md section 9.1. |
+| Cauchy generator matrices | J. Blömer et al., "An XOR-Based Erasure-Resilient Coding Scheme", ICSI TR-95-048, 1995. FORMAT.md section 9.2. |
 | dvdisaster RS03 | dvdisaster documentation, the RS03 codec. Informative comparison in section 4.8. |
 | BLAKE3 | J. O'Connor, J.-P. Aumasson, S. Neves and Z. Wilcox-O'Hearn, "BLAKE3: one function, fast everywhere", 2020. FORMAT.md section 3.2. |
 | SHA-256 | NIST FIPS 180-4, Secure Hash Standard. FORMAT.md section 3.2. |
@@ -2535,14 +2535,14 @@ disagree, FORMAT.md wins for the on-disc format.
 | dvd+rw-tools | growisofs and dvd+rw-mediainfo, upstream 7.1 with the Debian patch set. OPERATIONS.md section 11.9, and sections 4.2 and 4.3. |
 | udftools | mkudffs and udfinfo, 2.3 or later. OPERATIONS.md section 10.1. |
 | GNU ddrescue | The ddrescue manual, the mapfile format. OPERATIONS.md sections 13.4 and 24. |
-| Git multi-pack-index | Git technical documentation, "multi-pack-index format". FORMAT.md section 11.2 and OPERATIONS.md section 2.4. |
-| Git partial clone | Git technical documentation, "partial clone", the promisor discipline. FORMAT.md section 11.3. |
-| GEFS | O. Read, GEFS, a content-addressed filesystem for Plan 9: hashed pointers and one root per snapshot. FORMAT.md sections 2.1 and 6.15. |
+| Git multi-pack-index | Git technical documentation, "multi-pack-index format". FORMAT.md section 10.2 and OPERATIONS.md section 2.4. |
+| Git partial clone | Git technical documentation, "partial clone", the promisor discipline. FORMAT.md section 10.3. |
+| GEFS | O. Read, GEFS, a content-addressed filesystem for Plan 9: hashed pointers and one root per snapshot. FORMAT.md sections 2.1 and 6.14. |
 | Duplicacy | The two-step fossil collection rule. OPERATIONS.md section 4.5. |
 | Bacula | The bootstrap file. |
 | restic | The bundle (pack) shape and the Windows ACL inheritance defect. FORMAT.md section 6.3 and section 2.14. |
-| age | The separation of encryption from signing that FORMAT.md section 6.19 reserves. |
-| Linux kernel | `fs/udf/super.c` for the write-once read-only rule, and the `openat2` and `RESOLVE_*` flags that FORMAT.md section 6.12 and OPERATIONS.md section 15.6 rest on. |
+| age | The separation of encryption from signing that FORMAT.md section 6.16 reserves. |
+| Linux kernel | `fs/udf/super.c` for the write-once read-only rule, and the `openat2` and `RESOLVE_*` flags that FORMAT.md section 6.11 and OPERATIONS.md section 15.6 rest on. |
 
 ---
 
@@ -2559,6 +2559,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 0.5.2 | **The last on-disc format change before the first tag (GitHub issue #60, items B1, B6, B8 and B9).** **Content id**: the id of an object is now the hash of one kind byte and the uncompressed payload, for all four kinds. The kind byte is the object header's `kind` value. Before the change an empty file's blob and an empty directory's tree shared one id, both payloads being eight zero bytes; the second object counted as already present and a restore of it failed with a bad magic error. Ids of different kinds now never compare equal, so dedup needs no kind filter. FORMAT.md's content id rule states the byte order, names the payload of each kind and gives a worked example with real digests. **Refs**: the name `LATEST` is deleted. `commit` with no `--ref` moves the ref named by the local date of today, `YYYY-MM-DD`; two commits on one day move that one name, and `log` still reaches the older snapshot. No ref name is reserved; a reader takes the record with the highest time. **README.txt**: it cites the forward error correction part of FORMAT.txt as the full repair recipe, states that the reference decoder verifies and restores but does not repair, and says that its restore, verify and list commands take more than one disc root. A disc with no parity prints `parity: none` and lists no checksum.bin, no parity/ and no geometry. **Compression**: RFC 8878 is cited as the normative description of the zstd frame format, with the parts a reader needs. **Numbering**: FORMAT.md is renumbered once so that no section number has a gap; the old sections 10, 11, 12 and 13 are now 9, 10, 11 and 12, and "Cross-version and cross-phase reading" is now "Cross-version and unknown-value reading". The golden files, the decoder fixtures and FORMAT.txt were made again one time. |
 | 0.5.1 | **Host-side findings of the final review (GitHub issue #60, items B2, B3, B5, B7, B13, B14, B15, B16 and the small items).** `restore` has one write path: the all-discs mode now writes each file into the same `.NAME.noahsark-part` file the one-drive mode uses, and the file gets its final name only after every chunk is in place and verified. A file that a damaged or a missing object cuts short leaves no path with the final name, and its part file goes too, because every disc is present in that mode and no later run can finish it. `gc` frees `staging/plans/<disc-uuid>/`, the packed tree and the image beside it, for a disc whose objects are all ON-DISC, under the same retention and verify-count rules; `gc --dry-run` names the directory and its bytes, and a disc that is packed, burned or short of `gc.min_verified_copies` keeps it. `ls` and `log` read the staging store first and the local cache second, so a just-committed snapshot lists before the first `pack`; a ref resolves through `<repo>/refs.txt` first. The reference decoder's `restore`, `verify` and `list` take several disc roots, and an object another given root holds is found there; in `verify` a tree on a disc that was not given is a `NOTE` that names the disc by number, label and uuid, and a damaged object is still a `FAIL`. The cached-disc pick breaks a `created_sec` tie by the row count of the disc's own DISCS table, then by the higher uuid, so two packs in one second give one answer. `pack` with nothing left to pack writes no run, prints the reason and exits 0. A failed `verify` says the burn mark is removed and prints the `disc burned` line to run after the new burn. `status` on a new repository sends the operator to `commit`, and a disc that `recover` has not read shows as `not fed` with `recover` as the next step. A verify past `gc.min_verified_copies` prints `verified`, not "3 of 2". `verify --heal` with no `--out` says it repairs in place before it writes. `pack`, `disc burned` and `gc` now name what they count. No on-disc byte changed. |
 | 0.5.0 | **One format revision before the first tag (GitHub issue #30, all 24 cuts approved).** The user approved every cut on issue #30's decision list, made now because it is the last cheap moment to break the on-disc format: no tag has shipped yet, so no disc anywhere carries the old bytes. `version_minor` is reserved; a reader refuses only an unknown `version_major`. `header_len` has one definition for every structure, counted the same way everywhere, and a reader obeys it instead of assuming a compiled size. Every structure's reserved bytes are ignored, not checked, by a reader. The format keeps one hash algorithm, one set of chunker parameters, no crypto byte and no `lz4` compression code. A blob body is 8 bytes and a blob entry is 40 bytes, with the offset a running sum instead of a stored field. A tree entry's fixed header is 72 bytes, its variable areas sit at derived places, and it carries no hardlink group, no atime and no birth time. The root path is stored once, as the escaped root entry name; there is no `ROOT_PATH` TLV and no snapshot metadata tag 4. A snapshot drops `generation`, its source fields and the reachable object count, and keeps `parent`. INDEX has a 56-byte header; its Objects row is 40 bytes and pairs by position with the Files rows of the run's own objects, both in content id order; its Prereqs row is 48 bytes and names a disc by `disc_uuid`, never by `run_seq`. REFS and DISCS share a 56-byte header and carry no CRC; the newest ref wins by `time_sec`, then `time_nsec`, then snapshot id bytes. The DISCS row drops status, health, verify time and used sectors. DISC and RUN keep their on-disc sizes, with the cut fields turned to reserved space; the DISC superblock's `header_len` is 2048, and it records the one capacity that `pack` used, not a separate forced-capacity field. `RUN.bin` is 512 bytes. A parity file carries no header block of its own. `catalog/snapobj/` is gone: every snapshot is an ordinary object under `snapshots/`. Every mention of an appended run, a session or a close state is gone from the format; a disc holds one run. `FORMAT.txt` on the disc is a byte copy of `FORMAT.md` itself, not a generated excerpt. Host-side: `status` no longer shows used bytes, the local ledger no longer holds a verify timestamp, and `pack` reads each staged object exactly once. The disc-side media presets registry is gone; the capacity presets `pack` itself offers are unchanged. The reference decoder was rewritten from this document and holds no Reed-Solomon code; it says so and refuses to heal. No document version before this one is rewritten to match; the older change log rows describe the bytes their own version wrote. |
 | 0.4.29 | **Four branches reconciled: dead code, stale citations and one disc-number bug.** `--no-eject` and the manual eject/umount step are gone from `restore`'s disc-swap mode; OPERATIONS.md and `docs/decisions.md` now say plainly that `restore` waits and the operator swaps the disc in a second terminal. The dead config key `cache.format_version` is removed from the loader, the known-key list, the per-command key lists, the defaults and OPERATIONS.md's configuration reference. `disc label` and `disc mark-degraded` are no longer special-cased stubs; an unknown `disc` subcommand is refused the same way any other one is. `pack`'s default `--out` is built from `staging.dir`, not a hardcoded `<repo>/staging`, so a repository whose staging store was moved still packs into it. The one-drive restore's `--mount is required` message no longer names a document. A handful of Go comments that cited a section number, or a heading OPERATIONS.md's simplification passes removed, are reworded to describe the rule instead. **Bug fixed:** every disc's `README.txt` named disc 0, because `buildReadme` read a fixed constant instead of the run's real `disc_seq`; `buildReadme` now takes the disc number as a parameter, and every caller passes its own. The one-drive restore's mismatch report no longer complains "expected ... found ..." about a disc this run simply does not need; it says so calmly and asks for the disc it does need. No on-disc byte changed. |

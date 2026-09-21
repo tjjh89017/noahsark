@@ -21,7 +21,7 @@ func TestLogListsKnownSnapshots(t *testing.T) {
 	if !strings.Contains(out, snapID) {
 		t.Fatalf("log output %q missing the snapshot id", out)
 	}
-	if !strings.Contains(out, "refs: LATEST") {
+	if !strings.Contains(out, "refs: "+defaultRefName()) {
 		t.Fatalf("log output %q missing the ref name", out)
 	}
 	if !strings.Contains(out, "roots: "+rootPath(src)) {
@@ -52,12 +52,12 @@ func TestLogWithArgumentPrintsOneSnapshotsDetails(t *testing.T) {
 // resolves a snapshot id text form.
 func TestLogAcceptsARefName(t *testing.T) {
 	treeDir, snapID, _ := lsFixture(t)
-	code, out := runCmd(t, "log", treeDir, "LATEST")
+	code, out := runCmd(t, "log", treeDir, defaultRefName())
 	if code != 0 {
-		t.Fatalf("log LATEST: exit %d: %s", code, out)
+		t.Fatalf("log by ref name: exit %d: %s", code, out)
 	}
 	if !strings.Contains(out, "snapshot "+snapID) {
-		t.Fatalf("log LATEST output %q missing the resolved snapshot id", out)
+		t.Fatalf("log by ref name output %q missing the resolved snapshot id", out)
 	}
 }
 

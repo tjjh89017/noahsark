@@ -44,9 +44,9 @@ Use this table to find a topic, by document and heading, not by number
 | Disc filesystem and the volume tree (on-disc layout) | FORMAT.md | "8. Filesystem and the volume tree" |
 | The reference decoder | FORMAT.md | "8.6 Reference decoder" |
 | Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burning" |
-| Reed-Solomon parity (on-disc layout) | FORMAT.md | "10. Forward error correction" |
+| Reed-Solomon parity (on-disc layout) | FORMAT.md | "9. Forward error correction" |
 | Self-healing and verify (host-side) | OPERATIONS.md | "13. Verify and heal" |
-| The run index and the catalog | FORMAT.md | "11. The run index and the catalog" |
+| The run index and the catalog | FORMAT.md | "10. The run index and the catalog" |
 | Local cache | OPERATIONS.md | "2.4 Local cache layout" |
 | Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
 | State log, local refs and ledgers | OPERATIONS.md | "3. Local file formats" |
@@ -58,13 +58,13 @@ Use this table to find a topic, by document and heading, not by number
 | Commit flow, excludes and unstable files | OPERATIONS.md | "7. Commit" |
 | Command syntax | OPERATIONS.md | "16. CLI reference" |
 | Config keys | OPERATIONS.md | "17. Configuration reference" |
-| Format versioning rules | FORMAT.md | "12. Reader and writer rules" |
+| Format versioning rules | FORMAT.md | "11. Reader and writer rules" |
 | Failure and recovery behaviour | OPERATIONS.md | "20. Failure and recovery actions" |
 | Testing and CI | OPERATIONS.md | "22. Test list" and "23. Manual physical checklist" |
 | Go-level implementation notes | NOTES.md | "6. Implementation notes" |
 | What changed from the old design | NOTES.md | "2.19 Design changes from the superseded design" |
 | Term definitions | NOTES.md | "8. Glossary" |
-| The Gear table generation rule | FORMAT.md | "4.8 Gear table" |
+| The Gear table generation rule | FORMAT.md | "4.6 Gear table" |
 | Magic numbers and registries | FORMAT.md | "2.2 Magic values" and "2.5 Registries" |
 | Burning-host command reference | OPERATIONS.md | "24. Burning-host command reference" |
 | Rejected designs and why | NOTES.md | "2.18 Rejected and superseded alternatives" |
@@ -91,7 +91,7 @@ Implementation notes" section.
 - Write a golden-file test for every structure: encode known values, compare
   to a checked-in file; decode that file, compare the fields.
 - Vendor the Gear table. Generate it once from the normative rule in
-  FORMAT.md's "4.8 Gear table", check it in as a literal array, and never
+  FORMAT.md's "4.6 Gear table", check it in as a literal array, and never
   regenerate it from a dependency.
 - `image build` checks the `mkudffs` version: `udftools` 2.3 or later. The
   tool never runs `growisofs`, thus the operator checks `dvd+rw-tools` 7.1-14

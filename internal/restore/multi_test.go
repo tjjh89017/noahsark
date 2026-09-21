@@ -75,7 +75,7 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 		sectors := (capBytes + image.SectorSize - 1) / image.SectorSize
 		opts := image.PackOptions{
 			StagingDir:              stagingDir,
-			Snapshots:               []image.SnapshotRef{{Name: "LATEST", ID: snapID, Time: multiFixedClock()}},
+			Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: multiFixedClock()}},
 			TargetCapacitySectors:   sectors,
 			PhysicalCapacitySectors: sectors,
 			OutputDir:               outDir,

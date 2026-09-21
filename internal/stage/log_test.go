@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
@@ -15,7 +16,7 @@ func TestEnsureStagedThenMarkPacked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 
 	if err := l.EnsureStaged(id); err != nil {
 		t.Fatal(err)
@@ -47,8 +48,8 @@ func TestEnsureStagedThenMarkPacked(t *testing.T) {
 
 func TestOpenReplaysAcrossOpens(t *testing.T) {
 	dir := t.TempDir()
-	id1 := object.ComputeID([]byte("one"))
-	id2 := object.ComputeID([]byte("two"))
+	id1 := object.ComputeID(format.ObjectKindChunk, []byte("one"))
+	id2 := object.ComputeID(format.ObjectKindChunk, []byte("two"))
 
 	l, err := Open(dir)
 	if err != nil {
@@ -87,7 +88,7 @@ func TestEnsureOnDiscIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 	var discUUID [16]byte
 	discUUID[0] = 0xCD
 
@@ -118,7 +119,7 @@ func TestEnsureOnDiscKeepsAKnownState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			id := object.ComputeID([]byte("chunk"))
+			id := object.ComputeID(format.ObjectKindChunk, []byte("chunk"))
 
 			if err := l.MarkPacked(id, 1, discUUID); err != nil {
 				t.Fatal(err)
@@ -180,9 +181,9 @@ func TestCountState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id1 := object.ComputeID([]byte("one"))
-	id2 := object.ComputeID([]byte("two"))
-	id3 := object.ComputeID([]byte("three"))
+	id1 := object.ComputeID(format.ObjectKindChunk, []byte("one"))
+	id2 := object.ComputeID(format.ObjectKindChunk, []byte("two"))
+	id3 := object.ComputeID(format.ObjectKindChunk, []byte("three"))
 
 	if err := l.EnsureStaged(id1); err != nil {
 		t.Fatal(err)
@@ -207,8 +208,8 @@ func TestCountState(t *testing.T) {
 
 func TestTruncatedTailStopsReplay(t *testing.T) {
 	dir := t.TempDir()
-	id1 := object.ComputeID([]byte("one"))
-	id2 := object.ComputeID([]byte("two"))
+	id1 := object.ComputeID(format.ObjectKindChunk, []byte("one"))
+	id2 := object.ComputeID(format.ObjectKindChunk, []byte("two"))
 
 	l, err := Open(dir)
 	if err != nil {
@@ -264,7 +265,7 @@ func TestTruncatedTailReportsNoTruncationOnCleanLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("ok"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("ok"))
 	if err := l.EnsureStaged(id); err != nil {
 		t.Fatal(err)
 	}
@@ -284,9 +285,9 @@ func TestTruncatedTailReportsNoTruncationOnCleanLog(t *testing.T) {
 // garbage replay stops at and never gets past.
 func TestAppendAfterTornTailStaysReachable(t *testing.T) {
 	dir := t.TempDir()
-	id1 := object.ComputeID([]byte("one"))
-	id2 := object.ComputeID([]byte("two"))
-	id3 := object.ComputeID([]byte("three"))
+	id1 := object.ComputeID(format.ObjectKindChunk, []byte("one"))
+	id2 := object.ComputeID(format.ObjectKindChunk, []byte("two"))
+	id3 := object.ComputeID(format.ObjectKindChunk, []byte("three"))
 
 	l, err := Open(dir)
 	if err != nil {
@@ -342,8 +343,8 @@ func TestAppendAfterTornTailStaysReachable(t *testing.T) {
 
 func TestIDsInState(t *testing.T) {
 	dir := t.TempDir()
-	staged := object.ComputeID([]byte("staged"))
-	packed := object.ComputeID([]byte("packed"))
+	staged := object.ComputeID(format.ObjectKindChunk, []byte("staged"))
+	packed := object.ComputeID(format.ObjectKindChunk, []byte("packed"))
 
 	l, err := Open(dir)
 	if err != nil {
@@ -373,10 +374,10 @@ func TestPackedCountByDisc(t *testing.T) {
 	dir := t.TempDir()
 	discA := [16]byte{0xA}
 	discB := [16]byte{0xB}
-	idA1 := object.ComputeID([]byte("a1"))
-	idA2 := object.ComputeID([]byte("a2"))
-	idB1 := object.ComputeID([]byte("b1"))
-	idStaged := object.ComputeID([]byte("staged"))
+	idA1 := object.ComputeID(format.ObjectKindChunk, []byte("a1"))
+	idA2 := object.ComputeID(format.ObjectKindChunk, []byte("a2"))
+	idB1 := object.ComputeID(format.ObjectKindChunk, []byte("b1"))
+	idStaged := object.ComputeID(format.ObjectKindChunk, []byte("staged"))
 
 	l, err := Open(dir)
 	if err != nil {
@@ -415,7 +416,7 @@ func TestBurnedCleanTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 	discUUID := [16]byte{0xAB}
 
 	if err := l.EnsureStaged(id); err != nil {
@@ -464,7 +465,7 @@ func TestVerifyFailedReturnsBurnedToPacked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 	discUUID := [16]byte{0xCD}
 
 	if err := l.EnsureStaged(id); err != nil {
@@ -493,7 +494,7 @@ func TestMarkOnDiscIsTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 	discUUID := [16]byte{0xEF}
 
 	if err := l.EnsureStaged(id); err != nil {
@@ -523,7 +524,7 @@ func TestBurnUndoReturnsBurnedToPacked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 	discUUID := [16]byte{0x12}
 
 	if err := l.EnsureStaged(id); err != nil {
@@ -572,7 +573,7 @@ func TestVerifyCountRisesWithEachVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk a"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk a"))
 	discUUID := [16]byte{0x5A}
 
 	if err := l.EnsureStaged(id); err != nil {
@@ -620,7 +621,7 @@ func TestVerifyCountSurvivesOnDisc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk b"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk b"))
 	discUUID := [16]byte{0x7C}
 
 	if err := l.MarkPacked(id, 1, discUUID); err != nil {
@@ -660,7 +661,7 @@ func TestSecondVerifyKeepsTheFirstCleanTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := object.ComputeID([]byte("chunk c"))
+	id := object.ComputeID(format.ObjectKindChunk, []byte("chunk c"))
 	discUUID := [16]byte{0x1D}
 
 	if err := l.MarkPacked(id, 1, discUUID); err != nil {
@@ -702,9 +703,9 @@ func TestSecondVerifyKeepsTheFirstCleanTime(t *testing.T) {
 // append lands right after the last good record.
 func TestPartialTailRecordIsCut(t *testing.T) {
 	dir := t.TempDir()
-	id1 := object.ComputeID([]byte("one"))
-	id2 := object.ComputeID([]byte("two"))
-	id3 := object.ComputeID([]byte("three"))
+	id1 := object.ComputeID(format.ObjectKindChunk, []byte("one"))
+	id2 := object.ComputeID(format.ObjectKindChunk, []byte("two"))
+	id3 := object.ComputeID(format.ObjectKindChunk, []byte("three"))
 
 	l, err := Open(dir)
 	if err != nil {
@@ -771,7 +772,7 @@ func TestBadRecordInTheMiddleIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"one", "two", "three"} {
-		if err := l.EnsureStaged(object.ComputeID([]byte(name))); err != nil {
+		if err := l.EnsureStaged(object.ComputeID(format.ObjectKindChunk, []byte(name))); err != nil {
 			t.Fatal(err)
 		}
 	}

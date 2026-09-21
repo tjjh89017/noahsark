@@ -367,7 +367,7 @@ func (a *Assembler) chunkInPlace(f *os.File, be placedChunk) bool {
 	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
 		return false
 	}
-	return object.ComputeID(buf) == object.ID(be.ContentID)
+	return object.ComputeID(format.ObjectKindChunk, buf) == object.ID(be.ContentID)
 }
 
 // finishPart gives a complete part file its final name, then applies
@@ -500,7 +500,7 @@ func contentMatches(dest string, entries []placedChunk) bool {
 		if _, err := f.ReadAt(chunk, int64(be.Offset)); err != nil {
 			return false
 		}
-		if object.ComputeID(chunk) != object.ID(be.ContentID) {
+		if object.ComputeID(format.ObjectKindChunk, chunk) != object.ID(be.ContentID) {
 			return false
 		}
 	}
