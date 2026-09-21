@@ -63,6 +63,22 @@ TWO_FILES_FIXTURE = os.path.join(HERE, "testdata", "two-files-fixture")
 # column and 23 parity files.
 FEC_FIXTURE = os.path.join(HERE, "testdata", "fec-fixture")
 
+# TWO_DISCS_FIXTURE is two disc roots of one repository, disc0 and
+# disc1. Snapshot "first" holds src/sub/one.txt and is packed to disc0;
+# snapshot "second" adds src/two.txt and is packed to disc1. disc1
+# therefore needs the sub/ tree and the one.txt chunk of disc0. To make
+# it again, with the recipe of this file's header and:
+#   $N commit --repo=$w/repo --ref=first  $w/src   # src/sub/one.txt
+#   $N pack   --repo=$w/repo --capacity=dvd+r --no-fec --out=$w/tree0
+#   printf 'second disc file\n' >$w/src/two.txt
+#   $N commit --repo=$w/repo --ref=second $w/src
+#   $N pack   --repo=$w/repo --capacity=dvd+r --no-fec --out=$w/tree1
+#   cp -a $w/tree0/NOAHSARK reference/testdata/two-discs-fixture/disc0/
+#   cp -a $w/tree1/NOAHSARK reference/testdata/two-discs-fixture/disc1/
+TWO_DISCS_FIXTURE = os.path.join(HERE, "testdata", "two-discs-fixture")
+DISC0 = os.path.join(TWO_DISCS_FIXTURE, "disc0")
+DISC1 = os.path.join(TWO_DISCS_FIXTURE, "disc1")
+
 
 def golden(name: str) -> bytes:
     with open(os.path.join(TESTDATA, name), "rb") as f:
@@ -548,7 +564,7 @@ class Scheme0FixtureTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(d, "parity")))
 
     def test_verify_passes_by_content_id_and_file_hash_alone(self):
-        args = types.SimpleNamespace(disc_root=SCHEME0_FIXTURE)
+        args = types.SimpleNamespace(disc_root=[SCHEME0_FIXTURE])
         self.assertEqual(decoder.cmd_verify(args), 0)
 
     def test_snapshot_objects_live_under_snapshots(self):
@@ -594,12 +610,12 @@ class CaseFoldedFixtureTest(unittest.TestCase):
         self.assertEqual(got.snapshot_names(), want.snapshot_names())
 
     def test_verify_passes_on_folded_tree(self):
-        args = types.SimpleNamespace(disc_root=self.folded)
+        args = types.SimpleNamespace(disc_root=[self.folded])
         self.assertEqual(decoder.cmd_verify(args), 0)
 
     def test_list_matches_original_tree(self):
         def listing(root):
-            args = types.SimpleNamespace(disc_root=root, snapshot="LATEST")
+            args = types.SimpleNamespace(disc_root=[root], snapshot="LATEST")
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 code = decoder.cmd_list(args)
@@ -616,23 +632,41 @@ class DescribeMissingObjectTest(unittest.TestCase):
 
     UUID = bytes(range(16))
 
-    def test_names_disc_uuid_and_label(self):
+    def fake_set(self, prereqs, rows):
+        """A stand-in for DiscSet with one disc that was given and one
+        disc, named only by a Prereqs row, that was not."""
+        repo = types.SimpleNamespace(
+            disc={"disc_uuid": b"\x99" * 16},
+            newest_seq=0,
+            index=lambda seq: {"prereqs": prereqs},
+            discs=lambda: {"rows": rows},
+        )
+        s = types.SimpleNamespace(repos=[repo])
+        s.given_uuids = lambda: {repo.disc["disc_uuid"]}
+        s.other_disc = lambda cid: decoder.DiscSet.other_disc(s, cid)
+        s.ungiven_discs = lambda: decoder.DiscSet.ungiven_discs(s)
+        return s
+
+    def test_names_disc_number_label_and_uuid(self):
         cid = "aa" * 32
-        idx = {"prereqs": [{"content_id": cid, "disc_uuid": self.UUID}]}
-        discs = {"rows": [{"disc_uuid": self.UUID, "label": "BACKUP07"}]}
-        msg = decoder.describe_missing_object(cid, idx, discs)
+        rows = [{"disc_uuid": self.UUID, "disc_seq": 3, "label": "BACKUP07"}]
+        msg = decoder.describe_missing_object(
+            cid, self.fake_set([{"content_id": cid, "disc_uuid": self.UUID}], rows)
+        )
         self.assertIn(self.UUID.hex(), msg)
         self.assertIn("BACKUP07", msg)
+        self.assertIn("disc 3", msg)
 
     def test_names_disc_uuid_alone_when_discs_has_no_row(self):
         cid = "bb" * 32
-        idx = {"prereqs": [{"content_id": cid, "disc_uuid": self.UUID}]}
-        msg = decoder.describe_missing_object(cid, idx, {"rows": []})
+        msg = decoder.describe_missing_object(
+            cid, self.fake_set([{"content_id": cid, "disc_uuid": self.UUID}], [])
+        )
         self.assertIn(self.UUID.hex(), msg)
 
-    def test_empty_when_not_a_prereq(self):
+    def test_empty_when_no_prereq_row_and_no_other_disc(self):
         self.assertEqual(
-            decoder.describe_missing_object("dd" * 32, {"prereqs": []}, {"rows": []}), ""
+            decoder.describe_missing_object("dd" * 32, self.fake_set([], [])), ""
         )
 
 
@@ -690,7 +724,7 @@ class CopiedFixture(unittest.TestCase):
         self.out = os.path.join(tmp, "out")
 
     def restore(self):
-        args = types.SimpleNamespace(disc_root=self.root, snapshot="LATEST", out=self.out)
+        args = types.SimpleNamespace(disc_root=[self.root], snapshot="LATEST", out=self.out)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             code = decoder.cmd_restore(args)
@@ -762,7 +796,7 @@ class DamagedObjectFailsItsFileTest(CopiedFixture):
         self.assertEqual(parity[0], "p0232.bin")
 
     def test_verify_names_the_damaged_object_and_says_it_cannot_repair(self):
-        args = types.SimpleNamespace(disc_root=self.root)
+        args = types.SimpleNamespace(disc_root=[self.root])
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = decoder.cmd_verify(args)
@@ -781,6 +815,87 @@ class DamagedObjectFailsItsFileTest(CopiedFixture):
         self.assertNotIn("hello.txt", found)
         self.assertIn("second.txt", found)
         self.assert_no_partial_file()
+
+
+class TwoDiscsTest(unittest.TestCase):
+    """restore, verify and list take several disc roots. An object that
+    another given root holds is found there."""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.out, ignore_errors=True)
+
+    def run_cmd(self, func, **kw):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = func(types.SimpleNamespace(**kw))
+        return code, out.getvalue(), err.getvalue()
+
+    def restored_files(self):
+        found = set()
+        for _, _, files in os.walk(self.out):
+            found.update(files)
+        return found
+
+    def test_restore_across_two_roots(self):
+        code, _, err = self.run_cmd(
+            decoder.cmd_restore,
+            disc_root=[DISC1, DISC0],
+            snapshot="second",
+            out=self.out,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.restored_files(), {"one.txt", "two.txt"})
+
+    def test_restore_from_one_root_alone_names_the_other_disc(self):
+        code, _, err = self.run_cmd(
+            decoder.cmd_restore, disc_root=[DISC1], snapshot="second", out=self.out
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("which was not given", err)
+        self.assertIn("disc 0", err)
+
+    def test_verify_notes_a_disc_that_was_not_given(self):
+        code, _, err = self.run_cmd(decoder.cmd_verify, disc_root=[DISC1])
+        self.assertEqual(code, 0, err)
+        self.assertIn("NOTE", err)
+        self.assertNotIn("FAIL", err)
+        self.assertIn("disc 0", err)
+
+    def test_verify_of_both_roots_notes_nothing(self):
+        code, out, err = self.run_cmd(decoder.cmd_verify, disc_root=[DISC0, DISC1])
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("NOTE", err)
+        self.assertIn("all checks passed", out)
+
+    def test_verify_still_fails_a_damaged_object(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        copy0 = os.path.join(work, "disc0")
+        copy1 = os.path.join(work, "disc1")
+        shutil.copytree(DISC0, copy0)
+        shutil.copytree(DISC1, copy1)
+        victim = None
+        for base, _, files in os.walk(os.path.join(copy0, "NOAHSARK", "objects")):
+            for name in files:
+                victim = os.path.join(base, name)
+        self.assertIsNotNone(victim)
+        with open(victim, "r+b") as f:
+            f.seek(-1, os.SEEK_END)
+            last = f.read(1)
+            f.seek(-1, os.SEEK_END)
+            f.write(bytes([last[0] ^ 0xFF]))
+        code, _, err = self.run_cmd(decoder.cmd_verify, disc_root=[copy0, copy1])
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL", err)
+
+    def test_list_reads_one_snapshot_across_two_roots(self):
+        code, out, err = self.run_cmd(
+            decoder.cmd_list, disc_root=[DISC1, DISC0], snapshot="second"
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("one.txt", out)
+        self.assertIn("two.txt", out)
 
 
 if __name__ == "__main__":

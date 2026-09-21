@@ -378,6 +378,12 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	if strings.Contains(out, "0 object(s) returned to packed") {
 		t.Fatalf("verify (corrupt) output %q returned no object to packed", out)
 	}
+	if !strings.Contains(out, "the burn mark is removed") {
+		t.Fatalf("verify (corrupt) output %q does not say the burn mark is removed", out)
+	}
+	if !strings.Contains(out, "next: burn a new disc") || !strings.Contains(out, "noahsark disc burned") {
+		t.Fatalf("verify (corrupt) output %q does not name the next step", out)
+	}
 
 	flipByte(t, chunkPath, 70) // undo the corruption
 
@@ -468,5 +474,44 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	code, out = runCmd(t, "verify", "--repo="+repo, mounted, mounted)
 	if code != 2 {
 		t.Fatalf("verify with two DISC-ROOT arguments: exit %d, want 2: %s", code, out)
+	}
+}
+
+// TestVerifyThirdCopyPrintsVerified checks that a verify past
+// gc.min_verified_copies prints "verified" and never "3 of 2".
+func TestVerifyThirdCopyPrintsVerified(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	mounted := filepath.Join(work, "mounted")
+	copyTree(t, packedTreeDir(t, packOut), mounted)
+	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, packedDiscUUID(t, packOut)); code != 0 {
+		t.Fatalf("disc burned: exit %d: %s", code, out)
+	}
+
+	var out string
+	for copyNumber := 1; copyNumber <= 3; copyNumber++ {
+		if code, o := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+			t.Fatalf("verify %d: exit %d: %s", copyNumber, code, o)
+		} else {
+			out = o
+		}
+	}
+	if strings.Contains(out, "3 of 2") {
+		t.Fatalf("third verify output %q counts past the minimum", out)
+	}
+	if !strings.Contains(out, "verify: verified") {
+		t.Fatalf("third verify output %q does not say verified", out)
 	}
 }

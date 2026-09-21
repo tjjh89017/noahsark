@@ -68,8 +68,12 @@ func (c *Cache) cachedDiscs() ([][16]byte, error) {
 // newestCachedDisc returns the uuid of the cached disc with the highest
 // created_sec. It takes the time from the disc's own row in the disc's
 // own cached DISCS table, the only creation time the cache holds. A
-// disc whose table names no row for itself counts as created at 0. Two
-// equal times keep the lower uuid.
+// disc whose table names no row for itself counts as created at 0.
+//
+// Two packs in one second give the same created_sec. The later pack
+// then carries the longer lineage, thus a tie takes the disc whose own
+// DISCS table has more rows. A tie on the row count too takes the
+// higher uuid, so the answer is always the same one.
 func (c *Cache) newestCachedDisc() ([16]byte, error) {
 	uuids, err := c.cachedDiscs()
 	if err != nil {
@@ -78,19 +82,37 @@ func (c *Cache) newestCachedDisc() ([16]byte, error) {
 	if len(uuids) == 0 {
 		return [16]byte{}, fmt.Errorf("cache: no disc is cached yet; run pack, or recover, first")
 	}
-	newest := uuids[0]
+	var newest [16]byte
 	var newestCreated int64
-	have := false
+	newestRows := -1
 	for _, uuid := range uuids {
 		created := int64(0)
-		if row, found := c.ownDiscRow(uuid); found {
-			created = row.CreatedSec
+		rows := 0
+		if table, err := c.discsTableOf(uuid); err == nil {
+			rows = len(table.Rows)
+			for _, row := range table.Rows {
+				if row.DiscUUID == uuid {
+					created = row.CreatedSec
+				}
+			}
 		}
-		if !have || created > newestCreated {
-			newest, newestCreated, have = uuid, created, true
+		if newestRows < 0 || newerCachedDisc(created, rows, uuid, newestCreated, newestRows, newest) {
+			newest, newestCreated, newestRows = uuid, created, rows
 		}
 	}
 	return newest, nil
+}
+
+// newerCachedDisc compares two cached discs by created_sec, then by the
+// number of rows in the disc's own DISCS table, then by uuid.
+func newerCachedDisc(created int64, rows int, uuid [16]byte, bestCreated int64, bestRows int, best [16]byte) bool {
+	if created != bestCreated {
+		return created > bestCreated
+	}
+	if rows != bestRows {
+		return rows > bestRows
+	}
+	return bytes.Compare(uuid[:], best[:]) > 0
 }
 
 // discsTableOf reads and decodes one cached disc's own DISCS.bin.

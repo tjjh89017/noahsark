@@ -121,6 +121,8 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 // operator acts on.
 func discStateWord(d discSummary) string {
 	switch {
+	case notFed(d):
+		return "not fed"
 	case d.OnDiscObjects > 0 && d.OnDiscOnlyObjects == d.OnDiscObjects:
 		return "on disc only"
 	case d.PackedObjects > 0:
@@ -136,10 +138,23 @@ func discStateWord(d discSummary) string {
 	}
 }
 
+// notFed reports whether the disc ledger names this disc but the state
+// log holds no object of it at all. A partial recover leaves exactly
+// this: the ledger came from a disc that was fed, and this disc was
+// not. The objects of the disc are unknown until it is fed too.
+func notFed(d discSummary) bool {
+	return d.OnDiscObjects == 0 && d.PackedObjects == 0 && d.BurnedObjects == 0 && d.CleanObjects == 0
+}
+
 // nextStepLine names the one action to take next, in the order of the
-// disc cycle: burn, verify, verify the second copy, pack. A repository
-// with nothing waiting says so.
+// disc cycle: feed a disc to recover, burn, verify, verify the second
+// copy, pack, commit. A repository with nothing waiting says so.
 func nextStepLine(discs []discSummary, stagedObjects int) string {
+	for _, d := range discs {
+		if notFed(d) {
+			return fmt.Sprintf("next: mount disc %d, then run: noahsark recover --disc=<MOUNT>", d.Seq)
+		}
+	}
 	for _, d := range discs {
 		if d.PackedObjects > 0 {
 			return fmt.Sprintf("next: burn disc %d, then run: noahsark disc burned %d", d.Seq, d.Seq)
@@ -157,6 +172,9 @@ func nextStepLine(discs []discSummary, stagedObjects int) string {
 	}
 	if stagedObjects > 0 {
 		return "next: pack a disc, run: noahsark pack"
+	}
+	if len(discs) == 0 {
+		return "next: commit your files, run: noahsark commit <SOURCE>"
 	}
 	return "next: nothing to do"
 }

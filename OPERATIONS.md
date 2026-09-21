@@ -260,7 +260,14 @@ The command then stops and does not act on that record.
 5. `gc` writes the ON-DISC record and flushes it to the disk before it
    unlinks the staged file. A flush error stops `gc` before the unlink. A
    crash between the two leaves an orphan, and the next `gc` unlinks it.
-6. `gc` is a separate command. The operator runs it. `gc` never trims the
+6. `gc` removes `plans/<disc-uuid>/` of a disc when every object of that
+   disc is ON-DISC, whether an earlier run made it so or this run does. The
+   directory holds the disc tree and the image, which are a second copy of
+   bytes the disc now holds. A disc that is packed or burned, or that has
+   fewer than `gc.min_verified_copies` verifies, keeps its directory. A
+   `pack --out=DIR` outside staging writes no such directory, and `gc` never
+   touches it.
+7. `gc` is a separate command. The operator runs it. `gc` never trims the
    local cache.
 
 ## 5. Refs
@@ -647,10 +654,13 @@ The operator gives the disc roots: one `DISC-ROOT`, `--disc` for each disc, or
 `--discs-dir`. This mode needs no repository and no cache. It resolves a ref
 name from the REFS tables of the given discs, and finds each object through
 their INDEX files. If the newest disc is lost, each other disc carries the
-catalog as of its own pack. It writes each file one time, straight to its
-final name, with no-follow and exclusive create. It uses no part file. A file
-that a missing disc cuts short stays in place, and the error names the
-missing disc.
+catalog as of its own pack. It writes each file into a part file, the same way
+the disc-swap mode does, and gives the file its final name only after every
+chunk is in place and verified. Every disc is given in this mode, thus no later
+run can complete a file: a file that a damaged or a missing object cuts short
+loses its part file too, and the report names the file. No path with the final
+name is left behind.
+
 
 ### 14.2 Disc swap, one drive
 
@@ -692,11 +702,13 @@ memory grows with the size of the snapshot.
 
 ### 14.3 The part file, resume and a killed run
 
-This section is about the disc-swap mode. `restore` writes the bytes of a file into a hidden part file in the directory
-of the file, named `.<name>.noahsark-part`. When the snapshot holds a file of
-that name itself, `restore` adds a number to the suffix. The part file is
-opened with no-follow. The final size is set one time, so that a file with a
+Both modes write through a part file. Only the disc-swap mode keeps one for a
+later run. `restore` writes the bytes of a file into a hidden part file in the
+directory of the file, named `.<name>.noahsark-part`. When the snapshot holds a
+file of that name itself, `restore` adds a number to the suffix. The part file
+is opened with no-follow. The final size is set one time, so that a file with a
 hole keeps the hole.
+
 
 The final name appears one time, when the last chunk has landed: `restore`
 links the part file to the final name, then unlinks the part file. A link
@@ -710,7 +722,8 @@ there against its content id, and skips the good ones. A killed run leaves
 its part files in the output directory. The next run of the same `restore`
 completes them, and asks only for the discs that still hold a chunk that it
 needs. A `restore` that completes leaves no part file of its own, and never
-deletes a part file that it did not write.
+deletes a part file that it did not write. The all-discs mode removes its own
+part file as soon as a file fails, because no later run can complete it.
 
 `restore` checks the content id of every object after it reads it. An object
 that does not verify fails the one file that needs it: `restore` names that
@@ -864,7 +877,7 @@ noahsark log     [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
 | `verify` | `--heal` | Repair the disc root with the Reed-Solomon parity of the run before the check. |
 | `verify` | `--out` | With `--heal`, write the healed disc root into this directory, not in place. |
 | `status`, `ls`, `log` | `--json` | Print JSON. |
-| `gc` | `--dry-run` | Print one `would delete:` line for each disc, and delete nothing. |
+| `gc` | `--dry-run` | Print one `would delete:` line for each disc, and one for each disc plan directory with its bytes, and delete nothing. |
 | `gc` | `--force-after` | Shorten the retention for this run only, after a confirmation. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 | `restore`, `recover`, `ls`, `log` | `--disc` | A disc root to read. Repeatable. |
 | `restore`, `recover`, `ls`, `log` | `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
@@ -893,13 +906,15 @@ also when a file was skipped or unstable; the snapshot is committed all the
 same. A special file never changes the exit code. 2 also for a bad exclude
 pattern.
 
-**`pack`** prints `packed disc SEQ "LABEL": N objects, B bytes`, the `uuid:`
-and `tree:` lines, a `next steps:` block with the exact `image build`,
-`growisofs`, `disc burned` and `verify` lines, then `remaining staged: N
-objects, B bytes`. The block repeats `--repo` only when the operator gave it.
-Exit: 0 also when objects stay STAGED for the next disc. 1 also when nothing
-is STAGED. 2 also for a missing capacity, an `--out` directory that holds
+**`pack`** prints `packed disc SEQ "LABEL": N object(s) on the disc, B bytes`,
+the `uuid:` and `tree:` lines, a `next steps:` block with the exact `image
+build`, `growisofs`, `disc burned` and `verify` lines, then `remaining staged:
+N objects, B bytes`. The block repeats `--repo` only when the operator gave it.
+With nothing left to pack, `pack` writes no run, prints `pack: nothing to pack:
+...` with the reason, and exits 0. Exit: 0 also when objects stay STAGED for
+the next disc. 2 also for a missing capacity, an `--out` directory that holds
 files, or a capacity too small for one object.
+
 
 **`image build`** takes the image length from the `DISC.bin` of `TREE-DIR`;
 there is no `--capacity` option. It prints `built image FILE (N bytes)`.
@@ -907,29 +922,42 @@ Exit: 1 also when it is not root.
 
 **`disc burned`** takes its options after `burned`. It moves every PACKED
 object of each named disc to BURNED. It prints `disc SEQ LABEL: marked burned,
-N objects`, or `disc SEQ LABEL: already burned, 0 objects to mark`. The second
-copy of the same disc needs no second `disc burned`. `--undo` refuses a disc
-that has a CLEAN object, with exit code 1.
+N object(s) marked`, or `disc SEQ LABEL: already burned, 0 objects to mark`.
+The second copy of the same disc needs no second `disc burned`. `--undo`
+refuses a disc that has a CLEAN object, with exit code 1.
+
 
 **`verify`** prints `disc SEQ "LABEL": N objects, ok` on success, then, with a
 repository, `verify: marked N object(s) CLEAN (disc UUID)` and `verify: copy 1
-of 2 verified; verify the second copy before gc` or `verify: 2 of 2 copies
-verified`. When a PACKED object of the disc remains, it prints the
-`disc burned` command to run. Exit: 1 when the check or the heal failed, or
-when the repository does not know the disc.
+of 2 verified; verify the second copy before gc`, or `verify: 2 of 2 copies
+verified`. A verify past `gc.min_verified_copies` prints `verify: verified`,
+never "3 of 2". With `--heal` and no `--out`, `verify` prints `heal: no --out;
+repairing DISC-ROOT in place` before it writes anything. When a PACKED object
+of the disc remains, it prints the `disc burned` command to run. Exit: 1 when
+the check or the heal failed, or when the repository does not know the disc.
+
 
 **`status`** prints `staged: N objects, B bytes`, one `disc SEQ "LABEL"  STATE
-UUID` line for each disc, and one `next:` line with the one action to take. `STATE` is `packed`, `burned`, `verified C/N`, `verified` or `on disc
-only`. `C` is the lowest verify count of the CLEAN objects of the disc, and
-`N` is `gc.min_verified_copies`. `--json` gives the exact numbers.
+UUID` line for each disc, and one `next:` line with the one action to take.
+`STATE` is `not fed`, `packed`, `burned`, `verified C/N`, `verified` or `on
+disc only`. `not fed` names a disc the ledger knows and `recover` has not read;
+`next:` then names `recover`. A repository with no disc and nothing staged says
+`next: commit your files, run: noahsark commit <SOURCE>`. `C` is the lowest
+verify count of the CLEAN objects of the disc, and `N` is
+`gc.min_verified_copies`. `--json` gives the exact numbers.
 
-**`gc`** prints `gc: staging: deleted N object(s), B bytes`. When nothing is
-eligible, it prints the earliest eligible date. It prints one line for each
-disc that holds objects back for the verify count, and one line for the
-objects whose INDEX is not cached. `--force-after` prints `delete N object(s),
-B bytes? [y/N]` on standard error and deletes only on `y` or `yes`; a script
-answers with a pipe. Exit: 0 also when nothing was eligible. 1 also when a
-staged file could not be unlinked, and when the confirmation was refused.
+
+**`gc`** prints `gc: staging: deleted N staged object(s), B bytes` and `gc:
+plans: deleted N disc plan directory(ies), B bytes`. The first line counts
+staged object files; the second counts whole disc plan directories. When
+nothing is eligible, it prints the earliest eligible date. It prints one line
+for each disc that holds objects back for the verify count, and one line for
+the objects whose INDEX is not cached. `--force-after` prints `delete N
+object(s), B bytes? [y/N]` on standard error and deletes only on `y` or `yes`;
+a script answers with a pipe. Exit: 0 also when nothing was eligible. 1 also
+when a staged file could not be unlinked, and when the confirmation was
+refused.
+
 
 **`restore`** takes a snapshot id, as `log` prints it, or a ref name. The
 first two forms are "All discs at once". The third form is "Disc swap, one
@@ -956,12 +984,17 @@ and then exits with code 1.
 **`ls`** lists the tree of a snapshot; it reads tree objects only. **`log`**
 lists every snapshot that a disc carries, newest first: id, time, refs, root
 paths, object count and size; with a `REF` or a `SNAPSHOT`, it prints the
-details of that one snapshot. With no disc given, both read the local cache.
+details of that one snapshot. With no disc given, both read the staging store
+first and the local cache second, so a snapshot that `commit` has just written
+lists before the first `pack`. A ref name resolves through `<repo>/refs.txt`
+first, then through the cached REFS. A tree object that neither the staging
+store nor the cache holds is reported by name, with `pack` and `recover` as the
+two fixes. A repository with no ref at all fails with the empty-cache message.
 With a `DISC-ROOT`, `--disc` or `--discs-dir`, both read the discs and need no
 repository. A first argument that is an existing directory is a `DISC-ROOT`.
-Before the first `pack`, the cache is empty, and both fail with a message
-that says so. `ls` marks an `UNSTABLE` entry with `!` in the first column,
-and with `"unstable": true` under `--json`.
+`ls` marks an `UNSTABLE` entry with `!` in the first column, and with
+`"unstable": true` under `--json`.
+
 
 ## 17. Configuration reference
 
@@ -1005,7 +1038,7 @@ same image.
 | # | Failure, and the message | Recovery action |
 |---:|---|---|
 | 1 | A burn fails midway (`growisofs` reports it) | Discard the disc. Burn the same image on a new disc. If `disc burned` already ran, run `disc burned --undo DISC`, then `disc burned DISC` after the good burn. |
-| 2 | `verify` fails, or the disc does not mount: `verify: disc UUID failed; returned N object(s) from BURNED to PACKED` | Discard the disc. Burn the same image on a new disc, run `disc burned`, then `verify`. |
+| 2 | `verify` fails, or the disc does not mount: `verify: DISC failed; the burn mark is removed; N object(s) returned to packed` | Discard the disc. Burn a new disc from the same tree, run `disc burned SEQ`, then `verify`. `verify` prints that `next:` line itself. |
 | 3 | `verify: disc SEQ is not marked burned; run: noahsark disc burned SEQ` | Run the printed command, then `verify` again. |
 | 4 | `verify`: `disc UUID (LABEL) is not in repository PATH` | Give the right `--repo`, or run `recover --disc=ROOT` to add the disc. |
 | 5 | One copy of a disc is lost or bad later | Read from the other copy. Burn a new copy from the kept image, or from an image that `ddrescue` reads from the good copy. When the run has FEC, `verify --heal --out=DIR` can repair a copy of the bad disc root. |

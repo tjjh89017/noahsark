@@ -94,6 +94,11 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	if err := os.RemoveAll(cacheDir); err != nil {
 		t.Fatal(err)
 	}
+	// ls reads the staging store first, so the staged trees must go
+	// too, the way gc frees them once both copies are verified.
+	if err := os.RemoveAll(filepath.Join(repo, "staging", "objects")); err != nil {
+		t.Fatal(err)
+	}
 
 	lastDisc := discRoots[len(discRoots)-1]
 	if code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+lastDisc); code == 2 {
@@ -166,5 +171,62 @@ func TestLogNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
 	}
 	if !strings.Contains(out, "no such disc root: "+missing) {
 		t.Fatalf("log output %q does not name the missing disc root", out)
+	}
+}
+
+// TestLsAndLogBeforeTheFirstPack checks that log and ls -r resolve a
+// just-committed ref and its trees from the staging store, before any
+// pack has filled the local cache.
+func TestLsAndLogBeforeTheFirstPack(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-21", src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	snapID := snapshotIDFromCommit(t, out)
+
+	if code, out := runCmd(t, "log", "--repo="+repo); code != 0 {
+		t.Fatalf("log: exit %d, want 0: %s", code, out)
+	} else if !strings.Contains(out, snapID) || !strings.Contains(out, "2026-09-21") {
+		t.Fatalf("log output %q, want the staged snapshot and its ref", out)
+	}
+
+	if code, out := runCmd(t, "ls", "--repo="+repo, "--recursive", "2026-09-21"); code != 0 {
+		t.Fatalf("ls -r: exit %d, want 0: %s", code, out)
+	} else if !strings.Contains(out, "a.txt") || !strings.Contains(out, "b.txt") {
+		t.Fatalf("ls -r output %q, want the committed files", out)
+	}
+
+	// A second commit with a pack in between: the first snapshot comes
+	// from the cache, the second one from staging, and log lists both.
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(src, "c.txt"), []byte("content of c"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-22", src)
+	if code != 0 {
+		t.Fatalf("commit 2: exit %d: %s", code, out)
+	}
+	snapID2 := snapshotIDFromCommit(t, out)
+
+	code, out = runCmd(t, "log", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("log (after the second commit): exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, snapID) || !strings.Contains(out, snapID2) {
+		t.Fatalf("log output %q, want both snapshots", out)
+	}
+	if code, out := runCmd(t, "ls", "--repo="+repo, "--recursive", "2026-09-22"); code != 0 {
+		t.Fatalf("ls -r (second): exit %d: %s", code, out)
+	} else if !strings.Contains(out, "c.txt") {
+		t.Fatalf("ls -r output %q, want the new file", out)
 	}
 }

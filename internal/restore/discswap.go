@@ -296,7 +296,7 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 		return nil
 	}
 	if pf.remaining == 0 {
-		a.finish(dest, part, e)
+		finishPart(dest, part, e, a.wp)
 		delete(a.pending, dest)
 	}
 	return nil
@@ -370,16 +370,16 @@ func (a *Assembler) chunkInPlace(f *os.File, be placedChunk) bool {
 	return object.ComputeID(buf) == object.ID(be.ContentID)
 }
 
-// finish gives a complete part file its final name, then applies the
-// file's metadata. link fails when the final name exists, so the
+// finishPart gives a complete part file its final name, then applies
+// the file's metadata. link fails when the final name exists, so the
 // no-overwrite rule holds with no race; with overwrite, the path in the
 // way is unlinked first, and a directory that holds entries is never
 // removed.
-func (a *Assembler) finish(dest, part string, e format.TreeEntry) {
-	if a.wp.overwrite {
+func finishPart(dest, part string, e format.TreeEntry, wp *writePolicy) {
+	if wp.overwrite {
 		if _, err := os.Lstat(dest); err == nil {
 			if err := unlinkExisting("file", dest); err != nil {
-				a.wp.blocked("file", dest, err)
+				wp.blocked("file", dest, err)
 				removePart(part)
 				return
 			}
@@ -387,15 +387,15 @@ func (a *Assembler) finish(dest, part string, e format.TreeEntry) {
 	}
 	if err := linkPart(part, dest); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			a.wp.skip(dest)
+			wp.skip(dest)
 		} else {
-			a.wp.failed(dest, err)
+			wp.failed(dest, err)
 		}
 		removePart(part)
 		return
 	}
 	removePart(part)
-	applyMetadata(dest, e, a.wp)
+	applyMetadata(dest, e, wp)
 }
 
 // linkFile is os.Link, a seam a test drives the no-hard-link fallback

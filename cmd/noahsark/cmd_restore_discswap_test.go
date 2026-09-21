@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -382,10 +381,8 @@ func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
 
 	// A second snapshot, packed to its own disc: known to this
 	// repository's cache, but not needed to restore the first snapshot.
-	// The cache picks the newest cached disc by created_sec, a whole
-	// second; sleeping past a second boundary keeps that pick
-	// deterministic rather than a tie broken by uuid.
-	time.Sleep(1100 * time.Millisecond)
+	// Two packs in one second tie on created_sec; the cache then takes
+	// the disc whose DISCS table has more rows, which is this one.
 	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("more content"), 0o644); err != nil {
 		t.Fatal(err)
 	}

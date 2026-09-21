@@ -206,3 +206,76 @@ func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 		t.Fatalf("WithOverwrite did not replace the existing file")
 	}
 }
+
+// TestRestoreDamagedChunkLeavesNoFinalName checks the one write path of
+// every restore mode: a file whose chunk is damaged gets no final name
+// and no part file, while every other file is restored.
+func TestRestoreDamagedChunkLeavesNoFinalName(t *testing.T) {
+	srcDir := buildFixtureSrc(t)
+	_, treeDir, snapID := buildFixtureTree(t, srcDir)
+
+	base, err := findNoahsark(treeDir, image.NewNameCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipByte(t, findAChunkFile(t, base), 70)
+
+	outDir := t.TempDir()
+	rep, err := Restore(treeDir, snapID, outDir)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if !rep.Failed() {
+		t.Fatal("a damaged chunk must fail its file")
+	}
+	assertNoPathOfFailedFiles(t, rep, outDir, srcDir)
+}
+
+// TestRestoreMissingObjectLeavesNoFinalName is the same check for an
+// object that no provided disc holds at all.
+func TestRestoreMissingObjectLeavesNoFinalName(t *testing.T) {
+	srcDir := buildFixtureSrc(t)
+	_, treeDir, snapID := buildFixtureTree(t, srcDir)
+
+	base, err := findNoahsark(treeDir, image.NewNameCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(findAChunkFile(t, base)); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	rep, err := Restore(treeDir, snapID, outDir)
+	if err == nil {
+		t.Fatal("a removed object must report a missing disc")
+	}
+	if !rep.Failed() {
+		t.Fatal("a removed object must fail its file")
+	}
+	assertNoPathOfFailedFiles(t, rep, outDir, srcDir)
+}
+
+// assertNoPathOfFailedFiles checks that every failed file is absent
+// under its final name and under its part name, and that at least one
+// other file of the fixture did restore.
+func assertNoPathOfFailedFiles(t *testing.T, rep Report, outDir, srcDir string) {
+	t.Helper()
+	failed := problemsOf(rep, KindFile)
+	if len(failed) == 0 {
+		t.Fatal("no file problem reported")
+	}
+	for _, p := range failed {
+		if _, err := os.Lstat(p.Path); err == nil {
+			t.Fatalf("%s: the final name is in place after a failed file", p.Path)
+		}
+		part := filepath.Join(filepath.Dir(p.Path), "."+filepath.Base(p.Path)+partSuffix)
+		if _, err := os.Lstat(part); err == nil {
+			t.Fatalf("%s: a part file is left in the all-discs mode", part)
+		}
+	}
+	good := filepath.Join(outDir, srcDir, "small.txt")
+	if _, err := os.Lstat(good); err != nil {
+		t.Fatalf("a good file was not restored: %v", err)
+	}
+}

@@ -260,6 +260,23 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 		t.Fatalf("output %q says ok before every disc was fed", out)
 	}
 
+	// A disc the ledger names but recover never read holds no known
+	// object. status must call it "not fed", never "packed", and must
+	// name recover as the next step.
+	code, out = runCmd(t, "status", "--repo="+repo)
+	if code != 0 {
+		t.Fatalf("status (partial): exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "not fed") {
+		t.Fatalf("status output %q does not call the unfed disc \"not fed\"", out)
+	}
+	if strings.Contains(out, "  packed  ") {
+		t.Fatalf("status output %q calls an unfed disc packed", out)
+	}
+	if !strings.Contains(out, "next: mount disc") || !strings.Contains(out, "noahsark recover --disc=") {
+		t.Fatalf("status output %q does not send the operator to recover", out)
+	}
+
 	// Feed the remaining two discs: now every disc named in DISCS has
 	// itself been fed, and the rebuild must say ok.
 	code, out = runCmd(t, "recover", "--repo="+repo,

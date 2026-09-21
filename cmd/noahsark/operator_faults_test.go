@@ -10,10 +10,10 @@ import (
 )
 
 // dryRunDiscRe matches one predicted disc line of pack --dry-run.
-var dryRunDiscRe = regexp.MustCompile(`^disc (\d+) "([^"]*)": (\d+) objects, (\d+) bytes$`)
+var dryRunDiscRe = regexp.MustCompile(`^disc (\d+) "([^"]*)": (\d+) object\(s\) on the disc, (\d+) bytes$`)
 
 // packedDiscRe matches the first line of a real pack.
-var packedDiscRe = regexp.MustCompile(`^packed disc (\d+) "([^"]*)": (\d+) objects, (\d+) bytes$`)
+var packedDiscRe = regexp.MustCompile(`^packed disc (\d+) "([^"]*)": (\d+) object\(s\) on the disc, (\d+) bytes$`)
 
 // TestPackDefaultLabelUsesTheNewestPendingRef checks that a pack with
 // two pending refs labels the disc with the newest one, and that a
@@ -110,13 +110,17 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 		if m == nil {
 			t.Fatalf("pack %d: first line of %q is not a packed-disc line", i, out)
 		}
-		got := fmt.Sprintf("disc %s %q: %s objects, %s bytes", m[1], m[2], m[3], m[4])
+		got := fmt.Sprintf("disc %s %q: %s object(s) on the disc, %s bytes", m[1], m[2], m[3], m[4])
 		if got != predicted[i] {
 			t.Fatalf("real pack wrote %q, pack --dry-run predicted %q", got, predicted[i])
 		}
 	}
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=7MB", "--out="+filepath.Join(work, "extra")); code == 0 {
-		t.Fatalf("pack after the predicted discs: exit 0, want a refusal: %s", out)
+	code, out = runCmd(t, "pack", "--repo="+repo, "--capacity=7MB", "--out="+filepath.Join(work, "extra"))
+	if code != 0 {
+		t.Fatalf("pack after the predicted discs: exit %d, want 0: %s", code, out)
+	}
+	if !strings.Contains(out, "nothing to pack") {
+		t.Fatalf("pack after the predicted discs: output %q, want the nothing-to-pack line", out)
 	}
 }
 
@@ -243,6 +247,9 @@ func TestVerifyHealReportsBlocks(t *testing.T) {
 	}
 	if !strings.Contains(out, "heal: repaired 0 block(s)") {
 		t.Fatalf("verify --heal output %q, want the repaired-blocks line", out)
+	}
+	if !strings.Contains(out, "no --out; repairing "+tree+" in place") {
+		t.Fatalf("verify --heal output %q does not say it repairs in place", out)
 	}
 	if strings.Contains(out, "stripe") {
 		t.Fatalf("verify --heal output %q still uses the word stripe", out)
