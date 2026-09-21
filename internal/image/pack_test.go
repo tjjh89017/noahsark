@@ -104,17 +104,16 @@ func markStagedFromCommit(t *testing.T, stagingDir string, snapID object.ID, l *
 
 func packOpts(stagingDir string, snapID object.ID, outDir string, capacitySectors uint64, discUUID byte, l *stage.Log) PackOptions {
 	return PackOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
-		TargetCapacitySectors:   capacitySectors,
-		PhysicalCapacitySectors: capacitySectors,
-		OutputDir:               outDir,
-		RepoUUID:                [16]byte{1, 2, 3, 4},
-		DiscUUID:                [16]byte{discUUID},
-		Label:                   "test-disc",
-		FECEnabled:              true,
-		Now:                     fixedClock,
-		StageLog:                l,
+		StagingDir:            stagingDir,
+		Snapshots:             []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
+		TargetCapacitySectors: capacitySectors,
+		OutputDir:             outDir,
+		RepoUUID:              [16]byte{1, 2, 3, 4},
+		DiscUUID:              [16]byte{discUUID},
+		Label:                 "test-disc",
+		FECEnabled:            true,
+		Now:                   fixedClock,
+		StageLog:              l,
 	}
 }
 
@@ -517,63 +516,5 @@ func TestPackCapacityNeededSectorsActuallyWork(t *testing.T) {
 	opts2 := packOpts(stagingDir, snapID, outDir2, tooSmall.NeededSectors, 2, l)
 	if _, err := Pack(opts2); err != nil {
 		t.Fatalf("pack with NeededSectors=%d still failed: %v", tooSmall.NeededSectors, err)
-	}
-}
-
-// TestPackRefusesTargetAbovePhysical checks that Pack returns
-// ErrCapacityExceedsPhysical, before any output is written and before
-// any state changes, when --capacity asks for more than the disc's
-// physical capacity. The disc is write-once, so a target above the
-// physical size can never fit.
-func TestPackRefusesTargetAbovePhysical(t *testing.T) {
-	stagingDir := t.TempDir()
-	l, err := stage.Open(stagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapID := commitNamedFixture(t, stagingDir, "above-physical")
-	markStagedFromCommit(t, stagingDir, snapID, l)
-
-	outDir := t.TempDir()
-	opts := packOpts(stagingDir, snapID, outDir, 2000, 1, l)
-	opts.PhysicalCapacitySectors = 1000
-
-	_, err = Pack(opts)
-	if err == nil {
-		t.Fatal("expected an error packing a target above the physical capacity")
-	}
-	var exceeds *ErrCapacityExceedsPhysical
-	if !errors.As(err, &exceeds) {
-		t.Fatalf("got error %q, want an ErrCapacityExceedsPhysical", err)
-	}
-	if exceeds.TargetSectors != 2000 {
-		t.Fatalf("ErrCapacityExceedsPhysical.TargetSectors = %d, want 2000", exceeds.TargetSectors)
-	}
-	if exceeds.PhysicalSectors != 1000 {
-		t.Fatalf("ErrCapacityExceedsPhysical.PhysicalSectors = %d, want 1000", exceeds.PhysicalSectors)
-	}
-
-	if entries, err := os.ReadDir(outDir); err == nil && len(entries) != 0 {
-		t.Fatalf("%s is not empty, a run was written despite the error", outDir)
-	}
-}
-
-// TestPackAllowsTargetEqualToPhysical checks that Pack still packs a
-// run when --capacity equals the physical capacity exactly.
-func TestPackAllowsTargetEqualToPhysical(t *testing.T) {
-	stagingDir := t.TempDir()
-	l, err := stage.Open(stagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapID := commitNamedFixture(t, stagingDir, "equal-physical")
-	markStagedFromCommit(t, stagingDir, snapID, l)
-
-	outDir := t.TempDir()
-	opts := packOpts(stagingDir, snapID, outDir, sectorsFor(50_000_000), 1, l)
-	opts.PhysicalCapacitySectors = opts.TargetCapacitySectors
-
-	if _, err := Pack(opts); err != nil {
-		t.Fatalf("pack with an equal target and physical capacity failed: %v", err)
 	}
 }

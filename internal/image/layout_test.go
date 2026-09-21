@@ -77,16 +77,15 @@ func stageMultiChunkFixture(t *testing.T, contentBytes int) (string, object.ID) 
 func testOpts(t *testing.T, stagingDir string, snapID object.ID, outDir string) BuildOptions {
 	t.Helper()
 	return BuildOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
-		TargetCapacitySectors:   1 << 20, // generously large for a tiny fixture
-		PhysicalCapacitySectors: 1 << 20,
-		OutputDir:               outDir,
-		RepoUUID:                [16]byte{1, 2, 3, 4},
-		DiscUUID:                [16]byte{5, 6, 7, 8},
-		Label:                   "test-disc",
-		FECEnabled:              true,
-		Now:                     fixedClock,
+		StagingDir:            stagingDir,
+		Snapshots:             []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
+		TargetCapacitySectors: 1 << 20, // generously large for a tiny fixture
+		OutputDir:             outDir,
+		RepoUUID:              [16]byte{1, 2, 3, 4},
+		DiscUUID:              [16]byte{5, 6, 7, 8},
+		Label:                 "test-disc",
+		FECEnabled:            true,
+		Now:                   fixedClock,
 	}
 }
 
@@ -204,7 +203,6 @@ func TestBuildRefusesTooSmallCapacity(t *testing.T) {
 	outDir := t.TempDir()
 	opts := testOpts(t, stagingDir, snapID, outDir)
 	opts.TargetCapacitySectors = 1
-	opts.PhysicalCapacitySectors = 1
 	if _, err := Build(opts); err == nil {
 		t.Fatal("expected an error for a too-small target capacity")
 	}
@@ -221,7 +219,6 @@ func TestBuildStreamsMultiChunkContent(t *testing.T) {
 	outDir1 := t.TempDir()
 	opts1 := testOpts(t, stagingDir, snapID, outDir1)
 	opts1.TargetCapacitySectors = 1 << 22
-	opts1.PhysicalCapacitySectors = 1 << 22
 	if _, err := Build(opts1); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +229,6 @@ func TestBuildStreamsMultiChunkContent(t *testing.T) {
 	outDir2 := t.TempDir()
 	opts2 := testOpts(t, stagingDir, snapID, outDir2)
 	opts2.TargetCapacitySectors = 1 << 22
-	opts2.PhysicalCapacitySectors = 1 << 22
 	if _, err := Build(opts2); err != nil {
 		t.Fatal(err)
 	}

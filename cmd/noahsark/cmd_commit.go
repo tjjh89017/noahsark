@@ -101,12 +101,10 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	warnIfTruncated("commit", commitStageLog, stderr)
 
 	w := newWriter(cfg.StagingDir)
-	w.RestatAfterRead = cfg.RestatAfterRead
-	w.RetryUnstable = cfg.RetryUnstable
 	w.Progress = prog
 	w.Message = *message
 	w.OneFileSystem = *oneFileSystem
-	allExcludes := append(append(append([]object.Pattern(nil), cfg.ExcludePatterns...), ignoreExcludes...), flagExcludes...)
+	allExcludes := append(append([]object.Pattern(nil), ignoreExcludes...), flagExcludes...)
 	if len(allExcludes) > 0 {
 		w.Exclude = object.NewMatcher(allExcludes)
 	}

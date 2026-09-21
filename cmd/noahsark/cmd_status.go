@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -14,24 +13,24 @@ import (
 // discSummary is one disc's row in "status": every row the ledger
 // records for a disc_uuid, folded into a single line.
 type discSummary struct {
-	UUID          string `json:"uuid"`
-	Seq           uint64 `json:"seq"`
-	Label         string `json:"label"`
-	CapacityBytes uint64 `json:"capacity_bytes"`
-	OnDiscObjects int    `json:"on_disc_objects"`
-	PackedObjects int    `json:"packed_objects"`
-	BurnedObjects int    `json:"burned_objects"`
-	CleanObjects  int    `json:"clean_objects"`
+	UUID          string
+	Seq           uint64
+	Label         string
+	CapacityBytes uint64
+	OnDiscObjects int
+	PackedObjects int
+	BurnedObjects int
+	CleanObjects  int
 	// OnDiscOnlyObjects is how many of the disc's objects staging holds
 	// no file for: gc freed them, or recover read them from the
 	// disc itself. Such an object waits for no burn and no verify.
-	OnDiscOnlyObjects int `json:"on_disc_only_objects"`
+	OnDiscOnlyObjects int
 	// VerifiedCopies is the lowest verify count of the CLEAN objects of
 	// the disc, and 0 when the disc has no CLEAN object. gc frees an
 	// object at gc.min_verified_copies verifies, so this is the number
 	// the operator watches.
-	VerifiedCopies uint8 `json:"verified_copies"`
-	MinCopies      int   `json:"min_verified_copies"`
+	VerifiedCopies uint8
+	MinCopies      int
 }
 
 // cmdStatus implements "noahsark status": what waits for a pack, the
@@ -40,9 +39,8 @@ type discSummary struct {
 // question the operator did not ask; the state word and the next line
 // answer the one they did.
 func cmdStatus(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark status [--json]", "Show what is staged, the state of every disc, and what to do next.", stderr)
+	fs := newFlagSet("noahsark status", "Show what is staged, the state of every disc, and what to do next.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
-	jsonOut := fs.Bool("json", false, "print the discs and the exact counts as JSON")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -50,7 +48,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark status [--json]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark status")
 		return 2
 	}
 
@@ -92,21 +90,6 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
-	}
-
-	if *jsonOut {
-		out := struct {
-			Discs         []discSummary `json:"discs"`
-			StagedObjects int           `json:"staged_objects"`
-			StagedBytes   uint64        `json:"staged_bytes"`
-		}{discs, stagedObjects, stagedBytes}
-		b, err := json.MarshalIndent(out, "", "  ")
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-			return 1
-		}
-		_, _ = fmt.Fprintln(stdout, string(b))
-		return 0
 	}
 
 	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
@@ -152,7 +135,7 @@ func notFed(d discSummary) bool {
 func nextStepLine(discs []discSummary, stagedObjects int) string {
 	for _, d := range discs {
 		if notFed(d) {
-			return fmt.Sprintf("next: mount disc %d, then run: noahsark recover --disc=<MOUNT>", d.Seq)
+			return fmt.Sprintf("next: mount disc %d, then run: noahsark recover <MOUNT>", d.Seq)
 		}
 	}
 	for _, d := range discs {

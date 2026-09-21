@@ -39,7 +39,7 @@ func TestPackPopulatesCache(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=BASE", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -108,7 +108,7 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=BASE", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -124,7 +124,7 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 

@@ -34,11 +34,8 @@ func initAndCommit(t *testing.T) (repo, src string) {
 func TestCapacityRefusesABareNumber(t *testing.T) {
 	repo, _ := initAndCommit(t)
 
-	for _, arg := range []string{"--capacity=7500000", "--physical-capacity=7500000"} {
+	for _, arg := range []string{"--capacity=7500000"} {
 		args := []string{"pack", "--repo=" + repo, arg}
-		if strings.HasPrefix(arg, "--physical") {
-			args = append(args, "--capacity=64MiB")
-		}
 		code, out := runCmd(t, args...)
 		if code != 2 {
 			t.Fatalf("pack %s: exit %d, want 2: %s", arg, code, out)

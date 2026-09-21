@@ -66,22 +66,14 @@ func TestRestoreUnknownRefReportsTheSameError(t *testing.T) {
 }
 
 // TestRestoreMountWithDiscFlagsIsAnError checks that --mount combined
-// with --disc, or with --discs-dir, is refused: the two select
-// different, incompatible restore modes.
+// with --discs-dir is refused: the two select different, incompatible
+// restore modes.
 func TestRestoreMountWithDiscFlagsIsAnError(t *testing.T) {
-	treeDir, snapID, _ := lsFixture(t)
+	_, snapID, _ := lsFixture(t)
 	restoredDir := filepath.Join(t.TempDir(), "restored")
 
-	code, out := runCmd(t, "restore", "--mount=/mnt/drive", "--disc="+treeDir, snapID, restoredDir)
-	if code != 2 {
-		t.Fatalf("restore --mount --disc: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "--mount") || !strings.Contains(out, "--disc") {
-		t.Fatalf("restore --mount --disc output %q, want it to name both flags", out)
-	}
-
 	discsDir := t.TempDir()
-	code, out = runCmd(t, "restore", "--mount=/mnt/drive", "--discs-dir="+discsDir, snapID, restoredDir)
+	code, out := runCmd(t, "restore", "--mount=/mnt/drive", "--discs-dir="+discsDir, snapID, restoredDir)
 	if code != 2 {
 		t.Fatalf("restore --mount --discs-dir: exit %d, want 2: %s", code, out)
 	}

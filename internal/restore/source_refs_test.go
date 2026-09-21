@@ -90,8 +90,8 @@ func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	firstOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
 		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "run1", ID: firstSnap, Time: multiFixedClock()}},
-		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
-		OutputDir: firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
+		TargetCapacitySectors: 100_000,
+		OutputDir:             firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
 	}); err != nil {
 		t.Fatalf("first pack: %v", err)
@@ -110,8 +110,8 @@ func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	secondOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
 		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "run2", ID: secondSnap, Time: multiFixedClock()}},
-		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
-		OutputDir: secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
+		TargetCapacitySectors: 100_000,
+		OutputDir:             secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: multiFixedClock, StageLog: l,
 	}); err != nil {
 		t.Fatalf("second pack: %v", err)
@@ -167,8 +167,8 @@ func TestSourceParseSnapshotArgUnknownRefNamesProvidedDiscs(t *testing.T) {
 	out := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
 		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "only", ID: snap, Time: multiFixedClock()}},
-		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
-		OutputDir: out, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
+		TargetCapacitySectors: 100_000,
+		OutputDir:             out, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
 	}); err != nil {
 		t.Fatalf("pack: %v", err)
@@ -207,8 +207,8 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 	firstOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
 		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: oldSnap, Time: multiFixedClock()}},
-		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
-		OutputDir: firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
+		TargetCapacitySectors: 100_000,
+		OutputDir:             firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
 	}); err != nil {
 		t.Fatalf("first pack: %v", err)
@@ -219,8 +219,8 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 	secondOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
 		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: newSnap, Time: multiFixedClock().Add(time.Second)}},
-		TargetCapacitySectors: 100_000, PhysicalCapacitySectors: 100_000,
-		OutputDir: secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
+		TargetCapacitySectors: 100_000,
+		OutputDir:             secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: multiFixedClock, StageLog: l,
 	}); err != nil {
 		t.Fatalf("second pack: %v", err)

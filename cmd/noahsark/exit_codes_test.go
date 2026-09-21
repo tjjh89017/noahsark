@@ -27,7 +27,7 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		{"commit: unknown flag", []string{"commit", "--no-such-flag", "/nowhere"}},
 		{"init: repository already exists", []string{"init", "--repo=" + repo}},
 		{"pack: missing --capacity", []string{"pack", "--repo=" + repo}},
-		{"pack: --fec and --no-fec together", []string{"pack", "--repo=" + repo, "--capacity=64MiB", "--fec", "--no-fec"}},
+		{"pack: unknown flag", []string{"pack", "--repo=" + repo, "--capacity=64MiB", "--no-such-flag"}},
 		{"gc: unexpected positional argument", []string{"gc", "--repo=" + repo, "extra"}},
 		{"ls: missing SNAPSHOT", []string{"ls", "--repo=" + repo}},
 		{"log: unknown flag", []string{"log", "--repo=" + repo, "--no-such-flag"}},

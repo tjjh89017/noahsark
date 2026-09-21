@@ -241,17 +241,40 @@ func TestVerifyHealReportsBlocks(t *testing.T) {
 	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "verify", "--repo="+repo, "--heal", tree)
+	healed := filepath.Join(work, "healed")
+	code, out := runCmd(t, "verify", "--repo="+repo, "--heal", "--out="+healed, tree)
 	if code != 0 {
 		t.Fatalf("verify --heal: exit %d: %s", code, out)
 	}
 	if !strings.Contains(out, "heal: repaired 0 block(s)") {
 		t.Fatalf("verify --heal output %q, want the repaired-blocks line", out)
 	}
-	if !strings.Contains(out, "no --out; repairing "+tree+" in place") {
-		t.Fatalf("verify --heal output %q does not say it repairs in place", out)
-	}
 	if strings.Contains(out, "stripe") {
 		t.Fatalf("verify --heal output %q still uses the word stripe", out)
+	}
+}
+
+// TestVerifyHealRefusesWithNoOut checks that --heal with no --out is a
+// usage error: healing in place is no longer supported.
+func TestVerifyHealRefusesWithNoOut(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "commit", "--repo="+repo); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	tree := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "verify", "--repo="+repo, "--heal", tree)
+	if code != 2 {
+		t.Fatalf("verify --heal (no --out): exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "--heal needs --out") {
+		t.Fatalf("verify --heal (no --out) output %q, want it to name the missing --out", out)
 	}
 }

@@ -97,7 +97,7 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 
 	lastDisc := discRoots[len(discRoots)-1]
-	if code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+lastDisc); code == 2 {
+	if code, out := runCmd(t, "recover", "--repo="+repo, lastDisc); code == 2 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 

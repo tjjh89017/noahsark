@@ -55,8 +55,8 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 }
 
 // TestPackWithNoRefCarriesEveryPendingDateRef commits twice, each with
-// its own --ref=DATE naming a real label. Packing with no --ref and no
-// --snapshot must carry both pending refs.
+// its own --ref=DATE naming a real label. pack takes every pending ref;
+// it must carry both.
 func TestPackWithNoRefCarriesEveryPendingDateRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")

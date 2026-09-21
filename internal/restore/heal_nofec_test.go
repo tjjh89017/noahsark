@@ -24,16 +24,15 @@ func buildFixtureTreeNoFEC(t *testing.T, srcDir string) (treeDir string, snapID 
 
 	treeDir = t.TempDir()
 	opts := image.BuildOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
-		TargetCapacitySectors:   1 << 21,
-		PhysicalCapacitySectors: 1 << 21,
-		OutputDir:               treeDir,
-		RepoUUID:                [16]byte{1, 2, 3, 4},
-		DiscUUID:                [16]byte{5, 6, 7, 8},
-		Label:                   "restore-nofec-test",
-		FECEnabled:              false,
-		Now:                     fixedClock,
+		StagingDir:            stagingDir,
+		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
+		TargetCapacitySectors: 1 << 21,
+		OutputDir:             treeDir,
+		RepoUUID:              [16]byte{1, 2, 3, 4},
+		DiscUUID:              [16]byte{5, 6, 7, 8},
+		Label:                 "restore-nofec-test",
+		FECEnabled:            false,
+		Now:                   fixedClock,
 	}
 	if _, err := image.Build(opts); err != nil {
 		t.Fatal(err)

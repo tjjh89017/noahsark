@@ -184,7 +184,7 @@ The object states are STAGED, PACKED, BURNED, CLEAN and ON-DISC.
                                                      | CLEAN  |
                                                      +--------+
                                                           |
-                        gc, after staging.retain_after_clean (7 days)
+                        gc, after 7 days
                         and gc.min_verified_copies verifies (2)
                                                           v
                                                      +---------+
@@ -247,9 +247,9 @@ The command then stops and does not act on that record.
 
 1. `gc` frees the staged file of a CLEAN object only. It also frees an orphan:
    a staged file whose object is already ON-DISC.
-2. `gc` frees it only after `staging.retain_after_clean`, default 7 days, has
-   passed since the first successful verify. `--force-after` shortens this
-   period for one run, and asks for a confirmation.
+2. `gc` frees it only after 7 days have passed since the first successful
+   verify. This retention period is fixed. `--force-after` shortens it for
+   one run, and asks for a confirmation.
 3. `gc` frees it only when its verify count is at least
    `gc.min_verified_copies`, default 2. Two identical discs are the
    redundancy, thus `gc` holds the staged data until the second copy passes
@@ -363,22 +363,21 @@ OUT-DIR` creates `OUT-DIR/<root path>`.
 ### 7.6 In-flight change detection
 
 `commit` stats a file, reads and chunks it, and stats it again. When the size
-or the mtime differs, it reads the file again, up to `commit.retry_unstable`
-times. When the file still differs, `commit` stores the content that it read
-last, sets the `UNSTABLE` flag of FORMAT.md's "Entry flags" on the entry, and
-prints `unstable PATH branch=flagged`. The exit code is then 1. The operator
-runs `commit` again later.
+or the mtime differs, it reads the file again, once. When the file still
+differs, `commit` stores the content that it read last, sets the `UNSTABLE`
+flag of FORMAT.md's "Entry flags" on the entry, and prints `unstable PATH
+branch=flagged`. The exit code is then 1. The operator runs `commit` again
+later.
 
-`commit.restat_after_read = false` turns the detection off. Never set it
-false on a live source. A read-only filesystem snapshot (btrfs, LVM or ZFS) as
-the source removes in-flight changes entirely.
+This detection always runs; there is no key to turn it off. A read-only
+filesystem snapshot (btrfs, LVM or ZFS) as the source removes in-flight
+changes entirely.
 
 ### 7.8 Excludes
 
-`commit --exclude=PATTERN` (repeatable), the config key `sources.exclude`
-(repeatable, one pattern on each key line), and a `.noahsarkignore` file in
-the source root together name every path that `commit` leaves out. A path that
-any one of them excludes is excluded. There is no negation, thus order never
+`commit --exclude=PATTERN` (repeatable) and a `.noahsarkignore` file in the
+source root together name every path that `commit` leaves out. A path that
+either one excludes is excluded. There is no negation, thus order never
 matters.
 
 - One pattern on each line. `#` starts a comment. An empty line is ignored.
@@ -404,7 +403,8 @@ snapshot.
 1. `pack` fills exactly one run for each invocation, and one run goes on one
    disc. Data that does not fit stays STAGED for the next `pack`.
 2. `pack` always packs from the full STAGED pool, across every snapshot of
-   the repository. `--ref` and `--snapshot` do not select objects.
+   the repository. It has no option that selects objects; it takes what is
+   staged.
 3. `pack` walks the tree of every staged snapshot, in ascending snapshot id
    order, in post-order: the chunks of a file, then its blob, then the tree of
    its directory. It keeps the objects that are not on a disc yet. It takes
@@ -492,17 +492,15 @@ default. With FEC they follow FORMAT.md's "Parity layout".
 of 0.1 percent of the capacity. The estimate is a heuristic. It changes no
 disc byte.
 
-### 9.4 Forced capacity
+### 9.4 A capacity below the medium's own size
 
-A `--capacity` value below the capacity of the medium is a forced capacity.
-`pack --physical-capacity` gives the capacity of the medium; it defaults to
-the `--capacity` value. `pack` records the value it used, `--capacity`, as
-`capacity_sectors` in `DISC.bin` and in the DISCS row, as FORMAT.md's "Disc
-superblock" states: the disc carries the one capacity that `pack` used, not
-the medium's own reported capacity. `pack` refuses a `--capacity` above
-`--physical-capacity`.
+`--capacity` need not match the medium's real size; a smaller value packs a
+run that leaves the rest of the disc unused. `pack` records the value it
+used, `--capacity`, as `capacity_sectors` in `DISC.bin` and in the DISCS row,
+as FORMAT.md's "Disc superblock" states: the disc carries the one capacity
+that `pack` used, not the medium's own reported capacity.
 
-Everything that consumes capacity uses the forced value: the packer, the image
+Everything that consumes capacity uses this one value: the packer, the image
 length, and the FEC layout when FEC is on.
 
 ## 10. Disc filesystems and image building
@@ -654,8 +652,10 @@ set of safety rules.
 
 ### 14.1 All discs at once
 
-The operator gives the disc roots: one `DISC-ROOT`, `--disc` for each disc, or
-`--discs-dir`. This mode needs no repository and no cache. It resolves a ref
+The operator gives the disc roots: one or more `DISC-ROOT` arguments, or
+`--discs-dir` naming a directory whose immediate subdirectories are the disc
+roots. This mode needs
+no repository and no cache. It resolves a ref
 name from the REFS tables of the given discs, and finds each object through
 their INDEX files. If the newest disc is lost, each other disc carries the
 catalog as of its own pack. It writes each file into a part file, the same way
@@ -822,9 +822,11 @@ hold every option that the build has. `docs/guide.md` is the operator guide.
   uuid, a uuid prefix, or the exact label. A command refuses a value that
   matches no disc or more than one disc, and lists the candidates. Two discs
   can carry the same `disc_seq`; the operator then gives a uuid prefix.
-- A `DISC-ROOT` argument, `--disc=ROOT` and `--mount=DIR` name a directory:
-  the mount point of a disc, or a copy of a disc root. `--discs-dir=DIR` names
-  a directory whose immediate subdirectories are disc roots.
+- A `DISC-ROOT` argument and `--mount=DIR` name a directory: the mount point
+  of a disc, or a copy of a disc root. `restore`, `ls` and `log` accept one
+  or more `DISC-ROOT` arguments, the same way `recover` does. `--discs-dir=DIR`
+  names a directory whose immediate subdirectories are disc roots, for a
+  command that reads more than one disc at once without naming each one.
 - Every command exits with 0 on success, 1 on a failure at run time and 2 on a
   usage error ("Exit code registry"). The text below names only the cases
   that are not obvious.
@@ -835,24 +837,22 @@ hold every option that the build has. `docs/guide.md` is the operator guide.
 noahsark init    [--repo=PATH] [--source=PATH]
 noahsark commit  [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]...
                  [--one-file-system] [SOURCE]
-noahsark pack    [--repo=PATH] [--ref=NAME | --snapshot=ID]... [--capacity=SIZE]
-                 [--physical-capacity=SIZE] [--label=TEXT] [--out=DIR]
-                 [--fec | --no-fec] [--close] [--dry-run]
+noahsark pack    [--repo=PATH] [--capacity=SIZE] [--label=TEXT] [--out=DIR]
+                 [--fec] [--close] [--dry-run]
 noahsark image build --out=FILE [--force] TREE-DIR
 noahsark disc burned [--repo=PATH] [--undo] DISC [DISC...]
-noahsark verify  [--repo=DIR] [--heal] [--out=DIR] DISC-ROOT
-noahsark status  [--repo=PATH] [--json]
+noahsark verify  [--repo=DIR] [--heal --out=DIR] DISC-ROOT
+noahsark status  [--repo=PATH]
 noahsark gc      [--repo=PATH] [--dry-run] [--force-after=DURATION]
-noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
+noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR
 noahsark restore [--include=PATH]... [--overwrite]
-                 (--disc=ROOT... | --discs-dir=DIR) SNAPSHOT OUT-DIR
+                 --discs-dir=DIR SNAPSHOT OUT-DIR
 noahsark restore [--repo=PATH] [--include=PATH]... [--overwrite] --mount=DIR
                  [--dry-run] SNAPSHOT OUT-DIR
-noahsark recover [--repo=PATH] [--disc=ROOT]... [--discs-dir=DIR]
-noahsark ls      [--repo=PATH] [--long] [--recursive] [--json] [--unstable-only]
-                 [--disc=ROOT]... [--discs-dir=DIR] [DISC-ROOT] SNAPSHOT [PATH]
-noahsark log     [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
-                 [--discs-dir=DIR] [DISC-ROOT] [REF|SNAPSHOT]
+noahsark recover [--repo=PATH] [DISC-ROOT... | --discs-dir=DIR]
+noahsark ls      [--repo=PATH] [--long] [--recursive]
+                 [--discs-dir=DIR] [DISC-ROOT...] SNAPSHOT [PATH]
+noahsark log     [--repo=PATH] [--discs-dir=DIR] [DISC-ROOT...] [REF|SNAPSHOT]
 ```
 
 ### 16.3 Options
@@ -866,33 +866,26 @@ noahsark log     [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
 | `commit` | `--exclude` | An exclude pattern ("Excludes"). Repeatable. |
 | `commit` | `--one-file-system` | Do not cross a mount point. |
 | `pack` | `--capacity` | The target capacity ("Capacity"). Default: `pack.capacity`. |
-| `pack` | `--physical-capacity` | The capacity of the medium ("Forced capacity"). Default: the `--capacity` value. |
 | `pack` | `--label` | The human label. Default: the name of the ref whose snapshot is newest, then `disc SEQ`, for example `2026-09-21 disc 0`. |
 | `pack` | `--out` | The directory that receives the disc root. It must be empty or absent. Default `<staging.dir>/plans/<disc uuid>/tree`. |
-| `pack` | `--fec`, `--no-fec` | Write, or do not write, FEC for this run. They override `fec.scheme`. |
+| `pack` | `--fec` | Write FEC for this run. Overrides `fec.scheme`. To pack without FEC, set `fec.scheme = none` (the default) and omit `--fec`. |
 | `pack` | `--close` | Print the sealed burn command. Nothing else changes. |
-| `pack` | `--dry-run` | Predict the disc count and stop ("Dry run"). It takes no `--out`, `--label`, `--fec`, `--no-fec` or `--close`. |
-| `pack` | `--ref` | An extra ref name to carry onto the disc. `pack` carries every pending ref without it. |
-| `pack` | `--snapshot` | A snapshot id whose refs the disc carries. Repeatable. Not together with `--ref`. |
+| `pack` | `--dry-run` | Predict the disc count and stop ("Dry run"). It takes no `--out`, `--label`, `--fec` or `--close`. |
 | `image build` | `--out` | Where to write the image. Required. |
 | `image build` | `--force` | Replace `--out` when it exists. Without it, an existing `--out` is a usage error. |
 | `disc burned` | `--undo` | Move the BURNED objects of the disc back to PACKED, for a burn that was bad. |
 | `verify` | `--repo` | The repository whose staging state to update. |
-| `verify` | `--heal` | Repair the disc root with the Reed-Solomon parity of the run before the check. |
-| `verify` | `--out` | With `--heal`, write the healed disc root into this directory, not in place. |
-| `status`, `ls`, `log` | `--json` | Print JSON. |
+| `verify` | `--heal` | Repair the disc root with the Reed-Solomon parity of the run before the check. Requires `--out`. |
+| `verify` | `--out` | With `--heal`, write the healed disc root into this directory. Required with `--heal`; healing in place is not supported. |
 | `gc` | `--dry-run` | Print one `would delete:` line for each disc, and one for each disc plan directory with its bytes, and delete nothing. |
-| `gc` | `--force-after` | Shorten the retention for this run only, after a confirmation. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
-| `restore`, `recover`, `ls`, `log` | `--disc` | A disc root to read. Repeatable. |
-| `restore`, `recover`, `ls`, `log` | `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
+| `gc` | `--force-after` | Shorten the fixed 7-day retention for this run only, after a confirmation. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
+| `restore`, `recover`, `ls`, `log` | `--discs-dir` | A directory whose immediate subdirectories are disc roots, to read more than one disc at once. |
 | `restore` | `--include` | Restore only this path, relative to the snapshot. Repeatable. A directory includes everything below it. |
 | `restore` | `--overwrite` | Unlink an existing path first and then create it. Without it, `restore` leaves an existing path alone. |
 | `restore` | `--mount` | The directory where the one drive is mounted. There is no config default. |
 | `restore` | `--dry-run` | Print the plan and stop. It needs `--mount`. |
 | `ls` | `--long` | Print mode, owner, size and mtime. |
 | `ls` | `--recursive` | Descend into subdirectories. |
-| `ls` | `--unstable-only` | List only the `UNSTABLE` entries. |
-| `log` | `--limit` | Print at most N entries. 0 means no limit. |
 
 ### 16.4 Command notes
 
@@ -935,10 +928,11 @@ refuses a disc that has a CLEAN object, with exit code 1.
 repository, `verify: marked N object(s) CLEAN (disc UUID)` and `verify: copy 1
 of 2 verified; verify the second copy before gc`, or `verify: 2 of 2 copies
 verified`. A verify past `gc.min_verified_copies` prints `verify: verified`,
-never "3 of 2". With `--heal` and no `--out`, `verify` prints `heal: no --out;
-repairing DISC-ROOT in place` before it writes anything. When a PACKED object
-of the disc remains, it prints the `disc burned` command to run. Exit: 1 when
-the check or the heal failed, or when the repository does not know the disc.
+never "3 of 2". `--heal` requires `--out`; `verify` refuses `--heal` with no
+`--out`, exit code 2, before it writes anything, since healing in place is not
+supported. When a PACKED object of the disc remains, it prints the `disc
+burned` command to run. Exit: 1 when the check or the heal failed, or when the
+repository does not know the disc.
 
 
 **`status`** prints `staged: N objects, B bytes`, one `disc SEQ "LABEL"  STATE
@@ -948,7 +942,7 @@ disc only`. `not fed` names a disc the ledger knows and `recover` has not read;
 `next:` then names `recover`. A repository with no disc and nothing staged says
 `next: commit your files, run: noahsark commit <SOURCE>`. `C` is the lowest
 verify count of the CLEAN objects of the disc, and `N` is
-`gc.min_verified_copies`. `--json` gives the exact numbers.
+`gc.min_verified_copies`.
 
 
 **`gc`** prints `gc: staging: deleted N staged object(s), B bytes` and `gc:
@@ -965,8 +959,8 @@ refused.
 
 **`restore`** takes a snapshot id, as `log` prints it, or a ref name. The
 first two forms are "All discs at once". The third form is "Disc swap, one
-drive"; `--mount` does not go together with a `DISC-ROOT`, `--disc` or
-`--discs-dir`. It prints the problem lines of "Failure policy" on standard
+drive"; `--mount` does not go together with a `DISC-ROOT` or `--discs-dir`.
+It prints the problem lines of "Failure policy" on standard
 error, as `noahsark: restore: warning: PATH: REASON`, then `restored snapshot
 ID into OUT-DIR`, `resumed: N file(s) already restored` when a file was
 resumed, and the summary line when a problem occurred. Exit: 0 also when the
@@ -977,8 +971,10 @@ and for `--dry-run` without `--mount`.
 **`recover`** builds again, from discs, the state that the discs can prove:
 the config, the disc ledger, the refs, the state log and the local cache. It
 creates the repository directory when it is absent, and merges into the state
-that exists. With one drive, the operator runs it one time for each disc, in
-any order. It refuses discs that do not share one `repo_uuid`, and a
+that exists. It takes one or more `DISC-ROOT` arguments, or `--discs-dir`.
+With one drive, the operator runs it one time for each disc, in any order;
+with more than one drive mounted at once, one call naming every mount point
+does the same merge. It refuses discs that do not share one `repo_uuid`, and a
 repository whose `repo.uuid` differs from the discs. It records the objects of
 a fed disc as ON-DISC; do not run `disc burned` or `verify` again for such a
 disc. It prints `recover: ok`, or one `rebuild is partial: disc UUID (LABEL)
@@ -994,10 +990,11 @@ lists before the first `pack`. A ref name resolves through `<repo>/refs.txt`
 first, then through the cached REFS. A tree object that neither the staging
 store nor the cache holds is reported by name, with `pack` and `recover` as the
 two fixes. A repository with no ref at all fails with the empty-cache message.
-With a `DISC-ROOT`, `--disc` or `--discs-dir`, both read the discs and need no
-repository. A first argument that is an existing directory is a `DISC-ROOT`.
-`ls` marks an `UNSTABLE` entry with `!` in the first column, and with
-`"unstable": true` under `--json`.
+With one or more `DISC-ROOT` arguments or `--discs-dir`, both read the discs
+and need no repository. Every leading argument that is an existing directory
+is a `DISC-ROOT`; the first that is not starts `SNAPSHOT` (`ls`) or
+`REF|SNAPSHOT` (`log`). `ls` marks an `UNSTABLE` entry with `!` in the first
+column.
 
 
 ## 17. Configuration reference
@@ -1013,13 +1010,16 @@ These are all the keys.
 | `repo.uuid` | 32 hex digits | generated by `init` | The repository uuid. Never change it. |
 | `staging.dir` | path | `staging` | The staging store. A relative path is relative to the repository directory. |
 | `sources.root` | path | unset | The source root. `commit` uses it when no `SOURCE` is given. One line at most. `init --source` writes it. |
-| `sources.exclude` | pattern | unset | An exclude pattern ("Excludes"). Repeatable: one key line for each pattern. |
-| `commit.restat_after_read` | boolean | `true` | In-flight change detection. Never set it false on a live source. |
-| `commit.retry_unstable` | integer | 1 | How many times `commit` reads an unstable file again. |
-| `fec.scheme` | `none` or `rs255-gf8` | `none` | Whether `pack` writes FEC. `pack --fec` and `pack --no-fec` override it for one run. |
+| `fec.scheme` | `none` or `rs255-gf8` | `none` | Whether `pack` writes FEC. `pack --fec` overrides it to write FEC for one run. |
 | `pack.capacity` | preset or size | unset | The capacity that `pack` uses with no `--capacity`. A bare number is a config error. |
-| `staging.retain_after_clean` | duration | `7d` | The retention before `gc` may free a CLEAN object. It counts from the first successful verify. A whole number of days with `d`, or a Go duration. |
 | `gc.min_verified_copies` | integer | 2 | The successful verifies that an object needs before `gc` may free it. A value below 1 is a config error. |
+
+Excludes are not a config key: use `commit --exclude=PATTERN` (repeatable) or
+a `.noahsarkignore` file in the source root ("Excludes"). In-flight change
+detection ("In-flight change detection") always runs, at a fixed one retry;
+there is no key to change it. The retention before `gc` may free a CLEAN
+object is a fixed 7 days, counted from the first successful verify;
+`gc --force-after` shortens it for one run.
 
 ## 19. Exit code registry
 
@@ -1043,7 +1043,7 @@ same image.
 | 1 | A burn fails midway (`growisofs` reports it) | Discard the disc. Burn the same image on a new disc. If `disc burned` already ran, run `disc burned --undo DISC`, then `disc burned DISC` after the good burn. |
 | 2 | `verify` fails, or the disc does not mount: `verify: DISC failed; the burn mark is removed; N object(s) returned to packed` | Discard the disc. Burn a new disc from the same tree, run `disc burned SEQ`, then `verify`. `verify` prints that `next:` line itself. |
 | 3 | `verify: disc SEQ is not marked burned; run: noahsark disc burned SEQ` | Run the printed command, then `verify` again. |
-| 4 | `verify`: `disc UUID (LABEL) is not in repository PATH` | Give the right `--repo`, or run `recover --disc=ROOT` to add the disc. |
+| 4 | `verify`: `disc UUID (LABEL) is not in repository PATH` | Give the right `--repo`, or run `recover ROOT` to add the disc. |
 | 5 | One copy of a disc is lost or bad later | Read from the other copy. Burn a new copy from the kept image, or from an image that `ddrescue` reads from the good copy. When the run has FEC, `verify --heal --out=DIR` can repair a copy of the bad disc root. |
 | 6 | The two copies of a disc are lost | `restore` with the other discs restores what they hold and names each file that it cannot restore. Then `commit` the source into a new repository. |
 | 7 | The local cache is lost: `cache: no disc is cached yet; run pack, or recover, first` | `recover`, one time for each disc. |
@@ -1081,9 +1081,10 @@ CI. `.github/workflows/ci.yml` runs the composite actions `lint`, `unit` and
   the `UNSTABLE` flag, unreadable and vanished files.
 - `internal/stage`: the golden state record, replay, the torn tail, a bad
   record in the middle, a close error.
-- `internal/image`: packing order, the capacity budget, forced capacity, FEC
-  on and off, the dry run, the ledgers, `README.txt` and `FORMAT.txt` against
-  the golden text, bounded memory, the UDF image build.
+- `internal/image`: packing order, the capacity budget, a capacity below the
+  medium's own size, FEC on and off, the dry run, the ledgers, `README.txt`
+  and `FORMAT.txt` against the golden text, bounded memory, the UDF image
+  build.
 - `internal/cache`, `internal/repolock`: the cache by disc uuid; the lock.
 - `internal/restore`: a planted symlink, no overwrite by default, part files
   and resume, a file on two discs, `--include`, metadata as root and not as
@@ -1097,7 +1098,7 @@ mount):
 | Cell | What it proves |
 |---|---|
 | `media/dvd+r` | The full cycle on a DVD+R size image: commit, pack, image build, mount, verify, restore, the reference decoder. Then `cli` (the command-line cycle) and `iso` (a disc root burned as ISO 9660 still reads; Joliet does not). |
-| `media/bd25-forced-10g` | A 25 GB medium with a forced capacity of 10 GB. |
+| `media/bd25-forced-10g` | A 25 GB medium, packed at a 10 GB `--capacity`, below the medium's own size. |
 | `chain/dvd-bd25-bd10` | About 40 GB across three discs of different media. Restore needs all three. A missing disc is named. Data that does not fit stays STAGED. |
 | `lowmem` | The 25 GB flow under a process memory limit: peak memory does not grow with the data size. |
 | `incremental` | A second commit packs only the change onto a second disc. Both snapshots restore from the discs alone. |

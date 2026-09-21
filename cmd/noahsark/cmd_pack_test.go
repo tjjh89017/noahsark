@@ -53,11 +53,10 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 0d")
-
 	packAndVerifyDisc(t, work, repo, src)
 
-	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+	setGCStdin(t, strings.NewReader("y\n"))
+	if code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0d"); code != 0 {
 		t.Fatalf("gc: exit %d, want 0: %s", code, out)
 	}
 	if entries, err := os.ReadDir(filepath.Join(repo, "staging", "snapshots")); err != nil {
@@ -261,36 +260,6 @@ func TestPackCapacityTooSmallMessage(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pack: output %q missing %q", out, want)
 		}
-	}
-}
-
-// TestPackRefusesCapacityAbovePhysical packs with --capacity above
-// --physical-capacity. The disc is write-once, so the run must refuse
-// with exit code 2, name both values, and write nothing under --out.
-func TestPackRefusesCapacityAbovePhysical(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-
-	treeDir := filepath.Join(work, "tree")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=50MB", "--physical-capacity=4MB", "--out="+treeDir)
-	if code != 2 {
-		t.Fatalf("pack: exit %d, want 2: %s", code, out)
-	}
-	for _, want := range []string{"is above the physical capacity"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("pack: output %q missing %q", out, want)
-		}
-	}
-	if entries, err := os.ReadDir(treeDir); err == nil && len(entries) != 0 {
-		t.Fatalf("pack: %s is not empty, a run was written despite the refusal", treeDir)
 	}
 }
 

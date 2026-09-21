@@ -100,41 +100,6 @@ func TestCommitExcludeBadFlagPatternIsUsageError(t *testing.T) {
 	}
 }
 
-func TestCommitExcludeConfigKey(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "repo")
-	src := writeExcludeFixture(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	appendConfigLines(t, repo, "sources.exclude = *.tmp\nsources.exclude = node_modules/\n")
-
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
-	if code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	ls := packAndLs(t, repo, snapshotIDFromCommit(t, out))
-	if strings.Contains(ls, "a.tmp") || strings.Contains(ls, "node_modules") {
-		t.Fatalf("ls output %q should not contain excluded paths", ls)
-	}
-}
-
-func TestCommitExcludeBadConfigPatternIsConfigError(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "repo")
-	src := writeExcludeFixture(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	appendConfigLines(t, repo, "sources.exclude = [bad\n")
-
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
-	if code != 2 {
-		t.Fatalf("commit: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "sources.exclude") {
-		t.Fatalf("commit output %q, want it to name sources.exclude", out)
-	}
-}
-
 func TestCommitNoahsarkIgnoreFile(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeExcludeFixture(t)
@@ -170,20 +135,6 @@ func TestCommitNoahsarkIgnoreBadPatternIsConfigError(t *testing.T) {
 	}
 	if !strings.Contains(out, ignoreFileName) || !strings.Contains(out, "negation is not supported") {
 		t.Fatalf("commit output %q, want it to name the ignore file and the negation problem", out)
-	}
-}
-
-// appendConfigLines appends raw config lines to repo's config file.
-func appendConfigLines(t *testing.T, repo, lines string) {
-	t.Helper()
-	configFile := configPath(repo)
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = append(data, []byte(lines)...)
-	if err := os.WriteFile(configFile, data, 0o644); err != nil {
-		t.Fatal(err)
 	}
 }
 

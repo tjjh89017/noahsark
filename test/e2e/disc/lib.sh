@@ -47,25 +47,23 @@ run_tool() {
 	fi
 }
 
-# media_capacity_flags MEDIA prints the --capacity and, when the media
-# forces a smaller limit than its physical size, the --physical-capacity
-# flags for that preset.
+# media_capacity_flags MEDIA prints the --capacity flag for that preset.
 media_capacity_flags() {
 	case "$1" in
 	dvd+r) echo "--capacity=dvd+r" ;;
 	bd25) echo "--capacity=bd25" ;;
-	bd25-forced-10g) echo "--capacity=10GiB --physical-capacity=bd25" ;;
+	bd25-forced-10g) echo "--capacity=10GiB" ;;
 	*) fail "unknown media preset: $1" ;;
 	esac
 }
 
-# media_sectors MEDIA prints "TARGET_SECTORS PHYSICAL_SECTORS" for
-# ci-fixture, matching media_capacity_flags's preset.
+# media_sectors MEDIA prints TARGET_SECTORS for ci-fixture, matching
+# media_capacity_flags's preset.
 media_sectors() {
 	case "$1" in
-	dvd+r) echo "2295104 2295104" ;;
-	bd25) echo "12219392 12219392" ;;
-	bd25-forced-10g) echo "5242880 12219392" ;;
+	dvd+r) echo "2295104" ;;
+	bd25) echo "12219392" ;;
+	bd25-forced-10g) echo "5242880" ;;
 	*) fail "unknown media preset: $1" ;;
 	esac
 }

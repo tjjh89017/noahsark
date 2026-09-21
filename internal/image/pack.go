@@ -57,8 +57,6 @@ type PackOptions struct {
 	// TargetCapacitySectors is the pack limit. Pack refuses to run
 	// without it.
 	TargetCapacitySectors uint64
-	// PhysicalCapacitySectors is the disc's reported capacity.
-	PhysicalCapacitySectors uint64
 	// OutputDir receives the NOAHSARK tree.
 	OutputDir string
 	RepoUUID  [16]byte
@@ -119,20 +117,6 @@ func (e *ErrCapacityTooSmall) Error() string {
 		kindName(e.SmallestKind), e.SmallestID.TextForm(), e.SmallestBytes)
 }
 
-// ErrCapacityExceedsPhysical reports a target capacity above the disc's
-// physical capacity. The disc is write-once, so a target above the
-// physical size can never fit. Pack returns this before it does any
-// other work, so no output directory is written and no state changes.
-type ErrCapacityExceedsPhysical struct {
-	TargetSectors   uint64
-	PhysicalSectors uint64
-}
-
-func (e *ErrCapacityExceedsPhysical) Error() string {
-	return fmt.Sprintf("target capacity of %d sectors (%d bytes) exceeds physical capacity of %d sectors (%d bytes)",
-		e.TargetSectors, e.TargetSectors*SectorSize, e.PhysicalSectors, e.PhysicalSectors*SectorSize)
-}
-
 // refNamesText joins snapshots' ref names for an error message, as
 // "ref X" for one snapshot or "refs X, Y" for several.
 func refNamesText(snapshots []SnapshotRef) string {
@@ -171,9 +155,6 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 	if opts.TargetCapacitySectors == 0 {
 		return nil, fmt.Errorf("target capacity is required and must not be zero")
-	}
-	if opts.PhysicalCapacitySectors != 0 && opts.TargetCapacitySectors > opts.PhysicalCapacitySectors {
-		return nil, &ErrCapacityExceedsPhysical{TargetSectors: opts.TargetCapacitySectors, PhysicalSectors: opts.PhysicalCapacitySectors}
 	}
 	if opts.StageLog == nil {
 		return nil, fmt.Errorf("a staging state log is required")
@@ -501,9 +482,6 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 	if opts.TargetCapacitySectors == 0 {
 		return nil, fmt.Errorf("target capacity is required and must not be zero")
 	}
-	if opts.PhysicalCapacitySectors != 0 && opts.TargetCapacitySectors > opts.PhysicalCapacitySectors {
-		return nil, &ErrCapacityExceedsPhysical{TargetSectors: opts.TargetCapacitySectors, PhysicalSectors: opts.PhysicalCapacitySectors}
-	}
 	if opts.StageLog == nil {
 		return nil, fmt.Errorf("a staging state log is required")
 	}
@@ -642,8 +620,8 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 func (opts PackOptions) asBuildOptions() BuildOptions {
 	return BuildOptions{
 		StagingDir: opts.StagingDir, Snapshots: opts.Snapshots,
-		TargetCapacitySectors: opts.TargetCapacitySectors, PhysicalCapacitySectors: opts.PhysicalCapacitySectors,
-		OutputDir: opts.OutputDir, RepoUUID: opts.RepoUUID, DiscUUID: opts.DiscUUID,
+		TargetCapacitySectors: opts.TargetCapacitySectors,
+		OutputDir:             opts.OutputDir, RepoUUID: opts.RepoUUID, DiscUUID: opts.DiscUUID,
 		Label: opts.Label,
 	}
 }

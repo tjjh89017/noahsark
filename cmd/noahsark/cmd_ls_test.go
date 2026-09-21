@@ -128,40 +128,11 @@ func TestLsPathOnDirectoryListsChildren(t *testing.T) {
 	}
 }
 
-// TestLsJSON checks --json prints a JSON array naming the root entry.
-func TestLsJSON(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	code, out := runCmd(t, "ls", "--json", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, `"path":"`+rootPath(src)+`"`) {
-		t.Fatalf("ls --json output %q missing the root path", out)
-	}
-	if !strings.Contains(out, `"type":"directory"`) {
-		t.Fatalf("ls --json output %q missing the directory type", out)
-	}
-}
-
-// TestLsUnstableOnlyFindsNothingOnAStableCommit checks that
-// --unstable-only prints nothing, and exits 0, when the snapshot has no
-// UNSTABLE entry.
-func TestLsUnstableOnlyFindsNothingOnAStableCommit(t *testing.T) {
-	treeDir, snapID, _ := lsFixture(t)
-	code, out := runCmd(t, "ls", "--unstable-only", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
-	}
-	if out != "" {
-		t.Fatalf("ls --unstable-only output = %q, want empty", out)
-	}
-}
-
-// TestLsUnstableOnlyMarksAFlaggedEntry uses the same newWriter seam
+// TestLsMarksAnUnstableEntry uses the same newWriter seam
 // TestCommitExitsOneAndReportsAnUnstablePath uses to force one file
-// UNSTABLE, then checks --unstable-only lists exactly that file, marked
-// with "!" in the first column, and --json marks it "unstable": true.
-func TestLsUnstableOnlyMarksAFlaggedEntry(t *testing.T) {
+// UNSTABLE, then checks a recursive ls marks exactly that file with "!"
+// in the first column, and every other entry with a plain space.
+func TestLsMarksAnUnstableEntry(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -204,21 +175,22 @@ func TestLsUnstableOnlyMarksAFlaggedEntry(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	code, out = runCmd(t, "ls", "--unstable-only", treeDir, snapID)
+	code, out = runCmd(t, "ls", "--recursive", treeDir, snapID)
 	if code != 0 {
-		t.Fatalf("ls --unstable-only: exit %d: %s", code, out)
+		t.Fatalf("ls --recursive: exit %d: %s", code, out)
 	}
-	want := "!" + rootPath(src) + "/a.txt\n"
-	if out != want {
-		t.Fatalf("ls --unstable-only output = %q, want %q", out, want)
+	unstableLine := "!" + rootPath(src) + "/a.txt"
+	if !strings.Contains(out, unstableLine) {
+		t.Fatalf("ls --recursive output %q missing the unstable line %q", out, unstableLine)
 	}
-
-	code, out = runCmd(t, "ls", "--unstable-only", "--json", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls --unstable-only --json: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, `"unstable":true`) {
-		t.Fatalf("ls --unstable-only --json output %q missing unstable:true", out)
+	for line := range strings.SplitSeq(strings.TrimRight(out, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		wantUnstable := line == unstableLine
+		if (line[0] == '!') != wantUnstable {
+			t.Fatalf("ls line %q has the wrong marker; want unstable only for %q", line, unstableLine)
+		}
 	}
 }
 
@@ -252,8 +224,8 @@ func TestLsSnapshotIDPrefixNamesItself(t *testing.T) {
 }
 
 // TestLsExitsThreeOnAMissingDisc packs a multi-disc sequence, then runs
-// ls with one disc root left out, and asserts exit 3 and the same
-// missing-disc message restore uses.
+// ls with one disc root left out of --discs-dir, and asserts exit 3
+// and the same missing-disc message restore uses.
 func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -268,17 +240,22 @@ func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 	}
 	snapID := snapshotIDFromCommit(t, out)
 
-	var discRoots []string
+	discsDir := filepath.Join(work, "discs")
+	// disc1 is packed outside discsDir, so --discs-dir leaves it out.
+	otherDir := filepath.Join(work, "other")
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
-		treeDir := filepath.Join(work, "disc"+strconv.Itoa(i))
+		dir := discsDir
+		if i == 1 {
+			dir = otherDir
+		}
+		treeDir := filepath.Join(dir, "disc"+strconv.Itoa(i))
 		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
-		discRoots = append(discRoots, treeDir)
 	}
 
-	code, out = runCmd(t, "ls", "--recursive", "--disc="+discRoots[0], "--disc="+discRoots[2], snapID)
+	code, out = runCmd(t, "ls", "--recursive", "--discs-dir="+discsDir, snapID)
 	if code != 1 {
 		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}

@@ -36,9 +36,6 @@ type BuildOptions struct {
 	// TargetCapacitySectors is the pack limit. Build refuses to run
 	// without it.
 	TargetCapacitySectors uint64
-	// PhysicalCapacitySectors is the disc's reported capacity. For an
-	// image build this is the value the caller passes.
-	PhysicalCapacitySectors uint64
 	// OutputDir receives the NOAHSARK tree.
 	OutputDir string
 	RepoUUID  [16]byte

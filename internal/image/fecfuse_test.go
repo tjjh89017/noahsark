@@ -133,16 +133,15 @@ func TestBuildMixedFixtureFusedIsDeterministicAndVerifies(t *testing.T) {
 
 	opts := func(outDir string) BuildOptions {
 		return BuildOptions{
-			StagingDir:              stagingDir,
-			Snapshots:               snaps,
-			TargetCapacitySectors:   1 << 22,
-			PhysicalCapacitySectors: 1 << 22,
-			OutputDir:               outDir,
-			RepoUUID:                [16]byte{1, 2, 3, 4},
-			DiscUUID:                [16]byte{5, 6, 7, 8},
-			Label:                   "mixed-fixture",
-			FECEnabled:              true,
-			Now:                     fixedClock,
+			StagingDir:            stagingDir,
+			Snapshots:             snaps,
+			TargetCapacitySectors: 1 << 22,
+			OutputDir:             outDir,
+			RepoUUID:              [16]byte{1, 2, 3, 4},
+			DiscUUID:              [16]byte{5, 6, 7, 8},
+			Label:                 "mixed-fixture",
+			FECEnabled:            true,
+			Now:                   fixedClock,
 		}
 	}
 
@@ -168,14 +167,13 @@ func TestBuildMixedFixtureFusedIsDeterministicAndVerifies(t *testing.T) {
 func TestBuildMixedFixtureFECOffMatchesFECOn(t *testing.T) {
 	stagingDir, snaps := stageMixedFixture(t)
 	base := BuildOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               snaps,
-		TargetCapacitySectors:   1 << 22,
-		PhysicalCapacitySectors: 1 << 22,
-		RepoUUID:                [16]byte{1, 2, 3, 4},
-		DiscUUID:                [16]byte{5, 6, 7, 8},
-		Label:                   "mixed-fixture",
-		Now:                     fixedClock,
+		StagingDir:            stagingDir,
+		Snapshots:             snaps,
+		TargetCapacitySectors: 1 << 22,
+		RepoUUID:              [16]byte{1, 2, 3, 4},
+		DiscUUID:              [16]byte{5, 6, 7, 8},
+		Label:                 "mixed-fixture",
+		Now:                   fixedClock,
 	}
 
 	offDir := t.TempDir()

@@ -241,10 +241,11 @@ newer snapshot, and `log` still reaches the older one. `commit` exits 1 when any
 skipped; the data is still committed and safe, only flagged or left out of
 this one snapshot.
 
-With neither `--ref` nor `--snapshot`, `pack` carries forward every ref not
-yet moved onto a run (see `addPendingRefs`). When that leaves nothing, it
-names the newest ref of the repository, so a pack after `gc` reports an
-already-packed repository instead of one that never had a commit.
+`pack` takes no flag that selects which snapshot to place; it always
+carries forward every ref not yet moved onto a run (see
+`addPendingRefs`). When that leaves nothing, it names the newest ref of
+the repository, so a pack after `gc` reports an already-packed
+repository instead of one that never had a commit.
 
 `--capacity` refuses a bare number. It reads as a byte count, it once meant
 sectors, and the two are a factor of 2048 apart with nothing in the output to
@@ -266,7 +267,7 @@ and this build has no no-follow time call without adding `golang.org/x/sys`
 as a direct dependency.
 
 `ls`, `log` and `restore`'s disc-swap mode resolve SNAPSHOT through
-`internal/cache` when no disc root, `--disc` or `--discs-dir` is given:
+`internal/cache` when no disc root or `--discs-dir` is given:
 `looksLikeDiscRoot` tells a `DISC-ROOT` positional apart from a snapshot id or
 ref name by testing whether the argument is an existing directory.
 
@@ -278,7 +279,7 @@ call it and print the same disc list before any disc is read.
 `status` reads the local disc ledger (`discs.bin`, the same rows a DISCS
 table carries) and the staging state log. A counter answers a question the
 operator did not ask; the state word and the `next:` line answer the one they
-did. `--json` keeps the exact numbers.
+did.
 
 The DISCS row carries no used-space field at all; FORMAT.md records only
 `capacity_sectors`. The on-disc DISCS row a run carries for itself always
@@ -298,11 +299,10 @@ rule of section 6.7 that reuses the parent entry therefore never applies
 in this build; every unstable file takes the other branch, "flagged":
 the writer keeps the content it read and sets the `UNSTABLE` entry flag.
 `Writer` restats a regular file before and after reading it, controlled
-by a `RestatAfterRead` option (default true, matching
-`commit.restat_after_read`) and a `RetryUnstable` option (default 1,
-matching `commit.retry_unstable`). `cmd/noahsark`'s `commit` reads both
-keys from the config file when present and passes them through
-unchanged; both are Phase 1 keys, so no refusal applies. `commit` prints
+by a `RestatAfterRead` option (default true) and a `RetryUnstable` option
+(default 1). Neither is a config key: `cmd/noahsark`'s `commit` always runs
+with the `Writer` defaults, so the detection always runs, at one retry.
+`commit` prints
 one `unstable PATH branch=flagged` line per flagged path, then the
 count, and exits 1 when the count is nonzero, matching the exit code
 table's "some files could not be read, or were unstable" rule.
@@ -405,8 +405,8 @@ report there. A verify against a tree whose disc uuid the ledger has
 never seen at all, or run with no `--repo`, changes no staging state.
 
 `gc [--dry-run] [--force-after=DURATION]` implements the GC rules: it
-frees the staged file of a CLEAN object once
-`staging.retain_after_clean` has passed since its clean time, after
+frees the staged file of a CLEAN object once the fixed 7-day retention
+has passed since its clean time, after
 confirming the object's presence in the cached INDEX of the disc the
 state log says holds it; an object whose disc is not cached is left
 alone and reported separately, never deleted on trust. The ON-DISC
@@ -422,7 +422,7 @@ it costs little, and `recover` is the only tool needed to get it
 back.
 
 `--force-after=DURATION` substitutes DURATION for
-`staging.retain_after_clean` for this one run, using the same duration
+the fixed 7-day retention for this one run, using the same duration
 syntax (a whole number of days with a `d` suffix, or anything
 `time.ParseDuration` accepts). `gc` computes what it would delete under
 that shortened window exactly as it always does (`gcPlanStagingObjects`,
@@ -444,7 +444,7 @@ when nothing was eligible, 2 on failure, with no separate case for
 changes anything, so failing to find something to delete is not a
 `--dry-run` failure the way it is a real run's. `--dry-run` always
 exits 0, printing `gc: nothing is eligible yet` and the earliest date
-some CLEAN object reaches `staging.retain_after_clean`, when nothing is
+some CLEAN object reaches the fixed retention, when nothing is
 eligible and every candidate's run is cached (an object skipped because
 its run is not cached prints that separate line instead, since
 "nothing is eligible" would misstate why nothing was deleted). A real
@@ -468,8 +468,9 @@ completed.
 full; it always processes the whole STAGED pool across every snapshot
 the repository has ever committed, since FORMAT.md requires every
 snapshot object on every disc regardless of any other object's state.
-`--ref`/`--snapshot` still choose only which named refs this run's
-`REFS` table carries.
+`pack` has no flag that selects which refs this run's `REFS` table
+carries; it always carries every pending ref (see `addPendingRefs`,
+described above).
 
 Selection order is a post-order (children before parent) walk of every
 repository snapshot's tree: a directory's chunks, then its file blobs,
@@ -558,8 +559,8 @@ walking every other reachable branch instead of stopping at the first
 miss, so one `*MissingDiscError` at the end names every missing disc's
 uuid and every object needed from it. `cmd/noahsark`'s `restore` keeps
 its single positional `DISC-ROOT` form; a multi-disc restore instead
-repeats `--disc`, or names `--discs-dir`, a directory whose immediate
-subdirectories are disc roots.
+names `--discs-dir`, a directory whose immediate subdirectories are disc
+roots.
 
 ## 9. Forward error correction
 
@@ -606,8 +607,9 @@ only reached through the same call it always was.
 
 `cmd/noahsark`'s config gains `fec.scheme` (Phase 1, values `none` and
 `rs255-gf8`, default `none`), read as `repoConfig.FECEnabled`; `pack`
-gains `--fec` and `--no-fec`, which override the config for one run and
-refuse to be given together. `pack` prints which mode it used and the
+gains `--fec`, which overrides the config to write FEC for one run.
+There is no `--no-fec`: `fec.scheme` in the config is the one switch to
+turn FEC off. `pack` prints which mode it used and the
 stream-block budget that mode consumed.
 
 `internal/image.DataBudgetBlocksNoFEC` is the scheme 0 capacity rule:
@@ -683,7 +685,7 @@ that folds names, can reuse this same tolerance instead of a new rule.
 
 ## 14. Restore, single-drive disc swap
 
-With no `DISC-ROOT`, `--disc` or `--discs-dir`, and exactly `SNAPSHOT`
+With no `DISC-ROOT` or `--discs-dir`, and exactly `SNAPSHOT`
 and `OUT-DIR` left over, `restore` resolves `SNAPSHOT` through the
 local cache and builds a plan with `internal/plan.Build`. It then walks the plan's
 discs in order, one at a time, prompting the operator between them: the

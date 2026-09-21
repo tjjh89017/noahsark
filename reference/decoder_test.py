@@ -17,10 +17,11 @@ with the noahsark binary. To make them again:
 
     go build -o /tmp/noahsark ./cmd/noahsark
 
-    # scheme0-fixture: src/hello.txt alone, packed --no-fec.
+    # scheme0-fixture: src/hello.txt alone, packed with no --fec: the
+    # default, fec.scheme 0.
     #   printf 'hello from the scheme0 fixture\n' >src/hello.txt
-    # two-files-fixture: the pair below, packed --no-fec.
-    # fec-fixture: the same pair, packed --fec.
+    # two-files-fixture: the pair below, packed the same way.
+    # fec-fixture: the same pair, packed with --fec.
     #   printf 'hello from the two files fixture\n' >src/sub/hello.txt
     #   printf 'second file content here\n'         >src/sub/second.txt
     # Then, for each of the three:
@@ -50,11 +51,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TESTDATA = os.path.join(HERE, "..", "internal", "format", "testdata")
 
 # SCHEME0_FIXTURE is a whole run tree, one snapshot of one small file,
-# packed with --no-fec: fec_scheme 0, no checksum.bin, no parity.
+# packed with fec_scheme 0, the default: no checksum.bin, no parity.
 SCHEME0_FIXTURE = os.path.join(HERE, "testdata", "scheme0-fixture")
 
 # TWO_FILES_FIXTURE is a whole run tree, one snapshot of two regular
-# files in a subdirectory, packed with --no-fec. The restore tests need
+# files in a subdirectory, packed the same way. The restore tests need
 # more than one file, so restoring past a bad one still leaves something
 # to check.
 TWO_FILES_FIXTURE = os.path.join(HERE, "testdata", "two-files-fixture")
@@ -69,10 +70,10 @@ FEC_FIXTURE = os.path.join(HERE, "testdata", "fec-fixture")
 # therefore needs the sub/ tree and the one.txt chunk of disc0. To make
 # it again, with the recipe of this file's header and:
 #   $N commit --repo=$w/repo --ref=first  $w/src   # src/sub/one.txt
-#   $N pack   --repo=$w/repo --capacity=dvd+r --no-fec --out=$w/tree0
+#   $N pack   --repo=$w/repo --capacity=dvd+r --out=$w/tree0
 #   printf 'second disc file\n' >$w/src/two.txt
 #   $N commit --repo=$w/repo --ref=second $w/src
-#   $N pack   --repo=$w/repo --capacity=dvd+r --no-fec --out=$w/tree1
+#   $N pack   --repo=$w/repo --capacity=dvd+r --out=$w/tree1
 #   cp -a $w/tree0/NOAHSARK reference/testdata/two-discs-fixture/disc0/
 #   cp -a $w/tree1/NOAHSARK reference/testdata/two-discs-fixture/disc1/
 TWO_DISCS_FIXTURE = os.path.join(HERE, "testdata", "two-discs-fixture")

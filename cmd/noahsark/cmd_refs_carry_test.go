@@ -21,11 +21,10 @@ func writeRefsCarryFixture(t *testing.T, tag string) string {
 	return src
 }
 
-// TestPackCarriesEveryPendingRef commits three refs, then packs once
-// naming only the last one on the command line. The single run must
-// still carry all three: OPERATIONS.md's pack rule 2 copies every local
-// ref record with run_seq 0 into the run it packs, not only the ref
-// named by --ref.
+// TestPackCarriesEveryPendingRef commits three refs, then packs once.
+// The single run must carry all three: pack copies every local ref
+// record with run_seq 0 into the run it packs; it never narrows which
+// refs a run carries.
 func TestPackCarriesEveryPendingRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -44,7 +43,7 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=C", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -94,7 +93,7 @@ func TestRestoreDiscsDirWrongOrderFindsEveryRef(t *testing.T) {
 		t.Fatalf("commit run1: exit %d: %s", code, out)
 	}
 	discA := filepath.Join(discsDir, "disc-a")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=run1", "--out="+discA); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discA); code != 0 {
 		t.Fatalf("pack run1: exit %d: %s", code, out)
 	}
 
@@ -104,7 +103,7 @@ func TestRestoreDiscsDirWrongOrderFindsEveryRef(t *testing.T) {
 		t.Fatalf("commit run2: exit %d: %s", code, out)
 	}
 	discB := filepath.Join(discsDir, "disc-b")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--ref=run2", "--out="+discB); code != 0 {
+	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discB); code != 0 {
 		t.Fatalf("pack run2: exit %d: %s", code, out)
 	}
 
