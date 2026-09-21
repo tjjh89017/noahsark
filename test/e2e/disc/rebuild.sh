@@ -49,7 +49,7 @@ scenario_rebuild() {
 	size1="$(du -sb "$tree1" | cut -f1)"
 	log "rebuild: disc 1 packed tree size: $size1 bytes"
 
-	sudo "$BIN" image build --out="$image1" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree1"
+	sudo "$BIN" image build --out="$image1" "$tree1"
 	mount_populate "$image1" "$tree1" "$mnt1"
 	"$BIN" verify "$mnt1"
 
@@ -136,12 +136,15 @@ scenario_rebuild() {
 		fail "rebuild: disc 2 size $size2 is not under 25% of disc 1's $size1; recover did not prevent re-packing disc 1's content"
 	fi
 
-	sudo "$BIN" image build --out="$image2" "--capacity=$(media_image_capacity "$FIXED_MEDIA")" "$tree2"
+	sudo "$BIN" image build --out="$image2" "$tree2"
 	mount_populate "$image2" "$tree2" "$mnt2"
-	local verify_out2
-	verify_out2="$("$BIN" verify "$mnt2")"
-	echo "$verify_out2"
-	if ! echo "$verify_out2" | grep -qE 'discs: 2$'; then
+	"$BIN" verify "$mnt2"
+	# verify's own output no longer carries the DISCS row count; read it
+	# straight from DISCS.bin with the same Go reader verify uses.
+	local field_out2
+	field_out2="$(run_tool ci-disc-field "$mnt2")"
+	echo "$field_out2"
+	if ! echo "$field_out2" | grep -qE 'discs: 2$'; then
 		fail "rebuild: disc 2's DISCS table does not record 2 discs (expected disc 1 as a prerequisite)"
 	fi
 
