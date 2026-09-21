@@ -3,20 +3,6 @@
 Each entry records a reading of FORMAT.md chosen by the implementation. Each
 entry is named by the FORMAT.md heading it reads.
 
-## 11.1 INDEX
-
-`container_len`, `body_crc32c` and `header_crc32c` are all derivable from
-bytes the same call already lays out: `Index.Encode` computes and writes all
-three, overwriting any value the caller set. `Index.Decode` verifies both
-CRCs and refuses a mismatch. This does not change the bytes a correct writer
-puts on disc; it only fixes which Go call computes them.
-
-## 11.2 REFS and 11.3 DISCS
-
-`RefsTable.Encode` and `DiscsTable.Encode` compute and write `body_crc32c`
-and `header_crc32c` the same way, for the same reason. `Decode` for both
-verifies both CRCs and refuses a mismatch.
-
 ## 10.3 Checksum column
 
 `ChecksumRecord.Encode` computes and writes `header_crc32c` over bytes 0 to
@@ -36,17 +22,16 @@ disallowed one.
 ## 6.14 Snapshot
 
 `internal/object`'s `Writer.Commit` takes one source directory and no parent
-snapshot, so every commit it writes is a root snapshot: `generation` 1,
-`parent` all zero, `parent_hash_algo` 0. Snapshot metadata TLVs (author,
-host, message, exclude rules) are omitted, `meta_count` 0, because no
-config or CLI layer exists yet to supply them at this layer. Parent
-chaining and metadata belong to a later layer that already holds a
-repository's snapshot history.
+snapshot, so every commit it writes is a root snapshot: `parent` all zero.
+Snapshot metadata TLVs (author, host, message, exclude rules) are omitted,
+`meta_count` 0, because no config or CLI layer exists yet to supply them at
+this layer. Parent chaining and metadata belong to a later layer that
+already holds a repository's snapshot history.
 
 Sparse file handling (`SEEK_HOLE` probing, the tree entry `SPARSE` flag,
 hole punching on restore) is deferred to Phase 2. In Phase 1, a hole is
-ordinary zero data: the writer never probes `SEEK_HOLE`, so `source_flags`
-always carries `NO_SPARSE`, and it never claims sparse detection happened.
+ordinary zero data: the writer never probes `SEEK_HOLE`, and it never
+claims sparse detection happened.
 
 ## 10.5 Decode rule
 
@@ -65,10 +50,10 @@ the retry loop.
 
 ## 6.6 Tree entry fixed header and 6.7 Entry flags
 
-`internal/object`'s writer always sets `CTIME_ABSENT` clear and
-`ATIME_ABSENT` and `BTIME_ABSENT` set. This matches the Phase 1 defaults of
-`metadata.ctime` true and `metadata.atime` and `metadata.btime` false; no
-config layer exists yet at this layer to override them.
+`internal/object`'s writer always sets `CTIME_ABSENT` clear, matching the
+default `metadata.ctime` true; no config layer exists yet at this layer to
+override it. The tree entry has no atime field and no birth time field;
+FORMAT.md stores neither.
 
 ## 11.1 INDEX, Files table order and self-reference
 
@@ -99,21 +84,17 @@ order in section 8.7. `internal/image` takes the simplest deterministic
 reading: the Files rows for `INDEX.bin`, `RUN.bin`, `RUN2.bin`,
 `checksum.bin` and every parity file carry `file_hash` all zero. Every
 other row (`DISC.bin`, `REFERENCE/decoder.py`, `catalog/REFS.bin`,
-`catalog/DISCS.bin`, every `catalog/snapobj` copy, and every object file)
-carries the real sha256 of its whole encoded bytes, because those files
-are fully known before INDEX is built. `RUN.bin`'s own `header_crc32c`
-still lets a reader verify it directly; the Files table's `file_hash` for
-that row is redundant with that check, not a reader's only way to verify
-`RUN.bin`.
+`catalog/DISCS.bin`, and every object file, snapshots included) carries
+the real sha256 of its whole encoded bytes, because those files are fully
+known before INDEX is built. `RUN.bin`'s own `header_crc32c` still lets a
+reader verify it directly; the Files table's `file_hash` for that row is
+redundant with that check, not a reader's only way to verify `RUN.bin`.
 
-Row order for `catalog/snapobj` copies (role 9) and for object files (role
-13) is not stated beyond "by file_hash ascending" for role 13.
-`internal/image` sorts both groups by the sha256 of each file's own whole
-bytes, ascending, and keeps that as the deterministic tie-break for role
-9 too (ordered by the snapshot's own content id ascending, since a
-snapshot's role-9 copy and its role-13 copy are byte-identical and a
-content id is stable where a whole-file hash of role 9's copy is not
-otherwise pinned by any other row).
+Row order for object files (role 13, snapshots and every other object
+kind alike) follows section 11.1's own rule: ascending `content_id`,
+paired by position with the Objects table, which is sorted the same way.
+There is no separate catalog copy of a snapshot; a snapshot is one role
+13 row like any other object.
 
 ## 8.2 Files at the volume root: README.txt and FORMAT.txt
 
@@ -121,29 +102,18 @@ otherwise pinned by any other row).
 `/NOAHSARK/FORMAT.txt` at the volume root, directly after `DISC.bin` and
 before `REFERENCE/decoder.py`, matching the fill order section 8.7
 states. `FORMAT.txt` is checked in as `internal/image/format.txt`, copied
-byte for byte from the Appendix A fenced text; a test compares it against
-that text freshly extracted from `FORMAT.md` on every run, so the two
-can never drift silently. `README.txt` is built from a template checked
+byte for byte from `FORMAT.md` itself; a test compares it against
+`FORMAT.md` on every run, so the two can never drift silently. `README.txt`
+is built from a template checked
 in the same way, `internal/image/readme_template.txt`, with every slot
 substituted at build time from the values `Build` writes into `DISC.bin`
 and the run header. Both rows carry their real `sha256` in the Files
 table and enter the FEC stream, as roles 4 and 5.
 
-## 8.4 README.txt: {hash_algo} and {chunker_profile} source, and {label} scope
-
-Section 8.4's substitution table says `{hash_algo}` and
-`{chunker_profile}` come from the superblock's `hash_algo` and
-`chunker_profile` fields, but the disc superblock (section 7.5) carries
-no such fields: only the run header does. `internal/image` reads this as
-the section 3 prose already states it, "hash algorithm of the first run"
-and "chunker profile of the first run", and substitutes the values the
-first run's header carries, `sha2-256` and `P4`, the only values a Phase
-1 writer ever produces. This does not change any byte the superblock or
-the run header carries; it only fixes which structure's field a reader
-of this document should have named.
+## 8.4 README.txt: {label} scope
 
 `{label}` substitutes the superblock's `label` bytes "as they are". A
-Phase 1 writer never stores more than the caller's label text, zero-
+writer never stores more than the caller's label text, zero-
 padding the rest of the 64-byte field; `internal/image` substitutes only
 the meaningful, non-padding bytes rather than the full 64-byte field,
 since the padding is not part of the label and would otherwise read as a
@@ -165,32 +135,23 @@ and 6 of the fixture's one stripe, `README.txt` and `FORMAT.txt`,
 skipping columns 0 and 1, `INDEX.bin` itself: `internal/restore`'s Heal
 needs a readable `INDEX.bin` to resolve the stream layout in the first
 place, so healing `INDEX.bin`'s own bytes is out of scope for this
-implementation (see the `file_index` decision above), and this CI check
-does not exercise it.
+implementation (see the object-row-by-position decision below), and this
+CI check does not exercise it.
 
-## 11.1 INDEX, Objects table: resolving an object row's file by file_index
+## 11.1 INDEX, Objects table: resolving an object row's file by position
 
 `internal/image`'s `StreamFiles`, used by both `Read`'s parity
-verification and `internal/restore`'s `Heal`, used to resolve an object
-row's (role 13) file path by sorting every candidate file under
-`objects/` and `snapshots/` by its own current `sha256` and matching
-that order position by position against the run's object rows, the same
-rule Build uses to order those rows at write time. That match only holds
-while every object file is intact: corrupting one file's bytes changes
-its `sha256` and so its sort position, which silently reassigns every
-row from that point on to the wrong file. The Objects table already
-carries `file_index`, "0-based row index into the Files table" (section
-11.1), naming each object's own row directly and requiring no hash of
-the file's current bytes at all. `StreamFiles` now builds an object's
-path from its `content_id` and reads `file_index` to place it, so
-resolving an object row's file no longer depends on that file being
-undamaged, which `internal/restore`'s `Heal` needs before it can even
-find the block to repair. A snapobj row (role 9) carries no such field
-in this version, so the sha256-sort match, and its intact-file
-assumption, still applies there; this does not change any byte on disc
-in either case, only how a reader locates the file a row describes.
+verification and `internal/restore`'s `Heal`, resolves an object row's
+(role 13) file path directly from `content_id` and `kind`, per section
+3.5, and locates that row's own Files entry by position: the Objects
+table and the role 13 rows are both in ascending `content_id` order, and
+the `j`-th role 13 row describes Objects row `j` (section 11.1). This
+depends on no hash of a file's current bytes, so it does not silently
+misplace a row when one object file is corrupted, which
+`internal/restore`'s `Heal` needs before it can even find the block to
+repair.
 
-## 8.1 Profiles a reader must know: filesystem overhead estimate
+## 8.1 The UDF volume: filesystem overhead estimate
 
 FORMAT.md gives the `mkudffs` options and the anchor placement rule but no
 numeric UDF overhead budget. The first version of this estimate, one
@@ -225,7 +186,7 @@ toward a thin margin fails. This is still an estimate used only to
 refuse an over-target pack before spending time building it; it does not
 change any on-disc byte.
 
-## 8.1 Profiles a reader must know: keeping files out of the ICB
+## 8.1 The UDF volume: keeping files out of the ICB
 
 Small files may be embedded in-ICB by the UDF driver. The writer does not
 pad and sets no mount option. NoahsArk works at the file level and never
@@ -318,11 +279,12 @@ table carries) and the staging state log. A counter answers a question the
 operator did not ask; the state word and the `next:` line answer the one they
 did. `--json` keeps the exact numbers.
 
-The on-disc DISCS row a run carries for itself always writes `used_sectors`
-zero, the same way it leaves `run_hash` zero: the run's own final size is not
-known until the run is written. The local ledger row, built after the run is
-written, carries the real value, so every later run's copy of DISCS (and
-`status`) sees it from the next pack on.
+The DISCS row carries no used-space field at all; FORMAT.md records only
+`capacity_sectors`. The on-disc DISCS row a run carries for itself always
+leaves `run_hash` zero: the run's own final size and header hash are not
+known until the run is written. The local ledger row, built after the run
+is written, carries the real `run_hash`, so every later run's copy of
+DISCS (and `status`) sees it from the next pack on.
 
 Burning the folder `pack` produces directly, without running `image build`,
 is a documented, supported use: see docs/guide.md.
@@ -524,8 +486,8 @@ possible"), not a bin-packing search over subsets.
 Because the selected set is always dependency-closed, Prereqs
 construction is exact and needs no search: for every selected tree,
 blob or snapshot, a direct child absent from the selected set is
-necessarily already PACKED (by construction), and its recorded run_seq
-from the state log is the Prereqs row's `run_seq`.
+necessarily already PACKED (by construction), and its recorded
+`disc_uuid` from the state log is the Prereqs row's `disc_uuid`.
 
 `pack` checks that every staged object really holds the content its
 name promises, so corruption in the staging store cannot reach a disc.
@@ -584,10 +546,10 @@ existing disc) stays refused, unchanged from the existing reduction.
 
 `internal/restore.RestoreMulti` takes several disc roots and looks up
 each needed object directly by its canonical on-disc path on every
-provided root; a snapshot object is also looked for under each
-provided run's `catalog/snapobj`, since that copy is replicated on
-every disc while the canonical `/NOAHSARK/snapshots/<id>` copy exists
-only on the one disc that packed it. When an object is on none of the
+provided root; a snapshot object is looked up the same way as any other
+object, under `/NOAHSARK/snapshots/<id>`, on the one disc that packed it.
+There is no separate catalog copy of a snapshot to fall back to. When an
+object is on none of the
 provided roots, `RestoreMulti` resolves the disc that must hold it from
 whichever provided run's `INDEX` names it (its own Objects row, or a
 Prereqs row pointing at it) plus that run's `DISCS` table, and keeps
