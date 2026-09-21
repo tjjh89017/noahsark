@@ -410,10 +410,17 @@ insert disc 1 "2026-09-21 run2" (uuid 85f302d6-...) into <MOUNT> and press Enter
 ```
 
 Load that disc, mount it at `<MOUNT>` and press Enter. A wrong disc
-gives `expected disc ..., found ...` and the same prompt again. If the
-session stops, run the same command again. It continues and asks only
-for the discs that it still needs. Add `--no-eject` to keep the tray
-closed.
+gives `expected disc ..., found ...` and the same prompt again. Add
+`--no-eject` to keep the tray closed.
+
+`restore` writes each file into a hidden `.<NAME>.noahsark-part` file
+next to it, and gives the file its final name when the last chunk
+arrives. Thus a name in `<RESTORE_DIR>` is always a complete file. A
+file whose data lies on two discs is normal: the second disc finishes
+it. `restore` needs no space outside `<RESTORE_DIR>`.
+
+If the session stops, run the same command again. It continues from the
+part files and asks only for the discs that it still needs.
 
 ### All discs mounted
 
@@ -610,6 +617,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `restore`: `warning: <PATH>: a path is already here; pass --overwrite to replace it`, exit code 1 | `<RESTORE_DIR>` already holds that path. Restore into an empty directory, or add `--overwrite`. |
 | `restore`: `<PATH>: <OBJECT>: content id does not verify`, exit code 1 | The object on the disc is damaged. `restore` writes no bad data and continues with the next file. Use the second copy of the disc, or `verify --heal` when the run has FEC. |
 | `restore`: `warning: <PATH>: <FIELD> not applied: <ERROR>`, exit code 1 | The file's data restored, but its mode, times or owner did not. Fix the cause (often a permission problem) and restore again with `--overwrite`. Owner never appears here for a non-root restore: it is not attempted at all. |
+| `<RESTORE_DIR>` holds hidden `.<NAME>.noahsark-part` files | A restore stopped before those files were complete. Run the same `restore` again: it completes them and removes them. Delete one by hand only when you give up that file. |
 | `restore`: `missing disc(s)`, exit code 1 | The message lists each disc by its number, its label and its uuid. Find that disc. Restore again with it included. |
 | `restore`: `the snapshot's root tree is not on the provided disc(s)` | Give more discs of the set, the newest discs included. |
 | `restore`: `object(s) not found on any provided disc` | A newer disc is absent. Give more discs of the set, the newest discs included. |

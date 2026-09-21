@@ -112,8 +112,8 @@ func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (*
 // they were first found, a depth-first, file-by-file tree walk: a
 // blob's own chunk ids always sit right after it. group() reads objects
 // off a disc in this order, so a blob's own chunks stay adjacent in the
-// disc's own object list, letting a restore free a file's spool bytes
-// as soon as its last chunk arrives.
+// disc's own object list, and a restore reads one file's chunks from
+// one part of the disc.
 type walker struct {
 	c      *cache.Cache
 	needed map[object.ID]format.ObjectKind
@@ -285,8 +285,7 @@ func rootPathOf(e format.TreeEntry) string {
 //
 // Within one disc, objects keep order's relative order: the walk's
 // depth-first, file-by-file discovery order, so a blob's own chunks
-// stay adjacent in each DiscEntry.Objects, letting a restore free a
-// file's spool bytes as soon as its last chunk is read.
+// stay adjacent in each DiscEntry.Objects.
 func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []object.ID) *Result {
 	byDisc := make(map[[16]byte]*DiscEntry)
 	missingByDisc := make(map[[16]byte]int)

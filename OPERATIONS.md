@@ -148,7 +148,6 @@ others. The roles, the state log and the filesystem rule are normative.
 staging/
     objects/ab/cd/<id>          object files waiting to be packed
     plans/<disc_uuid>/tree      the disc root that pack writes by default
-    restore/<snapshot-id>/      restore spool of the disc-swap mode
     state.db                    append-only binary state log
 ```
 
@@ -227,8 +226,9 @@ the staged file of a CLEAN object only.
 ```
  snapshot id -> object set -> run map from INDEX -> disc plan
    -> for each disc in plan order:
-        detect disc -> read needed objects -> staging/restore/
-        -> assemble every file that is now complete -> free its staging space
+        detect disc -> walk the snapshot one time
+        -> write each chunk of this disc into the part file of its own file
+        -> link a file to its final name when its last chunk lands
    -> apply metadata in the fixed order -> deferred directory times
    -> warnings -> exit code
 ```
@@ -522,11 +522,11 @@ them are **informative**; they are the Linux way to meet the rule.
    the state log, the staging store, the ledgers or the config takes a
    non-blocking exclusive advisory lock on it before it reads the state log,
    and holds it until it exits. Those commands are `init`, `commit`, `pack`,
-   `gc`, `disc burned`, `recover`, the disc-swap mode of `restore` (except
-   `--dry-run`), and `verify` when it has a repository.
+   `gc`, `disc burned`, `recover`, and `verify` when it has a repository.
 2. A read-only command takes no lock: `ls`, `log`, `status`,
-   `verify` with no repository, `restore` with disc roots, `restore --dry-run`,
-   and `image build`.
+   `verify` with no repository, every mode of `restore`, and `image build`.
+   `restore` writes only below its own output directory; it reads the cache
+   and writes nothing in the repository.
 3. A command that cannot get its lock fails at once: it exits with code 1,
    with a message that names the lock file and says that another noahsark
    command runs on this repository. It never waits.
@@ -1163,18 +1163,57 @@ Step 2: greedy on the residual. P = mandatory_discs(N); U = N minus
 
 ```
 for each disc in plan order:
-    detect the disc
-    read every needed object from it in one pass
-    write those objects into staging/restore/
-    for every file whose chunks are now all present:
-        assemble it, write it to the target, free its staging space
+    walk the snapshot's tree one time, from the cache
+    for each file in scope that is not complete:
+        for each chunk of that file that is on this disc:
+            detect the disc, at the first chunk that must be read from it
+            read the chunk, verify it, write it into the file's part file
+        close the part file
+        when the last chunk of the file has landed, give the file its
+        final name
     eject
 ```
 
-The switch count equals the number of discs in the plan.
+The switch count equals the number of discs in the plan. A file whose chunks
+lie on two discs is a normal case: the disc that holds the first part writes
+its part of the file, and a later disc finishes it.
 
 File-major order is forbidden as an anti-pattern. If consecutive files live on
 different discs, each file boundary can cost a switch.
+
+A restore holds one disc's object id set, one chunk and one file's chunk list
+at a time. Nothing it holds grows with the size of the snapshot. It copies
+each byte one time, from the disc into the file, with no spool between.
+
+The restore writes only below its own output directory. It writes nothing in
+the repository, so it takes no lock.
+
+### 14.3 The part file, resume and a killed run
+
+A restore writes a file's bytes into a hidden part file in the file's own
+directory, named `.<name>.noahsark-part`. A snapshot can hold a file of that
+name itself; the restore then adds a number to the suffix, so it never writes
+into a path the snapshot owns. The part file is opened with no-follow, and its
+directory is made with the same no-follow rule as every other restore path.
+The final size is set one time, so a file with a hole keeps the hole.
+
+The final name appears one time, when the last chunk has landed: the restore
+links the part file to the final name, then unlinks the part file. A link
+fails when the name already exists, thus the no-overwrite rule holds with no
+race, and a part-written file never carries the final name. With `--overwrite`
+the path in the way is unlinked first; a directory that holds entries is never
+removed. A filesystem that has no hard link falls back to a check and a
+rename.
+
+At each open of a part file the restore checks each chunk of this disc against
+its content id, and skips the chunks that are already there. Thus a run that
+continues an interrupted one asks only for the discs that still hold a chunk
+it needs.
+
+A killed run leaves its part files in the output directory. The next run of
+the same restore completes them, or names each file that it cannot complete. A
+restore that completes leaves no part file of its own. A restore never deletes
+a part file that it did not write itself.
 
 Before it reads the first disc, `restore` prints the plan: the disc number,
 the label, the uuid and the object count of each disc that the plan needs,
@@ -1210,11 +1249,12 @@ snapshot id
  -> disc plan: unique-element reduction, greedy, tie-breaks; print the
       plan; fail on a missing disc
  -> for each disc:
-      detect -> read needed objects into staging/restore/
-      -> verify each object's content id (a mismatch fails that file)
-      -> assemble every file that is complete
-      -> create, write, chown, chmod, times
-      -> free the staging space of that file -> eject
+      detect -> walk the tree one time
+      -> read each chunk of this disc and verify its content id (a
+         mismatch fails that file)
+      -> write each chunk into the part file of its own file
+      -> for every file whose last chunk landed: link it to its final
+         name, then chown, chmod, times -> eject
  -> deferred pass: directory times, in reverse depth order
  -> one report: the problem lines, then one summary line + exit code
 ```
@@ -1635,8 +1675,8 @@ There are two modes.
   gives the expected and the found disc, then the same prompt. A repeated
   command continues, and asks only for the discs that it still needs.
   `--mount` does not go together with a `DISC-ROOT`, `--disc` or
-  `--discs-dir`. `--dry-run` prints the plan and stops there, writing
-  nothing and taking no lock.
+  `--discs-dir`. `--dry-run` prints the plan and stops there. This mode
+  writes only below `OUT-DIR`, thus it takes no lock either.
 
 `restore` leaves an existing path alone unless `--overwrite` is given. It
 reports in one form, whichever mode it ran in:
@@ -2025,6 +2065,7 @@ same image.
 | 12 | A required disc is missing at restore time | `restore` fails before any read and names the disc by uuid. Find the disc, or its second copy, and run `restore` again. |
 | 13 | A wrong disc is in the drive during a disc-swap restore | `restore` names the expected and the found disc and prompts again. |
 | 14 | An unknown critical TLV or an unknown format version | The tool refuses the entry or the disc. Upgrade the tool. |
+| 15 | A disc-swap restore is killed between two discs | The output directory keeps one hidden `.<name>.noahsark-part` file for each file that is not complete. Run the same `restore` again. It completes those files, and it asks only for the discs that it still needs. |
 
 ---
 
@@ -2051,6 +2092,8 @@ have gaps, because a deleted test keeps its number unused.
 | 9 | Checksum column locates a silently corrupted sector | FORMAT |
 | 11 | Cache-less restore: delete the cache, restore from the disc images alone | OPS |
 | 12 | Restore plan determinism | OPS |
+| 12a | Disc-swap restore of a file whose chunks lie on two discs: one insertion of each disc, and a byte-identical file | OPS |
+| 12b | A disc-swap restore killed after the first disc leaves no file at its final name that is not complete; the rerun completes it and asks only for the discs that it still needs | OPS |
 | 13 | Metadata restore as a non-root user: no owner attempt, exit code 0 | OPS |
 | 14 | Sparse round-trip: holes in, holes out | FORMAT |
 | 15 | Compression heuristic: a low-gain chunk is stored uncompressed | FORMAT |
