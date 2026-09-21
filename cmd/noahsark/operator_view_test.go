@@ -129,8 +129,8 @@ func TestImageBuildReadsCapacityFromTheTree(t *testing.T) {
 	}
 
 	disc := readDiscForTest(t, treeDir)
-	if disc.CapacityForcedSectors == 0 {
-		t.Fatal("DISC.bin carries no forced capacity")
+	if disc.CapacitySectors == 0 {
+		t.Fatal("DISC.bin carries no capacity")
 	}
 
 	// mkudffs is not available in every test environment, so the check

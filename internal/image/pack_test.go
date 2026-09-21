@@ -147,23 +147,20 @@ func commitNamedFixture(t *testing.T, stagingDir, name string) object.ID {
 	return snapID
 }
 
-// TestPackTwoSnapshotsSnapobjOrder packs a run that carries two
-// snapshots' objects in catalog/snapobj. Every disc always stores every
-// repository snapshot's own object there, regardless of which ref the
-// run's REFS table names, so two committed snapshots always produce two
-// snapobj files. Read must resolve the FEC stream over those two files
-// in the same order Pack wrote them in.
-func TestPackTwoSnapshotsSnapobjOrder(t *testing.T) {
+// TestPackCarriesEverySnapshotObject packs a run after several
+// commits. Every disc stores every repository snapshot's own object
+// under snapshots/, whatever ref the run's REFS table names, so Read
+// must resolve the FEC stream over all of them, in the content id
+// order the role 13 rows hold.
+func TestPackCarriesEverySnapshotObject(t *testing.T) {
 	stagingDir := t.TempDir()
 	l, err := stage.Open(stagingDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Several snapshots, not just two: the snapshot object id (a hash of
-	// its own payload) and the snapshot file's whole-bytes hash sort
-	// independently of each other, so with enough snapshots at least one
-	// pair is certain to land in a different relative order under the
-	// two keys.
+	// Several snapshots, so the run carries a set of snapshot objects
+	// whose ids order independently of the order they were committed
+	// in.
 	var firstSnap object.ID
 	for i := range 8 {
 		id := commitNamedFixture(t, stagingDir, fmt.Sprintf("snap-%d", i))
@@ -250,8 +247,8 @@ func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 		t.Fatal("expected at least one Prereqs row on the last disc, since not everything fit on one disc")
 	}
 	for _, p := range idx.Prereqs {
-		if p.RunSeq == 0 || p.RunSeq > uint64(len(discRoots)) {
-			t.Fatalf("prereq names run_seq %d, out of range for %d built runs", p.RunSeq, len(discRoots))
+		if p.DiscUUID == ([16]byte{}) {
+			t.Fatal("prereq names no disc uuid")
 		}
 	}
 }

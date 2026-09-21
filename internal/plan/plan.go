@@ -269,14 +269,12 @@ func splitPathSegs(p string) []string {
 	return out
 }
 
-// rootPathOf returns e's ROOT_PATH TLV payload, or "" when absent.
+// rootPathOf returns the source root path a root tree entry's name
+// holds, decoded by the root name escape rule. An undecodable name is
+// used as it is.
 func rootPathOf(e format.TreeEntry) string {
-	for _, t := range e.TLVs {
-		if t.Type == format.TLVTypeRootPath {
-			return string(t.Payload)
-		}
-	}
-	return ""
+	path, _ := format.DecodeRootName(string(e.Name))
+	return path
 }
 
 // group maps every needed object to a disc through c.LocateObject and
@@ -325,10 +323,10 @@ func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []objec
 			e = &DiscEntry{DiscSeq: row.DiscSeq, DiscUUID: row.DiscUUID, Label: discRowLabel(row), Created: row.CreatedSec}
 			byDisc[row.DiscUUID] = e
 		}
-		e.Objects = append(e.Objects, ObjectEntry{ID: id, Kind: needed[id], Bytes: loc.PayloadLen})
-		e.Bytes += loc.PayloadLen
+		e.Objects = append(e.Objects, ObjectEntry{ID: id, Kind: needed[id], Bytes: loc.ByteLen})
+		e.Bytes += loc.ByteLen
 		r.TotalObjects++
-		r.TotalBytes += loc.PayloadLen
+		r.TotalBytes += loc.ByteLen
 	}
 
 	discs := make([]DiscEntry, 0, len(byDisc))

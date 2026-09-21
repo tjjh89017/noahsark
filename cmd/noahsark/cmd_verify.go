@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -230,9 +229,6 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	}
 	count, haveClean := discVerifyCount(stageLog, ident.DiscUUID)
 	if haveClean {
-		if err := recordLedgerVerify(cfg.StagingDir, repoUUID, ident.DiscUUID); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
-		}
 		if err := cacheRunFromDisc(cfg, repoUUID, target); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		}
@@ -387,29 +383,6 @@ func markVerifyFailed(l *stage.Log, discUUID [16]byte) int {
 		}
 	}
 	return n
-}
-
-// recordLedgerVerify sets LastVerifySec to now on the disc ledger row
-// for discUUID, and writes the ledger back. OPERATIONS.md's local cache
-// layout also allows a health log; this build reuses the ledger row's
-// own LastVerifySec field instead of adding a second file for the same
-// fact.
-func recordLedgerVerify(stagingDir string, repoUUID, discUUID [16]byte) error {
-	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
-	if err != nil {
-		return err
-	}
-	found := false
-	for i := range ledger.Rows {
-		if ledger.Rows[i].DiscUUID == discUUID {
-			ledger.Rows[i].LastVerifySec = time.Now().Unix()
-			found = true
-		}
-	}
-	if !found {
-		return nil
-	}
-	return image.SaveDiscsLedger(stagingDir, repoUUID, ledger.Rows)
 }
 
 // cacheRunFromDisc copies target's run catalog, snapshots and trees

@@ -41,7 +41,7 @@ func RestoreWithProgress(discRoot string, snapshotID object.ID, outDir string, p
 // already fully restored (resumed); anything else found at dest is left
 // for --overwrite to resolve (not resumed). found is false when dest
 // does not exist.
-func existingFileStatus(dest string, e format.TreeEntry, entries []format.BlobEntry) (resumed, found bool) {
+func existingFileStatus(dest string, e format.TreeEntry, entries []placedChunk) (resumed, found bool) {
 	fi, err := os.Lstat(dest)
 	if err != nil {
 		return false, false
@@ -61,7 +61,7 @@ func existingFileStatus(dest string, e format.TreeEntry, entries []format.BlobEn
 // An unlink that fails, most often because dest is a non-empty
 // directory, leaves dest exactly as found and reports it through wp's
 // report, instead of stopping the restore.
-func openForWrite(dest string, e format.TreeEntry, entries []format.BlobEntry, wp *writePolicy) (f *os.File, skipped bool, err error) {
+func openForWrite(dest string, e format.TreeEntry, entries []placedChunk, wp *writePolicy) (f *os.File, skipped bool, err error) {
 	if wp != nil && wp.overwrite {
 		if _, statErr := os.Lstat(dest); statErr == nil {
 			if err := unlinkExisting("file", dest); err != nil {
@@ -137,8 +137,7 @@ func readVerified(base string, id object.ID, snapshot bool, cache *image.NameCac
 }
 
 // readVerifiedAt is readVerified against an explicit file path, for a
-// caller that already knows an object's copy lives somewhere other than
-// its canonical path, such as a run's catalog/snapobj copy.
+// caller that already knows where an object's file is.
 func readVerifiedAt(path string, id object.ID) (raw, payload []byte, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

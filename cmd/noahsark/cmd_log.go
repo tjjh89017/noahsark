@@ -98,14 +98,12 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 // pointing at it, the root paths it covers, and the counts the snapshot
 // itself stores.
 type logRecord struct {
-	ID               string   `json:"id"`
-	Parent           string   `json:"parent,omitempty"`
-	Generation       uint64   `json:"generation"`
-	Time             string   `json:"time"`
-	Refs             []string `json:"refs"`
-	Roots            []string `json:"roots"`
-	ReachableObjects uint64   `json:"reachable_objects"`
-	TotalSize        uint64   `json:"total_size"`
+	ID        string   `json:"id"`
+	Parent    string   `json:"parent,omitempty"`
+	Time      string   `json:"time"`
+	Refs      []string `json:"refs"`
+	Roots     []string `json:"roots"`
+	TotalSize uint64   `json:"total_size"`
 
 	// timeNanos is the snapshot's own time, at the full precision the
 	// snapshot record carries, unexported so it never reaches the JSON
@@ -154,9 +152,6 @@ func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Write
 		if a.timeNanos != b.timeNanos {
 			return a.timeNanos > b.timeNanos
 		}
-		if a.Generation != b.Generation {
-			return a.Generation > b.Generation
-		}
 		return a.ID < b.ID
 	})
 	if limit > 0 && len(records) > limit {
@@ -173,8 +168,8 @@ func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Write
 		return 0
 	}
 	for _, r := range records {
-		_, _ = fmt.Fprintf(stdout, "%s  %s  refs: %s  roots: %s  objects: %d  size: %d\n",
-			r.ID, r.Time, joinOrNone(r.Refs), joinOrNone(r.Roots), r.ReachableObjects, r.TotalSize)
+		_, _ = fmt.Fprintf(stdout, "%s  %s  refs: %s  roots: %s  size: %d\n",
+			r.ID, r.Time, joinOrNone(r.Refs), joinOrNone(r.Roots), r.TotalSize)
 	}
 	return 0
 }
@@ -212,11 +207,9 @@ func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, jsonOut bool,
 		parent = "(none)"
 	}
 	_, _ = fmt.Fprintf(stdout, "parent: %s\n", parent)
-	_, _ = fmt.Fprintf(stdout, "generation: %d\n", r.Generation)
 	_, _ = fmt.Fprintf(stdout, "time: %s\n", r.Time)
 	_, _ = fmt.Fprintf(stdout, "refs: %s\n", joinOrNone(r.Refs))
 	_, _ = fmt.Fprintf(stdout, "root paths: %s\n", joinOrNone(r.Roots))
-	_, _ = fmt.Fprintf(stdout, "reachable objects: %d\n", r.ReachableObjects)
 	_, _ = fmt.Fprintf(stdout, "total size: %d\n", r.TotalSize)
 	return 0
 }
@@ -227,12 +220,10 @@ func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, jsonOut bool,
 // command; log has no exit code for a missing disc, unlike ls.
 func buildLogRecord(src snapshotSource, id object.ID, snap *format.Snapshot, refs *format.RefsTable) logRecord {
 	r := logRecord{
-		ID:               id.TextForm(),
-		Generation:       snap.Generation,
-		Time:             time.Unix(snap.TimeSec, int64(snap.TimeNsec)).UTC().Format(time.RFC3339),
-		ReachableObjects: snap.ReachableObjectCount,
-		TotalSize:        snap.TotalSize,
-		timeNanos:        snap.TimeSec*int64(time.Second) + int64(snap.TimeNsec),
+		ID:        id.TextForm(),
+		Time:      time.Unix(snap.TimeSec, int64(snap.TimeNsec)).UTC().Format(time.RFC3339),
+		TotalSize: snap.TotalSize,
+		timeNanos: snap.TimeSec*int64(time.Second) + int64(snap.TimeNsec),
 	}
 	if snap.Parent != ([32]byte{}) {
 		r.Parent = object.ID(snap.Parent).TextForm()

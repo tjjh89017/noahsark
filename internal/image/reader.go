@@ -70,7 +70,7 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		return nil, fmt.Errorf("RUN.bin: want %d bytes, got %d", RunFileLen, len(runBuf))
 	}
 	var run format.Run
-	if err := run.Decode(runBuf[:format.RunLen]); err != nil {
+	if err := run.Decode(runBuf); err != nil {
 		return nil, fmt.Errorf("RUN.bin: %w", err)
 	}
 
@@ -113,33 +113,6 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 	var discs format.DiscsTable
 	if _, err := discs.Decode(discsBuf); err != nil {
 		return nil, fmt.Errorf("DISCS.bin: %w", err)
-	}
-
-	// Every parity file's header block must match RUN.bin exactly. Read
-	// only that header, never the file's parity payload. A scheme 0 run
-	// (no FEC) carries no parity files, so there is nothing to check
-	// here and no checksum column or parity to recompute below: verify
-	// checks content ids and file hashes only.
-	if run.FECScheme == format.FECSchemeRS255GF8 {
-		parityDir := cache.Join(runDir, "parity")
-		for j := range fec.M {
-			name := fmt.Sprintf("p%04d.bin", fec.K+1+j)
-			path := filepath.Join(parityDir, cache.Resolve(parityDir, name))
-			f, err := os.Open(path)
-			if err != nil {
-				return nil, fmt.Errorf("parity column %d: %w", j, err)
-			}
-			header := make([]byte, RunFileLen)
-			_, err = io.ReadFull(f, header)
-			_ = f.Close()
-			if err != nil {
-				return nil, fmt.Errorf("parity column %d: %w", j, err)
-			}
-			if !bytes.Equal(header, runBuf) {
-				return nil, fmt.Errorf("parity column %d header does not match RUN.bin", j)
-			}
-			runCopies++
-		}
 	}
 
 	if err := verifyObjects(base, &idx, prog, cache); err != nil {
@@ -207,52 +180,90 @@ func NewestRunDir(runsDir string) (string, error) {
 // payload, in memory: an object can be as large as the maximum chunk
 // size, so this bound must hold whatever the object's own size is.
 func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cache *NameCache) error {
-	headerLen := int64(format.CommonHeaderLen + format.ObjectHeaderLen)
-	var total int64
-	for _, row := range idx.Objects {
-		total += int64(row.StoredLen)
+	paths, err := ObjectPaths(base, idx, cache)
+	if err != nil {
+		return err
 	}
-	objectsDir := cache.Join(base, "objects")
-	snapshotsDir := cache.Join(base, "snapshots")
+	var total int64
+	for _, row := range objectFileRows(idx) {
+		total += int64(row.ByteLen)
+	}
 	prog.Start("verify: objects hashed", total)
-	for _, row := range idx.Objects {
+	for i, row := range idx.Objects {
 		id := object.ID(row.ContentID)
-		var path string
-		if row.Kind == format.ObjectKindSnapshot {
-			path = filepath.Join(snapshotsDir, id.TextForm())
-		} else {
-			path = filepath.Join(objectsDir, id.FanoutByte(), id.TextForm())
-		}
-		if err := verifyOneObject(path, id, row.Offset, row.StoredLen, row.Compression, headerLen); err != nil {
+		n, err := verifyOneObject(paths[i], id)
+		if err != nil {
 			return err
 		}
-		prog.Add(int64(row.StoredLen))
+		prog.Add(n)
 	}
 	prog.Done()
 	return nil
 }
 
-// verifyOneObject streams the object file at path, from headerLen+offset
-// for storedLen bytes, decompressing when compression says so, and
-// checks the result hashes to id.
-func verifyOneObject(path string, id object.ID, offset, storedLen uint64, compression format.Compression, headerLen int64) error {
+// objectFileRows returns the role 13 Files rows, in row order. The j-th
+// of them describes the file of Objects row j.
+func objectFileRows(idx *format.Index) []format.IndexFileRecord {
+	rows := make([]format.IndexFileRecord, 0, idx.ObjectCount)
+	for _, row := range idx.Files {
+		if row.Role == format.FileRoleObject {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// ObjectPaths returns the path of every object file of a run, in the row
+// order of INDEX's Objects table. The id gives the file name and the
+// kind gives the directory.
+func ObjectPaths(base string, idx *format.Index, cache *NameCache) ([]string, error) {
+	if len(objectFileRows(idx)) != len(idx.Objects) {
+		return nil, fmt.Errorf("INDEX: %d role 13 rows for %d Objects rows", len(objectFileRows(idx)), len(idx.Objects))
+	}
+	objectsDir := cache.Join(base, "objects")
+	snapshotsDir := cache.Join(base, "snapshots")
+	paths := make([]string, len(idx.Objects))
+	for i, row := range idx.Objects {
+		id := object.ID(row.ContentID)
+		if row.Kind == format.ObjectKindSnapshot {
+			paths[i] = filepath.Join(snapshotsDir, id.TextForm())
+		} else {
+			paths[i] = filepath.Join(objectsDir, id.FanoutByte(), id.TextForm())
+		}
+	}
+	return paths, nil
+}
+
+// verifyOneObject reads the object file at path, takes its stored
+// length and compression from its own object header, and checks the
+// payload hashes to id. It returns the stored byte count it read.
+func verifyOneObject(path string, id object.ID) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("object %s: %w", id.TextForm(), err)
+		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
 	defer func() { _ = f.Close() }()
 
-	if _, err := f.Seek(headerLen+int64(offset), io.SeekStart); err != nil {
-		return fmt.Errorf("object %s: %w", id.TextForm(), err)
+	head := make([]byte, format.CommonHeaderLen+format.ObjectHeaderLen)
+	if _, err := io.ReadFull(f, head); err != nil {
+		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
-	got, err := object.HashStreamed(f, compression, storedLen)
+	var ch format.CommonHeader
+	if err := ch.Decode(head); err != nil {
+		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
+	}
+	var oh format.ObjectHeader
+	if err := oh.Decode(head[format.CommonHeaderLen:]); err != nil {
+		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
+	}
+	got, err := object.HashStreamed(f, oh.Compression, oh.StoredLen)
 	if err != nil {
-		return fmt.Errorf("object %s: %w", id.TextForm(), err)
+		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
 	}
 	if object.ID(got) != id {
-		return fmt.Errorf("object %s: content id does not verify", id.TextForm())
+		return 0, fmt.Errorf("object %s: content id does not verify", id.TextForm())
 	}
-	return nil
+	return int64(oh.StoredLen), nil
 }
 
 // StreamFiles resolves the FEC stream's file paths and sizes for one run
@@ -261,15 +272,9 @@ func verifyOneObject(path string, id object.ID, offset, storedLen uint64, compre
 //
 // The Files table stores no file name. A fixed-name row (INDEX, DISC,
 // README.txt, FORMAT.txt, decoder.py, REFS, DISCS) is found by its role.
-// An object row (role 13) is found through the Objects table's
-// file_index field, which names that object's own Files row directly;
-// this holds even when the object's bytes are damaged, since it never
-// depends on hashing the file's current, possibly-corrupt content. A
-// snapobj row (role 9) carries no such field in this version, so it is
-// found by sorting the candidate files by their own name, the same
-// content id order Build used to order those rows, and matching that
-// order position by position against the run's consecutive rows of that
-// role.
+// An object row (role 13) pairs by position with the Objects table: the
+// j-th role 13 row describes the file of Objects row j, whose id and
+// kind give the path.
 func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *format.Index, err error) {
 	return StreamFilesWithCache(base, runDir, NewNameCache())
 }
@@ -286,43 +291,19 @@ func StreamFilesWithCache(base, runDir string, cache *NameCache) (paths []string
 		return nil, nil, nil, err
 	}
 
-	catalogDir := cache.Join(runDir, "catalog")
-	snapobjPaths, err := idSortedFiles(cache.Join(catalogDir, "snapobj"))
+	objectPaths, err := ObjectPaths(base, &decoded, cache)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	objectsDir := cache.Join(base, "objects")
-	snapshotsDir := cache.Join(base, "snapshots")
-	objectPathByFileIndex := make(map[int]string, len(decoded.Objects))
-	for _, row := range decoded.Objects {
-		id := object.ID(row.ContentID)
-		var p string
-		if row.Kind == format.ObjectKindSnapshot {
-			p = filepath.Join(snapshotsDir, id.TextForm())
-		} else {
-			p = filepath.Join(objectsDir, id.FanoutByte(), id.TextForm())
-		}
-		objectPathByFileIndex[int(row.FileIndex)] = p
-	}
-
-	snapIdx := 0
-	for i, row := range decoded.Files {
+	objIdx := 0
+	for _, row := range decoded.Files {
 		var path string
 		var inStream bool
 		switch row.Role {
-		case format.FileRoleSnapobj:
-			if snapIdx >= len(snapobjPaths) {
-				return nil, nil, nil, fmt.Errorf("fewer snapobj files than INDEX rows")
-			}
-			path, inStream = snapobjPaths[snapIdx], true
-			snapIdx++
 		case format.FileRoleObject:
-			p, ok := objectPathByFileIndex[i]
-			if !ok {
-				return nil, nil, nil, fmt.Errorf("no Objects row names file_index %d", i)
-			}
-			path, inStream = p, true
+			path, inStream = objectPaths[objIdx], true
+			objIdx++
 		default:
 			path, inStream = filesRowPath(base, runDir, row.Role, cache)
 		}
@@ -363,11 +344,6 @@ func verifyFEC(base, runDir string, prog *progress.Reporter, cache *NameCache) e
 		return err
 	}
 
-	runBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
-	if err != nil {
-		return err
-	}
-
 	parityDir := cache.Join(runDir, "parity")
 	parityPaths := make([]string, fec.M)
 	for j := range fec.M {
@@ -375,13 +351,13 @@ func verifyFEC(base, runDir string, prog *progress.Reporter, cache *NameCache) e
 		parityPaths[j] = filepath.Join(parityDir, cache.Resolve(parityDir, name))
 	}
 	checksumPath := filepath.Join(runDir, cache.Resolve(runDir, "checksum.bin"))
-	return compareFEC(sources, layout, runBuf, checksumPath, parityPaths, prog)
+	return compareFEC(sources, layout, checksumPath, parityPaths, prog)
 }
 
 // compareFEC recomputes the checksum column and the m parity files over
 // sources and compares each stripe against the checksum and parity files
 // already on disk, one stripe at a time.
-func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy []byte, checksumPath string, parityPaths []string, prog *progress.Reporter) error {
+func compareFEC(sources []streamSource, layout *fec.StreamLayout, checksumPath string, parityPaths []string, prog *progress.Reporter) error {
 	codec, err := fec.NewCodec(fec.K, fec.M)
 	if err != nil {
 		return err
@@ -412,13 +388,6 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 		}
 		defer func() { _ = f.Close() }()
 		parityFiles[j] = f
-		headerBuf := make([]byte, RunFileLen)
-		if _, err := io.ReadFull(f, headerBuf); err != nil {
-			return fmt.Errorf("parity column %d: %w", j, err)
-		}
-		if !bytes.Equal(headerBuf, runHeaderCopy) {
-			return fmt.Errorf("parity column %d header does not match RUN.bin", j)
-		}
 	}
 
 	data := make([][]byte, fec.K)
@@ -467,40 +436,10 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, runHeaderCopy 
 	return nil
 }
 
-// idSortedFiles lists the regular files directly under dir and returns
-// their paths sorted by their own file name ascending: for
-// catalog/snapobj, that name is the snapshot object's content id text
-// form, whose hex digits sort in the same order as the id's own bytes.
-// This matches Build and Pack's snapObjOrder, which sorts those rows by
-// content id, not by the file's own bytes. A missing dir is not an
-// error; it yields no files.
-func idSortedFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	paths := make([]string, len(names))
-	for i, name := range names {
-		paths[i] = filepath.Join(dir, name)
-	}
-	return paths, nil
-}
-
 // filesRowPath returns the path of a fixed-name INDEX Files row, given
 // its role, and whether that role's rows enter the FEC stream. A role
 // this function does not list is either outside the stream (RUN, RUN2,
-// checksum, parity) or resolved by the caller instead (snapobj, object).
+// checksum, parity) or resolved by the caller instead (an object row).
 func filesRowPath(base, runDir string, role uint8, cache *NameCache) (string, bool) {
 	switch role {
 	case format.FileRoleIndex:

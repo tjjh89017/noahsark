@@ -13,7 +13,6 @@ func TestMagicValues(t *testing.T) {
 		{"BLOB", MagicBlob, "BLOB\x00\x00\x00\x00"},
 		{"TREE", MagicTree, "TREE\x00\x00\x00\x00"},
 		{"SNAPSHOT", MagicSnapshot, "SNAPSHOT"},
-		{"BUNDLE", MagicBundle, "BUNDLE\x00\x00"},
 		{"DISC", MagicDisc, "DISC\x00\x00\x00\x00"},
 		{"RUN", MagicRun, "RUN\x00\x00\x00\x00\x00"},
 		{"INDEX", MagicIndex, "INDEX\x00\x00\x00"},

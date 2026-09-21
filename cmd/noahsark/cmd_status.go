@@ -18,7 +18,6 @@ type discSummary struct {
 	Seq           uint64 `json:"seq"`
 	Label         string `json:"label"`
 	CapacityBytes uint64 `json:"capacity_bytes"`
-	UsedBytes     uint64 `json:"used_bytes"`
 	OnDiscObjects int    `json:"on_disc_objects"`
 	PackedObjects int    `json:"packed_objects"`
 	BurnedObjects int    `json:"burned_objects"`
@@ -193,16 +192,11 @@ func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log, minCopies int) 
 	for _, key := range order {
 		discRows := byUUID[key]
 		newest := discRows[len(discRows)-1]
-		var usedSectors uint64
-		for _, r := range discRows {
-			usedSectors += r.UsedSectors
-		}
 		discs = append(discs, discSummary{
 			UUID:              key,
 			Seq:               newest.DiscSeq,
 			Label:             labelText(newest.Label[:newest.LabelLen]),
-			CapacityBytes:     newest.CapacityForcedSectors * image.SectorSize,
-			UsedBytes:         usedSectors * image.SectorSize,
+			CapacityBytes:     newest.CapacitySectors * image.SectorSize,
 			OnDiscObjects:     onDiscByDisc[newest.DiscUUID],
 			PackedObjects:     packedByDisc[newest.DiscUUID],
 			BurnedObjects:     burnedByDisc[newest.DiscUUID],

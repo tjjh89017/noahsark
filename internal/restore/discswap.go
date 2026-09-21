@@ -258,8 +258,7 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 	if err != nil {
 		return fmt.Errorf("blob %s: not held by the cache; disc-swap restore needs every blob cached: %w", blobID.TextForm(), err)
 	}
-	entries := append([]format.BlobEntry(nil), blob.Entries...)
-	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
+	entries := placeChunks(blob.Entries)
 
 	if !known {
 		if !a.wp.overwrite {
@@ -279,7 +278,7 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 		a.pending[dest] = pf
 	}
 
-	var wanted []format.BlobEntry
+	var wanted []placedChunk
 	for _, be := range entries {
 		if d.Has(object.ID(be.ContentID)) {
 			wanted = append(wanted, be)
@@ -308,7 +307,7 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 // and every chunk it already holds is taken out of the count, whatever
 // disc that chunk came from. A later walk therefore finishes the file
 // even when the restore never asks for that disc again.
-func (a *Assembler) register(part string, entries []format.BlobEntry) *pendingFile {
+func (a *Assembler) register(part string, entries []placedChunk) *pendingFile {
 	f, err := os.Open(part)
 	if err != nil {
 		return &pendingFile{remaining: len(entries)}
@@ -327,7 +326,7 @@ func (a *Assembler) register(part string, entries []format.BlobEntry) *pendingFi
 // chunk of this disc into it at the chunk's own offset. A chunk whose
 // bytes are already in the part file, from a run that was killed, is
 // checked against its content id and skipped.
-func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, wanted []format.BlobEntry, d DiscChunks, prog *progress.Reporter) error {
+func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, wanted []placedChunk, d DiscChunks, prog *progress.Reporter) error {
 	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
 		return err
@@ -349,7 +348,7 @@ func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, 
 		if uint64(len(payload)) != be.Length {
 			return fmt.Errorf("chunk %s: length %d, blob entry says %d", id.TextForm(), len(payload), be.Length)
 		}
-		if _, err := f.WriteAt(payload, int64(be.FileOffset)); err != nil {
+		if _, err := f.WriteAt(payload, int64(be.Offset)); err != nil {
 			return err
 		}
 		prog.Add(int64(len(payload)))
@@ -360,12 +359,12 @@ func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, 
 
 // chunkInPlace reports whether f already holds be's own bytes at be's
 // offset, by the same content id check a restore uses everywhere else.
-func (a *Assembler) chunkInPlace(f *os.File, be format.BlobEntry) bool {
+func (a *Assembler) chunkInPlace(f *os.File, be placedChunk) bool {
 	if uint64(cap(a.chunkBuf)) < be.Length {
 		a.chunkBuf = make([]byte, be.Length)
 	}
 	buf := a.chunkBuf[:be.Length]
-	if _, err := f.ReadAt(buf, int64(be.FileOffset)); err != nil {
+	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
 		return false
 	}
 	return object.ComputeID(buf) == object.ID(be.ContentID)
@@ -462,7 +461,7 @@ func (a *Assembler) Report() Report { return a.wp.report }
 // way applyMetadata leaves a file this restore wrote itself, or its
 // bytes hash to the same chunk ids entries names, checked straight from
 // dest with no disc access needed.
-func fileAlreadyRestored(dest string, fi os.FileInfo, e format.TreeEntry, entries []format.BlobEntry) bool {
+func fileAlreadyRestored(dest string, fi os.FileInfo, e format.TreeEntry, entries []placedChunk) bool {
 	if uint64(fi.Size()) != e.Size {
 		return false
 	}
@@ -485,7 +484,7 @@ func statMtime(fi os.FileInfo) (sec, nsec int64) {
 // contentMatches reports whether dest's bytes, split at entries' own
 // offsets and lengths, hash to the content id each entry names. It reads
 // dest, never a disc, so a resumed check never needs the drive back.
-func contentMatches(dest string, entries []format.BlobEntry) bool {
+func contentMatches(dest string, entries []placedChunk) bool {
 	f, err := os.Open(dest)
 	if err != nil {
 		return false
@@ -498,7 +497,7 @@ func contentMatches(dest string, entries []format.BlobEntry) bool {
 			buf = make([]byte, be.Length)
 		}
 		chunk := buf[:be.Length]
-		if _, err := f.ReadAt(chunk, int64(be.FileOffset)); err != nil {
+		if _, err := f.ReadAt(chunk, int64(be.Offset)); err != nil {
 			return false
 		}
 		if object.ComputeID(chunk) != object.ID(be.ContentID) {

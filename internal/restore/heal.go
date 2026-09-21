@@ -174,7 +174,7 @@ func healStripe(
 	parityBlocks := make([][]byte, fec.M)
 	for j := range fec.M {
 		buf := make([]byte, fec.BlockSize)
-		if _, err := parityFiles[j].ReadAt(buf, int64(1+stripe)*fec.BlockSize); err != nil {
+		if _, err := parityFiles[j].ReadAt(buf, int64(stripe)*fec.BlockSize); err != nil {
 			return nil, fmt.Errorf("stripe %d: parity column %d: %w", stripe, j, err)
 		}
 		parityBlocks[j] = buf
@@ -240,7 +240,7 @@ func healStripe(
 		if bytes.Equal(parityBlocks[j], recParity[j]) {
 			continue
 		}
-		if _, err := parityFiles[j].WriteAt(recParity[j], int64(1+stripe)*fec.BlockSize); err != nil {
+		if _, err := parityFiles[j].WriteAt(recParity[j], int64(stripe)*fec.BlockSize); err != nil {
 			return nil, fmt.Errorf("stripe %d: writing parity column %d: %w", stripe, j, err)
 		}
 		report.ParityColumns = append(report.ParityColumns, j)

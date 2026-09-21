@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
@@ -111,8 +110,8 @@ func TestBuildAndRead(t *testing.T) {
 	if rr.ObjectsVerified != result.ObjectCount {
 		t.Fatalf("read verified %d objects, build wrote %d", rr.ObjectsVerified, result.ObjectCount)
 	}
-	if rr.RunCopies != fec.M+2 {
-		t.Fatalf("expected %d run header copies, got %d", fec.M+2, rr.RunCopies)
+	if rr.RunCopies != 2 {
+		t.Fatalf("expected 2 run header copies, got %d", rr.RunCopies)
 	}
 	if rr.Run.RunSeq != 1 || rr.Run.DiscSeq != 0 {
 		t.Fatalf("unexpected run identity: %+v", rr.Run)

@@ -9,13 +9,11 @@ func testChunk() Chunk {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicChunk,
 			VersionMajor: 1,
-			VersionMinor: 0,
 			HeaderLen:    chunkFixedLen,
 		},
 		ObjectHeader: ObjectHeader{
 			Kind:        ObjectKindChunk,
 			HashAlgo:    HashAlgoSHA256,
-			DigestLen:   32,
 			Compression: CompressionNone,
 			PayloadLen:  uint64(len(payload)),
 			StoredLen:   uint64(len(payload)),
@@ -50,7 +48,7 @@ func TestChunkGolden(t *testing.T) {
 	if string(got.Payload) != string(c.Payload) {
 		t.Fatalf("payload mismatch: got %q, want %q", got.Payload, c.Payload)
 	}
-	if got.ObjectHeader.ReservedU8 != 0 || got.ObjectHeader.ReservedU16 != 0 || got.ObjectHeader.ReservedU32 != 0 {
+	if got.ObjectHeader.ReservedU8 != 0 || got.ObjectHeader.ReservedA != ([4]byte{}) || got.ObjectHeader.ReservedU32 != 0 {
 		t.Fatalf("reserved field not zero: %+v", got.ObjectHeader)
 	}
 }

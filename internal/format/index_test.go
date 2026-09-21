@@ -1,9 +1,6 @@
 package format
 
-import (
-	"encoding/binary"
-	"testing"
-)
+import "testing"
 
 func fileHashN(n int) [32]byte {
 	var h [32]byte
@@ -22,33 +19,39 @@ func contentIDN(n int) [32]byte {
 }
 
 func testIndex() Index {
+	files := []IndexFileRecord{
+		{ByteLen: 8192, Role: FileRoleIndex},
+		{ByteLen: 512, Role: FileRoleRun},
+		{FileHash: fileHashN(1), ByteLen: 2048, Role: FileRoleDisc},
+		{FileHash: fileHashN(2), ByteLen: 5624, Role: FileRoleRefs},
+		{FileHash: fileHashN(3), ByteLen: 408, Role: FileRoleDiscs},
+		{ByteLen: 4160, Role: FileRoleObject},
+		{ByteLen: 2112, Role: FileRoleObject},
+		{ByteLen: 328, Role: FileRoleObject},
+		{ByteLen: 240, Role: FileRoleObject},
+		{ByteLen: 512, Role: FileRoleRun2},
+	}
 	return Index{
 		Header: CommonHeader{
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicIndex,
 			VersionMajor: 1,
-			VersionMinor: 0,
 			HeaderLen:    IndexHeaderLen,
 		},
-		RunSeq:           7,
-		FileCount:        2,
-		ObjectCount:      2,
-		PrereqCount:      1,
-		FileRecordSize:   IndexFileRecordLen,
-		ObjectRecordSize: IndexObjectRecordLen,
-		PrereqRecordSize: IndexPrereqRecordLen,
-		HashAlgo:         HashAlgoSHA256,
-		DigestLen:        32,
-		Files: []IndexFileRecord{
-			{FileHash: fileHashN(1), ByteLen: 8192, Role: FileRoleIndex},
-			{FileHash: fileHashN(2), ByteLen: 512, Role: FileRoleRun},
-		},
+		RunSeq:      7,
+		FileCount:   uint32(len(files)),
+		ObjectCount: 4,
+		PrereqCount: 2,
+		Files:       files,
 		Objects: []IndexObjectRecord{
-			{ContentID: contentIDN(1), FileIndex: 0, Offset: 0, StoredLen: 4096, PayloadLen: 4096, Kind: ObjectKindChunk, Compression: CompressionZstd, Flags: 0},
-			{ContentID: contentIDN(2), FileIndex: 1, Offset: 0, StoredLen: 2048, PayloadLen: 2048, Kind: ObjectKindTree, Compression: CompressionNone, Flags: 2},
+			{ContentID: contentIDN(1), Kind: ObjectKindChunk},
+			{ContentID: contentIDN(2), Kind: ObjectKindBlob},
+			{ContentID: contentIDN(3), Kind: ObjectKindTree},
+			{ContentID: contentIDN(4), Kind: ObjectKindSnapshot},
 		},
 		Prereqs: []IndexPrereqRecord{
-			{ContentID: contentIDN(3), RunSeq: 99},
+			{ContentID: contentIDN(5), DiscUUID: discUUIDN(1)},
+			{ContentID: contentIDN(6), DiscUUID: discUUIDN(2)},
 		},
 	}
 }
@@ -63,13 +66,16 @@ func TestIndexGolden(t *testing.T) {
 
 	golden := readGolden(t, "index.golden")
 	var got Index
-	if _, err := got.Decode(golden); err != nil {
+	n, err := got.Decode(golden)
+	if err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if n != len(golden) {
+		t.Fatalf("decode consumed %d bytes, want %d", n, len(golden))
 	}
 
 	if got.RunSeq != idx.RunSeq || got.FileCount != idx.FileCount ||
-		got.ObjectCount != idx.ObjectCount || got.PrereqCount != idx.PrereqCount ||
-		got.ContainerLen != uint64(len(golden)) {
+		got.ObjectCount != idx.ObjectCount || got.PrereqCount != idx.PrereqCount {
 		t.Fatalf("decoded fixed fields mismatch: got %+v", got)
 	}
 	for i := range idx.Files {
@@ -88,8 +94,8 @@ func TestIndexGolden(t *testing.T) {
 		}
 	}
 
-	if got.Reserved != ([4]byte{}) {
-		t.Errorf("reserved not zero: %x", got.Reserved)
+	if got.ReservedU32 != 0 {
+		t.Errorf("reserved_u32 not zero: %d", got.ReservedU32)
 	}
 	for i, f := range got.Files {
 		if f.Reserved != ([7]byte{}) {
@@ -97,53 +103,35 @@ func TestIndexGolden(t *testing.T) {
 		}
 	}
 	for i, o := range got.Objects {
-		if o.Reserved1 != 0 || o.Reserved2 != 0 {
-			t.Errorf("object row %d reserved not zero: %d %d", i, o.Reserved1, o.Reserved2)
+		if o.Reserved != ([7]byte{}) {
+			t.Errorf("object row %d reserved not zero: %x", i, o.Reserved)
 		}
 	}
 }
 
-func TestIndexDecodeIgnoresReservedByte(t *testing.T) {
-	golden := readGolden(t, "index.golden")
-	buf := append([]byte(nil), golden...)
-	buf[60] = 0xFF
-	binary.LittleEndian.PutUint32(buf[76:80], crc32c(buf[0:76]))
-
-	var got Index
-	if _, err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved byte: %v", err)
-	}
+// TestIndexObjectRowsPairWithRole13Rows checks the pairing that replaced
+// the stored file index: the j-th role 13 Files row describes the file of
+// Objects row j.
+func TestIndexObjectRowsPairWithRole13Rows(t *testing.T) {
 	idx := testIndex()
-	if got.RunSeq != idx.RunSeq || got.FileCount != idx.FileCount ||
-		got.ObjectCount != idx.ObjectCount || got.PrereqCount != idx.PrereqCount {
-		t.Fatalf("decoded fixed fields mismatch: got %+v", got)
+	var role13 []IndexFileRecord
+	for _, f := range idx.Files {
+		if f.Role == FileRoleObject {
+			role13 = append(role13, f)
+		}
 	}
-	if got.Reserved[0] != 0xFF {
-		t.Fatalf("reserved byte not preserved: %x", got.Reserved)
+	if len(role13) != int(idx.ObjectCount) {
+		t.Fatalf("role 13 rows: got %d, want object_count %d", len(role13), idx.ObjectCount)
 	}
-}
-
-func TestIndexDecodeIgnoresReservedRecordFields(t *testing.T) {
-	golden := readGolden(t, "index.golden")
-	buf := append([]byte(nil), golden...)
-	fileRow := IndexHeaderLen
-	buf[fileRow+41] = 0xFF // a Files row's reserved byte
-	objectRow := IndexHeaderLen + 2*IndexFileRecordLen
-	binary.LittleEndian.PutUint32(buf[objectRow+36:objectRow+40], 0xFFFFFFFF) // an Objects row's reserved1
-
-	total := len(buf)
-	binary.LittleEndian.PutUint32(buf[72:76], crc32c(buf[IndexHeaderLen:total]))
-	binary.LittleEndian.PutUint32(buf[76:80], crc32c(buf[0:76]))
-
-	var got Index
-	if _, err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved record fields: %v", err)
+	for i, f := range role13 {
+		if f.FileHash != ([32]byte{}) {
+			t.Errorf("role 13 row %d carries a file_hash: %x", i, f.FileHash)
+		}
 	}
-	if got.Files[0].Reserved[0] != 0xFF {
-		t.Fatalf("file row reserved byte not preserved: %x", got.Files[0].Reserved)
-	}
-	if got.Objects[0].Reserved1 != 0xFFFFFFFF {
-		t.Fatalf("object row reserved1 not preserved: %x", got.Objects[0].Reserved1)
+	for i := 1; i < len(idx.Objects); i++ {
+		if string(idx.Objects[i-1].ContentID[:]) >= string(idx.Objects[i].ContentID[:]) {
+			t.Fatalf("Objects rows are not in ascending content id order at %d", i)
+		}
 	}
 }
 
@@ -168,12 +156,13 @@ func TestIndexDecodeRejectsBadMagic(t *testing.T) {
 	}
 }
 
-func TestIndexDecodeRejectsBadCRC(t *testing.T) {
+func TestIndexDecodeRejectsBadObjectKind(t *testing.T) {
 	golden := readGolden(t, "index.golden")
 	buf := append([]byte(nil), golden...)
-	buf[len(buf)-1] ^= 0xFF
+	row := IndexHeaderLen + 10*IndexFileRecordLen
+	buf[row+32] = 9
 	var idx Index
-	if _, err := idx.Decode(buf); err != ErrCRC {
-		t.Fatalf("decode bad body crc: got %v, want %v", err, ErrCRC)
+	if _, err := idx.Decode(buf); err != ErrObjectKind {
+		t.Fatalf("decode bad kind: got %v, want %v", err, ErrObjectKind)
 	}
 }

@@ -13,8 +13,10 @@ const treeBodyFixedLen = 8
 // tree body, before the entries.
 const treeFixedLen = CommonHeaderLen + ObjectHeaderLen + treeBodyFixedLen
 
-// TreeEntryHeaderLen is the fixed header length of one tree entry.
-const TreeEntryHeaderLen = 112
+// TreeEntryHeaderLen is the fixed header length of one tree entry. The
+// fixed header stores no offset of an area; every area sits at a derived
+// place.
+const TreeEntryHeaderLen = 72
 
 // Entry type values of TreeEntry.EntryType.
 const (
@@ -29,13 +31,10 @@ const (
 
 // Entry flag bits of TreeEntry.EntryFlags.
 const (
-	EntryFlagHardlinkMember uint8 = 1 << 0
-	EntryFlagAtimeAbsent    uint8 = 1 << 1
-	EntryFlagCtimeAbsent    uint8 = 1 << 2
-	EntryFlagBtimeAbsent    uint8 = 1 << 3
-	EntryFlagSparse         uint8 = 1 << 4
-	EntryFlagMetadataPart   uint8 = 1 << 5
-	EntryFlagUnstable       uint8 = 1 << 7
+	EntryFlagCtimeAbsent  uint8 = 1 << 2
+	EntryFlagSparse       uint8 = 1 << 4
+	EntryFlagMetadataPart uint8 = 1 << 5
+	EntryFlagUnstable     uint8 = 1 << 7
 )
 
 // Tree is one directory, with one entry per child.
@@ -50,24 +49,20 @@ type Tree struct {
 // TreeEntry is one child of a tree, its fixed header, name, content
 // reference, and extension TLVs.
 type TreeEntry struct {
-	EntryType     uint8
-	EntryFlags    uint8
-	Size          uint64
-	HardlinkGroup uint64
-	MtimeSec      int64
-	AtimeSec      int64
-	CtimeSec      int64
-	BtimeSec      int64
-	MtimeNsec     uint32
-	AtimeNsec     uint32
-	CtimeNsec     uint32
-	BtimeNsec     uint32
-	Mode          uint32
-	UID           uint32
-	GID           uint32
-	RdevMajor     uint32
-	RdevMinor     uint32
-	Name          []byte
+	EntryType   uint8
+	EntryFlags  uint8
+	Size        uint64
+	MtimeSec    int64
+	CtimeSec    int64
+	MtimeNsec   uint32
+	CtimeNsec   uint32
+	Mode        uint32
+	UID         uint32
+	GID         uint32
+	RdevMajor   uint32
+	RdevMinor   uint32
+	ReservedU32 uint32
+	Name        []byte
 	// ContentID holds the blob id (regular file) or tree id (directory).
 	// It is unused for every other entry type.
 	ContentID [32]byte
@@ -94,22 +89,24 @@ func (e *TreeEntry) sortKey() []byte {
 	return e.Name
 }
 
-// EncodedLen is the entry's length on the medium, the fixed header, the
-// name, the content reference area, and the TLV area, each 8-byte
-// aligned, rounded up to a multiple of 8.
-func (e *TreeEntry) EncodedLen() int {
-	pos := TreeEntryHeaderLen + len(e.Name)
-	if cl := e.contentLen(); cl > 0 {
-		pos = align8(pos) + cl
-	}
-	extLen := 0
+// areas returns the derived start of the content area, the start of the
+// TLV area, the TLV area length, and the total entry length.
+func (e *TreeEntry) areas() (contentOff, extOff, extLen, entryLen int) {
+	contentOff = align8(TreeEntryHeaderLen + len(e.Name))
 	for i := range e.TLVs {
 		extLen += e.TLVs[i].EncodedLen()
 	}
-	if extLen > 0 {
-		pos = align8(pos) + extLen
-	}
-	return align8(pos)
+	extOff = align8(contentOff + e.contentLen())
+	entryLen = align8(extOff + extLen)
+	return contentOff, extOff, extLen, entryLen
+}
+
+// EncodedLen is the entry's length on the medium: the fixed header, the
+// name, the content reference area, and the TLV area, each at its derived
+// place, rounded up to a multiple of 8.
+func (e *TreeEntry) EncodedLen() int {
+	_, _, _, entryLen := e.areas()
+	return entryLen
 }
 
 // Encode writes e into buf and returns the number of bytes written,
@@ -120,77 +117,52 @@ func (e *TreeEntry) Encode(buf []byte) (int, error) {
 		return 0, ErrBadField
 	}
 	contentLen := e.contentLen()
-	extLen := 0
-	for i := range e.TLVs {
-		extLen += e.TLVs[i].EncodedLen()
-	}
-
-	pos := TreeEntryHeaderLen + nameLen
-	contentOff := 0
-	if contentLen > 0 {
-		contentOff = align8(pos)
-		pos = contentOff + contentLen
-	}
-	extOff := 0
-	if extLen > 0 {
-		extOff = align8(pos)
-		pos = extOff + extLen
-	}
-	entryLen := align8(pos)
+	contentOff, extOff, extLen, entryLen := e.areas()
 	if entryLen > len(buf) {
 		return 0, ErrShort
 	}
-
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(entryLen))
-	binary.LittleEndian.PutUint16(buf[4:6], TreeEntryHeaderLen)
-	buf[6] = e.EntryType
-	buf[7] = e.EntryFlags
-	binary.LittleEndian.PutUint64(buf[8:16], e.Size)
-	binary.LittleEndian.PutUint64(buf[16:24], e.HardlinkGroup)
-	binary.LittleEndian.PutUint64(buf[24:32], uint64(e.MtimeSec))
-	binary.LittleEndian.PutUint64(buf[32:40], uint64(e.AtimeSec))
-	binary.LittleEndian.PutUint64(buf[40:48], uint64(e.CtimeSec))
-	binary.LittleEndian.PutUint64(buf[48:56], uint64(e.BtimeSec))
-	binary.LittleEndian.PutUint32(buf[56:60], e.MtimeNsec)
-	binary.LittleEndian.PutUint32(buf[60:64], e.AtimeNsec)
-	binary.LittleEndian.PutUint32(buf[64:68], e.CtimeNsec)
-	binary.LittleEndian.PutUint32(buf[68:72], e.BtimeNsec)
-	binary.LittleEndian.PutUint32(buf[72:76], e.Mode)
-	binary.LittleEndian.PutUint32(buf[76:80], e.UID)
-	binary.LittleEndian.PutUint32(buf[80:84], e.GID)
-	binary.LittleEndian.PutUint32(buf[84:88], e.RdevMajor)
-	binary.LittleEndian.PutUint32(buf[88:92], e.RdevMinor)
-	binary.LittleEndian.PutUint32(buf[92:96], uint32(contentOff))
-	binary.LittleEndian.PutUint32(buf[96:100], uint32(contentLen))
-	binary.LittleEndian.PutUint32(buf[100:104], uint32(extOff))
-	binary.LittleEndian.PutUint32(buf[104:108], uint32(extLen))
-	binary.LittleEndian.PutUint16(buf[108:110], TreeEntryHeaderLen)
-	binary.LittleEndian.PutUint16(buf[110:112], uint16(nameLen))
-
-	for i := TreeEntryHeaderLen; i < entryLen; i++ {
+	for i := range buf[:entryLen] {
 		buf[i] = 0
 	}
+
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(entryLen))
+	buf[4] = e.EntryType
+	buf[5] = e.EntryFlags
+	binary.LittleEndian.PutUint16(buf[6:8], uint16(nameLen))
+	binary.LittleEndian.PutUint64(buf[8:16], e.Size)
+	binary.LittleEndian.PutUint64(buf[16:24], uint64(e.MtimeSec))
+	binary.LittleEndian.PutUint64(buf[24:32], uint64(e.CtimeSec))
+	binary.LittleEndian.PutUint32(buf[32:36], e.MtimeNsec)
+	binary.LittleEndian.PutUint32(buf[36:40], e.CtimeNsec)
+	binary.LittleEndian.PutUint32(buf[40:44], e.Mode)
+	binary.LittleEndian.PutUint32(buf[44:48], e.UID)
+	binary.LittleEndian.PutUint32(buf[48:52], e.GID)
+	binary.LittleEndian.PutUint32(buf[52:56], e.RdevMajor)
+	binary.LittleEndian.PutUint32(buf[56:60], e.RdevMinor)
+	binary.LittleEndian.PutUint32(buf[60:64], uint32(contentLen))
+	binary.LittleEndian.PutUint32(buf[64:68], uint32(extLen))
+	binary.LittleEndian.PutUint32(buf[68:72], e.ReservedU32)
+
 	copy(buf[TreeEntryHeaderLen:TreeEntryHeaderLen+nameLen], e.Name)
 	if contentLen > 0 {
 		copy(buf[contentOff:contentOff+contentLen], e.ContentID[:])
 	}
-	if extLen > 0 {
-		p := extOff
-		for i := range e.TLVs {
-			n, err := e.TLVs[i].Encode(buf[p:])
-			if err != nil {
-				return 0, err
-			}
-			p += n
+	p := extOff
+	for i := range e.TLVs {
+		n, err := e.TLVs[i].Encode(buf[p:])
+		if err != nil {
+			return 0, err
 		}
+		p += n
 	}
 	return entryLen, nil
 }
 
 // Decode reads one TreeEntry from buf and returns the number of bytes
-// read. It rejects a short buffer, an invalid name, an unknown critical
-// TLV, and a TLV area out of canonical order. It does not interpret a
-// padding byte between the entry's variable areas.
+// read. It rejects a short buffer, an invalid name, a content_len the
+// entry type forbids, an entry_len that differs from the derived value,
+// an unknown critical TLV, and a TLV area out of canonical order. It does
+// not interpret a padding byte between the entry's variable areas.
 func (e *TreeEntry) Decode(buf []byte) (int, error) {
 	if len(buf) < TreeEntryHeaderLen {
 		return 0, ErrShort
@@ -199,60 +171,57 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 	if entryLen < TreeEntryHeaderLen || entryLen%8 != 0 || entryLen > len(buf) {
 		return 0, ErrBadField
 	}
-	headerLen := int(binary.LittleEndian.Uint16(buf[4:6]))
-	if headerLen < TreeEntryHeaderLen {
-		return 0, ErrBadField
-	}
-	entryType := buf[6]
+	entryType := buf[4]
 	if entryType < EntryTypeRegular || entryType > EntryTypeSocket {
 		return 0, ErrBadField
 	}
-	entryFlags := buf[7]
+	entryFlags := buf[5]
+	nameLen := int(binary.LittleEndian.Uint16(buf[6:8]))
 	size := binary.LittleEndian.Uint64(buf[8:16])
-	hardlinkGroup := binary.LittleEndian.Uint64(buf[16:24])
-	mtimeSec := int64(binary.LittleEndian.Uint64(buf[24:32]))
-	atimeSec := int64(binary.LittleEndian.Uint64(buf[32:40]))
-	ctimeSec := int64(binary.LittleEndian.Uint64(buf[40:48]))
-	btimeSec := int64(binary.LittleEndian.Uint64(buf[48:56]))
-	mtimeNsec := binary.LittleEndian.Uint32(buf[56:60])
-	atimeNsec := binary.LittleEndian.Uint32(buf[60:64])
-	ctimeNsec := binary.LittleEndian.Uint32(buf[64:68])
-	btimeNsec := binary.LittleEndian.Uint32(buf[68:72])
-	mode := binary.LittleEndian.Uint32(buf[72:76])
-	uid := binary.LittleEndian.Uint32(buf[76:80])
-	gid := binary.LittleEndian.Uint32(buf[80:84])
-	rdevMajor := binary.LittleEndian.Uint32(buf[84:88])
-	rdevMinor := binary.LittleEndian.Uint32(buf[88:92])
-	contentOff := int(binary.LittleEndian.Uint32(buf[92:96]))
-	contentLen := int(binary.LittleEndian.Uint32(buf[96:100]))
-	extOff := int(binary.LittleEndian.Uint32(buf[100:104]))
-	extLen := int(binary.LittleEndian.Uint32(buf[104:108]))
-	nameOff := int(binary.LittleEndian.Uint16(buf[108:110]))
-	nameLen := int(binary.LittleEndian.Uint16(buf[110:112]))
+	mtimeSec := int64(binary.LittleEndian.Uint64(buf[16:24]))
+	ctimeSec := int64(binary.LittleEndian.Uint64(buf[24:32]))
+	mtimeNsec := binary.LittleEndian.Uint32(buf[32:36])
+	ctimeNsec := binary.LittleEndian.Uint32(buf[36:40])
+	mode := binary.LittleEndian.Uint32(buf[40:44])
+	uid := binary.LittleEndian.Uint32(buf[44:48])
+	gid := binary.LittleEndian.Uint32(buf[48:52])
+	rdevMajor := binary.LittleEndian.Uint32(buf[52:56])
+	rdevMinor := binary.LittleEndian.Uint32(buf[56:60])
+	contentLen := int(binary.LittleEndian.Uint32(buf[60:64]))
+	extLen := int(binary.LittleEndian.Uint32(buf[64:68]))
+	reservedU32 := binary.LittleEndian.Uint32(buf[68:72])
 
-	if nameLen < 1 || nameLen > 4095 || nameOff+nameLen > entryLen {
+	if nameLen < 1 || nameLen > 4095 || TreeEntryHeaderLen+nameLen > entryLen {
 		return 0, ErrBadField
 	}
-	name := append([]byte(nil), buf[nameOff:nameOff+nameLen]...)
+	if extLen%8 != 0 {
+		return 0, ErrBadField
+	}
+	wantContentLen := 0
+	if entryType == EntryTypeRegular || entryType == EntryTypeDirectory {
+		wantContentLen = 32
+	}
+	if contentLen != wantContentLen {
+		return 0, ErrBadField
+	}
+	contentOff := align8(TreeEntryHeaderLen + nameLen)
+	extOff := align8(contentOff + contentLen)
+	if align8(extOff+extLen) != entryLen {
+		return 0, ErrBadField
+	}
+
+	name := append([]byte(nil), buf[TreeEntryHeaderLen:TreeEntryHeaderLen+nameLen]...)
 	if err := validateEntryName(name); err != nil {
 		return 0, err
 	}
 
 	var contentID [32]byte
 	if contentLen > 0 {
-		if contentLen != 32 || contentOff+contentLen > entryLen {
-			return 0, ErrBadField
-		}
 		copy(contentID[:], buf[contentOff:contentOff+contentLen])
-	} else if contentOff != 0 {
-		return 0, ErrBadField
 	}
 
 	var tlvs []TLV
 	if extLen > 0 {
-		if extOff+extLen > entryLen {
-			return 0, ErrBadField
-		}
 		p := extOff
 		end := extOff + extLen
 		var prev *TLV
@@ -279,27 +248,21 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 			prev = &prevCopy
 			p += n
 		}
-	} else if extOff != 0 {
-		return 0, ErrBadField
 	}
 
 	e.EntryType = entryType
 	e.EntryFlags = entryFlags
 	e.Size = size
-	e.HardlinkGroup = hardlinkGroup
 	e.MtimeSec = mtimeSec
-	e.AtimeSec = atimeSec
 	e.CtimeSec = ctimeSec
-	e.BtimeSec = btimeSec
 	e.MtimeNsec = mtimeNsec
-	e.AtimeNsec = atimeNsec
 	e.CtimeNsec = ctimeNsec
-	e.BtimeNsec = btimeNsec
 	e.Mode = mode
 	e.UID = uid
 	e.GID = gid
 	e.RdevMajor = rdevMajor
 	e.RdevMinor = rdevMinor
+	e.ReservedU32 = reservedU32
 	e.Name = name
 	e.ContentID = contentID
 	e.TLVs = tlvs
@@ -362,6 +325,7 @@ func (t *Tree) Encode(buf []byte) (int, error) {
 	binary.LittleEndian.PutUint32(buf[off+4:off+8], t.ReservedU32)
 
 	crc := crc32c(buf[0:objectHeaderCRCOffset])
+	t.ObjectHeader.HeaderCRC32C = crc
 	binary.LittleEndian.PutUint32(buf[objectHeaderCRCOffset:objectHeaderCRCOffset+4], crc)
 
 	pos := treeFixedLen
@@ -377,8 +341,8 @@ func (t *Tree) Encode(buf []byte) (int, error) {
 
 // Decode reads a Tree from buf and returns the number of bytes read. It
 // rejects a short buffer, a magic_kind mismatch, a header_crc32c mismatch,
-// and tree entries not in ascending canonical order. It does not interpret
-// a reserved field.
+// a header_len below the fixed part this build knows, and tree entries not
+// in ascending canonical order. It does not interpret a reserved field.
 func (t *Tree) Decode(buf []byte) (int, error) {
 	if len(buf) < treeFixedLen {
 		return 0, ErrShort
@@ -389,6 +353,10 @@ func (t *Tree) Decode(buf []byte) (int, error) {
 	if t.Header.MagicKind != MagicTree {
 		return 0, ErrBadMagic
 	}
+	entriesOff, err := t.Header.fixedPartEnd(treeFixedLen)
+	if err != nil {
+		return 0, err
+	}
 	off := CommonHeaderLen
 	if err := t.ObjectHeader.Decode(buf[off : off+ObjectHeaderLen]); err != nil {
 		return 0, err
@@ -398,16 +366,13 @@ func (t *Tree) Decode(buf []byte) (int, error) {
 		return 0, ErrCRC
 	}
 
-	entryCount := binary.LittleEndian.Uint32(buf[off : off+4])
-	reservedU32 := binary.LittleEndian.Uint32(buf[off+4 : off+8])
+	t.EntryCount = binary.LittleEndian.Uint32(buf[off : off+4])
+	t.ReservedU32 = binary.LittleEndian.Uint32(buf[off+4 : off+8])
 
-	t.EntryCount = entryCount
-	t.ReservedU32 = reservedU32
-
-	pos := treeFixedLen
+	pos := entriesOff
 	t.Entries = nil
 	var prev *TreeEntry
-	for range entryCount {
+	for range t.EntryCount {
 		if pos >= len(buf) {
 			return 0, ErrShort
 		}

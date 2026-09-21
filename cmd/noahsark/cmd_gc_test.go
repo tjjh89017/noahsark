@@ -268,13 +268,13 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 	indexOfA := encodeGCIndex(t, sharedRunSeq, []format.IndexObjectRecord{
-		{ContentID: onDiscA, PayloadLen: 10, StoredLen: 10, Kind: format.ObjectKindChunk},
-		{ContentID: onDiscB, PayloadLen: 20, StoredLen: 20, Kind: format.ObjectKindChunk},
-	})
+		{ContentID: onDiscA, Kind: format.ObjectKindChunk},
+		{ContentID: onDiscB, Kind: format.ObjectKindChunk},
+	}, []uint64{74, 84})
 	if err := c.WriteDisc(discA, indexOfA, encodeGCRefs(t), encodeGCDiscs(t, discA, sharedRunSeq)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.WriteDisc(discB, encodeGCIndex(t, sharedRunSeq, nil), encodeGCRefs(t), encodeGCDiscs(t, discB, sharedRunSeq)); err != nil {
+	if err := c.WriteDisc(discB, encodeGCIndex(t, sharedRunSeq, nil, nil), encodeGCRefs(t), encodeGCDiscs(t, discB, sharedRunSeq)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,14 +292,18 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 }
 
 // encodeGCIndex builds a minimal, valid INDEX holding rows.
-func encodeGCIndex(t *testing.T, runSeq uint64, rows []format.IndexObjectRecord) []byte {
+func encodeGCIndex(t *testing.T, runSeq uint64, rows []format.IndexObjectRecord, byteLens []uint64) []byte {
 	t.Helper()
+	files := make([]format.IndexFileRecord, len(rows))
+	for i := range rows {
+		files[i] = format.IndexFileRecord{Role: format.FileRoleObject, ByteLen: byteLens[i]}
+	}
 	idx := &format.Index{
-		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1},
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex, VersionMajor: 1, HeaderLen: format.IndexHeaderLen},
 		RunSeq:      runSeq,
+		FileCount:   uint32(len(files)),
 		ObjectCount: uint32(len(rows)),
-		HashAlgo:    format.HashAlgoSHA256,
-		DigestLen:   32,
+		Files:       files,
 		Objects:     rows,
 	}
 	buf := make([]byte, idx.EncodedLen())
@@ -313,12 +317,9 @@ func encodeGCIndex(t *testing.T, runSeq uint64, rows []format.IndexObjectRecord)
 func encodeGCDiscs(t *testing.T, uuid [16]byte, runSeq uint64) []byte {
 	t.Helper()
 	discs := &format.DiscsTable{
-		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1},
-		HashAlgo:    format.HashAlgoSHA256,
-		DigestLen:   32,
+		Header:      format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs, VersionMajor: 1, HeaderLen: format.DiscsHeaderLen},
 		RecordCount: 1,
-		RecordSize:  format.DiscsRowLen,
-		Rows:        []format.DiscsRow{{RunSeq: runSeq, DiscUUID: uuid, RunStatus: 1, Health: 1}},
+		Rows:        []format.DiscsRow{{RunSeq: runSeq, DiscUUID: uuid}},
 	}
 	buf := make([]byte, format.DiscsHeaderLen+format.DiscsRowLen)
 	if _, err := discs.Encode(buf); err != nil {
@@ -331,10 +332,7 @@ func encodeGCDiscs(t *testing.T, uuid [16]byte, runSeq uint64) []byte {
 func encodeGCRefs(t *testing.T) []byte {
 	t.Helper()
 	refs := &format.RefsTable{
-		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1},
-		HashAlgo:   format.HashAlgoSHA256,
-		DigestLen:  32,
-		RecordSize: format.RefRecordLen,
+		Header: format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs, VersionMajor: 1, HeaderLen: format.RefsHeaderLen},
 	}
 	buf := make([]byte, format.RefsHeaderLen)
 	if _, err := refs.Encode(buf); err != nil {

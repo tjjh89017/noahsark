@@ -1,29 +1,31 @@
 package format
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+)
 
 const (
-	// RefsFixedBodyLen is the size of REFS's fixed body, after the common
-	// header and before the records.
-	RefsFixedBodyLen = 40
+	// TableFixedBodyLen is the size of the REFS and DISCS fixed body,
+	// after the common header and before the records.
+	TableFixedBodyLen = 24
 	// RefsHeaderLen is the common header plus the fixed body.
-	RefsHeaderLen = CommonHeaderLen + RefsFixedBodyLen
+	RefsHeaderLen = CommonHeaderLen + TableFixedBodyLen
 	// RefRecordLen is the size of one REFS record.
-	RefRecordLen = 96
+	RefRecordLen = 88
 	// RefNameLen is the size of a ref record's name field.
 	RefNameLen = 40
 )
 
-// RefRecord is a named pointer to a snapshot, one row of REFS, 96 bytes.
+// RefRecord is a named pointer to a snapshot, one row of REFS, 88 bytes.
+// A record stores no run number.
 type RefRecord struct {
-	SnapshotID [32]byte
-	TimeSec    int64
-	TimeNsec   uint32
-	NameLen    uint16
-	HashAlgo   HashAlgo
-	ReservedU8 uint8
-	Name       [RefNameLen]byte
-	RunSeq     uint64
+	SnapshotID  [32]byte
+	TimeSec     int64
+	TimeNsec    uint32
+	NameLen     uint16
+	ReservedU16 uint16
+	Name        [RefNameLen]byte
 }
 
 func (r *RefRecord) encode(buf []byte) {
@@ -31,10 +33,8 @@ func (r *RefRecord) encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[32:40], uint64(r.TimeSec))
 	binary.LittleEndian.PutUint32(buf[40:44], r.TimeNsec)
 	binary.LittleEndian.PutUint16(buf[44:46], r.NameLen)
-	buf[46] = byte(r.HashAlgo)
-	buf[47] = r.ReservedU8
+	binary.LittleEndian.PutUint16(buf[46:48], r.ReservedU16)
 	copy(buf[48:88], r.Name[:])
-	binary.LittleEndian.PutUint64(buf[88:96], r.RunSeq)
 }
 
 func (r *RefRecord) decode(buf []byte) {
@@ -42,25 +42,18 @@ func (r *RefRecord) decode(buf []byte) {
 	r.TimeSec = int64(binary.LittleEndian.Uint64(buf[32:40]))
 	r.TimeNsec = binary.LittleEndian.Uint32(buf[40:44])
 	r.NameLen = binary.LittleEndian.Uint16(buf[44:46])
-	r.HashAlgo = HashAlgo(buf[46])
-	r.ReservedU8 = buf[47]
+	r.ReservedU16 = binary.LittleEndian.Uint16(buf[46:48])
 	copy(r.Name[:], buf[48:88])
-	r.RunSeq = binary.LittleEndian.Uint64(buf[88:96])
 }
 
 // RefsTable is REFS, the repository-wide table of named pointers to
-// snapshots. It is replicated in full on every run.
+// snapshots. It is carried in full on every disc. It holds no CRC; the
+// file_hash of its Files row covers every byte.
 type RefsTable struct {
-	Header       CommonHeader
-	RepoUUID     [16]byte
-	RecordCount  uint64
-	RecordSize   uint16
-	HashAlgo     HashAlgo
-	DigestLen    uint8
-	Reserved     [4]byte
-	BodyCRC32C   uint32
-	HeaderCRC32C uint32
-	Records      []RefRecord
+	Header      CommonHeader
+	RepoUUID    [16]byte
+	RecordCount uint64
+	Records     []RefRecord
 }
 
 // EncodedLen returns the total encoded size of t: the header plus every
@@ -70,9 +63,7 @@ func (t *RefsTable) EncodedLen() int {
 }
 
 // Encode writes t into buf and returns the number of bytes written,
-// EncodedLen(). It computes body_crc32c over the records and
-// header_crc32c over bytes 0 to 67, and overwrites t.BodyCRC32C and
-// t.HeaderCRC32C with the computed values.
+// EncodedLen().
 func (t *RefsTable) Encode(buf []byte) (int, error) {
 	total := t.EncodedLen()
 	if len(buf) < total {
@@ -83,30 +74,19 @@ func (t *RefsTable) Encode(buf []byte) (int, error) {
 	}
 	copy(buf[32:48], t.RepoUUID[:])
 	binary.LittleEndian.PutUint64(buf[48:56], t.RecordCount)
-	binary.LittleEndian.PutUint16(buf[56:58], t.RecordSize)
-	buf[58] = byte(t.HashAlgo)
-	buf[59] = t.DigestLen
-	copy(buf[60:64], t.Reserved[:])
 
 	off := RefsHeaderLen
 	for i := range t.Records {
 		t.Records[i].encode(buf[off : off+RefRecordLen])
 		off += RefRecordLen
 	}
-
-	bodyCRC := crc32c(buf[RefsHeaderLen:total])
-	t.BodyCRC32C = bodyCRC
-	binary.LittleEndian.PutUint32(buf[64:68], bodyCRC)
-
-	headerCRC := crc32c(buf[0:68])
-	t.HeaderCRC32C = headerCRC
-	binary.LittleEndian.PutUint32(buf[68:72], headerCRC)
 	return total, nil
 }
 
 // Decode reads a RefsTable from buf and returns the number of bytes
-// read. It rejects a short buffer, a magic_kind mismatch, and a CRC
-// mismatch. It does not interpret a reserved field.
+// read. It rejects a short buffer, a magic_kind mismatch, a header_len
+// below the fixed part this build knows, and a file length that does
+// not agree with record_count. It does not interpret a reserved field.
 func (t *RefsTable) Decode(buf []byte) (int, error) {
 	if len(buf) < RefsHeaderLen {
 		return 0, ErrShort
@@ -118,31 +98,24 @@ func (t *RefsTable) Decode(buf []byte) (int, error) {
 	if h.MagicKind != MagicRefs {
 		return 0, ErrBadMagic
 	}
+	recordsOff, err := h.fixedPartEnd(RefsHeaderLen)
+	if err != nil {
+		return 0, err
+	}
 
 	var repoUUID [16]byte
 	copy(repoUUID[:], buf[32:48])
 	recordCount := binary.LittleEndian.Uint64(buf[48:56])
-	recordSize := binary.LittleEndian.Uint16(buf[56:58])
-	hashAlgo := HashAlgo(buf[58])
-	digestLen := buf[59]
-	var reserved [4]byte
-	copy(reserved[:], buf[60:64])
-	bodyCRC := binary.LittleEndian.Uint32(buf[64:68])
-	headerCRC := binary.LittleEndian.Uint32(buf[68:72])
 
-	if headerCRC != crc32c(buf[0:68]) {
-		return 0, ErrCRC
-	}
-
-	total := RefsHeaderLen + int(recordCount)*RefRecordLen
+	total := recordsOff + int(recordCount)*RefRecordLen
 	if len(buf) < total {
 		return 0, ErrShort
 	}
-	if bodyCRC != crc32c(buf[RefsHeaderLen:total]) {
-		return 0, ErrCRC
+	if len(buf) != total {
+		return 0, ErrBadField
 	}
 
-	off := RefsHeaderLen
+	off := recordsOff
 	records := make([]RefRecord, recordCount)
 	for i := range records {
 		records[i].decode(buf[off : off+RefRecordLen])
@@ -152,12 +125,20 @@ func (t *RefsTable) Decode(buf []byte) (int, error) {
 	t.Header = h
 	t.RepoUUID = repoUUID
 	t.RecordCount = recordCount
-	t.RecordSize = recordSize
-	t.HashAlgo = hashAlgo
-	t.DigestLen = digestLen
-	t.Reserved = reserved
-	t.BodyCRC32C = bodyCRC
-	t.HeaderCRC32C = headerCRC
 	t.Records = records
 	return total, nil
+}
+
+// NewerRef reports whether a is newer than b for one ref name: the
+// highest time_sec, then the highest time_nsec, then the highest
+// snapshot_id bytes. A reader takes the newest record as the value of
+// the name.
+func NewerRef(a, b RefRecord) bool {
+	if a.TimeSec != b.TimeSec {
+		return a.TimeSec > b.TimeSec
+	}
+	if a.TimeNsec != b.TimeNsec {
+		return a.TimeNsec > b.TimeNsec
+	}
+	return bytes.Compare(a.SnapshotID[:], b.SnapshotID[:]) > 0
 }

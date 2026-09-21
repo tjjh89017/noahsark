@@ -54,7 +54,7 @@ func (c *Cache) WriteBlob(id object.ID, raw []byte) error {
 }
 
 // WriteFromRoot copies one run's catalog, every snapshot object under
-// its catalog/snapobj, and every object its own INDEX lists as a tree,
+// snapshots/, and every object its own INDEX lists as a tree,
 // into the cache. root is a freshly packed run tree or a mounted disc
 // root; both share one on-disc layout (FORMAT.md "Disc and run model"),
 // so the same read and copy path serves pack, right after it builds a
@@ -94,23 +94,16 @@ func WriteFromRoot(c *Cache, root string) (*image.ReadResult, error) {
 		return nil, err
 	}
 
-	snapobjDir := names.Join(catalogDir, "snapobj")
-	entries, err := os.ReadDir(snapobjDir)
-	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
-	}
+	snapshotsDir := names.Join(base, "snapshots")
 	var snapIDs []object.ID
-	for _, e := range entries {
-		if e.IsDir() {
+	for _, row := range rr.Index.Objects {
+		if row.Kind != format.ObjectKindSnapshot {
 			continue
 		}
-		id, err := object.ParseID(e.Name())
+		id := object.ID(row.ContentID)
+		raw, err := os.ReadFile(filepath.Join(snapshotsDir, names.Resolve(snapshotsDir, id.TextForm())))
 		if err != nil {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(snapobjDir, e.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("cache: %w", err)
+			return nil, fmt.Errorf("cache: snapshot %s: %w", id.TextForm(), err)
 		}
 		if err := c.WriteSnapshot(id, raw); err != nil {
 			return nil, err

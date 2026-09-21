@@ -23,7 +23,7 @@ func testTreeEntries() []TreeEntry {
 	}
 	file := TreeEntry{
 		EntryType:  EntryTypeRegular,
-		EntryFlags: EntryFlagAtimeAbsent | EntryFlagCtimeAbsent | EntryFlagBtimeAbsent,
+		EntryFlags: EntryFlagCtimeAbsent,
 		Size:       12345,
 		MtimeSec:   1700000001,
 		MtimeNsec:  500,
@@ -51,13 +51,11 @@ func testTree() Tree {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicTree,
 			VersionMajor: 1,
-			VersionMinor: 0,
 			HeaderLen:    treeFixedLen,
 		},
 		ObjectHeader: ObjectHeader{
 			Kind:        ObjectKindTree,
 			HashAlgo:    HashAlgoSHA256,
-			DigestLen:   32,
 			Compression: CompressionNone,
 			PayloadLen:  uint64(payloadLen),
 			StoredLen:   uint64(payloadLen),
@@ -97,7 +95,7 @@ func TestTreeGolden(t *testing.T) {
 		want := tr.Entries[i]
 		g := got.Entries[i]
 		if g.EntryType != want.EntryType || g.EntryFlags != want.EntryFlags ||
-			g.Size != want.Size || g.HardlinkGroup != want.HardlinkGroup ||
+			g.Size != want.Size ||
 			g.MtimeSec != want.MtimeSec || g.MtimeNsec != want.MtimeNsec ||
 			g.Mode != want.Mode || g.UID != want.UID || g.GID != want.GID ||
 			string(g.Name) != string(want.Name) || g.ContentID != want.ContentID {
@@ -144,8 +142,8 @@ func TestTreeEntryDecodeIgnoresPaddingBytes(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	// The name is one byte, so the alignment padding before the content
-	// area, offset 113 to 119, is nonzero here.
-	buf[113] = 0xFF
+	// area, offset 73 to 79, is nonzero here.
+	buf[73] = 0xFF
 
 	var got TreeEntry
 	n, err := got.Decode(buf)
@@ -198,7 +196,6 @@ func TestTreeDecodeRejectsBadOrder(t *testing.T) {
 		ObjectHeader: ObjectHeader{
 			Kind:        ObjectKindTree,
 			HashAlgo:    HashAlgoSHA256,
-			DigestLen:   32,
 			Compression: CompressionNone,
 			PayloadLen:  uint64(payloadLen),
 			StoredLen:   uint64(payloadLen),

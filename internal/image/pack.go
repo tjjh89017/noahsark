@@ -2,7 +2,6 @@ package image
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,7 +58,6 @@ type PackOptions struct {
 	RepoUUID  [16]byte
 	DiscUUID  [16]byte
 	Label     string
-	MediaType format.MediaType
 	// FECEnabled writes a Reed-Solomon checksum column and parity for
 	// this run when true (fec_scheme 1). When false, the default, the
 	// run carries no FEC (fec_scheme 0).
@@ -241,7 +239,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	newRefRecords := refRecordsFromSnapshots(opts.Snapshots, runSeq)
+	newRefRecords := refRecordsFromSnapshots(opts.Snapshots)
 	mergedRefRecords := mergeRefRecords(refsLedger.Records, newRefRecords)
 	refsBuf, refsHash, err := encodeRefsTable(opts.RepoUUID, mergedRefRecords)
 	if err != nil {
@@ -258,11 +256,15 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	formatHash := sha256.Sum256(FormatTxt)
 	decoderHash := sha256.Sum256(DecoderPy)
 
-	snapObjOrder := append([]object.ID(nil), allSnapshotIDs...)
-	sort.Slice(snapObjOrder, func(i, j int) bool { return lessBytes(snapObjOrder[i][:], snapObjOrder[j][:]) })
-	var snapobjBlocks uint64
-	for _, id := range snapObjOrder {
-		snapobjBlocks += blockCount(uint64(len(snapshotBytes[id])))
+	// Every snapshot object goes onto every disc. A snapshot an earlier
+	// disc already carries is placed whatever the budget allows, so it
+	// is reserved here instead of competing for selection; a snapshot
+	// this run is the first to store is an ordinary candidate, and its
+	// root tree then gets a prerequisite row like any other reference.
+	carried := carriedSnapshots(allSnapshotIDs, opts.StageLog)
+	var carriedBlocks uint64
+	for _, id := range carried {
+		carriedBlocks += blockCount(uint64(len(snapshotBytes[id])))
 	}
 
 	fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
@@ -271,8 +273,8 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		blockCount(uint64(len(DecoderPy))) +
 		blockCount(uint64(len(refsBuf))) +
 		blockCount(uint64(len(discsBuf))) +
-		snapobjBlocks
-	fixedFileCount := 8 + len(snapObjOrder) // INDEX,RUN,DISC,README,FORMAT,decoder,REFS,DISCS
+		carriedBlocks
+	fixedFileCount := 8 + len(carried) // INDEX,RUN,DISC,README,FORMAT,decoder,REFS,DISCS
 
 	selected, prereqIDs, err := selectRun(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
 	if err != nil {
@@ -293,29 +295,17 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		}
 	}
 
-	// A selected chunk's hash is read by streaming its staged file; its
-	// bytes are never held whole in memory. Tree, blob and snapshot
-	// bytes are already cached from buildPackOrder, small metadata
-	// bounded by the tree shape rather than by data size.
-	type hashedUnit struct {
-		packUnit
-		hash [32]byte
+	// The role 13 rows and the Objects rows pair by position, and both
+	// are in ascending content id order.
+	placed := make([]packUnit, 0, len(selected)+len(carried))
+	placed = append(placed, selected...)
+	for _, id := range carried {
+		data := snapshotBytes[id]
+		placed = append(placed, packUnit{
+			ID: id, Kind: format.ObjectKindSnapshot, Bytes: data, ByteLen: uint64(len(data)),
+		})
 	}
-	hashed := make([]hashedUnit, len(selected))
-	for i, u := range selected {
-		var h [32]byte
-		if u.Bytes != nil {
-			h = sha256.Sum256(u.Bytes)
-		} else {
-			var err error
-			h, err = hashFile(StagedPath(opts.StagingDir, u.ID, u.Kind))
-			if err != nil {
-				return nil, fmt.Errorf("chunk %s: %w", u.ID.TextForm(), err)
-			}
-		}
-		hashed[i] = hashedUnit{packUnit: u, hash: h}
-	}
-	sort.Slice(hashed, func(i, j int) bool { return lessBytes(hashed[i].hash[:], hashed[j].hash[:]) })
+	sort.Slice(placed, func(i, j int) bool { return lessBytes(placed[i].ID[:], placed[j].ID[:]) })
 
 	prereqs := make([]format.IndexPrereqRecord, 0, len(prereqIDs))
 	for id := range prereqIDs {
@@ -323,12 +313,11 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		if !ok || !rec.State.OnDisc() {
 			return nil, fmt.Errorf("internal error: prerequisite %s is not packed", id.TextForm())
 		}
-		prereqs = append(prereqs, format.IndexPrereqRecord{ContentID: id, RunSeq: rec.RunSeq})
+		prereqs = append(prereqs, format.IndexPrereqRecord{ContentID: id, DiscUUID: rec.DiscUUID})
 	}
 	sort.Slice(prereqs, func(i, j int) bool { return lessBytes(prereqs[i].ContentID[:], prereqs[j].ContentID[:]) })
 
 	var rows []fileRow
-	fileIndex := make(map[object.ID]int)
 	indexRowIdx := len(rows)
 	rows = append(rows, fileRow{role: format.FileRoleIndex, path: "NOAHSARK/runs/%RUNSEQ%/INDEX.bin", inStream: true})
 	runRowIdx := len(rows)
@@ -340,24 +329,8 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows = append(rows, fileRow{role: format.FileRoleRefs, byteLen: uint64(len(refsBuf)), hash: refsHash, data: refsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/REFS.bin", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleDiscs, byteLen: uint64(len(discsBuf)), hash: discsHash, data: discsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/DISCS.bin", inStream: true})
 
-	for _, id := range snapObjOrder {
-		data := snapshotBytes[id]
-		h := sha256.Sum256(data)
-		rows = append(rows, fileRow{
-			role: format.FileRoleSnapobj, byteLen: uint64(len(data)), hash: h, data: data,
-			path: filepath.ToSlash(filepath.Join("NOAHSARK/runs/%RUNSEQ%/catalog/snapobj", id.TextForm())), inStream: true,
-		})
-	}
-
-	for _, h := range hashed {
-		var p string
-		if h.Kind == format.ObjectKindSnapshot {
-			p = filepath.ToSlash(filepath.Join("NOAHSARK/snapshots", h.ID.TextForm()))
-		} else {
-			p = filepath.ToSlash(filepath.Join("NOAHSARK/objects", h.ID.FanoutByte(), h.ID.TextForm()))
-		}
-		fileIndex[h.ID] = len(rows)
-		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, hash: h.hash, path: p, inStream: true}
+	for _, h := range placed {
+		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, path: objectDiscPath(h.ID, h.Kind), inStream: true}
 		if h.Bytes != nil {
 			row.data = h.Bytes
 		} else {
@@ -367,7 +340,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		rows = append(rows, row)
 	}
 
-	objectCount := len(hashed)
+	objectCount := len(placed)
 	fileCount := len(rows) + extraFixedRowCount(opts.FECEnabled)
 	indexLen := format.IndexHeaderLen + fileCount*format.IndexFileRecordLen +
 		objectCount*format.IndexObjectRecordLen + len(prereqs)*format.IndexPrereqRecordLen
@@ -385,31 +358,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 
 	objRows := make([]format.IndexObjectRecord, objectCount)
-	for i, h := range hashed {
-		var storedLen, payloadLen uint64
-		var compression format.Compression
-		var err error
-		if h.Bytes != nil {
-			err = readObjectHeader(h.Bytes, &storedLen, &payloadLen, &compression)
-		} else {
-			storedLen, payloadLen, compression, err = readObjectHeaderFile(StagedPath(opts.StagingDir, h.ID, h.Kind))
-		}
-		if err != nil {
-			if errors.Is(err, errShortStagedHeader) {
-				return nil, stagedDamaged(h.ID, h.Kind)
-			}
-			return nil, fmt.Errorf("%s: %w", h.ID.TextForm(), err)
-		}
-		var flags uint16
-		if h.Kind != format.ObjectKindChunk {
-			flags |= 0x2
-		}
-		objRows[i] = format.IndexObjectRecord{
-			ContentID: h.ID, FileIndex: uint32(fileIndex[h.ID]), StoredLen: storedLen,
-			PayloadLen: payloadLen, Kind: h.Kind, Compression: compression, Flags: flags,
-		}
+	for i, h := range placed {
+		objRows[i] = format.IndexObjectRecord{ContentID: h.ID, Kind: h.Kind}
 	}
-	sort.Slice(objRows, func(i, j int) bool { return lessBytes(objRows[i].ContentID[:], objRows[j].ContentID[:]) })
 
 	idxFiles := make([]format.IndexFileRecord, len(rows))
 	for i, r := range rows {
@@ -419,13 +370,11 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	idx := format.Index{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicIndex,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.IndexHeaderLen,
+			VersionMajor: 1, HeaderLen: format.IndexHeaderLen,
 		},
 		RunSeq: runSeq, FileCount: uint32(len(rows)), ObjectCount: uint32(objectCount),
-		PrereqCount: uint32(len(prereqs)), FileRecordSize: format.IndexFileRecordLen,
-		ObjectRecordSize: format.IndexObjectRecordLen, PrereqRecordSize: format.IndexPrereqRecordLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32,
-		Files: idxFiles, Objects: objRows, Prereqs: prereqs,
+		PrereqCount: uint32(len(prereqs)),
+		Files:       idxFiles, Objects: objRows, Prereqs: prereqs,
 	}
 	indexBuf := make([]byte, idx.EncodedLen())
 	if _, err := idx.Encode(indexBuf); err != nil {
@@ -437,7 +386,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
 
-	runBuf, err := buildRun(opts.asBuildOptions(), packTime, indexBuf, indexHash, plan.streamBytesTotal, uint64(objectCount), runSeq, discSeq, opts.FECEnabled)
+	runBuf, err := buildRun(opts.asBuildOptions(), packTime, indexBuf, indexHash, plan.streamBytesTotal, runSeq, discSeq, opts.FECEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +394,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows[run2RowIdx].data = runBuf
 	plan.rows = rows
 
-	if err := writeRunTree(opts.OutputDir, runSeq, plan, runBuf, opts.Progress); err != nil {
+	if err := writeRunTree(opts.OutputDir, runSeq, plan, opts.Progress); err != nil {
 		// A staged object that does not match its own content is caught
 		// while its bytes are copied, so the output tree is already part
 		// written when this fails. Take the part-written tree away again:
@@ -460,7 +409,9 @@ func Pack(opts PackOptions) (*PackResult, error) {
 
 	// Record every packed object as Packed, and this disc's row into the
 	// local ledger, only once the run's files are all on local disk.
-	for _, h := range hashed {
+	// Only the objects this run is the first to store change state. A
+	// carried snapshot stays bound to the disc that first stored it.
+	for _, h := range selected {
 		if err := opts.StageLog.MarkPacked(h.ID, runSeq, opts.DiscUUID); err != nil {
 			return nil, err
 		}
@@ -471,7 +422,6 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	// zero, matching run_hash: the run's own final size is not known
 	// until the run is written. The local ledger row, and so every
 	// later run's copy of DISCS, carries the real value from here on.
-	newRow.UsedSectors = blockCount(plan.streamBytesTotal)
 	ledger.Rows = append(ledger.Rows, newRow)
 	if err := SaveDiscsLedger(opts.StagingDir, opts.RepoUUID, ledger.Rows); err != nil {
 		return nil, err
@@ -598,13 +548,12 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		return nil, err
 	}
 
-	snapObjOrder := append([]object.ID(nil), allSnapshotIDs...)
-	sort.Slice(snapObjOrder, func(i, j int) bool { return lessBytes(snapObjOrder[i][:], snapObjOrder[j][:]) })
-	var snapobjBlocks uint64
-	for _, id := range snapObjOrder {
-		snapobjBlocks += blockCount(uint64(len(snapshotBytes[id])))
+	carried := carriedSnapshots(allSnapshotIDs, opts.StageLog)
+	var carriedBlocks uint64
+	for _, id := range carried {
+		carriedBlocks += blockCount(uint64(len(snapshotBytes[id])))
 	}
-	fixedFileCount := 8 + len(snapObjOrder)
+	fixedFileCount := 8 + len(carried)
 
 	rows := append([]format.DiscsRow(nil), ledger.Rows...)
 	var discs []DryRunDisc
@@ -619,7 +568,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		if err != nil {
 			return discs, err
 		}
-		newRefRecords := refRecordsFromSnapshots(discOpts.Snapshots, runSeq)
+		newRefRecords := refRecordsFromSnapshots(discOpts.Snapshots)
 		refsBuf, _, err := encodeRefsTable(discOpts.RepoUUID, mergeRefRecords(refsLedger.Records, newRefRecords))
 		if err != nil {
 			return discs, err
@@ -638,7 +587,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 			blockCount(uint64(len(DecoderPy))) +
 			blockCount(uint64(len(refsBuf))) +
 			blockCount(uint64(len(discsBuf))) +
-			snapobjBlocks
+			carriedBlocks
 
 		selected, _, err := selectRun(discOpts, candidates, fixedBlocksExclIndex, fixedFileCount)
 		if err != nil {
@@ -689,7 +638,7 @@ func (opts PackOptions) asBuildOptions() BuildOptions {
 		StagingDir: opts.StagingDir, Snapshots: opts.Snapshots,
 		TargetCapacitySectors: opts.TargetCapacitySectors, PhysicalCapacitySectors: opts.PhysicalCapacitySectors,
 		OutputDir: opts.OutputDir, RepoUUID: opts.RepoUUID, DiscUUID: opts.DiscUUID,
-		Label: opts.Label, MediaType: opts.MediaType,
+		Label: opts.Label,
 	}
 }
 
@@ -1090,10 +1039,9 @@ func SaveDiscsLedger(stagingDir string, repoUUID [16]byte, rows []format.DiscsRo
 	t := format.DiscsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.DiscsHeaderLen,
+			VersionMajor: 1, HeaderLen: format.DiscsHeaderLen,
 		},
-		RepoUUID: repoUUID, RecordCount: uint64(len(rows)), RecordSize: format.DiscsRowLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Rows: rows,
+		RepoUUID: repoUUID, RecordCount: uint64(len(rows)), Rows: rows,
 	}
 	buf := make([]byte, t.EncodedLen())
 	if _, err := t.Encode(buf); err != nil {
@@ -1131,21 +1079,34 @@ func SaveRefsLedger(stagingDir string, repoUUID [16]byte, recs []format.RefRecor
 	return os.WriteFile(filepath.Join(stagingDir, refsLedgerName), buf, 0o644)
 }
 
-// mergeRefRecords unions carried and fresh REFS records by name: a name
-// in both keeps only the fresh record, since a ref packed again on this
-// run points at a newer snapshot and this run's run_seq. A name found
-// only in carried keeps its own run_seq from the run that packed it.
+// carriedSnapshots returns the snapshot ids an earlier disc already
+// carries, in ascending content id order. Every snapshot object goes
+// onto every disc, so this run places these again whatever its budget
+// allows; a snapshot no disc carries yet is an ordinary candidate.
+func carriedSnapshots(all []object.ID, log *stage.Log) []object.ID {
+	out := make([]object.ID, 0, len(all))
+	for _, id := range all {
+		if rec, ok := log.Get(id); ok && rec.State.OnDisc() {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return lessBytes(out[i][:], out[j][:]) })
+	return out
+}
+
+// mergeRefRecords unions carried and fresh REFS records. The table only
+// grows from one run to the next: a record is dropped only when another
+// record holds the same name, time and snapshot id. A reader takes the
+// newest record of a name by time, then by snapshot id bytes.
 // The result is unsorted; encodeRefsTable orders it before writing.
 func mergeRefRecords(carried, fresh []format.RefRecord) []format.RefRecord {
-	byName := make(map[string]format.RefRecord, len(carried)+len(fresh))
-	for _, r := range carried {
-		byName[string(r.Name[:r.NameLen])] = r
-	}
-	for _, r := range fresh {
-		byName[string(r.Name[:r.NameLen])] = r
-	}
-	merged := make([]format.RefRecord, 0, len(byName))
-	for _, r := range byName {
+	byKey := make(map[format.RefRecord]bool, len(carried)+len(fresh))
+	merged := make([]format.RefRecord, 0, len(carried)+len(fresh))
+	for _, r := range append(append([]format.RefRecord(nil), carried...), fresh...) {
+		if byKey[r] {
+			continue
+		}
+		byKey[r] = true
 		merged = append(merged, r)
 	}
 	return merged

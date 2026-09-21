@@ -8,25 +8,17 @@ func testSnapshot() Snapshot {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicSnapshot,
 			VersionMajor: 1,
-			VersionMinor: 0,
 			HeaderLen:    CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen,
 		},
 		Object: ObjectHeader{
-			Kind:      ObjectKindSnapshot,
-			HashAlgo:  HashAlgoSHA256,
-			DigestLen: 32,
+			Kind:     ObjectKindSnapshot,
+			HashAlgo: HashAlgoSHA256,
 		},
-		Generation:           1,
-		TimeSec:              1700000000,
-		TimeNsec:             123456789,
-		TzOffsetSec:          3600,
-		TotalSize:            123456,
-		ReachableObjectCount: 42,
-		HashAlgo:             HashAlgoSHA256,
-		ChunkerProfile:       ChunkerProfileP3,
-		MetaCount:            2,
-		SourceType:           SnapshotSourceLocal,
-		ParentHashAlgo:       0,
+		TimeSec:     1700000000,
+		TimeNsec:    123456789,
+		TzOffsetSec: 3600,
+		TotalSize:   123456,
+		MetaCount:   2,
 		Meta: []SnapshotMeta{
 			{Tag: SnapshotMetaAuthor, Value: []byte("date")},
 			{Tag: SnapshotMetaHost, Value: []byte("host1")},
@@ -56,13 +48,9 @@ func TestSnapshotGolden(t *testing.T) {
 		t.Fatalf("decode consumed %d bytes, want %d", n, len(golden))
 	}
 	if got.RootTree != s.RootTree || got.Parent != s.Parent ||
-		got.Generation != s.Generation || got.TimeSec != s.TimeSec ||
+		got.TimeSec != s.TimeSec ||
 		got.TimeNsec != s.TimeNsec || got.TzOffsetSec != s.TzOffsetSec ||
-		got.TotalSize != s.TotalSize ||
-		got.ReachableObjectCount != s.ReachableObjectCount ||
-		got.HashAlgo != s.HashAlgo || got.ChunkerProfile != s.ChunkerProfile ||
-		got.MetaCount != s.MetaCount || got.SourceType != s.SourceType ||
-		got.SourceFlags != s.SourceFlags || got.ParentHashAlgo != s.ParentHashAlgo {
+		got.TotalSize != s.TotalSize || got.MetaCount != s.MetaCount {
 		t.Fatalf("decoded snapshot fixed body mismatch: got %+v, want %+v", got, s)
 	}
 	if len(got.Meta) != len(s.Meta) {
@@ -75,26 +63,8 @@ func TestSnapshotGolden(t *testing.T) {
 		}
 	}
 
-	if got.ReservedU8 != 0 {
-		t.Errorf("reserved_u8 not zero: 0x%02x", got.ReservedU8)
-	}
-}
-
-func TestSnapshotDecodeIgnoresReservedByte(t *testing.T) {
-	golden := readGolden(t, "snapshot.golden")
-	buf := append([]byte(nil), golden...)
-	buf[CommonHeaderLen+ObjectHeaderLen+111] = 0xFF // the body's reserved_u8
-
-	var got Snapshot
-	if _, err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved byte: %v", err)
-	}
-	if got.ReservedU8 != 0xFF {
-		t.Fatalf("reserved byte not preserved: 0x%02x", got.ReservedU8)
-	}
-	s := testSnapshot()
-	if got.Generation != s.Generation || got.TotalSize != s.TotalSize {
-		t.Fatalf("body mismatch: got %+v, want %+v", got, s)
+	if got.ReservedU64a != 0 || got.ReservedU64b != 0 || got.ReservedU16 != 0 || got.ReservedU32 != 0 {
+		t.Errorf("reserved field not zero: %+v", got)
 	}
 }
 

@@ -5,9 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/tjjh89017/noahsark/internal/format"
-	"github.com/tjjh89017/noahsark/internal/image"
 )
 
 // TestPackRefusesNothingToPack packs a repository in full, then packs
@@ -294,55 +291,6 @@ func TestPackRefusesCapacityAbovePhysical(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(treeDir); err == nil && len(entries) != 0 {
 		t.Fatalf("pack: %s is not empty, a run was written despite the refusal", treeDir)
-	}
-}
-
-// TestPackMediaDerivedFromCapacityPreset checks that a BD --capacity
-// preset with no --media records the matching media type, and that a
-// DVD --capacity preset with no --media records the matching DVD media
-// type, since FORMAT.md's media type registry is informational and
-// never refuses a pack on its account.
-func TestPackMediaDerivedFromCapacityPreset(t *testing.T) {
-	work := t.TempDir()
-
-	bdRepo := filepath.Join(work, "repo-bd")
-	bdSrc := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+bdRepo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "commit", "--repo="+bdRepo, bdSrc); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	treeDir := filepath.Join(work, "tree-bd50")
-	if code, out := runCmd(t, "pack", "--repo="+bdRepo, "--capacity=bd50", "--out="+treeDir); code != 0 {
-		t.Fatalf("pack --capacity=bd50: exit %d: %s", code, out)
-	}
-	rr, err := image.Read(treeDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rr.Disc.MediaType != format.MediaTypeBDRDL50GB {
-		t.Fatalf("DISC.bin media_type = %v, want BD-R-DL-50 (%v)", rr.Disc.MediaType, format.MediaTypeBDRDL50GB)
-	}
-
-	dvdRepo := filepath.Join(work, "repo-dvd")
-	dvdSrc := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+dvdRepo); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "commit", "--repo="+dvdRepo, dvdSrc); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	dvdTree := filepath.Join(work, "tree-dvd")
-	if code, out := runCmd(t, "pack", "--repo="+dvdRepo, "--capacity=dvd+r", "--out="+dvdTree); code != 0 {
-		t.Fatalf("pack --capacity=dvd+r: exit %d: %s", code, out)
-	}
-	dvdRR, err := image.Read(dvdTree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dvdRR.Disc.MediaType != format.MediaTypeDVDPlusRSL {
-		t.Fatalf("DISC.bin media_type = %v, want DVD+R-SL (%v)", dvdRR.Disc.MediaType, format.MediaTypeDVDPlusRSL)
 	}
 }
 

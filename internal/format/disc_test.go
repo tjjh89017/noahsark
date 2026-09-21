@@ -11,23 +11,15 @@ func testDisc() Disc {
 			MagicProject: ProjectMagic,
 			MagicKind:    MagicDisc,
 			VersionMajor: 1,
-			VersionMinor: 0,
-			HeaderLen:    CommonHeaderLen + 2012,
+			HeaderLen:    DiscLen,
 		},
-		DiscSeq:               0,
-		CapacitySectors:       12219392,
-		CapacityForcedSectors: 12000000,
-		CreatedSec:            1700000000,
-		CreatedNsec:           500000000,
-		TzOffsetSec:           -25200,
-		MediaType:             MediaTypeBDRSL25GB,
-		FSProfile:             DiscFSProfileOneshot,
-		FanoutLevels:          1,
-		CapacityIsForced:      1,
-		Sealed:                1,
-		LabelLen:              14,
-		ToolVersion:           0x01000001,
-		SuperCRC32C:           0xF9BA7142,
+		DiscSeq:         0,
+		CapacitySectors: 12219392,
+		CreatedSec:      1700000000,
+		CreatedNsec:     500000000,
+		TzOffsetSec:     -25200,
+		LabelLen:        14,
+		ToolVersion:     0x01000001,
 	}
 	for i := range d.DiscUUID {
 		d.DiscUUID[i] = byte(i + 1)
@@ -56,17 +48,12 @@ func TestDiscGolden(t *testing.T) {
 		t.Fatalf("decoded disc mismatch: got %+v, want %+v", got, d)
 	}
 
-	for i, b := range got.ReservedU8 {
-		if b != 0 {
-			t.Errorf("reserved_u8[%d] not zero: 0x%02x", i, b)
-		}
+	if got.ReservedA != ([40]byte{}) || got.ReservedB != ([8]byte{}) {
+		t.Errorf("reserved field not zero: %x %x", got.ReservedA, got.ReservedB)
 	}
-	if got.ReservedU32 != 0 {
-		t.Errorf("reserved_u32 not zero: 0x%08x", got.ReservedU32)
-	}
-	for i, b := range got.Reserved {
+	for i, b := range got.ReservedC {
 		if b != 0 {
-			t.Errorf("reserved[%d] not zero: 0x%02x", i, b)
+			t.Errorf("reserved_c[%d] not zero: 0x%02x", i, b)
 		}
 	}
 }
@@ -74,7 +61,7 @@ func TestDiscGolden(t *testing.T) {
 func TestDiscDecodeIgnoresReservedByte(t *testing.T) {
 	golden := readGolden(t, "disc.golden")
 	buf := append([]byte(nil), golden...)
-	buf[220] = 0xFF
+	buf[216] = 0xFF
 	binary.LittleEndian.PutUint32(buf[2044:2048], crc32c(buf[0:2044]))
 
 	var got Disc
@@ -82,7 +69,7 @@ func TestDiscDecodeIgnoresReservedByte(t *testing.T) {
 		t.Fatalf("decode nonzero reserved byte: %v", err)
 	}
 	want := testDisc()
-	want.Reserved[0] = 0xFF
+	want.ReservedC[0] = 0xFF
 	want.SuperCRC32C = crc32c(buf[0:2044])
 	if got != want {
 		t.Fatalf("decoded disc mismatch: got %+v, want %+v", got, want)

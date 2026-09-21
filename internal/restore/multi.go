@@ -336,9 +336,7 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 		if _, err := discs.Decode(discsBuf); err != nil {
 			return nil, fmt.Errorf("%s: %w", runDir, err)
 		}
-		runToDisc := map[uint64][16]byte{idx.RunSeq: disc.DiscUUID}
 		for _, row := range discs.Rows {
-			runToDisc[row.RunSeq] = row.DiscUUID
 			if _, ok := src.discNames[row.DiscUUID]; !ok {
 				src.discNames[row.DiscUUID] = DiscName{Seq: row.DiscSeq, Label: discLabelText(row)}
 			}
@@ -348,9 +346,7 @@ func newMultiSource(discRoots []string) (*multiSource, error) {
 			src.contentToDisc[object.ID(row.ContentID)] = disc.DiscUUID
 		}
 		for _, row := range idx.Prereqs {
-			if uuid, ok := runToDisc[row.RunSeq]; ok {
-				prereqs = append(prereqs, prereq{id: object.ID(row.ContentID), disc: uuid})
-			}
+			prereqs = append(prereqs, prereq{id: object.ID(row.ContentID), disc: row.DiscUUID})
 		}
 	}
 	for _, p := range prereqs {
@@ -384,19 +380,6 @@ func (src *multiSource) read(id object.ID, snapshot bool) (raw, payload []byte, 
 				return raw, payload, true
 			}
 			badErr = err
-		}
-		// A snapshot object's canonical copy is written only to the
-		// disc that packed it, but its catalog/snapobj copy is
-		// replicated in full on every run; try that too.
-		if snapshot {
-			snapobjPath := filepath.Join(src.names.Join(b.runDir, "catalog", "snapobj"), id.TextForm())
-			if _, err := os.Stat(snapobjPath); err == nil {
-				raw, payload, err := readVerifiedAt(snapobjPath, id)
-				if err == nil {
-					return raw, payload, true
-				}
-				badErr = err
-			}
 		}
 	}
 	if badErr != nil {
@@ -567,8 +550,7 @@ func (src *multiSource) restoreFile(dest string, blobID object.ID, e format.Tree
 		return false, fmt.Errorf("blob %s: %w", blobID.TextForm(), err)
 	}
 
-	entries := append([]format.BlobEntry(nil), blob.Entries...)
-	sort.Slice(entries, func(i, j int) bool { return entries[i].FileOffset < entries[j].FileOffset })
+	entries := placeChunks(blob.Entries)
 
 	f, skipped, err := openForWrite(dest, e, entries, src.wp)
 	if err != nil {

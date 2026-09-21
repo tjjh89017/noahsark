@@ -60,10 +60,11 @@ func (s *Source) Snapshot(id object.ID) (*format.Snapshot, error) {
 }
 
 // Refs reads REFS from every provided disc and merges the results by
-// ref name: when two discs disagree on a name, the record with the
-// higher run_seq wins. A pack that has not yet carried an older disc's
-// ref forward can still leave a disc's REFS short of the full name set,
-// so Refs does not trust any one disc's copy alone.
+// ref name, keeping the newest record of each name: the highest
+// time_sec, then time_nsec, then the highest snapshot_id bytes. A pack
+// that has not yet carried an older disc's ref forward can still leave
+// a disc's REFS short of the full name set, so Refs does not trust any
+// one disc's copy alone.
 func (s *Source) Refs() (*format.RefsTable, error) {
 	var merged *format.RefsTable
 	byName := make(map[string]format.RefRecord)
@@ -78,12 +79,12 @@ func (s *Source) Refs() (*format.RefsTable, error) {
 			return nil, fmt.Errorf("%s: %w", catalogDir, err)
 		}
 		if merged == nil {
-			merged = &format.RefsTable{Header: refs.Header, RepoUUID: refs.RepoUUID, RecordSize: refs.RecordSize, HashAlgo: refs.HashAlgo, DigestLen: refs.DigestLen}
+			merged = &format.RefsTable{Header: refs.Header, RepoUUID: refs.RepoUUID}
 		}
 		for _, r := range refs.Records {
 			name := string(r.Name[:r.NameLen])
 			cur, ok := byName[name]
-			if !ok || r.RunSeq > cur.RunSeq {
+			if !ok || format.NewerRef(r, cur) {
 				byName[name] = r
 			}
 		}
@@ -105,16 +106,14 @@ func (s *Source) Refs() (*format.RefsTable, error) {
 }
 
 // SnapshotIDs returns the content id of every snapshot object the
-// provided discs know, deduplicated. A snapshot's canonical copy is
-// written only to the disc that packed it, but its catalog/snapobj copy
-// is replicated in full on every run, so scanning every provided disc's
-// catalog/snapobj directory finds every snapshot without needing the
-// disc that packed each one.
+// provided discs know, deduplicated. Every disc carries every snapshot
+// object of the repository under snapshots/, so scanning one provided
+// disc already finds every snapshot.
 func (s *Source) SnapshotIDs() ([]object.ID, error) {
 	seen := make(map[object.ID]bool)
 	var ids []object.ID
 	for _, b := range s.src.bases {
-		dir := s.src.names.Join(b.runDir, "catalog", "snapobj")
+		dir := s.src.names.Join(b.base, "snapshots")
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {

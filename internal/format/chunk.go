@@ -53,6 +53,9 @@ func (c *Chunk) Decode(buf []byte) (int, error) {
 	if c.Header.MagicKind != MagicChunk {
 		return 0, ErrBadMagic
 	}
+	if c.Header.HeaderLen != chunkFixedLen {
+		return 0, ErrHeaderLen
+	}
 	if err := c.ObjectHeader.Decode(buf[CommonHeaderLen:chunkFixedLen]); err != nil {
 		return 0, err
 	}

@@ -7,30 +7,24 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
-// RunFileLen is the on-disc length of RUN.bin and RUN2.bin: the 512-byte
-// header padded to one whole sector.
-const RunFileLen = SectorSize
+// RunFileLen is the on-disc length of RUN.bin and RUN2.bin. Each file is
+// exactly the run header.
+const RunFileLen = format.RunLen
 
 func buildDisc(opts BuildOptions, packTime time.Time, discSeq uint64) ([]byte, [32]byte, error) {
 	_, tzOffset := packTime.Zone()
 	var label [64]byte
 	n := copy(label[:], opts.Label)
 
-	forced := uint8(0)
-	if opts.TargetCapacitySectors < opts.PhysicalCapacitySectors {
-		forced = 1
-	}
-
 	d := format.Disc{
 		Common: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicDisc,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.CommonHeaderLen + 2012,
+			VersionMajor: 1, HeaderLen: format.DiscLen,
 		},
 		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, DiscSeq: discSeq,
-		CapacitySectors: opts.PhysicalCapacitySectors, CapacityForcedSectors: opts.TargetCapacitySectors,
-		CreatedSec: packTime.Unix(), CreatedNsec: uint32(packTime.Nanosecond()), TzOffsetSec: int32(tzOffset),
-		MediaType: opts.MediaType, FSProfile: format.DiscFSProfileOneshot, FanoutLevels: 1,
-		CapacityIsForced: forced, Sealed: 0, LabelLen: uint32(n), Label: label, ToolVersion: toolVersion,
+		CapacitySectors: opts.TargetCapacitySectors,
+		CreatedSec:      packTime.Unix(), CreatedNsec: uint32(packTime.Nanosecond()), TzOffsetSec: int32(tzOffset),
+		LabelLen: uint32(n), Label: label, ToolVersion: toolVersion,
 	}
 	buf := make([]byte, format.DiscLen)
 	if err := d.Encode(buf); err != nil {
@@ -50,42 +44,37 @@ func runFECFields(fecEnabled bool) (k, m uint16, scheme format.FECScheme) {
 	return 0, 0, format.FECSchemeNone
 }
 
-func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, objectCount uint64, runSeq, discSeq uint64, fecEnabled bool) ([]byte, error) {
+func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, runSeq, discSeq uint64, fecEnabled bool) ([]byte, error) {
 	fecK, fecM, fecScheme := runFECFields(fecEnabled)
 	r := format.Run{
 		Common: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRun,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.CommonHeaderLen + 480,
+			VersionMajor: 1, HeaderLen: format.RunLen,
 		},
 		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, RunSeq: runSeq, DiscSeq: discSeq,
 		FECK: fecK, FECM: fecM, FECScheme: fecScheme,
-		HashAlgo: format.HashAlgoSHA256, ChunkerProfile: format.ChunkerProfileP4,
-		Compression: format.CompressionZstd, FSProfile: format.DiscFSProfileOneshot,
-		RunKind: format.RunKindData, RunFlags: 0,
+		HashAlgo:   format.HashAlgoSHA256,
 		IndexBytes: uint64(len(indexBuf)), IndexHash: indexHash,
 		StreamBytes: streamBytes,
 		CreatedSec:  packTime.Unix(), CreatedNsec: uint32(packTime.Nanosecond()), ToolVersion: toolVersion,
-		DiscObjectCount: objectCount, DiscRunIndex: 0,
 	}
 	buf := make([]byte, format.RunLen)
 	if err := r.Encode(buf); err != nil {
 		return nil, err
 	}
-	out := make([]byte, RunFileLen)
-	copy(out, buf)
-	return out, nil
+	return buf, nil
 }
 
 // refRecordsFromSnapshots turns each named snapshot into one REFS
-// record stamped with runSeq, the run whose refs.bin will carry it.
-func refRecordsFromSnapshots(snapshots []SnapshotRef, runSeq uint64) []format.RefRecord {
+// record. A record carries no run number.
+func refRecordsFromSnapshots(snapshots []SnapshotRef) []format.RefRecord {
 	recs := make([]format.RefRecord, len(snapshots))
 	for i, s := range snapshots {
 		var name [format.RefNameLen]byte
 		n := copy(name[:], s.Name)
 		recs[i] = format.RefRecord{
 			SnapshotID: s.ID, TimeSec: s.Time.Unix(), TimeNsec: uint32(s.Time.Nanosecond()),
-			NameLen: uint16(n), HashAlgo: format.HashAlgoSHA256, Name: name, RunSeq: runSeq,
+			NameLen: uint16(n), Name: name,
 		}
 	}
 	return recs
@@ -100,10 +89,9 @@ func encodeRefsTable(repoUUID [16]byte, recs []format.RefRecord) ([]byte, [32]by
 	t := format.RefsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRefs,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.RefsHeaderLen,
+			VersionMajor: 1, HeaderLen: format.RefsHeaderLen,
 		},
-		RepoUUID: repoUUID, RecordCount: uint64(len(recs)), RecordSize: format.RefRecordLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Records: recs,
+		RepoUUID: repoUUID, RecordCount: uint64(len(recs)), Records: recs,
 	}
 	buf := make([]byte, t.EncodedLen())
 	if _, err := t.Encode(buf); err != nil {
@@ -112,17 +100,16 @@ func encodeRefsTable(repoUUID [16]byte, recs []format.RefRecord) ([]byte, [32]by
 	return buf, sha256sum(buf), nil
 }
 
-// buildRefs builds REFS from opts.Snapshots alone, every record stamped
-// with runSeq. Build uses this: a one-shot build has no earlier run to
-// carry refs forward from.
-func buildRefs(opts BuildOptions, runSeq uint64) ([]byte, [32]byte, error) {
-	recs := refRecordsFromSnapshots(opts.Snapshots, runSeq)
+// buildRefs builds REFS from opts.Snapshots alone. Build uses this: a
+// one-shot build has no earlier run to carry refs forward from.
+func buildRefs(opts BuildOptions) ([]byte, [32]byte, error) {
+	recs := refRecordsFromSnapshots(opts.Snapshots)
 	return encodeRefsTable(opts.RepoUUID, recs)
 }
 
 // sortRefRecords orders records the way REFS requires: name bytes
-// ascending, then time_sec, then time_nsec, then run_seq, then
-// snapshot_id bytes ascending.
+// ascending, then time_sec, then time_nsec, then snapshot_id bytes
+// ascending.
 func sortRefRecords(recs []format.RefRecord) {
 	less := func(i, j int) bool {
 		a, b := recs[i], recs[j]
@@ -134,9 +121,6 @@ func sortRefRecords(recs []format.RefRecord) {
 		}
 		if a.TimeNsec != b.TimeNsec {
 			return a.TimeNsec < b.TimeNsec
-		}
-		if a.RunSeq != b.RunSeq {
-			return a.RunSeq < b.RunSeq
 		}
 		return compareBytes(a.SnapshotID[:], b.SnapshotID[:]) < 0
 	}
@@ -179,18 +163,11 @@ func newDiscsRow(opts BuildOptions, packTime time.Time, runSeq, discSeq uint64) 
 	var label [format.DiscsLabelLen]byte
 	n := copy(label[:], opts.Label)
 
-	var stateFlags uint8
-	if opts.TargetCapacitySectors < opts.PhysicalCapacitySectors {
-		stateFlags |= format.DiscsStateCapacityForced
-	}
-
 	return format.DiscsRow{
 		RunSeq: runSeq, DiscSeq: discSeq, DiscUUID: opts.DiscUUID,
-		CreatedSec: packTime.Unix(), LastVerifySec: 0,
-		CapacitySectors: opts.PhysicalCapacitySectors, UsedSectors: 0,
-		RunStatus: 2, Health: 6, RsMarginPercent: 100,
-		LabelLen: uint16(n), Label: label, StateFlags: stateFlags,
-		CapacityForcedSectors: opts.TargetCapacitySectors,
+		CreatedSec:      packTime.Unix(),
+		CapacitySectors: opts.TargetCapacitySectors,
+		LabelLen:        uint16(n), Label: label,
 	}
 }
 
@@ -204,10 +181,9 @@ func buildDiscs(opts BuildOptions, packTime time.Time, runSeq, discSeq uint64, p
 	t := format.DiscsTable{
 		Header: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs,
-			VersionMajor: 1, VersionMinor: 0, HeaderLen: format.DiscsHeaderLen,
+			VersionMajor: 1, HeaderLen: format.DiscsHeaderLen,
 		},
-		RepoUUID: opts.RepoUUID, RecordCount: uint64(len(rows)), RecordSize: format.DiscsRowLen,
-		HashAlgo: format.HashAlgoSHA256, DigestLen: 32, Rows: rows,
+		RepoUUID: opts.RepoUUID, RecordCount: uint64(len(rows)), Rows: rows,
 	}
 	buf := make([]byte, t.EncodedLen())
 	if _, err := t.Encode(buf); err != nil {

@@ -1,7 +1,6 @@
 package image
 
 import (
-	"crypto/sha256"
 	"errors"
 	"io"
 	"os"
@@ -10,47 +9,6 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
-
-// hashFile returns sha256 of path's whole bytes, read in fixed-size
-// chunks so a large object never sits in memory whole.
-func hashFile(path string) ([32]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return [32]byte{}, err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return [32]byte{}, err
-	}
-	var sum [32]byte
-	copy(sum[:], h.Sum(nil))
-	return sum, nil
-}
-
-// readObjectHeaderFile reads only the common and object header prefix of
-// the object file at path, the storedLen, payloadLen and compression id
-// an object row needs, without reading the object's payload.
-func readObjectHeaderFile(path string) (storedLen, payloadLen uint64, compression format.Compression, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	defer func() { _ = f.Close() }()
-	buf, err := readObjectHeaderPrefix(f)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	var h format.CommonHeader
-	if err := h.Decode(buf); err != nil {
-		return 0, 0, 0, err
-	}
-	var oh format.ObjectHeader
-	if err := oh.Decode(buf[format.CommonHeaderLen:]); err != nil {
-		return 0, 0, 0, err
-	}
-	return oh.StoredLen, oh.PayloadLen, oh.Compression, nil
-}
 
 // errShortStagedHeader marks an object file too short to hold even the
 // common and object header prefix. The caller knows the object's id and
