@@ -9,12 +9,15 @@ and every object it visits (chunk, blob, tree, snapshot); it verifies the
 SHA-256 content id of every object it reads; and it can list, verify or
 restore a snapshot.
 
-It uses the standard library only. zstd-compressed chunks are expanded with
-the compression.zstd module where the interpreter provides it (Python
-3.14+), or with the zstd command-line tool otherwise; when neither is
-available, a compressed chunk cannot be expanded and restore of the files
-that use it fails, but listing and verification of everything else still
-proceeds.
+This decoder holds no Reed-Solomon code. It cannot repair a damaged disc.
+It reads the checksum column only to report what a repair tool would use.
+
+It uses the standard library only. zstd-compressed payloads are expanded
+with the compression.zstd module where the interpreter provides it
+(Python 3.14+), or with the zstd command-line tool otherwise; when
+neither is available, a compressed payload cannot be expanded and restore
+of the files that use it fails, but listing and verification of
+everything else still proceeds.
 
 Usage:
     decoder.py summary <disc-root>
@@ -30,9 +33,7 @@ Exit status is nonzero when any verification check fails.
 """
 
 import argparse
-import binascii
 import os
-import stat
 import struct
 import subprocess
 import sys
@@ -89,7 +90,7 @@ class Report:
 
 
 # ---------------------------------------------------------------------------
-# Magic values.
+# Magic values and registries.
 
 PROJECT_MAGIC = b"NOAHSARK"
 
@@ -109,9 +110,15 @@ MAGIC_RUN = _magic(b"RUN")
 MAGIC_INDEX = _magic(b"INDEX")
 MAGIC_REFS = _magic(b"REFS")
 MAGIC_DISCS = _magic(b"DISCS")
+MAGIC_CHECKSUM = _magic(b"CHECKSUM")
 
 OBJECT_KIND_NAMES = {1: "chunk", 2: "blob", 3: "tree", 4: "snapshot"}
-COMPRESSION_NAMES = {0: "none", 1: "zstd", 2: "lz4"}
+COMPRESSION_NAMES = {0: "none", 1: "zstd"}
+FEC_SCHEME_NAMES = {0: "none", 1: "rs255-gf8"}
+
+# Hash algorithm registry (multicodec codes). sha2-256 is the only
+# algorithm of format major 1; every other code is refused by name.
+HASH_ALGO_SHA256 = 0x12
 
 ENTRY_TYPE_NAMES = {
     1: "regular",
@@ -123,33 +130,64 @@ ENTRY_TYPE_NAMES = {
     7: "socket",
 }
 
-ENTRY_FLAG_ATIME_ABSENT = 1 << 1
 ENTRY_FLAG_CTIME_ABSENT = 1 << 2
-ENTRY_FLAG_BTIME_ABSENT = 1 << 3
 ENTRY_FLAG_SPARSE = 1 << 4
+ENTRY_FLAG_METADATA_PARTIAL = 1 << 5
 ENTRY_FLAG_UNSTABLE = 1 << 7
 
 TLV_SYMLINK_TARGET = 0x0001
 TLV_USER_NAME = 0x0002
 TLV_GROUP_NAME = 0x0003
-TLV_ROOT_PATH = 0x0004
+TLV_KNOWN = (TLV_SYMLINK_TARGET, TLV_USER_NAME, TLV_GROUP_NAME)
+TLV_FLAG_CRITICAL = 1
 
+SNAPSHOT_META_TAG_NAMES = {
+    1: "author",
+    2: "host",
+    3: "message",
+    5: "exclude_rules",
+    6: "checksum_commit",
+}
+
+# File role registry. Roles 3, 4, 5, 7, 8 and 14 carry a file_hash; the
+# path of each follows from the role alone.
+ROLE_INDEX = 1
+ROLE_RUN = 2
+ROLE_DISC = 3
+ROLE_README = 4
+ROLE_FORMAT = 5
+ROLE_REFS = 7
+ROLE_DISCS = 8
+ROLE_CHECKSUM = 10
+ROLE_PARITY = 11
+ROLE_RUN2 = 12
+ROLE_OBJECT = 13
+ROLE_REFERENCE = 14
+HASHED_ROLES = (ROLE_DISC, ROLE_README, ROLE_FORMAT, ROLE_REFS, ROLE_DISCS, ROLE_REFERENCE)
+# The roles inside the FEC stream, in the row order of INDEX. The rows of
+# every other role describe a file of the run outside the stream.
+STREAM_ROLES = (ROLE_INDEX, ROLE_DISC, ROLE_README, ROLE_FORMAT, ROLE_REFS, ROLE_DISCS,
+                ROLE_OBJECT, ROLE_REFERENCE)
+
+BLOCK_SIZE = 2048
 
 # ---------------------------------------------------------------------------
 # Common header and object header.
 
 COMMON_HEADER_LEN = 32
 OBJECT_HEADER_LEN = 32
+OBJECT_FIXED_LEN = COMMON_HEADER_LEN + OBJECT_HEADER_LEN
 
 
 def decode_common_header(buf: bytes, where: str):
+    """The 32-byte header that begins every structure: the project magic,
+    the kind name, version_major and header_len. A reader refuses an
+    unknown version_major and ignores every reserved field."""
     if len(buf) < COMMON_HEADER_LEN:
         raise FormatError(f"{where}: buffer shorter than the common header")
     magic_project = buf[0:8]
     magic_kind = buf[8:16]
-    version_major, version_minor, header_len, _reserved_u16 = struct.unpack_from(
-        "<HHHH", buf, 16
-    )
+    version_major, header_len = struct.unpack_from("<H2xH", buf, 16)
     if magic_project != PROJECT_MAGIC:
         raise FormatError(f"{where}: bad magic_project {magic_project!r}")
     if version_major != 1:
@@ -157,26 +195,42 @@ def decode_common_header(buf: bytes, where: str):
     return {
         "magic_kind": magic_kind,
         "version_major": version_major,
-        "version_minor": version_minor,
         "header_len": header_len,
     }
+
+
+def check_magic_kind(common: dict, want: bytes, where: str):
+    if common["magic_kind"] != want:
+        raise FormatError(
+            f"{where}: magic_kind {common['magic_kind']!r}, want {want!r}"
+        )
+
+
+def variable_area_start(common: dict, known_len: int, where: str) -> int:
+    """header_len is the offset of the first byte after the fixed part, so
+    it marks where the rows, the entries or the TLV records begin. A
+    header_len below the fixed part this decoder knows is refused; a
+    larger one means a later writer appended a field, and the excess is
+    skipped instead of misread."""
+    header_len = common["header_len"]
+    if header_len < known_len:
+        raise FormatError(
+            f"{where}: header_len {header_len} below the known fixed part {known_len}"
+        )
+    return header_len
 
 
 def object_header_fields(body: bytes):
     """Parses the 32-byte object header body alone, with no CRC check."""
     if len(body) < OBJECT_HEADER_LEN:
         raise FormatError("buffer shorter than the object header")
-    kind, hash_algo, digest_len, compression, crypto, _r8, _r16 = struct.unpack_from(
-        "<BBBBBBH", body, 0
-    )
+    kind, hash_algo, compression = struct.unpack_from("<BBxB", body, 0)
     payload_len, stored_len = struct.unpack_from("<QQ", body, 8)
     header_crc32c = struct.unpack_from("<I", body, 24)[0]
     return {
         "kind": kind,
         "hash_algo": hash_algo,
-        "digest_len": digest_len,
         "compression": compression,
-        "crypto": crypto,
         "payload_len": payload_len,
         "stored_len": stored_len,
         "header_crc32c": header_crc32c,
@@ -185,16 +239,12 @@ def object_header_fields(body: bytes):
 
 def decode_object_header(buf: bytes, where: str, verify_crc: bool = True):
     """Parses the object header that follows the common header in buf, and,
-    when verify_crc is set, verifies header_crc32c against the common
-    header and object header bytes it covers."""
-    if len(buf) < COMMON_HEADER_LEN + OBJECT_HEADER_LEN:
+    when verify_crc is set, verifies header_crc32c over the common header
+    and the first 24 bytes of the object header."""
+    if len(buf) < OBJECT_FIXED_LEN:
         raise FormatError(f"{where}: buffer shorter than the object header")
-    body = buf[COMMON_HEADER_LEN : COMMON_HEADER_LEN + OBJECT_HEADER_LEN]
-    fields = object_header_fields(body)
-    if not verify_crc:
-        return fields
-    covered = buf[0 : COMMON_HEADER_LEN + 24]
-    if crc32c(covered) != fields["header_crc32c"]:
+    fields = object_header_fields(buf[COMMON_HEADER_LEN:OBJECT_FIXED_LEN])
+    if verify_crc and crc32c(buf[0 : COMMON_HEADER_LEN + 24]) != fields["header_crc32c"]:
         raise FormatError(f"{where}: object header_crc32c mismatch")
     return fields
 
@@ -223,38 +273,33 @@ class ZstdUnavailable(Exception):
     """Neither compression.zstd nor the zstd command-line tool is present."""
 
 
-def zstd_decompress(data: bytes, payload_len: int) -> bytes:
-    mod = _zstd_module()
-    if mod is not None:
-        out = mod.decompress(data)
-        if len(out) != payload_len:
-            raise FormatError(
-                f"decompressed length {len(out)} does not match payload_len {payload_len}"
-            )
-        return out
-    tool = _which("zstd")
-    if tool is None:
-        raise ZstdUnavailable(
-            "no compression.zstd module and no zstd command-line tool found; "
-            "cannot expand this compressed chunk"
-        )
-    proc = subprocess.run(
-        [tool, "-d", "-c", "-q"], input=data, stdout=subprocess.PIPE, check=True
-    )
-    out = proc.stdout
-    if len(out) != payload_len:
-        raise FormatError(
-            f"decompressed length {len(out)} does not match payload_len {payload_len}"
-        )
-    return out
-
-
 def _which(name: str):
     for d in os.environ.get("PATH", "").split(os.pathsep):
         candidate = os.path.join(d, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def zstd_decompress(data: bytes, payload_len: int) -> bytes:
+    mod = _zstd_module()
+    if mod is not None:
+        out = mod.decompress(data)
+    else:
+        tool = _which("zstd")
+        if tool is None:
+            raise ZstdUnavailable(
+                "no compression.zstd module and no zstd command-line tool found; "
+                "cannot expand this compressed payload"
+            )
+        out = subprocess.run(
+            [tool, "-d", "-c", "-q"], input=data, stdout=subprocess.PIPE, check=True
+        ).stdout
+    if len(out) != payload_len:
+        raise FormatError(
+            f"decompressed length {len(out)} does not match payload_len {payload_len}"
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -264,11 +309,23 @@ def _which(name: str):
 class ObjectFile:
     """A decoded object file: its headers, and its uncompressed payload."""
 
-    def __init__(self, common, obj_header, payload: bytes, content_id_hex: str):
+    def __init__(self, common, obj_header, payload, content_id_hex):
         self.common = common
         self.obj_header = obj_header
         self.payload = payload
         self.content_id_hex = content_id_hex
+
+    def kind_fixed_len(self, known_len: int, where: str) -> int:
+        """The offset inside the payload where the entries or the TLV
+        records start: header_len minus the two headers. A later writer
+        can enlarge it; it never shrinks below the known fixed body."""
+        off = self.common["header_len"] - OBJECT_FIXED_LEN
+        if off < known_len:
+            raise FormatError(
+                f"{where}: header_len {self.common['header_len']} below the known "
+                f"fixed body ({OBJECT_FIXED_LEN + known_len})"
+            )
+        return off
 
 
 def decode_object_bytes(
@@ -279,8 +336,27 @@ def decode_object_bytes(
     not compare it against any file name; read_object_file does that."""
     common = decode_common_header(buf, where)
     obj_header = decode_object_header(buf, where, verify_crc=verify_crc)
-    fixed_len = COMMON_HEADER_LEN + OBJECT_HEADER_LEN
-    stored = buf[fixed_len : fixed_len + obj_header["stored_len"]]
+    # The stored bytes always start right after the two headers. A chunk
+    # has no fixed body, so its header_len is exactly 64: every payload
+    # byte of a chunk is file content.
+    if common["magic_kind"] == MAGIC_CHUNK:
+        if common["header_len"] != OBJECT_FIXED_LEN:
+            raise FormatError(
+                f"{where}: chunk header_len {common['header_len']}, want {OBJECT_FIXED_LEN}"
+            )
+    else:
+        variable_area_start(common, OBJECT_FIXED_LEN, where)
+
+    hash_algo = obj_header["hash_algo"]
+    if hash_algo != HASH_ALGO_SHA256:
+        raise FormatError(
+            f"{where}: unsupported hash_algo 0x{hash_algo:02x}; "
+            f"only sha2-256 (0x{HASH_ALGO_SHA256:02x}) is implemented"
+        )
+    kind = obj_header["kind"]
+    if kind not in OBJECT_KIND_NAMES:
+        raise FormatError(f"{where}: object kind {kind} outside 1 to 4")
+    stored = buf[OBJECT_FIXED_LEN : OBJECT_FIXED_LEN + obj_header["stored_len"]]
     if len(stored) != obj_header["stored_len"]:
         raise FormatError(f"{where}: stored bytes truncated")
 
@@ -299,7 +375,7 @@ def decode_object_bytes(
     else:
         raise FormatError(f"{where}: unsupported compression id {compression}")
 
-    text_form = "1220" + sha256(payload).hexdigest()  # the text form
+    text_form = "1220" + sha256(payload).hexdigest()
     return ObjectFile(common, obj_header, payload, text_form)
 
 
@@ -308,42 +384,47 @@ def read_object_file(path: str, report: Report = None) -> ObjectFile:
     against its file name, and returns the decoded payload bytes."""
     with open(path, "rb") as f:
         buf = f.read()
-    where = path
-    obj = decode_object_bytes(buf, where, report=report)
+    obj = decode_object_bytes(buf, path, report=report)
     if obj.payload is None:
         return obj
     name = os.path.basename(path)
     if name != obj.content_id_hex:
         message = f"content id mismatch: file name {name}, computed {obj.content_id_hex}"
         if report is not None:
-            report.fail(where, message)
-            return ObjectFile(obj.common, obj.obj_header, obj.payload, None)
-        raise FormatError(f"{where}: {message}")
+            # The bytes are damaged. They never reach a caller: a reader
+            # verifies the content id before it returns object bytes.
+            report.fail(path, message)
+            return ObjectFile(obj.common, obj.obj_header, None, None)
+        raise FormatError(f"{path}: {message}")
     return obj
 
 
 # ---------------------------------------------------------------------------
 # Chunk: opaque payload bytes. Nothing further to parse.
 
-
 # ---------------------------------------------------------------------------
-# Blob.
+# Blob: the ordered chunk ids of one file. An entry stores no file
+# offset; the offset of an entry is the sum of the lengths before it.
 
-BLOB_ENTRY_LEN = 48
+BLOB_BODY_FIXED_LEN = 8
+BLOB_ENTRY_LEN = 40
 
 
-def parse_blob(payload: bytes, where: str):
-    entry_count, total_size = struct.unpack_from("<QQ", payload, 0)
-    entry_size, hash_algo, digest_len, level = struct.unpack_from(
-        "<HBBB", payload, 16
-    )
-    if level > 1:
-        raise FormatError(f"{where}: blob level {level} above 1")
+def parse_blob(payload: bytes, where: str, obj: ObjectFile = None):
+    entry_count = struct.unpack_from("<Q", payload, 0)[0]
+    off = obj.kind_fixed_len(BLOB_BODY_FIXED_LEN, where) if obj else BLOB_BODY_FIXED_LEN
+    if off + entry_count * BLOB_ENTRY_LEN != len(payload):
+        raise FormatError(
+            f"{where}: {entry_count} entries do not fill the payload "
+            f"({len(payload)} bytes from offset {off})"
+        )
     entries = []
-    off = 24
+    file_offset = 0
     for _ in range(entry_count):
         content_id = payload[off : off + 32]
-        length, file_offset = struct.unpack_from("<QQ", payload, off + 32)
+        length = struct.unpack_from("<Q", payload, off + 32)[0]
+        if length == 0:
+            raise FormatError(f"{where}: blob entry with length 0")
         entries.append(
             {
                 "content_id": content_id.hex(),
@@ -351,20 +432,20 @@ def parse_blob(payload: bytes, where: str):
                 "file_offset": file_offset,
             }
         )
+        file_offset += length
         off += BLOB_ENTRY_LEN
-    return {
-        "entry_count": entry_count,
-        "total_size": total_size,
-        "entry_size": entry_size,
-        "level": level,
-        "entries": entries,
-    }
+    return {"entry_count": entry_count, "size": file_offset, "entries": entries}
 
 
 # ---------------------------------------------------------------------------
 # Tree, tree entry and TLV.
 
-TREE_ENTRY_HEADER_LEN = 112
+TREE_BODY_FIXED_LEN = 8
+TREE_ENTRY_HEADER_LEN = 72
+
+# The content area holds one blob id for a regular file, one tree id for
+# a directory, and nothing for every other entry type.
+CONTENT_LEN_BY_TYPE = {1: 32, 2: 32, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0}
 
 
 def _align8(n: int) -> int:
@@ -372,6 +453,9 @@ def _align8(n: int) -> int:
 
 
 def parse_tlvs(buf: bytes, where: str):
+    """Extension TLV records of one tree entry. An unknown record with the
+    critical bit set refuses the entry; an unknown non-critical record is
+    kept and reported."""
     tlvs = []
     p = 0
     while p < len(buf):
@@ -381,46 +465,60 @@ def parse_tlvs(buf: bytes, where: str):
         n = _align8(8 + tlv_len)
         if p + n > len(buf):
             raise FormatError(f"{where}: truncated TLV payload")
-        payload = buf[p + 8 : p + 8 + tlv_len]
-        pad = buf[p + 8 + tlv_len : p + n]
-        if any(pad):
-            raise FormatError(f"{where}: nonzero TLV padding")
-        tlvs.append({"type": tlv_type, "flags": flags, "payload": payload})
+        if tlv_type not in TLV_KNOWN and (
+            flags & TLV_FLAG_CRITICAL or 0x8000 <= tlv_type <= 0xBFFF
+        ):
+            raise FormatError(f"{where}: unknown critical TLV type 0x{tlv_type:04x}")
+        tlvs.append(
+            {"type": tlv_type, "flags": flags, "payload": buf[p + 8 : p + 8 + tlv_len]}
+        )
         p += n
     return tlvs
 
 
 def parse_tree_entry(buf: bytes, where: str):
-    entry_len = struct.unpack_from("<I", buf, 0)[0]
-    if entry_len < TREE_ENTRY_HEADER_LEN or entry_len % 8 != 0 or entry_len > len(buf):
-        raise FormatError(f"{where}: bad entry_len {entry_len}")
-    entry_type = buf[6]
-    entry_flags = buf[7]
-    size = struct.unpack_from("<Q", buf, 8)[0]
-    mtime_sec = struct.unpack_from("<q", buf, 24)[0]
-    atime_sec = struct.unpack_from("<q", buf, 32)[0]
-    ctime_sec = struct.unpack_from("<q", buf, 40)[0]
-    btime_sec = struct.unpack_from("<q", buf, 48)[0]
-    mtime_nsec, atime_nsec, ctime_nsec, btime_nsec = struct.unpack_from(
-        "<IIII", buf, 56
-    )
-    mode, uid, gid, rdev_major, rdev_minor = struct.unpack_from("<IIIII", buf, 72)
-    content_off, content_len, ext_off, ext_len = struct.unpack_from("<IIII", buf, 92)
-    name_off, name_len = struct.unpack_from("<HH", buf, 108)
+    """One tree entry: the 72-byte fixed header, then the name, the
+    content area and the TLV area, each at the offset the entry's own
+    lengths derive."""
+    if len(buf) < TREE_ENTRY_HEADER_LEN:
+        raise FormatError(f"{where}: truncated tree entry")
+    entry_len, entry_type, entry_flags, name_len = struct.unpack_from("<IBBH", buf, 0)
+    size, mtime_sec, ctime_sec = struct.unpack_from("<Qqq", buf, 8)
+    mtime_nsec, ctime_nsec = struct.unpack_from("<II", buf, 32)
+    mode, uid, gid, rdev_major, rdev_minor = struct.unpack_from("<IIIII", buf, 40)
+    content_len, ext_len = struct.unpack_from("<II", buf, 60)
 
-    if name_len < 1 or name_len > 4095 or name_off + name_len > entry_len:
+    if entry_type not in ENTRY_TYPE_NAMES:
+        raise FormatError(f"{where}: bad entry_type {entry_type}")
+    if name_len < 1 or name_len > 4095:
         raise FormatError(f"{where}: bad name_len {name_len}")
-    name = buf[name_off : name_off + name_len]
+    if content_len != CONTENT_LEN_BY_TYPE[entry_type]:
+        raise FormatError(
+            f"{where}: content_len {content_len} for entry_type {entry_type}"
+        )
+    if ext_len % 8:
+        raise FormatError(f"{where}: ext_len {ext_len} is not a multiple of 8")
+
+    content_off = _align8(TREE_ENTRY_HEADER_LEN + name_len)
+    ext_off = _align8(content_off + content_len)
+    derived_len = _align8(ext_off + ext_len)
+    if entry_len != derived_len:
+        raise FormatError(
+            f"{where}: entry_len {entry_len} differs from the derived {derived_len}"
+        )
+    if entry_len > len(buf):
+        raise FormatError(f"{where}: entry_len {entry_len} past the end of the tree")
+
+    name = buf[TREE_ENTRY_HEADER_LEN : TREE_ENTRY_HEADER_LEN + name_len]
     if name in (b".", b"..") or b"/" in name or b"\\" in name or 0 in name:
         raise FormatError(f"{where}: invalid entry name {name!r}")
 
     content_id = None
     if content_len:
         content_id = buf[content_off : content_off + content_len].hex()
-
-    tlvs = []
-    if ext_len:
-        tlvs = parse_tlvs(buf[ext_off : ext_off + ext_len], where)
+    tlvs = parse_tlvs(buf[ext_off : ext_off + ext_len], where) if ext_len else []
+    if entry_type == 3 and not any(t["type"] == TLV_SYMLINK_TARGET for t in tlvs):
+        raise FormatError(f"{where}: symlink entry {name!r} carries no target TLV")
 
     return {
         "entry_len": entry_len,
@@ -428,13 +526,9 @@ def parse_tree_entry(buf: bytes, where: str):
         "entry_flags": entry_flags,
         "size": size,
         "mtime_sec": mtime_sec,
-        "atime_sec": atime_sec,
         "ctime_sec": ctime_sec,
-        "btime_sec": btime_sec,
         "mtime_nsec": mtime_nsec,
-        "atime_nsec": atime_nsec,
         "ctime_nsec": ctime_nsec,
-        "btime_nsec": btime_nsec,
         "mode": mode,
         "uid": uid,
         "gid": gid,
@@ -446,15 +540,14 @@ def parse_tree_entry(buf: bytes, where: str):
     }
 
 
-def parse_tree(payload: bytes, where: str):
-    entry_count, reserved_u32 = struct.unpack_from("<II", payload, 0)
-    if reserved_u32 != 0:
-        raise FormatError(f"{where}: tree reserved_u32 not zero")
+def parse_tree(payload: bytes, where: str, obj: ObjectFile = None):
+    entry_count = struct.unpack_from("<I", payload, 0)[0]
+    pos = obj.kind_fixed_len(TREE_BODY_FIXED_LEN, where) if obj else TREE_BODY_FIXED_LEN
     entries = []
-    pos = 8
     prev_key = None
     for _ in range(entry_count):
         e = parse_tree_entry(payload[pos:], where)
+        # A directory name compares as if a '/' byte were appended.
         key = e["name"] + (b"/" if e["entry_type"] == 2 else b"")
         if prev_key is not None and prev_key >= key:
             raise FormatError(f"{where}: tree entries not in ascending order")
@@ -467,19 +560,12 @@ def parse_tree(payload: bytes, where: str):
 # ---------------------------------------------------------------------------
 # Snapshot.
 
-SNAPSHOT_FIXED_LEN = 112
-
-SNAPSHOT_META_TAG_NAMES = {
-    1: "author",
-    2: "host",
-    3: "message",
-    4: "source_root",
-    5: "exclude_rules",
-    6: "checksum_commit",
-}
+SNAPSHOT_BODY_FIXED_LEN = 112
 
 
 def parse_snapshot_meta(buf: bytes, where: str):
+    """Snapshot metadata records. Each is padded to a 4-byte boundary. An
+    unknown tag in the reserved critical range refuses the snapshot."""
     records = []
     p = 0
     while p < len(buf):
@@ -491,30 +577,28 @@ def parse_snapshot_meta(buf: bytes, where: str):
             total += 4 - (total % 4)
         if p + total > len(buf):
             raise FormatError(f"{where}: truncated snapshot meta value")
-        value = buf[p + 8 : p + 8 + value_len]
-        pad = buf[p + 8 + value_len : p + total]
-        if any(pad):
-            raise FormatError(f"{where}: nonzero snapshot meta padding")
-        records.append({"tag": tag, "flags": flags, "value": value})
+        if 0x8000 <= tag <= 0xBFFF:
+            raise FormatError(f"{where}: unknown critical metadata tag 0x{tag:04x}")
+        records.append(
+            {"tag": tag, "flags": flags, "value": buf[p + 8 : p + 8 + value_len]}
+        )
         p += total
     return records
 
 
-def parse_snapshot(payload: bytes, where: str):
+def parse_snapshot(payload: bytes, where: str, obj: ObjectFile = None):
     root_tree = payload[0:32].hex()
     parent = payload[32:64].hex()
-    generation = struct.unpack_from("<Q", payload, 64)[0]
     time_sec = struct.unpack_from("<q", payload, 72)[0]
     time_nsec, tz_offset_sec = struct.unpack_from("<Ii", payload, 80)
-    total_size, reachable_object_count = struct.unpack_from("<QQ", payload, 88)
-    hash_algo, chunker_profile = struct.unpack_from("<BB", payload, 104)
+    total_size = struct.unpack_from("<Q", payload, 88)[0]
     meta_count = struct.unpack_from("<H", payload, 106)[0]
-    source_type, source_flags, parent_hash_algo, reserved_u8 = struct.unpack_from(
-        "<BBBB", payload, 108
+    meta_start = (
+        obj.kind_fixed_len(SNAPSHOT_BODY_FIXED_LEN, where)
+        if obj
+        else SNAPSHOT_BODY_FIXED_LEN
     )
-    if reserved_u8 != 0:
-        raise FormatError(f"{where}: snapshot reserved_u8 not zero")
-    meta = parse_snapshot_meta(payload[SNAPSHOT_FIXED_LEN:], where)
+    meta = parse_snapshot_meta(payload[meta_start:], where)
     if len(meta) != meta_count:
         raise FormatError(
             f"{where}: meta_count {meta_count} does not match {len(meta)} records found"
@@ -522,433 +606,361 @@ def parse_snapshot(payload: bytes, where: str):
     return {
         "root_tree": root_tree,
         "parent": parent,
-        "generation": generation,
         "time_sec": time_sec,
         "time_nsec": time_nsec,
         "tz_offset_sec": tz_offset_sec,
         "total_size": total_size,
-        "reachable_object_count": reachable_object_count,
-        "hash_algo": hash_algo,
-        "chunker_profile": chunker_profile,
-        "source_type": source_type,
-        "source_flags": source_flags,
-        "parent_hash_algo": parent_hash_algo,
         "meta": meta,
     }
 
 
 # ---------------------------------------------------------------------------
-# Disc superblock. 2048 bytes, never compressed, no object
-# header: it carries only the common header before its own fixed body.
+# Disc superblock: 2048 bytes, one sector, never compressed.
 
 DISC_LEN = 2048
 
 
 def parse_disc(buf: bytes, where: str):
-    if len(buf) < DISC_LEN:
-        raise FormatError(f"{where}: short disc superblock")
+    if len(buf) != DISC_LEN:
+        raise FormatError(f"{where}: disc superblock is {len(buf)} bytes, want {DISC_LEN}")
     common = decode_common_header(buf, where)
-    if common["magic_kind"] != MAGIC_DISC:
-        raise FormatError(f"{where}: not a disc superblock")
-    disc_uuid = buf[32:48]
-    repo_uuid = buf[48:64]
-    disc_seq, capacity_sectors, capacity_forced_sectors = struct.unpack_from(
-        "<QQQ", buf, 64
-    )
-    prev_disc_super_hash = buf[88:120]
-    created_sec = struct.unpack_from("<q", buf, 120)[0]
-    created_nsec, tz_offset_sec = struct.unpack_from("<Ii", buf, 128)
-    media_type, fs_profile, fanout_levels, capacity_is_forced, sealed = buf[136:141]
-    label_len = struct.unpack_from("<I", buf, 144)[0]
-    label = buf[148 : 148 + min(label_len, 64)]
-    tool_version = struct.unpack_from("<I", buf, 212)[0]
+    check_magic_kind(common, MAGIC_DISC, where)
     super_crc32c = struct.unpack_from("<I", buf, 2044)[0]
     if crc32c(buf[0:2044]) != super_crc32c:
         raise FormatError(f"{where}: super_crc32c mismatch")
+    disc_seq, capacity_sectors = struct.unpack_from("<QQ", buf, 64)
+    created_sec = struct.unpack_from("<q", buf, 120)[0]
+    created_nsec, tz_offset_sec = struct.unpack_from("<Ii", buf, 128)
+    label_len = struct.unpack_from("<I", buf, 144)[0]
+    if label_len > 64:
+        raise FormatError(f"{where}: label_len {label_len} above 64")
     return {
-        "disc_uuid": disc_uuid,
-        "repo_uuid": repo_uuid,
+        "disc_uuid": buf[32:48],
+        "repo_uuid": buf[48:64],
         "disc_seq": disc_seq,
         "capacity_sectors": capacity_sectors,
-        "capacity_forced_sectors": capacity_forced_sectors,
-        "prev_disc_super_hash": prev_disc_super_hash,
         "created_sec": created_sec,
         "created_nsec": created_nsec,
         "tz_offset_sec": tz_offset_sec,
-        "media_type": media_type,
-        "fs_profile": fs_profile,
-        "fanout_levels": fanout_levels,
-        "capacity_is_forced": capacity_is_forced,
-        "sealed": sealed,
         "label_len": label_len,
-        "label": label,
-        "tool_version": tool_version,
+        "label": buf[148 : 148 + label_len],
+        "tool_version": struct.unpack_from("<I", buf, 212)[0],
     }
 
 
 # ---------------------------------------------------------------------------
-# Run header. 512 bytes of structure inside a 2048-byte file;
-# bytes 512 to 2047 are zero padding, not part of the structure.
+# Run header: 512 bytes, written two times as RUN.bin and RUN2.bin.
 
 RUN_LEN = 512
 
 
 def parse_run(buf: bytes, where: str):
-    if len(buf) < RUN_LEN:
-        raise FormatError(f"{where}: short run header")
+    if len(buf) != RUN_LEN:
+        raise FormatError(f"{where}: run header is {len(buf)} bytes, want {RUN_LEN}")
     common = decode_common_header(buf, where)
-    if common["magic_kind"] != MAGIC_RUN:
-        raise FormatError(f"{where}: not a run header")
-    disc_uuid = buf[32:48]
-    repo_uuid = buf[48:64]
-    run_seq, disc_seq = struct.unpack_from("<QQ", buf, 64)
-    fec_k, fec_m = struct.unpack_from("<HH", buf, 80)
-    fec_scheme, hash_algo, chunker_profile, compression, fs_profile, run_kind, run_flags = (
-        buf[84:91]
-    )
-    index_bytes = struct.unpack_from("<Q", buf, 96)[0]
-    index_hash = buf[104:136]
-    stream_bytes = struct.unpack_from("<Q", buf, 136)[0]
-    prev_run_hash = buf[144:176]
-    created_sec = struct.unpack_from("<q", buf, 176)[0]
-    created_nsec, tool_version = struct.unpack_from("<II", buf, 184)
-    disc_object_count = struct.unpack_from("<Q", buf, 192)[0]
-    disc_run_index = struct.unpack_from("<I", buf, 200)[0]
+    check_magic_kind(common, MAGIC_RUN, where)
     header_crc32c = struct.unpack_from("<I", buf, 504)[0]
     if crc32c(buf[0:504]) != header_crc32c:
         raise FormatError(f"{where}: run header_crc32c mismatch")
+    run_seq, disc_seq = struct.unpack_from("<QQ", buf, 64)
+    fec_k, fec_m, fec_scheme, hash_algo = struct.unpack_from("<HHBB", buf, 80)
+    if hash_algo != HASH_ALGO_SHA256:
+        raise FormatError(
+            f"{where}: unsupported hash_algo 0x{hash_algo:02x}; "
+            f"only sha2-256 (0x{HASH_ALGO_SHA256:02x}) is implemented"
+        )
+    index_bytes = struct.unpack_from("<Q", buf, 96)[0]
+    stream_bytes = struct.unpack_from("<Q", buf, 136)[0]
+    created_sec = struct.unpack_from("<q", buf, 176)[0]
+    created_nsec, tool_version = struct.unpack_from("<II", buf, 184)
     return {
-        "disc_uuid": disc_uuid,
-        "repo_uuid": repo_uuid,
+        "disc_uuid": buf[32:48],
+        "repo_uuid": buf[48:64],
         "run_seq": run_seq,
         "disc_seq": disc_seq,
         "fec_k": fec_k,
         "fec_m": fec_m,
+        "fec_scheme": fec_scheme,
         "hash_algo": hash_algo,
-        "chunker_profile": chunker_profile,
-        "compression": compression,
-        "run_kind": run_kind,
-        "run_flags": run_flags,
         "index_bytes": index_bytes,
-        "index_hash": index_hash,
+        "index_hash": buf[104:136],
         "stream_bytes": stream_bytes,
-        "prev_run_hash": prev_run_hash,
         "created_sec": created_sec,
         "created_nsec": created_nsec,
         "tool_version": tool_version,
-        "disc_object_count": disc_object_count,
-        "disc_run_index": disc_run_index,
+    }
+
+
+def fec_geometry(run: dict):
+    """stream_blocks and L, the block count of one column, derived from
+    the run header alone. Neither is stored."""
+    if run["fec_scheme"] != 1:
+        return None
+    stream_blocks = run["stream_bytes"] // BLOCK_SIZE
+    k = run["fec_k"]
+    if k == 0:
+        raise FormatError("run header: fec_scheme 1 with fec_k 0")
+    return {
+        "stream_blocks": stream_blocks,
+        "column_blocks": -(-stream_blocks // k),
     }
 
 
 # ---------------------------------------------------------------------------
-# INDEX.
+# INDEX: the Files, Objects and Prereqs tables of one run.
 
-INDEX_FIXED_BODY_LEN = 48
-INDEX_HEADER_LEN = COMMON_HEADER_LEN + INDEX_FIXED_BODY_LEN
-INDEX_FILE_RECORD_LEN = 48
-INDEX_OBJECT_RECORD_LEN = 72
-INDEX_PREREQ_RECORD_LEN = 40
+INDEX_HEADER_LEN = 56
+INDEX_FILE_ROW_LEN = 48
+INDEX_OBJECT_ROW_LEN = 40
+INDEX_PREREQ_ROW_LEN = 48
 
 
 def parse_index(buf: bytes, where: str):
-    if len(buf) < INDEX_HEADER_LEN:
-        raise FormatError(f"{where}: short INDEX header")
     common = decode_common_header(buf, where)
-    if common["magic_kind"] != MAGIC_INDEX:
-        raise FormatError(f"{where}: not an INDEX")
+    check_magic_kind(common, MAGIC_INDEX, where)
     run_seq = struct.unpack_from("<Q", buf, 32)[0]
     file_count, object_count, prereq_count = struct.unpack_from("<III", buf, 40)
-    hash_algo, digest_len = buf[58:60]
-    container_len = struct.unpack_from("<Q", buf, 64)[0]
-    body_crc32c, header_crc32c = struct.unpack_from("<II", buf, 72)
-    if crc32c(buf[0:76]) != header_crc32c:
-        raise FormatError(f"{where}: INDEX header_crc32c mismatch")
 
+    off = variable_area_start(common, INDEX_HEADER_LEN, where)
     total = (
-        INDEX_HEADER_LEN
-        + file_count * INDEX_FILE_RECORD_LEN
-        + object_count * INDEX_OBJECT_RECORD_LEN
-        + prereq_count * INDEX_PREREQ_RECORD_LEN
+        off
+        + file_count * INDEX_FILE_ROW_LEN
+        + object_count * INDEX_OBJECT_ROW_LEN
+        + prereq_count * INDEX_PREREQ_ROW_LEN
     )
-    if len(buf) < total:
-        raise FormatError(f"{where}: INDEX buffer shorter than container_len")
-    if crc32c(buf[INDEX_HEADER_LEN:total]) != body_crc32c:
-        raise FormatError(f"{where}: INDEX body_crc32c mismatch")
+    if len(buf) != total:
+        raise FormatError(
+            f"{where}: INDEX is {len(buf)} bytes, the row counts need {total}"
+        )
 
-    off = INDEX_HEADER_LEN
     files = []
     for _ in range(file_count):
-        row = buf[off : off + INDEX_FILE_RECORD_LEN]
-        file_hash = row[0:32]
-        byte_len = struct.unpack_from("<Q", row, 32)[0]
-        role = row[40]
-        files.append({"file_hash": file_hash, "byte_len": byte_len, "role": role})
-        off += INDEX_FILE_RECORD_LEN
+        byte_len = struct.unpack_from("<Q", buf, off + 32)[0]
+        files.append(
+            {"file_hash": buf[off : off + 32], "byte_len": byte_len, "role": buf[off + 40]}
+        )
+        off += INDEX_FILE_ROW_LEN
 
     objects = []
     for _ in range(object_count):
-        row = buf[off : off + INDEX_OBJECT_RECORD_LEN]
-        content_id = row[0:32]
-        file_index = struct.unpack_from("<I", row, 32)[0]
-        offset, stored_len, payload_len = struct.unpack_from("<QQQ", row, 40)
-        kind, compression = row[64:66]
-        flags = struct.unpack_from("<H", row, 66)[0]
-        if kind < 1 or kind > 4:
+        kind = buf[off + 32]
+        if kind not in OBJECT_KIND_NAMES:
             raise FormatError(f"{where}: Objects row kind {kind} outside 1 to 4")
-        objects.append(
-            {
-                "content_id": content_id.hex(),
-                "file_index": file_index,
-                "offset": offset,
-                "stored_len": stored_len,
-                "payload_len": payload_len,
-                "kind": kind,
-                "compression": compression,
-                "flags": flags,
-            }
-        )
-        off += INDEX_OBJECT_RECORD_LEN
+        objects.append({"content_id": buf[off : off + 32].hex(), "kind": kind})
+        off += INDEX_OBJECT_ROW_LEN
 
     prereqs = []
     for _ in range(prereq_count):
-        row = buf[off : off + INDEX_PREREQ_RECORD_LEN]
-        content_id = row[0:32]
-        run_seq_p = struct.unpack_from("<Q", row, 32)[0]
-        prereqs.append({"content_id": content_id.hex(), "run_seq": run_seq_p})
-        off += INDEX_PREREQ_RECORD_LEN
+        prereqs.append(
+            {
+                "content_id": buf[off : off + 32].hex(),
+                "disc_uuid": buf[off + 32 : off + 48],
+            }
+        )
+        off += INDEX_PREREQ_ROW_LEN
 
+    object_rows = [f for f in files if f["role"] == ROLE_OBJECT]
+    if len(object_rows) != object_count:
+        raise FormatError(
+            f"{where}: {len(object_rows)} object file rows, object_count {object_count}"
+        )
     return {
         "run_seq": run_seq,
         "file_count": file_count,
         "object_count": object_count,
         "prereq_count": prereq_count,
-        "hash_algo": hash_algo,
-        "digest_len": digest_len,
-        "container_len": container_len,
         "files": files,
         "objects": objects,
         "prereqs": prereqs,
+        "object_rows": object_rows,
     }
 
 
-# ---------------------------------------------------------------------------
-# REFS, and the Ref object.
+def stream_bytes_from_index(idx: dict) -> int:
+    """The byte length of the FEC stream: every stream file of INDEX, in
+    row order, each padded with zero bytes to a multiple of the block
+    size. The run header records the same number."""
+    total = 0
+    for f in idx["files"]:
+        if f["role"] in STREAM_ROLES:
+            total += -(-f["byte_len"] // BLOCK_SIZE) * BLOCK_SIZE
+    return total
 
-REFS_FIXED_BODY_LEN = 40
-REFS_HEADER_LEN = COMMON_HEADER_LEN + REFS_FIXED_BODY_LEN
-REF_RECORD_LEN = 96
+
+# ---------------------------------------------------------------------------
+# REFS and DISCS: one container shape, two record kinds.
+
+TABLE_HEADER_LEN = 56
+REF_RECORD_LEN = 88
+DISCS_ROW_LEN = 176
+
+
+def _parse_table(buf: bytes, where: str, magic: bytes, record_len: int):
+    common = decode_common_header(buf, where)
+    check_magic_kind(common, magic, where)
+    record_count = struct.unpack_from("<Q", buf, 48)[0]
+    off = variable_area_start(common, TABLE_HEADER_LEN, where)
+    total = off + record_count * record_len
+    if len(buf) != total:
+        raise FormatError(
+            f"{where}: file is {len(buf)} bytes, {record_count} records need {total}"
+        )
+    return buf[32:48], record_count, off
 
 
 def parse_refs(buf: bytes, where: str):
-    if len(buf) < REFS_HEADER_LEN:
-        raise FormatError(f"{where}: short REFS header")
-    common = decode_common_header(buf, where)
-    if common["magic_kind"] != MAGIC_REFS:
-        raise FormatError(f"{where}: not a REFS table")
-    repo_uuid = buf[32:48]
-    record_count = struct.unpack_from("<Q", buf, 48)[0]
-    record_size, hash_algo, digest_len = struct.unpack_from("<HBB", buf, 56)
-    body_crc32c, header_crc32c = struct.unpack_from("<II", buf, 64)
-    if crc32c(buf[0:68]) != header_crc32c:
-        raise FormatError(f"{where}: REFS header_crc32c mismatch")
-
-    total = REFS_HEADER_LEN + record_count * REF_RECORD_LEN
-    if len(buf) < total:
-        raise FormatError(f"{where}: REFS buffer shorter than its record count")
-    if crc32c(buf[REFS_HEADER_LEN:total]) != body_crc32c:
-        raise FormatError(f"{where}: REFS body_crc32c mismatch")
-
-    off = REFS_HEADER_LEN
+    repo_uuid, record_count, off = _parse_table(buf, where, MAGIC_REFS, REF_RECORD_LEN)
     records = []
     for _ in range(record_count):
         row = buf[off : off + REF_RECORD_LEN]
-        snapshot_id = row[0:32]
         time_sec = struct.unpack_from("<q", row, 32)[0]
         time_nsec, name_len = struct.unpack_from("<IH", row, 40)
-        ref_hash_algo = row[46]
-        name = row[48:88].rstrip(b"\0")
-        run_seq = struct.unpack_from("<Q", row, 88)[0]
+        if name_len < 1 or name_len > 40:
+            raise FormatError(f"{where}: ref name_len {name_len} outside 1 to 40")
         records.append(
             {
-                "snapshot_id": snapshot_id.hex(),
+                "snapshot_id": row[0:32].hex(),
                 "time_sec": time_sec,
                 "time_nsec": time_nsec,
                 "name_len": name_len,
-                "hash_algo": ref_hash_algo,
-                "name": name.decode("utf-8", errors="replace"),
-                "run_seq": run_seq,
+                "name": row[48 : 48 + name_len].decode("utf-8", errors="replace"),
             }
         )
         off += REF_RECORD_LEN
-
     return {"repo_uuid": repo_uuid, "record_count": record_count, "records": records}
 
 
 def latest_ref(records, name: str):
-    """The newest on-disc ref record for name: highest run_seq, then
-    highest time_sec, then highest time_nsec, the Ref object's ordering
-    rule."""
-    matches = [r for r in records if r["name"] == name and r["run_seq"] != 0]
+    """The newest record of a name: the highest time_sec, then the highest
+    time_nsec, then the highest snapshot_id bytes."""
+    matches = [r for r in records if r["name"] == name]
     if not matches:
         return None
-    return max(matches, key=lambda r: (r["run_seq"], r["time_sec"], r["time_nsec"]))
-
-
-# ---------------------------------------------------------------------------
-# DISCS.
-
-DISCS_FIXED_BODY_LEN = 40
-DISCS_HEADER_LEN = COMMON_HEADER_LEN + DISCS_FIXED_BODY_LEN
-DISCS_ROW_LEN = 176
-
-RUN_STATUS_NAMES = {1: "verified", 2: "burned, not yet verified", 3: "withdrawn"}
-HEALTH_NAMES = {
-    1: "healthy",
-    2: "degraded",
-    3: "critical",
-    4: "failed",
-    5: "unknown",
-    6: "unverified, this disc",
-}
+    return max(
+        matches, key=lambda r: (r["time_sec"], r["time_nsec"], bytes.fromhex(r["snapshot_id"]))
+    )
 
 
 def parse_discs(buf: bytes, where: str):
-    if len(buf) < DISCS_HEADER_LEN:
-        raise FormatError(f"{where}: short DISCS header")
-    common = decode_common_header(buf, where)
-    if common["magic_kind"] != MAGIC_DISCS:
-        raise FormatError(f"{where}: not a DISCS table")
-    repo_uuid = buf[32:48]
-    record_count = struct.unpack_from("<Q", buf, 48)[0]
-    record_size, hash_algo, digest_len = struct.unpack_from("<HBB", buf, 56)
-    body_crc32c, header_crc32c = struct.unpack_from("<II", buf, 64)
-    if crc32c(buf[0:68]) != header_crc32c:
-        raise FormatError(f"{where}: DISCS header_crc32c mismatch")
-
-    total = DISCS_HEADER_LEN + record_count * DISCS_ROW_LEN
-    if len(buf) < total:
-        raise FormatError(f"{where}: DISCS buffer shorter than its record count")
-    if crc32c(buf[DISCS_HEADER_LEN:total]) != body_crc32c:
-        raise FormatError(f"{where}: DISCS body_crc32c mismatch")
-
-    off = DISCS_HEADER_LEN
+    repo_uuid, record_count, off = _parse_table(buf, where, MAGIC_DISCS, DISCS_ROW_LEN)
     rows = []
     for _ in range(record_count):
         row = buf[off : off + DISCS_ROW_LEN]
         run_seq, disc_seq = struct.unpack_from("<QQ", row, 0)
-        disc_uuid = row[16:32]
-        run_hash = row[32:64]
-        created_sec, last_verify_sec = struct.unpack_from("<qq", row, 64)
-        capacity_sectors, used_sectors = struct.unpack_from("<QQ", row, 80)
-        run_status, health = row[96:98]
-        rs_margin_percent, label_len = struct.unpack_from("<HH", row, 98)
-        label = row[102:166].rstrip(b"\0")
-        state_flags = row[166]
-        capacity_forced_sectors = struct.unpack_from("<Q", row, 168)[0]
+        created_sec = struct.unpack_from("<q", row, 64)[0]
+        capacity_sectors = struct.unpack_from("<Q", row, 80)[0]
+        label_len = struct.unpack_from("<H", row, 100)[0]
+        if label_len > 64:
+            raise FormatError(f"{where}: DISCS label_len {label_len} above 64")
         rows.append(
             {
                 "run_seq": run_seq,
                 "disc_seq": disc_seq,
-                "disc_uuid": disc_uuid,
-                "run_hash": run_hash,
+                "disc_uuid": row[16:32],
+                "run_hash": row[32:64],
                 "created_sec": created_sec,
-                "last_verify_sec": last_verify_sec,
                 "capacity_sectors": capacity_sectors,
-                "used_sectors": used_sectors,
-                "run_status": run_status,
-                "health": health,
-                "rs_margin_percent": rs_margin_percent,
-                "label": label.decode("utf-8", errors="replace"),
-                "state_flags": state_flags,
-                "capacity_forced_sectors": capacity_forced_sectors,
+                "label": row[102 : 102 + label_len].decode("utf-8", errors="replace"),
             }
         )
         off += DISCS_ROW_LEN
-
     return {"repo_uuid": repo_uuid, "record_count": record_count, "rows": rows}
 
 
 # ---------------------------------------------------------------------------
-# Checksum column record. The decoder does not use this
-# structure for verify or restore; it is parsed for completeness, since a
-# scrub tool would need it to find a damaged block.
+# Checksum column block. This decoder holds no Reed-Solomon code, so it
+# never repairs; it parses a block to report what a repair tool would
+# use to locate a damaged data block.
 
-CHECKSUM_RECORD_LEN = 2048
-CHECKSUM_DIGESTS_AREA_LEN = 1848
+CHECKSUM_BLOCK_LEN = 2048
+CHECKSUM_DIGESTS_OFF = 20
 CHECKSUM_DIGEST_SIZE = 8
-CHECKSUM_HEADER_LEN = 20
-MAGIC_CHECKSUM = _magic(b"CHECKSUM")
+CHECKSUM_DIGESTS_AREA_LEN = 1848
 
 
-def parse_checksum_record(buf: bytes, where: str):
-    if len(buf) < CHECKSUM_RECORD_LEN:
-        raise FormatError(f"{where}: short checksum record")
-    magic_kind = buf[0:8]
-    if magic_kind != MAGIC_CHECKSUM:
-        raise FormatError(f"{where}: not a checksum record")
+def parse_checksum_block(buf: bytes, where: str):
+    if len(buf) < CHECKSUM_BLOCK_LEN:
+        raise FormatError(f"{where}: short checksum block")
+    if buf[0:8] != MAGIC_CHECKSUM:
+        raise FormatError(f"{where}: not a checksum block")
     stripe_index = struct.unpack_from("<I", buf, 8)[0]
-    digest_count, digest_bytes, hash_algo = struct.unpack_from("<HBB", buf, 12)
+    digest_count = struct.unpack_from("<H", buf, 12)[0]
     header_crc32c = struct.unpack_from("<I", buf, 16)[0]
     if crc32c(buf[0:16]) != header_crc32c:
-        raise FormatError(f"{where}: checksum record header_crc32c mismatch")
-
-    digests_area = buf[CHECKSUM_HEADER_LEN : CHECKSUM_HEADER_LEN + CHECKSUM_DIGESTS_AREA_LEN]
-    used = digest_count * CHECKSUM_DIGEST_SIZE
-    if used > CHECKSUM_DIGESTS_AREA_LEN:
+        raise FormatError(f"{where}: checksum block header_crc32c mismatch")
+    if digest_count * CHECKSUM_DIGEST_SIZE > CHECKSUM_DIGESTS_AREA_LEN:
         raise FormatError(f"{where}: digest_count does not fit the digests area")
-    digests = [digests_area[i : i + 8] for i in range(0, used, CHECKSUM_DIGEST_SIZE)]
-    if any(digests_area[used:]):
-        raise FormatError(f"{where}: nonzero padding after the digests")
-
-    reserved = buf[CHECKSUM_HEADER_LEN + CHECKSUM_DIGESTS_AREA_LEN : CHECKSUM_RECORD_LEN]
-    if any(reserved):
-        raise FormatError(f"{where}: checksum record reserved area not zero")
-
+    digests = [
+        buf[CHECKSUM_DIGESTS_OFF + i * 8 : CHECKSUM_DIGESTS_OFF + i * 8 + 8]
+        for i in range(digest_count)
+    ]
     return {
         "stripe_index": stripe_index,
         "digest_count": digest_count,
-        "digest_bytes": digest_bytes,
-        "hash_algo": hash_algo,
         "digests": digests,
     }
 
 
 # ---------------------------------------------------------------------------
-# Repository layout helpers: files at the volume root, and fan-out on disc.
+# Repository layout: the volume tree, and the fan-out on disc.
 
 
-def find_noahsark_root(path: str) -> str:
-    if os.path.basename(os.path.normpath(path)) == "NOAHSARK" and os.path.isfile(
-        os.path.join(path, "DISC.bin")
-    ):
-        return path
-    candidate = os.path.join(path, "NOAHSARK")
-    if os.path.isfile(os.path.join(candidate, "DISC.bin")):
-        return candidate
+class NameCache:
+    """Resolves a fixed on-disc name inside a directory case-
+    insensitively, so a reader accepts a burner's output that folds
+    every name to lowercase (plain ISO 9660 level 4, no Rock Ridge)
+    alongside the exact case FORMAT.md defines. Caches each directory's
+    own listing so repeated lookups do not rescan it."""
+
+    def __init__(self):
+        self._listings = {}
+
+    def resolve(self, dir_path: str, want: str) -> str:
+        if os.path.exists(os.path.join(dir_path, want)):
+            return want
+        names = self._listings.get(dir_path)
+        if names is None:
+            names = {}
+            try:
+                for entry in os.listdir(dir_path):
+                    names[entry.lower()] = entry
+            except OSError:
+                pass
+            self._listings[dir_path] = names
+        return names.get(want.lower(), want)
+
+    def join(self, dir_path: str, *parts: str) -> str:
+        cur = dir_path
+        for part in parts:
+            cur = os.path.join(cur, self.resolve(cur, part))
+        return cur
+
+
+def find_noahsark_root(path: str, names: NameCache) -> str:
+    base = os.path.normpath(path)
+    for candidate in (base, os.path.join(base, names.resolve(base, "NOAHSARK"))):
+        disc_name = names.resolve(candidate, "DISC.bin")
+        if os.path.isfile(os.path.join(candidate, disc_name)):
+            return candidate
     raise FormatError(f"{path}: no /NOAHSARK/DISC.bin found under this path")
 
 
-def list_run_seqs(root: str):
-    runs_dir = os.path.join(root, "runs")
+def list_run_seqs(root: str, names: NameCache):
+    runs_dir = names.join(root, "runs")
     if not os.path.isdir(runs_dir):
         return []
-    seqs = []
-    for name in os.listdir(runs_dir):
-        if name.isdigit():
-            seqs.append(int(name))
-    return sorted(seqs)
+    return sorted(int(n) for n in os.listdir(runs_dir) if n.isdigit())
 
 
-def run_dir(root: str, seq: int) -> str:
-    return os.path.join(root, "runs", f"{seq:010d}")
+def run_dir(root: str, seq: int, names: NameCache) -> str:
+    return names.join(root, "runs", f"{seq:010d}")
 
 
 def text_form(id_hex: str) -> str:
-    """Normalizes a content id to its 68-character multihash text form.
-    A digest field inside a record is the raw 32-byte digest,
-    64 hex characters; an on-disk file name already carries the 4-character
-    sha2-256 multihash prefix "1220" and is 68 characters."""
+    """Normalizes a content id to its 68-character multihash text form. A
+    digest field inside a record holds the raw 32-byte digest, 64 hex
+    characters; a file name already carries the sha2-256 multihash prefix
+    "1220" and is 68 characters."""
     if len(id_hex) == 68:
         return id_hex
     if len(id_hex) == 64:
@@ -956,17 +968,40 @@ def text_form(id_hex: str) -> str:
     raise FormatError(f"not a 32-byte digest or a multihash text form: {id_hex!r}")
 
 
-def object_path(root: str, content_id_hex: str, fanout_levels: int, under: str = "objects") -> str:
-    """The path of an object file under objects/ or snapshots/, the fan-out
-    on disc rule."""
+def object_path(root: str, content_id_hex: str, names: NameCache, under: str = "objects") -> str:
+    """The path of an object file. Chunks, blobs and trees live under
+    objects/<d0d1>/, snapshots under snapshots/. The fan-out directory is
+    the first two hex digits of the digest, which start after the
+    4-character multihash prefix. Fan-out is always one level."""
     name = text_form(content_id_hex)
     if under == "snapshots":
-        return os.path.join(root, "snapshots", name)
-    d0d1 = name[4:6]  # digest starts after the 4-hex multihash prefix
-    if fanout_levels >= 2:
-        d2d3 = name[6:8]
-        return os.path.join(root, "objects", d0d1, d2d3, name)
-    return os.path.join(root, "objects", d0d1, name)
+        return os.path.join(names.join(root, "snapshots"), name)
+    return os.path.join(names.join(root, "objects"), name[4:6], name)
+
+
+# Fixed-name files, by their INDEX file role.
+ROLE_PATHS = {
+    ROLE_DISC: ("DISC.bin",),
+    ROLE_README: ("README.txt",),
+    ROLE_FORMAT: ("FORMAT.txt",),
+    ROLE_REFERENCE: ("REFERENCE", "decoder.py"),
+}
+ROLE_RUN_PATHS = {
+    ROLE_INDEX: ("INDEX.bin",),
+    ROLE_RUN: ("RUN.bin",),
+    ROLE_RUN2: ("RUN2.bin",),
+    ROLE_REFS: ("catalog", "REFS.bin"),
+    ROLE_DISCS: ("catalog", "DISCS.bin"),
+    ROLE_CHECKSUM: ("checksum.bin",),
+}
+
+
+def role_path(root: str, seq: int, role: int, names: NameCache):
+    if role in ROLE_PATHS:
+        return names.join(root, *ROLE_PATHS[role])
+    if role in ROLE_RUN_PATHS:
+        return names.join(run_dir(root, seq, names), *ROLE_RUN_PATHS[role])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -975,46 +1010,88 @@ def object_path(root: str, content_id_hex: str, fanout_levels: int, under: str =
 
 class Repo:
     def __init__(self, path: str):
-        self.root = find_noahsark_root(path)
-        with open(os.path.join(self.root, "DISC.bin"), "rb") as f:
+        self.names = NameCache()
+        self.root = find_noahsark_root(path, self.names)
+        disc_name = self.names.resolve(self.root, "DISC.bin")
+        with open(os.path.join(self.root, disc_name), "rb") as f:
             self.disc = parse_disc(f.read(), "DISC.bin")
-        self.run_seqs = list_run_seqs(self.root)
+        self.run_seqs = list_run_seqs(self.root, self.names)
         if not self.run_seqs:
             raise FormatError(f"{self.root}: no runs found under runs/")
         self.newest_seq = self.run_seqs[-1]
 
+    def _read(self, path: str) -> bytes:
+        with open(path, "rb") as f:
+            return f.read()
+
     def run_header(self, seq: int):
-        path = os.path.join(run_dir(self.root, seq), "RUN.bin")
-        with open(path, "rb") as f:
-            return parse_run(f.read(), path)
+        """RUN.bin, or RUN2.bin when RUN.bin is unreadable or fails its
+        checks. Both copies are byte-identical."""
+        d = run_dir(self.root, seq, self.names)
+        first = None
+        for want in ("RUN.bin", "RUN2.bin"):
+            path = os.path.join(d, self.names.resolve(d, want))
+            try:
+                return parse_run(self._read(path), path)
+            except (FormatError, OSError) as e:
+                first = first or e
+        raise first
 
-    def index(self, seq: int):
-        path = os.path.join(run_dir(self.root, seq), "INDEX.bin")
-        with open(path, "rb") as f:
-            return parse_index(f.read(), path)
+    def index(self, seq: int, run: dict = None):
+        """INDEX.bin, verified against index_bytes and index_hash of the
+        run header before any row is used."""
+        d = run_dir(self.root, seq, self.names)
+        path = os.path.join(d, self.names.resolve(d, "INDEX.bin"))
+        buf = self._read(path)
+        run = run or self.run_header(seq)
+        if len(buf) != run["index_bytes"]:
+            raise FormatError(
+                f"{path}: INDEX is {len(buf)} bytes, index_bytes says {run['index_bytes']}"
+            )
+        if sha256(buf).digest() != run["index_hash"]:
+            raise FormatError(f"{path}: index_hash does not match INDEX.bin")
+        idx = parse_index(buf, path)
+        if idx["run_seq"] != run["run_seq"]:
+            raise FormatError(
+                f"{path}: run_seq {idx['run_seq']} differs from the run header's "
+                f"{run['run_seq']}"
+            )
+        return idx
 
-    def refs(self, seq: int = None):
+    def hashed_file(self, seq: int, role: int, magic_parse, idx: dict = None):
+        """Reads a fixed-name file and verifies it against the file_hash of
+        its Files row, the only thing that covers REFS, DISCS, DISC.bin,
+        README.txt, FORMAT.txt and decoder.py."""
+        path = role_path(self.root, seq, role, self.names)
+        buf = self._read(path)
+        idx = idx if idx is not None else self.index(seq)
+        rows = [f for f in idx["files"] if f["role"] == role]
+        if not rows:
+            raise FormatError(f"{path}: INDEX has no Files row of role {role}")
+        if len(buf) != rows[0]["byte_len"] or sha256(buf).digest() != rows[0]["file_hash"]:
+            raise FormatError(f"{path}: file_hash of the role {role} Files row does not match")
+        return magic_parse(buf, path) if magic_parse else buf
+
+    def refs(self, seq: int = None, idx: dict = None):
         seq = seq or self.newest_seq
-        path = os.path.join(run_dir(self.root, seq), "catalog", "REFS.bin")
-        with open(path, "rb") as f:
-            return parse_refs(f.read(), path)
+        return self.hashed_file(seq, ROLE_REFS, parse_refs, idx)
 
-    def discs(self, seq: int = None):
+    def discs(self, seq: int = None, idx: dict = None):
         seq = seq or self.newest_seq
-        path = os.path.join(run_dir(self.root, seq), "catalog", "DISCS.bin")
-        with open(path, "rb") as f:
-            return parse_discs(f.read(), path)
+        return self.hashed_file(seq, ROLE_DISCS, parse_discs, idx)
 
-    def snapshot_names(self, seq: int = None):
-        seq = seq or self.newest_seq
-        snapobj_dir = os.path.join(run_dir(self.root, seq), "catalog", "snapobj")
-        if not os.path.isdir(snapobj_dir):
+    def snapshot_names(self):
+        """Every snapshot object of the repository lies under snapshots/,
+        named by its content id. Every disc carries every snapshot."""
+        d = self.names.join(self.root, "snapshots")
+        if not os.path.isdir(d):
             return []
-        return sorted(os.listdir(snapobj_dir))
+        return sorted(os.listdir(d))
 
     def read_object(self, content_id_hex: str, under: str = "objects", report: Report = None):
-        path = object_path(self.root, content_id_hex, self.disc["fanout_levels"], under)
-        return read_object_file(path, report)
+        return read_object_file(
+            object_path(self.root, content_id_hex, self.names, under), report
+        )
 
     def read_snapshot(self, name: str, report: Report = None):
         """name is a ref name, or a snapshot content id as a 68-character
@@ -1022,27 +1099,26 @@ class Repo:
         if len(name) in (64, 68) and all(c in "0123456789abcdef" for c in name):
             obj = self.read_object(name, under="snapshots", report=report)
         else:
-            refs = self.refs()
-            ref = latest_ref(refs["records"], name)
+            ref = latest_ref(self.refs()["records"], name)
             if ref is None:
                 raise FormatError(f"no ref named {name!r} in REFS")
             obj = self.read_object(ref["snapshot_id"], under="snapshots", report=report)
         if obj.payload is None:
-            raise FormatError(f"snapshot {name!r} could not be decompressed")
-        snap = parse_snapshot(obj.payload, f"snapshot {name!r}")
+            raise FormatError(f"snapshot {name!r} could not be expanded")
+        snap = parse_snapshot(obj.payload, f"snapshot {name!r}", obj)
         snap["content_id"] = obj.content_id_hex
         return snap
 
 
 # ---------------------------------------------------------------------------
-# Walking a snapshot tree, the fill order inside a run's walk order:
-# pre-order, tree-entry order, descending into a directory before the
-# next sibling entry.
+# Walking a snapshot: pre-order, in tree entry order, descending into a
+# directory before the next sibling entry.
 
 
 def unescape_root_name(name: bytes) -> str:
-    """Reverses the four-byte escape the root tree defines: %2F, %5C, %00,
-    %25."""
+    """Reverses the escape the root tree entry name carries: %2F, %5C,
+    %00, %25. The root entry name is the one place the source path
+    lives."""
     out = bytearray()
     i = 0
     while i < len(name):
@@ -1060,53 +1136,59 @@ def unescape_root_name(name: bytes) -> str:
 
 
 def walk_tree(repo: Repo, tree_id_hex: str, path_prefix: str, report: Report, visit):
-    """Depth-first, pre-order walk of one tree, in tree-entry order. visit
+    """Depth-first, pre-order walk of one tree, in tree entry order. visit
     is called with (path, entry) for every entry before its children."""
     try:
         obj = repo.read_object(tree_id_hex, under="objects", report=report)
         if obj.payload is None:
-            report.fail(tree_id_hex, "tree could not be decompressed, walk stopped here")
+            report.fail(tree_id_hex, "tree did not verify or could not be expanded, walk stopped here")
             return
-        tree = parse_tree(obj.payload, f"tree {tree_id_hex}")
-    except (FormatError, FileNotFoundError) as e:
+        tree = parse_tree(obj.payload, f"tree {tree_id_hex}", obj)
+    except (FormatError, OSError) as e:
         report.fail(tree_id_hex, f"tree could not be read, walk stopped here: {e}")
         return
     for entry in tree["entries"]:
         name = entry["name"]
         display_name = (
-            unescape_root_name(name) if path_prefix == "" else name.decode(
-                "utf-8", errors="surrogateescape"
-            )
+            unescape_root_name(name)
+            if path_prefix == ""
+            else name.decode("utf-8", errors="surrogateescape")
         )
         child_path = display_name if path_prefix == "" else f"{path_prefix}/{display_name}"
         visit(child_path, entry)
-        if entry["entry_type"] == 2:  # directory
+        if entry["entry_type"] == 2:
             walk_tree(repo, entry["content_id"], child_path, report, visit)
 
 
 def iter_file_chunks(repo: Repo, blob_id_hex: str, report: Report):
-    """Yields (content_id_hex, length, file_offset) leaf chunk entries of a
-    file's blob, following level-1 nested blobs. Phase 1 never writes
-    level 1, but a reader must still follow it, the Blob rule."""
+    """Yields (content_id_hex, length) of one file's chunks, in file
+    order. A blob has one level: every entry names a chunk."""
     obj = repo.read_object(blob_id_hex, under="objects", report=report)
     if obj.payload is None:
-        report.fail(blob_id_hex, "blob could not be decompressed")
+        report.fail(blob_id_hex, "blob did not verify or could not be expanded")
         return
-    blob = parse_blob(obj.payload, f"blob {blob_id_hex}")
-    if blob["level"] == 0:
-        for e in blob["entries"]:
-            yield e["content_id"], e["length"], e["file_offset"]
-    else:
-        for e in blob["entries"]:
-            yield from iter_file_chunks(repo, e["content_id"], report)
+    blob = parse_blob(obj.payload, f"blob {blob_id_hex}", obj)
+    for e in blob["entries"]:
+        yield e["content_id"], e["length"]
 
 
 # ---------------------------------------------------------------------------
 # summary
 
 
+def _fec_line(run: dict) -> str:
+    scheme = FEC_SCHEME_NAMES.get(run["fec_scheme"], str(run["fec_scheme"]))
+    if run["fec_scheme"] != 1:
+        return f"fec:            {scheme}"
+    geo = fec_geometry(run)
+    return (
+        f"fec:            {scheme}, k={run['fec_k']} m={run['fec_m']}, "
+        f"{geo['column_blocks']} blocks per column\n"
+        "                this decoder holds no Reed-Solomon code and cannot repair"
+    )
+
+
 def cmd_summary(args):
-    report = Report()
     repo = Repo(args.disc_root)
     d = repo.disc
     print(f"NOAHSARK root: {repo.root}")
@@ -1114,36 +1196,30 @@ def cmd_summary(args):
     print(f"repo uuid:     {d['repo_uuid'].hex()}")
     print(f"disc seq:      {d['disc_seq']}")
     print(f"label:         {d['label'].decode('utf-8', errors='replace')}")
-    print(f"fs profile:    {d['fs_profile']}")
-    print(f"fanout levels: {d['fanout_levels']}")
-    print(f"sealed:        {bool(d['sealed'])}")
+    print(f"capacity:      {d['capacity_sectors']} sectors")
     print(f"runs found:    {repo.run_seqs}")
 
     run = repo.run_header(repo.newest_seq)
     print(f"\nnewest run seq: {run['run_seq']}")
     print(f"hash_algo:      0x{run['hash_algo']:02x}")
-    print(f"chunker_profile:{run['chunker_profile']}")
-    print(f"fec_k / fec_m:  {run['fec_k']} / {run['fec_m']}")
-    print(f"disc_object_count: {run['disc_object_count']}")
+    print(f"created:        {run['created_sec']}")
+    print(_fec_line(run))
 
-    idx = repo.index(repo.newest_seq)
+    idx = repo.index(repo.newest_seq, run)
     print(f"\nINDEX for run {idx['run_seq']}:")
     print(f"  files:   {idx['file_count']}")
     print(f"  objects: {idx['object_count']}")
     print(f"  prereqs: {idx['prereq_count']}")
 
-    refs = repo.refs()
+    refs = repo.refs(repo.newest_seq, idx)
     print(f"\nREFS: {refs['record_count']} records")
-    discs = repo.discs()
+    discs = repo.discs(repo.newest_seq, idx)
     print(f"DISCS: {discs['record_count']} rows")
     for row in discs["rows"]:
-        status = RUN_STATUS_NAMES.get(row["run_status"], str(row["run_status"]))
-        health = HEALTH_NAMES.get(row["health"], str(row["health"]))
-        print(f"  run {row['run_seq']}: status={status} health={health}")
+        print(f"  run {row['run_seq']}: disc {row['disc_uuid'].hex()} label {row['label']}")
 
-    names = repo.snapshot_names()
-    print(f"\nsnapshots in this run's catalog: {len(names)}")
-    return 0 if report.ok() else 1
+    print(f"\nsnapshot objects on this disc: {len(repo.snapshot_names())}")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1155,23 +1231,21 @@ def cmd_list(args):
     repo = Repo(args.disc_root)
 
     if args.snapshot is None:
-        refs = repo.refs()
         names_by_snapshot = {}
-        for r in refs["records"]:
+        for r in repo.refs()["records"]:
             names_by_snapshot.setdefault(text_form(r["snapshot_id"]), []).append(r["name"])
         for name in repo.snapshot_names():
             snap = repo.read_snapshot(name, report=report)
             refnames = ", ".join(sorted(set(names_by_snapshot.get(name, []))))
             print(
-                f"{name}  gen={snap['generation']:<4} "
-                f"time={snap['time_sec']}  parent={snap['parent'][:16]}...  "
-                f"refs=[{refnames}]"
+                f"{name}  time={snap['time_sec']}  "
+                f"parent={snap['parent'][:16]}...  refs=[{refnames}]"
             )
         return 0 if report.ok() else 1
 
     snap = repo.read_snapshot(args.snapshot, report=report)
     print(f"# snapshot {snap['content_id']}")
-    print(f"# generation {snap['generation']}, time {snap['time_sec']}")
+    print(f"# time {snap['time_sec']}")
     for m in snap["meta"]:
         tag_name = SNAPSHOT_META_TAG_NAMES.get(m["tag"], str(m["tag"]))
         if m["tag"] in (1, 2, 3):
@@ -1179,9 +1253,7 @@ def cmd_list(args):
 
     def visit(path, entry):
         type_name = ENTRY_TYPE_NAMES.get(entry["entry_type"], str(entry["entry_type"]))
-        size = entry["size"]
-        mode = oct(entry["mode"])
-        print(f"{type_name:9} {size:12} {mode:7} {path}")
+        print(f"{type_name:9} {entry['size']:12} {oct(entry['mode']):7} {path}")
 
     walk_tree(repo, snap["root_tree"], "", report, visit)
     return 0 if report.ok() else 1
@@ -1198,49 +1270,70 @@ def cmd_verify(args):
     for seq in repo.run_seqs:
         try:
             run = repo.run_header(seq)
-        except FormatError as e:
-            report.fail(f"run {seq}", str(e))
-            continue
-        try:
-            idx = repo.index(seq)
-        except FormatError as e:
+            idx = repo.index(seq, run)
+        except (FormatError, OSError) as e:
             report.fail(f"run {seq}", str(e))
             continue
 
-        index_path = os.path.join(run_dir(repo.root, seq), "INDEX.bin")
-        with open(index_path, "rb") as f:
-            index_bytes = f.read()
-        if sha256(index_bytes).digest() != run["index_hash"]:
-            report.fail(f"run {seq}", "index_hash does not match INDEX.bin")
+        want = stream_bytes_from_index(idx)
+        if want != run["stream_bytes"]:
+            report.fail(
+                f"run {seq}",
+                f"stream_bytes {run['stream_bytes']} differs from the {want} the "
+                "Files rows add up to",
+            )
+
+        if run["fec_scheme"] == 1:
+            print(
+                f"run {seq}: this run carries parity; this decoder holds no "
+                "Reed-Solomon code and cannot repair"
+            )
+
+        for role in HASHED_ROLES:
+            try:
+                repo.hashed_file(seq, role, None, idx)
+            except (FormatError, OSError) as e:
+                report.fail(f"run {seq} role {role}", str(e))
 
         try:
-            repo.refs(seq)
-        except FormatError as e:
+            refs = repo.refs(seq, idx)
+            if refs["repo_uuid"] != run["repo_uuid"]:
+                report.fail(f"run {seq} REFS", "repo_uuid differs from the run header's")
+        except (FormatError, OSError) as e:
             report.fail(f"run {seq} REFS", str(e))
         try:
-            repo.discs(seq)
-        except FormatError as e:
+            discs = repo.discs(seq, idx)
+            if discs["repo_uuid"] != run["repo_uuid"]:
+                report.fail(f"run {seq} DISCS", "repo_uuid differs from the run header's")
+        except (FormatError, OSError) as e:
             report.fail(f"run {seq} DISCS", str(e))
 
-        for row in idx["objects"]:
-            cid = row["content_id"]
-            under = "snapshots" if row["kind"] == 4 else "objects"
+        for field in ("disc_uuid", "repo_uuid", "disc_seq"):
+            if repo.disc[field] != run[field]:
+                report.fail("DISC.bin", f"{field} differs from the run header's")
+
+        # The j-th role 13 Files row describes the file of Objects row j.
+        for row, obj_row in zip(idx["object_rows"], idx["objects"]):
+            cid = obj_row["content_id"]
+            under = "snapshots" if obj_row["kind"] == 4 else "objects"
             try:
+                path = object_path(repo.root, cid, repo.names, under)
+                if os.path.getsize(path) != row["byte_len"]:
+                    report.fail(f"object {cid}", "file size differs from its Files row")
                 obj = repo.read_object(cid, under=under, report=report)
                 if obj.payload is not None and obj.content_id_hex != text_form(cid):
                     report.fail(f"object {cid}", "content id mismatch against INDEX")
             except FormatError as e:
                 report.fail(f"object {cid}", str(e))
-            except FileNotFoundError:
+            except OSError:
                 report.fail(f"object {cid}", "object file not found")
 
     for name in repo.snapshot_names():
         try:
             snap = repo.read_snapshot(name, report=report)
             walk_tree(repo, snap["root_tree"], "", report, lambda p, e: None)
-        except FormatError as e:
+        except (FormatError, OSError) as e:
             report.fail(f"snapshot {name}", str(e))
-            continue
 
     if report.ok():
         print("verify: all checks passed")
@@ -1260,22 +1353,98 @@ def restore_symlink(dest: str, target: bytes):
     os.symlink(target_str, dest)
 
 
-def restore_file(repo: Repo, dest: str, blob_id_hex: str, report: Report):
-    chunks = sorted(
-        iter_file_chunks(repo, blob_id_hex, report), key=lambda c: c[2]
-    )
-    with open(dest, "wb") as out:
-        for content_id_hex, length, file_offset in chunks:
-            obj = repo.read_object(content_id_hex, under="objects", report=report)
-            if obj.payload is None:
-                report.fail(dest, f"chunk {content_id_hex} could not be expanded")
-                continue
-            if len(obj.payload) != length:
-                report.fail(dest, f"chunk {content_id_hex} length mismatch")
-            out.write(obj.payload)
+def describe_missing_object(cid_hex: str, idx: dict, discs: dict) -> str:
+    """Adds context to an object-not-found message: when cid_hex is a
+    Prereqs row of the run's INDEX, names the disc uuid that stores it
+    and, when DISCS gives one, that disc's label, so the person knows
+    which disc to load. A row names a disc by uuid, never by run number."""
+    want = text_form(cid_hex)
+    for p in idx.get("prereqs", []):
+        if text_form(p["content_id"]) != want:
+            continue
+        uuid = p["disc_uuid"]
+        for row in discs.get("rows", []):
+            if row["disc_uuid"] == uuid and row["label"]:
+                return (
+                    f"; it is a prerequisite stored on disc {uuid.hex()} "
+                    f"labelled {row['label']}"
+                )
+        return f"; it is a prerequisite stored on disc {uuid.hex()}"
+    return ""
 
 
-def apply_metadata(dest: str, entry, report: Report):
+def restore_file(
+    repo: Repo, dest: str, blob_id_hex: str, report: Report, idx: dict, discs: dict
+) -> bool:
+    """Writes one regular file's chunks into dest, in file order. Writes
+    to a temporary name beside dest and renames it into place only on
+    full success, and removes the temporary file on any failure, so a
+    file that could not be fully restored never looks complete. Returns
+    whether it succeeded."""
+    try:
+        chunks = list(iter_file_chunks(repo, blob_id_hex, report))
+    except (FormatError, OSError) as e:
+        report.fail(
+            dest,
+            f"blob {blob_id_hex} could not be read: {e}"
+            f"{describe_missing_object(blob_id_hex, idx, discs)}",
+        )
+        return False
+
+    tmp = dest + ".noahsark-partial"
+    ok = True
+    try:
+        with open(tmp, "wb") as out:
+            for content_id_hex, length in chunks:
+                try:
+                    obj = repo.read_object(content_id_hex, under="objects", report=report)
+                except (FormatError, OSError) as e:
+                    report.fail(
+                        dest,
+                        f"chunk {content_id_hex} could not be read: {e}"
+                        f"{describe_missing_object(content_id_hex, idx, discs)}",
+                    )
+                    ok = False
+                    break
+                if obj.payload is None:
+                    report.fail(dest, f"chunk {content_id_hex} did not verify or could not be expanded")
+                    ok = False
+                    break
+                if len(obj.payload) != length:
+                    report.fail(dest, f"chunk {content_id_hex} length mismatch")
+                    ok = False
+                    break
+                out.write(obj.payload)
+    except OSError as e:
+        report.fail(dest, f"could not write the file: {e}")
+        ok = False
+
+    if ok:
+        os.replace(tmp, dest)
+    else:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return ok
+
+
+def safe_dest(out_dir: str, path: str, report: Report):
+    """Joins path under out_dir and refuses a result that would land
+    outside out_dir. A root entry name is unescaped before it reaches
+    this function (unescape_root_name), and the escape can turn a name
+    that passed tree entry validation into one holding '/' or '..'
+    segments; this is the last line of defense against writing outside
+    --out."""
+    out_abs = os.path.abspath(out_dir)
+    candidate = os.path.abspath(os.path.join(out_abs, path.lstrip("/")))
+    if candidate != out_abs and not candidate.startswith(out_abs + os.sep):
+        report.fail(path, f"path would restore outside --out ({out_dir!r}); entry skipped")
+        return None
+    return candidate
+
+
+def apply_metadata(dest: str, entry):
     try:
         os.chmod(dest, entry["mode"] & 0o7777, follow_symlinks=False)
     except (NotImplementedError, OSError):
@@ -1293,35 +1462,75 @@ def cmd_restore(args):
     snap = repo.read_snapshot(args.snapshot, report=report)
     os.makedirs(args.out, exist_ok=True)
 
+    # The Prereqs table of the run's INDEX, and DISCS, let a failure name
+    # the disc that holds a missing object. Their own failure to parse is
+    # not fatal to restore; it only costs that extra context in a message.
+    try:
+        idx = repo.index(repo.newest_seq)
+    except (FormatError, OSError) as e:
+        report.fail(args.disc_root, f"could not read INDEX for prerequisite context: {e}")
+        idx = {"prereqs": [], "files": []}
+    try:
+        discs = repo.discs(repo.newest_seq, idx)
+    except (FormatError, OSError) as e:
+        report.fail(args.disc_root, f"could not read DISCS for prerequisite context: {e}")
+        discs = {"rows": []}
+
+    counts = {"files": 0, "failed": 0}
+
     def visit(path, entry):
-        # A root entry's decoded name is the source's absolute path (the
-        # root tree's escape); strip its leading '/' so it joins under
-        # --out instead of replacing it.
-        dest = os.path.join(args.out, path.lstrip("/"))
+        # A root entry's decoded name is the source's absolute path; its
+        # leading '/' is stripped so it joins under --out instead of
+        # replacing it. safe_dest refuses a decoded name that would
+        # otherwise escape --out.
+        dest = safe_dest(args.out, path, report)
+        if dest is None:
+            if entry["entry_type"] == 1:
+                counts["files"] += 1
+                counts["failed"] += 1
+            return
+        for t in entry["tlvs"]:
+            if t["type"] not in TLV_KNOWN:
+                print(
+                    f"note {path}: unknown TLV type 0x{t['type']:04x} kept, not applied",
+                    file=sys.stderr,
+                )
         entry_type = entry["entry_type"]
-        if entry_type == 2:  # directory
-            os.makedirs(dest, exist_ok=True)
-            apply_metadata(dest, entry, report)
-        elif entry_type == 1:  # regular
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            restore_file(repo, dest, entry["content_id"], report)
-            apply_metadata(dest, entry, report)
-        elif entry_type == 3:  # symlink
-            target = b""
-            for t in entry["tlvs"]:
-                if t["type"] == TLV_SYMLINK_TARGET:
-                    target = t["payload"]
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            restore_symlink(dest, target)
-        else:
-            report.fail(dest, f"entry type {entry_type} not restored by this decoder")
+        try:
+            if entry_type == 2:
+                os.makedirs(dest, exist_ok=True)
+                apply_metadata(dest, entry)
+            elif entry_type == 1:
+                counts["files"] += 1
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if restore_file(repo, dest, entry["content_id"], report, idx, discs):
+                    apply_metadata(dest, entry)
+                else:
+                    counts["failed"] += 1
+            elif entry_type == 3:
+                target = b""
+                for t in entry["tlvs"]:
+                    if t["type"] == TLV_SYMLINK_TARGET:
+                        target = t["payload"]
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                restore_symlink(dest, target)
+            else:
+                report.fail(dest, f"entry type {entry_type} not restored by this decoder")
+        except OSError as e:
+            report.fail(dest, f"could not restore this entry: {e}")
+            if entry_type == 1:
+                counts["failed"] += 1
 
     walk_tree(repo, snap["root_tree"], "", report, visit)
 
     if report.ok():
         print(f"restore: wrote snapshot into {args.out}")
     else:
-        print(f"restore: {len(report.failures)} problem(s)", file=sys.stderr)
+        print(
+            f"restore: {counts['failed']} of {counts['files']} file(s) failed, "
+            f"{len(report.failures)} problem(s) total",
+            file=sys.stderr,
+        )
     return 0 if report.ok() else 1
 
 
@@ -1362,10 +1571,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except FormatError as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    except FileNotFoundError as e:
+    except (FormatError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
