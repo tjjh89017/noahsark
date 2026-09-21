@@ -55,7 +55,6 @@ snapshot 122009a2...
 ref 2026-09-14 -> 122009a2...
 new objects: 8, existing objects: 0
 unstable: 0, skipped: 0
-excluded: 0 path(s)
 staged: 8 objects, 3001470 bytes
 ```
 
@@ -85,11 +84,16 @@ keep it. `pack.capacity` in the config holds its size:
 | `bd25` | BD-R 25 GB | 25,025,314,816 |
 | `bd50` | BD-R DL 50 GB (also `bd100`, `bd128`) | 50,050,629,632 |
 
-`noahsark pack --dry-run` prints how many discs the staged data needs.
+`noahsark pack --dry-run` prints the discs the staged data needs. It
+predicts exactly what the next packs write.
 
 ```
+$ noahsark pack --dry-run
+disc 0 "2026-09-21 disc 0": 20 objects, 6004049 bytes
+total: 1 disc(s), 20 objects, 6004049 bytes
+next: run noahsark pack 1 time(s), one disc for each pack
 $ noahsark pack
-packed disc 0 "2026-09-14 disc 0": 20 objects, 6004049 bytes
+packed disc 0 "2026-09-21 disc 0": 20 objects, 6004049 bytes
 uuid: 4a060bd4-ca9f-2d06-263e-b907483b8230
 tree: /srv/ark/repo/staging/plans/4a060bd4.../tree
 next steps:
@@ -116,12 +120,12 @@ disc and load it again, then mount and verify it.
 $ sudo noahsark image build --out=/srv/ark/.../tree.img /srv/ark/.../tree
 $ growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/.../tree.img
 $ noahsark disc burned 0
-disc 0 2026-09-14 disc 0: marked burned, 20 objects
+disc 0 "2026-09-21 disc 0": marked burned, 20 objects
 $ sudo mkdir -p /mnt/ark
 $ sudo mount /dev/sr0 /mnt/ark
 $ noahsark verify /mnt/ark
-disc 0 "2026-09-14 disc 0": 20 objects, ok
-verify: marked 20 object(s) CLEAN (disc 4a060bd4-ca9f-2d06-263e-b907483b8230)
+disc 0 "2026-09-21 disc 0": 20 objects, ok
+verify: 20 object(s) verified on disc 0 "2026-09-21 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230)
 verify: copy 1 of 2 verified; verify the second copy before gc
 $ sudo umount /mnt/ark
 ```
@@ -134,11 +138,11 @@ not run `disc burned` again. Mount and verify the second disc:
 
 ```
 $ noahsark verify /mnt/ark
-disc 0 "2026-09-14 disc 0": 20 objects, ok
+disc 0 "2026-09-21 disc 0": 20 objects, ok
 verify: 2 of 2 copies verified
 $ noahsark status
 staged: 0 objects, 0 bytes
-disc 0 "2026-09-14 disc 0"  verified  4a060bd4-ca9f-2d06-263e-b907483b8230
+disc 0 "2026-09-21 disc 0"  verified  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: nothing to do
 ```
 
@@ -201,25 +205,38 @@ also repeat `--disc=<MOUNT>` for each root.
 and stops.
 
 ```
-$ noahsark restore --mount=/mnt/ark --dry-run 2026-09-17 /srv/restore
-disc 0 "2026-09-14 disc 0" (2d22d412-...): 1 objects, 11 bytes
-disc 1 "disc 1" (cb3bebe8-...): 1 objects, 3000000 bytes
-totals: 2 discs, 2 objects, 3000011 bytes
-$ noahsark restore --mount=/mnt/ark --no-eject 2026-09-17 /srv/restore
-...
-insert disc 1 "disc 1" (uuid cb3bebe8-...) into /mnt/ark and press Enter
+$ noahsark restore --mount=/mnt/ark --dry-run 2026-09-21 /srv/restore
+disc 0 "2026-09-14 disc 0" (2d22d412-...): 2 objects, 1800000 bytes
+disc 1 "2026-09-21 disc 1" (cb3bebe8-...): 2 objects, 1800000 bytes
+totals: 2 discs, 4 objects, 3600000 bytes
+$ noahsark restore --mount=/mnt/ark 2026-09-21 /srv/restore
+disc 0 "2026-09-14 disc 0" (2d22d412-...): 2 objects, 1800000 bytes
+disc 1 "2026-09-21 disc 1" (cb3bebe8-...): 2 objects, 1800000 bytes
+totals: 2 discs, 4 objects, 3600000 bytes
+disc 0 "2026-09-14 disc 0": found
+insert disc 1 "2026-09-21 disc 1" (cb3bebe8-...) into /mnt/ark and press Enter
 ```
 
-`restore` asks for each disc one time, in its own order. Keep a second
-terminal open. While `restore` waits, run `sudo umount /mnt/ark` there,
-change the disc, run `sudo mount /dev/sr0 /mnt/ark`, then press Enter in
-the first terminal. A wrong disc gives `expected disc ..., found ...` and
-the same prompt again. Without `--no-eject`, `restore` tries to unmount
-and eject by itself. That fails for a user that is not root.
+`restore` asks for each disc one time, in the order of the list that it
+printed. It never unmounts and never ejects. Keep a second terminal open.
+While `restore` waits, run `sudo umount /mnt/ark` there, change the disc,
+run `sudo mount /dev/sr0 /mnt/ark`, then press Enter in the first
+terminal. Before each prompt, `restore` looks at the disc that is in the
+drive: a disc that it still needs is read at once, whatever its place in
+the list. A wrong disc gives
+`expected disc 1 "..." (...), found disc 0 "..." (...)` and the same
+prompt again.
 
 A stopped one-drive restore leaves hidden `.<NAME>.noahsark-part` files.
-Run the same command again: it continues, and asks only for the discs that
-it still needs. A name without `.noahsark-part` is always a complete file.
+Run the same command again: it lists and asks for only the discs that it
+still needs. A name without `.noahsark-part` is always a complete file.
+
+```
+$ noahsark restore --mount=/mnt/ark 2026-09-21 /srv/restore
+disc 1 "2026-09-21 disc 1" (cb3bebe8-...): 2 objects, 1800000 bytes
+totals: 1 discs, 2 objects, 1800000 bytes
+insert disc 1 "2026-09-21 disc 1" (cb3bebe8-...) into /mnt/ark and press Enter
+```
 
 `restore` prints one report: a warning line for each path that it did not
 restore, then `restored snapshot ...`, then a summary such as
@@ -259,12 +276,14 @@ recover: ok
 ```
 
 With one drive, run `noahsark recover --repo=/srv/ark/repo --disc=/mnt/ark`
-one time for each disc, in any order. `rebuild is partial: disc ... not fed
+one time for each disc, in any order. `rebuild is partial: disc 1 "..." (...) not fed
 yet`, exit 1, names a disc that you must still give. Give every disc, the
 newest included. Then `status` shows each disc as `on disc only`. Do not
-mark or verify the discs again. Put `sources.root = /srv/data` and
-`pack.capacity` into the new config. A commit that was not packed before
-the loss is gone: commit again.
+mark or verify the discs again. `recover` ends with
+`config: put sources.root and pack.capacity into <REPO>/config; no disc
+carries them`: no disc holds the source path or the media size, so write
+those two keys back by hand. A commit that was not packed before the loss
+is gone: commit again.
 
 **A disc is lost or bad.** Read from the other copy. Burn a new copy from
 `tree.img` if you kept it. If the two copies are lost, `restore` names the
@@ -280,7 +299,8 @@ option and is off by default. Add `--fec` to `pack`, or set
 `fec.scheme = rs255-gf8` in the config. `--no-fec` overrides the config for
 one pack. `pack` then prints `fec: on`. FEC uses approximately 9% of the
 disc. `noahsark verify --heal --out=<DIR> <MOUNT>` writes a repaired disc
-root into `<DIR>`. It refuses a disc without FEC: `has no FEC`.
+root into `<DIR>` and prints `heal: repaired N block(s)`. It refuses a
+disc without FEC: `has no FEC`.
 
 ## Image build, rehearsal and other options
 
@@ -308,20 +328,19 @@ Exit codes: 0 is success, 1 is a failure at run time, 2 is a usage error.
 | `no noahsark repository found` | Set `NOAHSARK_REPO`, or give `--repo`. |
 | `repository lock ... is held` | Wait for the other `noahsark` command to end. |
 | `pack`: `no capacity` | Put `pack.capacity = bd25` in the config, or give `--capacity`. |
-| `capacity: "7500000" has no unit` | Give a preset, or a size with a unit such as `25GB`. All commands refuse this config. |
+| `capacity: "7500000" has no unit` | Give a preset, or a size with a unit such as `25GB`. Only `pack` refuses; the other commands run. |
 | `pack`: `capacity ... holds not one object` | The capacity is too small. The message names the capacity to use. |
 | `pack`: `staged chunk <ID> is damaged; run commit again ...` | A staged file is corrupt. Run `commit` again, then `pack` again. |
 | `commit`: `warning: <PATH>: FIFO, no content is backed up` | Normal for a FIFO, a socket or a device: no content, exit 0. Exclude the path to stop the warning. |
 | `commit`: `skipped: 1`, exit 1 | A file vanished, or a permission stopped the read. The rest is committed. Fix the cause and commit again. |
 | `commit`: `no SOURCE given and no source root in the config` | Put `sources.root = /srv/data` in the config, or give the source as an argument. |
 | `verify`: `disc 0 is not marked burned; run: noahsark disc burned 0` | The disc is good, but the repository does not know the burn. Run that command, then `verify` again. |
-| `disc burned --undo`: `is verified (CLEAN) and cannot be returned to packed` | A verified disc stays verified. No action. |
+| `disc burned --undo`: `is verified and cannot be returned to packed` | A verified disc stays verified. No action. |
 | `matches no disc` or `matches more than one disc` | Give the disc number, or the first 8 characters of the uuid, from the list in the message. |
 | A disc does not mount, or `verify` fails | Discard the disc. Burn a new copy and verify it. Use the other copy until then. |
 | `gc`: `1 of 2 copies verified; N object(s) held` | Verify the second copy (step 4), then run `gc` again. |
 | `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them with `--disc` or `--discs-dir`, or use `--mount`. |
 | `ref ... is not on the provided disc(s)` | A newer disc holds the ref. Give the newest disc too. |
-| `restore`: `umount ... failed; run restore with sudo, or pass --no-eject` | Add `--no-eject`, and unmount in the second terminal. |
 | `restore`: `stdin closed while waiting for the next disc` | Run `restore` in a terminal, not in a pipe. Run it again to continue. |
 | `image build`: `mkudffs: ... executable file not found` | Install `udftools` 2.3 or later. |
 | `growisofs`: `unable to open64(...): Permission denied` | Add your user to the `cdrom` group. Log in again. |

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -62,7 +63,34 @@ type repoConfig struct {
 	// config file names, in the order it names them. The key is
 	// repeatable: one line for each pattern.
 	ExcludePatterns []object.Pattern
+	// badKeys holds the error of every key whose value did not parse.
+	// readConfig keeps the default for such a key and reports nothing;
+	// the command that reads the key calls checkKeys and refuses there.
+	// A command that never reads the key runs as usual.
+	badKeys map[string]error
 }
+
+// checkKeys returns the first error of the named keys, in the order
+// given, or nil when every one of them parsed.
+func (c repoConfig) checkKeys(keys ...string) error {
+	for _, k := range keys {
+		if err, ok := c.badKeys[k]; ok {
+			return err
+		}
+	}
+	return nil
+}
+
+// configKeysForCommit, configKeysForPack, configKeysForGC and
+// configKeysForVerify name the keys each command reads. A command
+// refuses a bad value of one of its own keys and runs with a bad value
+// of every other key, so a fault in one key stops one command only.
+var (
+	configKeysForCommit = []string{"sources.root", "commit.restat_after_read", "commit.retry_unstable", "sources.exclude"}
+	configKeysForPack   = []string{"pack.capacity", "fec.scheme", "cache.dir", "cache.format_version"}
+	configKeysForGC     = []string{"staging.retain_after_clean", "gc.min_verified_copies", "cache.dir", "cache.format_version"}
+	configKeysForVerify = []string{"gc.min_verified_copies", "cache.dir", "cache.format_version"}
+)
 
 // knownConfigKeys names every key this build reads. A key present in the
 // file that is not here is unknown.
@@ -163,19 +191,22 @@ func readConfig(path string) (repoConfig, error) {
 			c.StagingDir = value
 		case "sources.root":
 			if c.SourceRoot != "" {
-				return repoConfig{}, fmt.Errorf("config: sources.root: only one source root is supported in this build")
+				c.bad(key, fmt.Errorf("config: sources.root: only one source root is supported in this build"))
+				break
 			}
 			c.SourceRoot = value
 		case "commit.restat_after_read":
 			b, err := strconv.ParseBool(value)
 			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: commit.restat_after_read: %w", err)
+				c.bad(key, fmt.Errorf("config: commit.restat_after_read: %w", err))
+				break
 			}
 			c.RestatAfterRead = b
 		case "commit.retry_unstable":
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: commit.retry_unstable: %w", err)
+				c.bad(key, fmt.Errorf("config: commit.retry_unstable: %w", err))
+				break
 			}
 			c.RetryUnstable = n
 		case "fec.scheme":
@@ -185,11 +216,12 @@ func readConfig(path string) (repoConfig, error) {
 			case "rs255-gf8":
 				c.FECEnabled = true
 			default:
-				return repoConfig{}, fmt.Errorf("config: fec.scheme: unknown value %q, want none or rs255-gf8", value)
+				c.bad(key, fmt.Errorf("config: fec.scheme: unknown value %q, want none or rs255-gf8", value))
 			}
 		case "pack.capacity":
 			if _, err := parseCapacity(value); err != nil {
-				return repoConfig{}, fmt.Errorf("config: pack.capacity: %w", err)
+				c.bad(key, fmt.Errorf("config: pack.capacity: %w", err))
+				break
 			}
 			c.PackCapacity = value
 		case "cache.dir":
@@ -197,28 +229,33 @@ func readConfig(path string) (repoConfig, error) {
 		case "cache.format_version":
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: cache.format_version: %w", err)
+				c.bad(key, fmt.Errorf("config: cache.format_version: %w", err))
+				break
 			}
 			c.CacheFormatVersion = n
 		case "staging.retain_after_clean":
 			d, err := parseRetentionDuration(value)
 			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: staging.retain_after_clean: %w", err)
+				c.bad(key, fmt.Errorf("config: staging.retain_after_clean: %w", err))
+				break
 			}
 			c.RetainAfterClean = d
 		case "gc.min_verified_copies":
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: gc.min_verified_copies: %w", err)
+				c.bad(key, fmt.Errorf("config: gc.min_verified_copies: %w", err))
+				break
 			}
 			if n < 1 {
-				return repoConfig{}, fmt.Errorf("config: gc.min_verified_copies: must be at least 1")
+				c.bad(key, fmt.Errorf("config: gc.min_verified_copies: must be at least 1"))
+				break
 			}
 			c.MinVerifiedCopies = n
 		case "sources.exclude":
 			pat, err := object.ParsePattern(value)
 			if err != nil {
-				return repoConfig{}, fmt.Errorf("config: sources.exclude: %s: %w", path, err)
+				c.bad(key, fmt.Errorf("config: sources.exclude: %s: %w", path, err))
+				break
 			}
 			c.ExcludePatterns = append(c.ExcludePatterns, pat)
 		}
@@ -237,6 +274,30 @@ func readConfig(path string) (repoConfig, error) {
 		c.StagingDir = filepath.Join(filepath.Dir(path), c.StagingDir)
 	}
 	return c, nil
+}
+
+// refuseBadConfig prints the fault of the first named key whose value
+// did not parse, and reports whether cmdName must stop. A key cmdName
+// never reads is not named here, so one bad value stops only the
+// commands that need that key.
+func refuseBadConfig(cmdName string, cfg repoConfig, stderr io.Writer, keys ...string) bool {
+	err := cfg.checkKeys(keys...)
+	if err == nil {
+		return false
+	}
+	_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmdName, err)
+	return true
+}
+
+// bad records that key's value did not parse. The first error for a key
+// wins, so a repeated key reports the fault the operator meets first.
+func (c *repoConfig) bad(key string, err error) {
+	if c.badKeys == nil {
+		c.badKeys = make(map[string]error)
+	}
+	if _, ok := c.badKeys[key]; !ok {
+		c.badKeys[key] = err
+	}
 }
 
 // configPath returns the config file path inside a repository directory.

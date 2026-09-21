@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -186,8 +187,11 @@ func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 	if !strings.Contains(out, ": found") {
 		t.Fatalf("restore output %q missing a found line for the already-mounted disc", out)
 	}
-	if !strings.Contains(out, "expected disc") {
-		t.Fatalf("restore output %q missing the mismatch report for the second disc", out)
+	if strings.Contains(out, "expected disc") {
+		t.Fatalf("restore output %q complained about the disc it had just finished, want no complaint before the first prompt", out)
+	}
+	if !strings.Contains(out, "insert disc") {
+		t.Fatalf("restore output %q missing the prompt for the second disc", out)
 	}
 	compareTrees(t, filepath.Join(outDir, src), src)
 }
@@ -319,10 +323,11 @@ func TestRestoreDiscSwapIncludeNarrowsToOneDisc(t *testing.T) {
 	compareTrees(t, filepath.Join(outDir, src, "sub0"), filepath.Join(src, "sub0"))
 }
 
-// TestRestoreDiscSwapNoEject checks that --no-eject skips the eject
-// step: with it, a mount directory that is not a real mount point never
-// runs umount or eject, so no warning about either appears.
-func TestRestoreDiscSwapNoEject(t *testing.T) {
+// TestRestoreDiscSwapNeverEjects checks that restore never unmounts and
+// never ejects: it names the disc it wants and waits. It also checks
+// that the disc the loop just finished, still in the drive, draws no
+// complaint before the first prompt.
+func TestRestoreDiscSwapNeverEjects(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
@@ -334,27 +339,27 @@ func TestRestoreDiscSwapNoEject(t *testing.T) {
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--no-eject", snapID, outDir)
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "umount") || strings.Contains(out, "eject") {
-		t.Fatalf("restore --no-eject output %q mentions eject", out)
+	if strings.Contains(out, "umount") || strings.Contains(out, "eject") || strings.Contains(out, "sudo") {
+		t.Fatalf("restore output %q mentions umount, eject or sudo", out)
 	}
 	if strings.Contains(out, "expected disc") {
-		t.Fatalf("restore --no-eject output %q reported a mismatch for the disc the loop just finished, want none before the first prompt", out)
+		t.Fatalf("restore output %q reported a mismatch for the disc the loop just finished, want none before the first prompt", out)
 	}
 	if !strings.Contains(out, "insert disc") {
-		t.Fatalf("restore --no-eject output %q missing the prompt to swap discs", out)
+		t.Fatalf("restore output %q missing the prompt to swap discs", out)
 	}
 	compareTrees(t, filepath.Join(outDir, src), src)
 }
 
-// TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch checks that
-// --no-eject only suppresses the mismatch line for the disc the loop
-// just finished: once the operator has been prompted once, and a
-// second, different disc is inserted, that is reported the normal way.
-func TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch(t *testing.T) {
+// TestRestoreDiscSwapStillReportsAGenuineMismatch checks that only the
+// disc the loop just finished escapes the mismatch line: a disc of
+// another repository is reported the normal way, and the report names
+// the disc by its number, its label and its uuid.
+func TestRestoreDiscSwapStillReportsAGenuineMismatch(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, _, discRoots := discSwapFixture(t)
 	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
@@ -385,14 +390,24 @@ func TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch(t *testing.T) {
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--no-eject", snapID, outDir)
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
 	if strings.Count(out, "expected disc") != 1 {
-		t.Fatalf("restore --no-eject output %q, want exactly one mismatch report (for the bogus disc, not the disc the loop just finished): %d", out, strings.Count(out, "expected disc"))
+		t.Fatalf("restore output %q, want exactly one mismatch report (for the bogus disc, not the disc the loop just finished): %d", out, strings.Count(out, "expected disc"))
+	}
+	if !mismatchNamesRe.MatchString(out) {
+		t.Fatalf("restore output %q, want the mismatch to name both discs as disc N \"LABEL\" (uuid)", out)
+	}
+	if strings.Contains(out, `""`) {
+		t.Fatalf("restore output %q names a disc with an empty label", out)
 	}
 }
+
+// mismatchNamesRe matches the wrong-disc line, which must name the disc
+// it wants and the disc it found in the same complete form.
+var mismatchNamesRe = regexp.MustCompile(`expected disc \d+ "[^"]+" \([0-9a-f-]+\), found disc \d+ "[^"]+" \([0-9a-f-]+\)`)
 
 // TestRestoreMountUnknownRefNamesProvidedDiscs checks that restore
 // --mount with a ref name the cache does not know reports the ref as
@@ -456,4 +471,93 @@ func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 			t.Fatalf("--include=%s: plan named disc_seq %v, want exactly the chunk-holding discs %v", include, planned, want)
 		}
 	}
+}
+
+// TestRestoreDiscSwapReadsTheDiscInTheDriveFirst puts the disc the list
+// names last into the drive before the restore starts. The restore must
+// read it with no prompt and no complaint, and then ask for the other
+// one.
+func TestRestoreDiscSwapReadsTheDiscInTheDriveFirst(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo, snapID, src, discRoots := discSwapFixture(t)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	if len(seqs) != 2 {
+		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
+	}
+
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	mountDisc(t, mountDir, discRoots[seqs[1]])
+	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+		func() { mountDisc(t, mountDir, discRoots[seqs[0]]) },
+	}})
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	if code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "expected disc") {
+		t.Fatalf("restore output %q complained about a disc it needed and could read", out)
+	}
+	if n := strings.Count(out, "insert disc"); n != 1 {
+		t.Fatalf("restore prompted %d time(s), want 1: %s", n, out)
+	}
+	compareTrees(t, filepath.Join(outDir, src), src)
+}
+
+// TestRestoreDiscSwapRerunListsOnlyTheDiscsStillNeeded interrupts a
+// restore after the first disc, then checks that both --dry-run and the
+// rerun list only the disc that is still needed.
+func TestRestoreDiscSwapRerunListsOnlyTheDiscsStillNeeded(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	repo, snapID, src, discRoots := discSwapFixture(t)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	if len(seqs) != 2 {
+		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
+	}
+
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	mountDisc(t, mountDir, discRoots[seqs[0]])
+	outDir := filepath.Join(t.TempDir(), "out")
+
+	setRestoreStdin(t, &scriptedStdin{})
+	if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir); code == 0 {
+		t.Fatalf("restore (interrupted): exit 0, want non-zero: %s", out)
+	}
+
+	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--dry-run", snapID, outDir)
+	if code != 0 {
+		t.Fatalf("restore --dry-run: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "totals: 1 discs") {
+		t.Fatalf("restore --dry-run output %q, want only the disc that is still needed", out)
+	}
+	if listsDisc(out, seqs[0]) {
+		t.Fatalf("restore --dry-run output %q still lists the disc it already read", out)
+	}
+
+	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) },
+	}})
+	code, out = runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	if code != 0 {
+		t.Fatalf("restore (resumed): exit %d: %s", code, out)
+	}
+	if listsDisc(out, seqs[0]) {
+		t.Fatalf("the rerun output %q still lists the disc it already read", out)
+	}
+	compareTrees(t, filepath.Join(outDir, src), src)
+}
+
+// listsDisc reports whether out's printed disc list names disc seq. It
+// reads only the list lines, so a wrong-disc report elsewhere in the
+// output never counts as a listing.
+func listsDisc(out string, seq int) bool {
+	prefix := fmt.Sprintf("disc %d ", seq)
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.HasPrefix(line, prefix) && strings.Contains(line, " objects, ") {
+			return true
+		}
+	}
+	return false
 }

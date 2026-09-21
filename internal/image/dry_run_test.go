@@ -7,11 +7,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// TestDryRunMatchesRealPackDiscCount checks that pack --dry-run's own
-// object counts, disc by disc, land within one sector's worth of what a
-// real, repeated Pack actually places: DryRun's fixed-overhead estimate
-// does not grow the DISCS table across predicted discs the way a real
-// pack does, so an exact match is not guaranteed, only a close one.
+// TestDryRunMatchesRealPackDiscCount checks that pack --dry-run
+// predicts exactly the discs a loop of real packs then writes: the same
+// disc numbers, the same object counts and the same byte counts.
 func TestDryRunMatchesRealPackDiscCount(t *testing.T) {
 	stagingDir, snapID := packFixture(t)
 
@@ -23,7 +21,7 @@ func TestDryRunMatchesRealPackDiscCount(t *testing.T) {
 
 	capacitySectors := sectorsFor(7_000_000)
 	dryOpts := packOpts(stagingDir, snapID, t.TempDir(), capacitySectors, 0, dryLog)
-	discs, err := DryRun(dryOpts)
+	discs, err := DryRun(dryOpts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +52,15 @@ func TestDryRunMatchesRealPackDiscCount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("disc %d: Pack: %v", discCount, err)
 		}
+		if discCount >= len(discs) {
+			t.Fatalf("real pack wrote disc %d, DryRun predicted %d disc(s) only", discCount, len(discs))
+		}
+		want := discs[discCount]
+		if result.DiscSeq != want.DiscSeq || result.ObjectCount != want.ObjectCount || result.ObjectBytes != want.ObjectBytes {
+			t.Fatalf("real pack wrote disc %d: %d objects, %d bytes; DryRun predicted disc %d: %d objects, %d bytes",
+				result.DiscSeq, result.ObjectCount, result.ObjectBytes,
+				want.DiscSeq, want.ObjectCount, want.ObjectBytes)
+		}
 		discCount++
 		if result.RemainingObjects == 0 {
 			break
@@ -80,7 +87,7 @@ func TestDryRunReturnsNoDiscsWhenNothingStaged(t *testing.T) {
 		t.Fatalf("Pack: %v", err)
 	}
 
-	discs, err := DryRun(packOpts(stagingDir, snapID, "", sectorsFor(64<<20), 0, l))
+	discs, err := DryRun(packOpts(stagingDir, snapID, "", sectorsFor(64<<20), 0, l), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -165,8 +166,8 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	if strings.Contains(out, "would delete 0 object") {
 		t.Fatalf("gc --dry-run output %q, want more than 0 objects", out)
 	}
-	if !strings.Contains(out, "would delete: disc ") {
-		t.Fatalf("gc --dry-run output %q missing the grouped disc summary line", out)
+	if !gcDiscLineRe.MatchString(out) {
+		t.Fatalf("gc --dry-run output %q must name the disc by number, label and uuid", out)
 	}
 }
 
@@ -399,3 +400,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 		t.Fatalf("staging/objects has %d file(s), %v; want the orphans freed", n, err)
 	}
 }
+
+// gcDiscLineRe matches gc's grouped summary line, which names the disc
+// the way every other command names one.
+var gcDiscLineRe = regexp.MustCompile(`would delete: disc \d+ "[^"]*" \([0-9a-f-]+\): \d+ object\(s\)`)

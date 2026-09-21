@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -130,6 +131,9 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 	}
 	if !strings.Contains(out, "1 of 2 copies verified") || !strings.Contains(out, "verify the second copy") {
 		t.Fatalf("gc --dry-run output %q, want the held line", out)
+	}
+	if !gcHeldDiscLineRe.MatchString(out) {
+		t.Fatalf("gc --dry-run output %q must name the held disc by number, label and uuid", out)
 	}
 
 	objDir := filepath.Join(repo, "staging", "objects")
@@ -265,3 +269,7 @@ func TestConfigRefusesMinVerifiedCopiesBelowOne(t *testing.T) {
 		t.Fatalf("gc output %q, want the config error", out)
 	}
 }
+
+// gcHeldDiscLineRe matches gc's held-for-copies line, which names the
+// disc the way every other command names one.
+var gcHeldDiscLineRe = regexp.MustCompile(`gc: disc \d+ "[^"]*" \([0-9a-f-]+\): \d+ of \d+ copies verified`)

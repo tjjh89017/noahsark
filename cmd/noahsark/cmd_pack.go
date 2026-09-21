@@ -59,13 +59,13 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	var snapshotFlags stringList
 	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
 	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
-	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's physical capacity ("+capacityHelpText()+"); defaults to --capacity, so this only needs setting when the target is a forced, smaller limit")
+	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's real capacity ("+capacityHelpText()+"); defaults to --capacity, so set it only when --capacity is a smaller limit than the disc")
 	label := fs.String("label", "", "human label for the disc; defaults to the newest ref name and the disc number")
 	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <repo>/staging/plans/<disc uuid>/tree")
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
 	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
-	closeDisc := fs.Bool("close", false, "seal the disc when it is burned: spare:none and -dvd-compat, no later append. Only the printed burn command changes; this build does not burn or track disc state")
-	dryRun := fs.Bool("dry-run", false, "print how many discs the staged data needs at this capacity, and stop; writes nothing")
+	closeDisc := fs.Bool("close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
+	dryRun := fs.Bool("dry-run", false, "print the discs the staged data needs at this capacity, and stop; writes nothing")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -85,6 +85,9 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 2
+	}
+	if refuseBadConfig("pack", cfg, stderr, configKeysForPack...) {
 		return 2
 	}
 
@@ -185,18 +188,27 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		fecEnabled = false
 	}
 
-	if *dryRun {
-		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, physicalCapacitySectors, fecEnabled)
+	// labelFor answers what label a disc with this number gets, so a
+	// dry run predicts the same label, and so the same README bytes,
+	// that the real pack of that disc writes.
+	labelFor := func(discSeq uint64) string {
+		if *label != "" {
+			return *label
+		}
+		return defaultLabel(repoDir, cfg, snapshots, discSeq)
 	}
 
-	discLabel := *label
-	if discLabel == "" {
-		discLabel, err = defaultLabel(cfg, repoUUID, snapshots)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-			return 1
-		}
+	if *dryRun {
+		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, physicalCapacitySectors, mediaType, fecEnabled, labelFor)
 	}
+
+	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	_, nextDiscSeq := image.NextSeqNumbers(ledger.Rows)
+	discLabel := labelFor(nextDiscSeq)
 
 	discUUIDBytes := make([]byte, 16)
 	if _, err := rand.Read(discUUIDBytes); err != nil {
@@ -297,7 +309,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 // tree, no state record, no cache entry, no ledger row, and no sequence
 // number is used. It takes no repository lock, since it only reads the
 // staging store and the ledgers.
-func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors, physicalCapacitySectors uint64, fecEnabled bool) int {
+func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors, physicalCapacitySectors uint64, mediaType format.MediaType, fecEnabled bool, labelFor func(uint64) string) int {
 	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -311,36 +323,44 @@ func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, 
 		TargetCapacitySectors:   capacitySectors,
 		PhysicalCapacitySectors: physicalCapacitySectors,
 		RepoUUID:                repoUUID,
+		MediaType:               mediaType,
 		FECEnabled:              fecEnabled,
 		StageLog:                stageLog,
 	}
-	discs, err := image.DryRun(opts)
+	discs, err := image.DryRun(opts, labelFor)
+	printDryRunDiscs(stdout, discs)
 	if err != nil {
 		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --dry-run: capacity (%d bytes) holds not one object; %s\n",
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity (%d bytes) holds not one object; %s\n",
 				capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --dry-run: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
 			return 2
 		}
 		if exceeds, ok := errors.AsType[*image.ErrCapacityExceedsPhysical](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --dry-run: capacity (%d bytes) is above the physical capacity (%d bytes)\n",
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity (%d bytes) is above the physical capacity (%d bytes)\n",
 				exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
 			return 2
 		}
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --dry-run:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
+	return 0
+}
 
+// printDryRunDiscs prints one line for each predicted disc, then the
+// totals and the one action the operator takes next.
+func printDryRunDiscs(stdout io.Writer, discs []image.DryRunDisc) {
 	var totalObjects int
 	var totalBytes uint64
-	for i, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "disc %d: %d objects, %d bytes\n", i+1, d.ObjectCount, d.ObjectBytes)
+	for _, d := range discs {
+		_, _ = fmt.Fprintf(stdout, "disc %d %q: %d objects, %d bytes\n", d.DiscSeq, d.Label, d.ObjectCount, d.ObjectBytes)
 		totalObjects += d.ObjectCount
 		totalBytes += d.ObjectBytes
 	}
 	_, _ = fmt.Fprintf(stdout, "total: %d disc(s), %d objects, %d bytes\n", len(discs), totalObjects, totalBytes)
-	_, _ = fmt.Fprintln(stdout, "these numbers are an estimate: a real pack's DISCS table grows by one row on each later disc, which this estimate does not simulate, so the real per-disc fixed files (DISC.bin, DISCS.bin, REFS.bin) can end up a little larger")
-	return 0
+	if len(discs) > 0 {
+		_, _ = fmt.Fprintf(stdout, "next: run noahsark pack %d time(s), one disc for each pack\n", len(discs))
+	}
 }
 
 // smallestObjectText names the smallest staged object of a refused
@@ -367,32 +387,63 @@ func kindWord(kind format.ObjectKind) string {
 }
 
 // defaultLabel builds the label a pack uses when --label names none:
-// the name of the newest ref this disc carries, and the disc number the
-// next pack will take. The newest ref is the one whose snapshot has the
-// latest commit time; a tie goes to the name that sorts first. A pack
-// that carries no ref at all gets the disc number alone.
-func defaultLabel(cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef) (string, error) {
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
-	if err != nil {
-		return "", err
+// the name of the newest ref this disc carries, and discSeq. A disc
+// that carries no ref uses the newest ref of the repository instead, so
+// a later disc of the same run of packs keeps a name an operator reads.
+// A repository with no ref at all gets the disc number alone.
+func defaultLabel(repoDir string, cfg repoConfig, snapshots []image.SnapshotRef, discSeq uint64) string {
+	name := newestRefName(cfg.StagingDir, snapshots)
+	if name == "" {
+		name = newestRefName(cfg.StagingDir, allRepoRefs(repoDir))
 	}
-	_, discSeq := image.NextSeqNumbers(ledger.Rows)
+	if name == "" {
+		return fmt.Sprintf("disc %d", discSeq)
+	}
+	return fmt.Sprintf("%s disc %d", name, discSeq)
+}
 
+// newestRefName returns the name of the ref whose snapshot was
+// committed last. A tie goes to the name that sorts last, so a set of
+// date names committed in the same second still gives the latest date.
+// A snapshot whose staged object gc has already freed counts as the
+// oldest, thus a name is still returned while any ref is given.
+func newestRefName(stagingDir string, snapshots []image.SnapshotRef) string {
 	name := ""
 	var newest int64
 	for _, s := range snapshots {
-		sec, err := snapshotTime(cfg.StagingDir, s.ID)
+		sec, err := snapshotTime(stagingDir, s.ID)
 		if err != nil {
-			continue
+			sec = 0
 		}
-		if name == "" || sec > newest || (sec == newest && s.Name < name) {
+		if name == "" || sec > newest || (sec == newest && s.Name > name) {
 			name, newest = s.Name, sec
 		}
 	}
-	if name == "" {
-		return fmt.Sprintf("disc %d", discSeq), nil
+	return name
+}
+
+// allRepoRefs reads every ref of the repository, for the label of a
+// disc that carries no ref of its own. An unreadable ref file gives no
+// ref, and the label then falls back to the disc number.
+func allRepoRefs(repoDir string) []image.SnapshotRef {
+	refs, err := readRefs(repoDir)
+	if err != nil {
+		return nil
 	}
-	return fmt.Sprintf("%s disc %d", name, discSeq), nil
+	names := make([]string, 0, len(refs))
+	for n := range refs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]image.SnapshotRef, 0, len(names))
+	for _, n := range names {
+		id, err := parseSnapshotID(refs[n])
+		if err != nil {
+			continue
+		}
+		out = append(out, image.SnapshotRef{Name: n, ID: id})
+	}
+	return out
 }
 
 // snapshotTime reads one staged snapshot object's commit time.

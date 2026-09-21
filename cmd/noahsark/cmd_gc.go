@@ -72,6 +72,9 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 2
 	}
+	if refuseBadConfig("gc", cfg, stderr, configKeysForGC...) {
+		return 2
+	}
 
 	// gc --dry-run still reads the state log to report what it would
 	// delete, so it takes the same lock as a real gc.
@@ -108,6 +111,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		retainAfterClean = retainAfterCleanOverride
 	}
 
+	discNames := discNamesFromLedger(cfg.StagingDir, repoUUID)
 	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, retainAfterClean, cfg.MinVerifiedCopies, gcClock())
 	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
 	if retainAfterCleanOverride >= 0 && !*dryRun && len(candidates) > 0 {
@@ -123,9 +127,9 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintf(stdout, "gc: staging: %s %d object(s), %d bytes\n", verb, objDeleted, objBytes)
 	if *dryRun {
-		printDryRunGroupSummary(candidates, stdout)
+		printDryRunGroupSummary(candidates, discNames, stdout)
 	}
-	printHeldForCopies(stdout, stageLog, cfg.MinVerifiedCopies)
+	printHeldForCopies(stdout, stageLog, discNames, cfg.MinVerifiedCopies)
 	if uncached > 0 {
 		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncached)
 	}
@@ -221,7 +225,7 @@ func hasVerifiedCopies(l *stage.Log, id object.ID, minCopies int) bool {
 // objects back because the disc has fewer than minCopies successful
 // verifies. It names the lowest count of the disc, the number of objects
 // held, and the action that frees them.
-func printHeldForCopies(stdout io.Writer, l *stage.Log, minCopies int) {
+func printHeldForCopies(stdout io.Writer, l *stage.Log, names map[[16]byte]string, minCopies int) {
 	type held struct {
 		objects int
 		lowest  uint8
@@ -252,8 +256,8 @@ func printHeldForCopies(stdout io.Writer, l *stage.Log, minCopies int) {
 	slices.Sort(uuids)
 	for _, text := range uuids {
 		h := byDisc[order[text]]
-		_, _ = fmt.Fprintf(stdout, "gc: disc %s: %d of %d copies verified; %d object(s) held; verify the second copy\n",
-			text, h.lowest, minCopies, h.objects)
+		_, _ = fmt.Fprintf(stdout, "gc: %s: %d of %d copies verified; %d object(s) held; verify the second copy\n",
+			discNameOf(names, order[text]), h.lowest, minCopies, h.objects)
 	}
 }
 
@@ -377,12 +381,13 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int
 // printDryRunGroupSummary prints one line per disc objs groups by, each
 // with that disc's own eligible object count and bytes, in uuid text
 // order. It is gc --dry-run's whole report.
-func printDryRunGroupSummary(objs []gcObj, stdout io.Writer) {
+func printDryRunGroupSummary(objs []gcObj, names map[[16]byte]string, stdout io.Writer) {
 	type group struct {
 		objects int
 		bytes   uint64
 	}
 	byDisc := make(map[string]*group)
+	order := make(map[string][16]byte)
 	var uuids []string
 	for _, o := range objs {
 		text := uuidText(o.discUUID)
@@ -390,6 +395,7 @@ func printDryRunGroupSummary(objs []gcObj, stdout io.Writer) {
 		if !ok {
 			g = &group{}
 			byDisc[text] = g
+			order[text] = o.discUUID
 			uuids = append(uuids, text)
 		}
 		g.objects++
@@ -398,7 +404,7 @@ func printDryRunGroupSummary(objs []gcObj, stdout io.Writer) {
 	slices.Sort(uuids)
 	for _, text := range uuids {
 		g := byDisc[text]
-		_, _ = fmt.Fprintf(stdout, "would delete: disc %s: %d object(s), %d bytes\n", text, g.objects, g.bytes)
+		_, _ = fmt.Fprintf(stdout, "would delete: %s: %d object(s), %d bytes\n", discNameOf(names, order[text]), g.objects, g.bytes)
 	}
 }
 
@@ -441,4 +447,28 @@ func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, b
 		}
 	}
 	return format.IndexObjectRecord{}, false
+}
+
+// discNamesFromLedger maps each disc uuid the local ledger knows to the
+// name an operator reads: the number, the label and the uuid.
+func discNamesFromLedger(stagingDir string, repoUUID [16]byte) map[[16]byte]string {
+	names := make(map[[16]byte]string)
+	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+	if err != nil {
+		return names
+	}
+	for _, row := range ledger.Rows {
+		n := min(int(row.LabelLen), len(row.Label))
+		names[row.DiscUUID] = discName(row.DiscSeq, string(row.Label[:n]), row.DiscUUID)
+	}
+	return names
+}
+
+// discNameOf returns the name of uuid, or the uuid alone when the
+// ledger has no row for it.
+func discNameOf(names map[[16]byte]string, uuid [16]byte) string {
+	if name, ok := names[uuid]; ok {
+		return name
+	}
+	return "disc " + uuidText(uuid)
 }
