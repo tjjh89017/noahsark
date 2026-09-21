@@ -518,7 +518,7 @@ report and one set of safety rules.
 
 ### 14.1 All discs at once
 
-The operator gives one or more `DISC-ROOT` arguments, or `--discs-dir`. This
+The operator gives one or more `DISC-ROOT` arguments. This
 mode needs no repository and no cache. It resolves a ref name from the REFS
 tables of the given discs, and finds each object through their INDEX files.
 If the newest disc is lost, each other disc carries the catalog as of its own
@@ -648,8 +648,9 @@ its syntax and its options with `-h`, and exits with code 0.
   uuid, a uuid prefix, or the exact label. A command refuses a value that
   matches no disc or more than one disc, and lists the candidates.
 - A `DISC-ROOT` argument and `--mount=DIR` name a directory: the mount point
-  of a disc, or a copy of a disc root. `--discs-dir=DIR` names a directory
-  whose immediate subdirectories are disc roots.
+  of a disc, or a copy of a disc root. Give several `DISC-ROOT` arguments to
+  read several discs at once; a shell glob such as `/mnt/discs/*` expands to
+  that list.
 
 ### 16.2 Syntax
 
@@ -665,14 +666,12 @@ noahsark verify  [--repo=DIR] [--heal --out=DIR] DISC-ROOT
 noahsark status  [--repo=PATH]
 noahsark gc      [--repo=PATH] [--dry-run] [--force-after=DURATION]
 noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR
-noahsark restore [--include=PATH]... [--overwrite]
-                 --discs-dir=DIR SNAPSHOT OUT-DIR
 noahsark restore [--repo=PATH] [--include=PATH]... [--overwrite] --mount=DIR
                  [--dry-run] SNAPSHOT OUT-DIR
-noahsark recover [--repo=PATH] [DISC-ROOT... | --discs-dir=DIR]
+noahsark recover [--repo=PATH] DISC-ROOT...
 noahsark ls      [--repo=PATH] [--long] [--recursive]
-                 [--discs-dir=DIR] [DISC-ROOT...] SNAPSHOT [PATH]
-noahsark log     [--repo=PATH] [--discs-dir=DIR] [DISC-ROOT...] [REF|SNAPSHOT]
+                 [DISC-ROOT...] SNAPSHOT [PATH]
+noahsark log     [--repo=PATH] [DISC-ROOT...] [REF|SNAPSHOT]
 ```
 
 ### 16.3 Options
@@ -699,7 +698,6 @@ noahsark log     [--repo=PATH] [--discs-dir=DIR] [DISC-ROOT...] [REF|SNAPSHOT]
 | `verify` | `--out` | With `--heal`, the directory that receives the healed disc root. |
 | `gc` | `--dry-run` | Print what `gc` would delete, and delete nothing. |
 | `gc` | `--force-after` | Shorten the 7-day retention for this run only, after a confirmation. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
-| `restore`, `recover`, `ls`, `log` | `--discs-dir` | A directory whose immediate subdirectories are disc roots. |
 | `restore` | `--include` | Restore only this path, relative to the snapshot. Repeatable. |
 | `restore` | `--overwrite` | Unlink an existing path first and then create it. |
 | `restore` | `--mount` | The directory where the one drive is mounted. |
@@ -757,7 +755,7 @@ nothing was eligible. 1 when a staged file could not be unlinked, and when the
 confirmation was refused.
 
 **`restore`** takes a snapshot id, as `log` prints it, or a ref name.
-`--mount` does not go together with a `DISC-ROOT` or `--discs-dir`. It prints
+`--mount` does not go together with a `DISC-ROOT`. It prints
 the problem lines as `noahsark: restore: warning: PATH: REASON`, then
 `restored snapshot ID into OUT-DIR`, then `resumed: N file(s) already
 restored` when a file was resumed. Exit: see "Failure policy". 1 also when a
@@ -777,7 +775,11 @@ first; with a `REF` or a `SNAPSHOT`, it prints the details of that one. With
 no disc given, both read the staging store first and the local cache second,
 so a snapshot lists before the first `pack`. With disc roots, both read the
 discs and need no repository. Every leading argument that is an existing
-directory is a `DISC-ROOT`.
+directory is a `DISC-ROOT`. With disc roots, a bare `log` also lists a ref
+whose own snapshot object `gc` has freed and that a later pack stopped
+carrying forward: REFS.bin still carries the ref name on every run, so `log`
+prints its snapshot id, the ref name, and "on another disc", instead of
+dropping the ref from the list.
 
 ## 17. Configuration reference
 

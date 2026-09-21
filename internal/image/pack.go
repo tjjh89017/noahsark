@@ -441,7 +441,14 @@ func Pack(opts PackOptions) (*PackResult, error) {
 
 	return &PackResult{
 		ObjectBytes: objectBytes,
-		RunSeq:      runSeq, DiscSeq: discSeq, ObjectCount: objectCount,
+		// ObjectCount here is len(selected), not the INDEX table's own
+		// objectCount: a carried snapshot is already counted on the disc
+		// that first stored it, so this disc's own object count, the one
+		// the operator sees, must match what disc burned and verify
+		// report for the same disc, both of which count by that first
+		// disc's ownership. objectBytes above already follows the same
+		// rule.
+		RunSeq: runSeq, DiscSeq: discSeq, ObjectCount: len(selected),
 		FileCount: len(rows), StreamBlocks: blockCount(plan.streamBytesTotal), StripeCount: plan.stripeCount,
 		RemainingObjects: remainingObjects,
 		RemainingBytes:   remainingBytes,

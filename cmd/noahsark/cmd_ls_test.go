@@ -224,7 +224,7 @@ func TestLsSnapshotIDPrefixNamesItself(t *testing.T) {
 }
 
 // TestLsExitsThreeOnAMissingDisc packs a multi-disc sequence, then runs
-// ls with one disc root left out of --discs-dir, and asserts exit 3
+// ls with one disc root left off the command line, and asserts exit 3
 // and the same missing-disc message restore uses.
 func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 	work := t.TempDir()
@@ -241,21 +241,22 @@ func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	discsDir := filepath.Join(work, "discs")
-	// disc1 is packed outside discsDir, so --discs-dir leaves it out.
-	otherDir := filepath.Join(work, "other")
+	// disc1's root is never passed to ls, so it is left off.
+	var discRoots []string
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
-		dir := discsDir
-		if i == 1 {
-			dir = otherDir
-		}
-		treeDir := filepath.Join(dir, "disc"+strconv.Itoa(i))
+		treeDir := filepath.Join(discsDir, "disc"+strconv.Itoa(i))
 		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
+		if i != 1 {
+			discRoots = append(discRoots, treeDir)
+		}
 	}
 
-	code, out = runCmd(t, "ls", "--recursive", "--discs-dir="+discsDir, snapID)
+	args := append([]string{"ls", "--recursive"}, discRoots...)
+	args = append(args, snapID)
+	code, out = runCmd(t, args...)
 	if code != 1 {
 		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}

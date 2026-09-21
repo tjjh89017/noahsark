@@ -26,20 +26,18 @@ import (
 // straight replay of every provided disc's tables into a fresh or
 // existing repository directory.
 func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark recover [DISC-ROOT... | --discs-dir=DIR]",
+	fs := newFlagSet("noahsark recover DISC-ROOT...",
 		"Rebuild the repository state from one or more discs.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory to create or use")
-	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
 	if checkPositionalsForFlags("recover", fs, stderr) {
 		return 2
 	}
-
-	discRoots, err := resolveDiscRoots(*discsDir, fs.Args())
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
+	discRoots := fs.Args()
+	if len(discRoots) == 0 {
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover: no disc root given")
 		return 2
 	}
 

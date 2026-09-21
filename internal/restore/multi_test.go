@@ -517,7 +517,7 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 }
 
 // TestRestoreMultiResumesMatchingSizeSkipsMismatch asserts that
-// RestoreMulti (the engine behind restore --disc and --discs-dir)
+// RestoreMulti (the engine behind restore's all-discs-at-once mode)
 // applies the same resumed/skipped rule as the disc-swap --mount mode:
 // a pre-existing file whose size matches the snapshot's tree entry
 // counts as resumed and is left alone, while one whose size disagrees

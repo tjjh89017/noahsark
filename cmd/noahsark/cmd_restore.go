@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
@@ -23,10 +22,11 @@ var restoreStdin io.Reader = os.Stdin
 // cmdRestore implements "noahsark restore". Two modes share this
 // entry point.
 //
-// With a disc root or --discs-dir, restore reads every disc at once,
-// unchanged from before: see resolveDiscRoots.
+// With one or more DISC-ROOT positionals, restore reads every disc at
+// once. A shell glob such as /mnt/discs/* expands to that positional
+// list.
 //
-// With neither, and exactly SNAPSHOT and OUT-DIR left over, restore
+// With none, and exactly SNAPSHOT and OUT-DIR left over, restore
 // resolves SNAPSHOT through the local cache and walks the disc-swap
 // loop one disc at a time, by disc number, prompting the operator to
 // insert the next one. This is the single-drive path; see
@@ -34,9 +34,8 @@ var restoreStdin io.Reader = os.Stdin
 func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR\n"+
 		"       noahsark restore [--include=PATH]... [--overwrite] --mount=DIR [--dry-run] SNAPSHOT OUT-DIR",
-		"Restore a snapshot to a directory. Accepts --discs-dir, or one or more DISC-ROOT positionals, for the all-discs-at-once mode.", stderr)
+		"Restore a snapshot to a directory. Accepts one or more DISC-ROOT positionals for the all-discs-at-once mode.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
-	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	var includeFlags stringList
 	fs.Var(&includeFlags, "include", "restore only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
 	overwrite := fs.Bool("overwrite", false, "unlink an existing path first and then create it; without this, an existing path is left alone")
@@ -49,13 +48,8 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	multi := *discsDir != ""
-	if *mountFlag != "" && multi {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount cannot be combined with --discs-dir")
-		return 2
-	}
 	if *dryRun && *mountFlag == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --dry-run needs --mount; the disc list comes from the local cache, and the all-discs-at-once modes read every disc together with no such list to preview")
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --dry-run needs --mount; the disc list comes from the local cache, and the all-discs-at-once mode reads every disc together with no such list to preview")
 		return 2
 	}
 	// Two positional arguments, with --mount given, are the disc-swap
@@ -64,12 +58,12 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	// off when the first one names an existing directory, and a
 	// SNAPSHOT OUT-DIR with no disc given otherwise. Both mistakes get
 	// their own line, naming what the operator typed.
-	if !multi && fs.NArg() == 2 {
+	if fs.NArg() == 2 {
 		if *mountFlag == "" {
 			if looksLikeDiscRoot(fs.Arg(0)) {
 				_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s is a disc root, so OUT-DIR is missing\n", fs.Arg(0))
 			} else {
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no disc given for snapshot %q; pass a DISC-ROOT, --discs-dir or --mount\n", fs.Arg(0))
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no disc given for snapshot %q; pass a DISC-ROOT or --mount\n", fs.Arg(0))
 			}
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] SNAPSHOT OUT-DIR")
 			return 2
@@ -80,46 +74,30 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	// more positional arguments with --mount given carry a leftover
 	// DISC-ROOT from the all-discs-at-once form, not that mode's own
 	// SNAPSHOT OUT-DIR pair.
-	if !multi && *mountFlag != "" && fs.NArg() >= 3 {
+	if *mountFlag != "" && fs.NArg() >= 3 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount takes no DISC-ROOT")
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] SNAPSHOT OUT-DIR")
 		return 2
 	}
 
-	var discRoots, discRootArgs, positional []string
-	switch {
-	case multi:
-		if fs.NArg() != 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] --discs-dir=DIR SNAPSHOT OUT-DIR")
-			return 2
-		}
-		positional = fs.Args()
-	default:
-		// The trailing two positional arguments are always SNAPSHOT and
-		// OUT-DIR; everything before them is one or more DISC-ROOTs, so
-		// this needs no guess about where the roots end.
-		if fs.NArg() < 3 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR")
-			return 2
-		}
-		discRootArgs = fs.Args()[:fs.NArg()-2]
-		positional = fs.Args()[fs.NArg()-2:]
-		for _, root := range discRootArgs {
-			if !looksLikeDiscRoot(root) {
-				// Every argument in this position is always a mounted
-				// disc or an unpacked NOAHSARK tree. Name it here, so a
-				// mistyped path is not reported later as a missing
-				// object.
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no such disc root: %s\n", root)
-				return 2
-			}
-		}
-	}
-	var err error
-	discRoots, err = resolveDiscRoots(*discsDir, discRootArgs)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+	// The trailing two positional arguments are always SNAPSHOT and
+	// OUT-DIR; everything before them is one or more DISC-ROOTs, so
+	// this needs no guess about where the roots end.
+	if fs.NArg() < 3 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR")
 		return 2
+	}
+	discRoots := fs.Args()[:fs.NArg()-2]
+	positional := fs.Args()[fs.NArg()-2:]
+	for _, root := range discRoots {
+		if !looksLikeDiscRoot(root) {
+			// Every argument in this position is always a mounted
+			// disc or an unpacked NOAHSARK tree. Name it here, so a
+			// mistyped path is not reported later as a missing
+			// object.
+			_, _ = fmt.Fprintf(stderr, "noahsark: restore: no such disc root: %s\n", root)
+			return 2
+		}
 	}
 	snapshotArg, outDir := positional[0], positional[1]
 
@@ -181,44 +159,6 @@ func printRestoreResult(stdout io.Writer, rep restore.Report, snapID object.ID, 
 		return 1
 	}
 	return 0
-}
-
-// resolveDiscRoots builds the disc root list a command reads from: every
-// positional DISC-ROOT the caller already picked out when --discs-dir is
-// not given, else every immediate subdirectory of --discs-dir.
-func resolveDiscRoots(discsDir string, positional []string) ([]string, error) {
-	if discsDir == "" {
-		if len(positional) == 0 {
-			return nil, fmt.Errorf("no disc root given")
-		}
-		return positional, nil
-	}
-
-	var roots []string
-	entries, err := os.ReadDir(discsDir)
-	if err != nil {
-		return nil, fmt.Errorf("--discs-dir %s: %w", discsDir, err)
-	}
-	for _, e := range entries {
-		path := filepath.Join(discsDir, e.Name())
-		isDir := e.IsDir()
-		if !isDir && e.Type()&os.ModeSymlink != 0 {
-			// A symlinked disc root (a mounted image linked in
-			// under --discs-dir) reports as a symlink, not a
-			// directory, from ReadDir's own lstat. Stat through
-			// it so a symlinked mount is not skipped.
-			if info, err := os.Stat(path); err == nil {
-				isDir = info.IsDir()
-			}
-		}
-		if isDir {
-			roots = append(roots, path)
-		}
-	}
-	if len(roots) == 0 {
-		return nil, fmt.Errorf("no disc root found: --discs-dir has no mounted subdirectories")
-	}
-	return roots, nil
 }
 
 // errStdinClosed is returned when the disc-swap loop's prompt cannot

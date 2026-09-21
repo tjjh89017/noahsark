@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,27 +24,6 @@ func TestRestoreAcceptsARefName(t *testing.T) {
 	}
 }
 
-// TestRestoreDiscsDirFollowsASymlinkedDiscRoot checks that --discs-dir
-// finds a disc root reached through a symlink, not only a real
-// directory: os.ReadDir's entries report a symlink's own type, not the
-// directory it points to, so resolveDiscRoots must stat through it.
-func TestRestoreDiscsDirFollowsASymlinkedDiscRoot(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-
-	discsDir := t.TempDir()
-	link := filepath.Join(discsDir, "disc-link")
-	if err := os.Symlink(treeDir, link); err != nil {
-		t.Fatal(err)
-	}
-
-	restoredDir := filepath.Join(t.TempDir(), "restored")
-	code, out := runCmd(t, "restore", "--discs-dir="+discsDir, snapID, restoredDir)
-	if code != 0 {
-		t.Fatalf("restore --discs-dir with a symlinked disc root: exit %d: %s", code, out)
-	}
-	compareTrees(t, filepath.Join(restoredDir, src), src)
-}
-
 // TestRestoreUnknownRefReportsTheSameError checks that an unknown ref
 // name given to restore reports the same error ls reports for it.
 func TestRestoreUnknownRefReportsTheSameError(t *testing.T) {
@@ -62,23 +40,6 @@ func TestRestoreUnknownRefReportsTheSameError(t *testing.T) {
 	lsMsg := strings.TrimPrefix(strings.TrimSpace(lsOut), "noahsark: ls: ")
 	if restoreMsg != lsMsg {
 		t.Fatalf("restore error %q, want same as ls error %q (ls exit %d)", restoreMsg, lsMsg, lsCode)
-	}
-}
-
-// TestRestoreMountWithDiscFlagsIsAnError checks that --mount combined
-// with --discs-dir is refused: the two select different, incompatible
-// restore modes.
-func TestRestoreMountWithDiscFlagsIsAnError(t *testing.T) {
-	_, snapID, _ := lsFixture(t)
-	restoredDir := filepath.Join(t.TempDir(), "restored")
-
-	discsDir := t.TempDir()
-	code, out := runCmd(t, "restore", "--mount=/mnt/drive", "--discs-dir="+discsDir, snapID, restoredDir)
-	if code != 2 {
-		t.Fatalf("restore --mount --discs-dir: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "--mount") || !strings.Contains(out, "--discs-dir") {
-		t.Fatalf("restore --mount --discs-dir output %q, want it to name both flags", out)
 	}
 }
 
