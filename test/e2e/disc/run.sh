@@ -323,8 +323,13 @@ scenario_media() {
 	verify_out="$("$BIN" verify "$mnt")"
 	echo "$verify_out"
 	if [ "$media" = "bd25-forced-10g" ]; then
-		echo "$verify_out" | grep -qE 'forced 5242880 sectors, capacity_is_forced=1' \
-			|| fail "media/$media: verify did not report the forced capacity fields"
+		# verify's own output no longer carries the forced capacity
+		# fields; read them straight from DISC.bin with the same Go
+		# reader verify uses, through the ci-only helper.
+		local field_out
+		field_out="$(run_tool ci-disc-field "$mnt")"
+		echo "$field_out" | grep -qE 'forced 5242880 sectors, capacity_is_forced=1' \
+			|| fail "media/$media: DISC.bin did not report the forced capacity fields"
 	fi
 	"$BIN" restore "$mnt" "$snap" "$restored"
 	assert_dirs_equal "$restored$small_src" "$small_src"

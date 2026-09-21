@@ -91,7 +91,7 @@ runs:
         # fix afterward) and picks up these prebuilt binaries instead of
         # `go run`, so it never has to compile anything itself.
         mkdir -p "$RUNNER_TEMP/e2e-tools"
-        for name in ci-fixture ci-chain-fixture ci-incremental-fixture ci-list ci-corrupt ci-heal ci-restore ci-disc-uuid ci-state-count ci-index-count; do
+        for name in ci-fixture ci-chain-fixture ci-incremental-fixture ci-list ci-corrupt ci-heal ci-restore ci-disc-uuid ci-disc-field ci-state-count ci-index-count; do
           go build -o "$RUNNER_TEMP/e2e-tools/$name" "./test/e2e/disc/cmd/$name"
         done
         go build -o "$RUNNER_TEMP/e2e-tools/noahsark" ./cmd/noahsark
