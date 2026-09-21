@@ -313,7 +313,7 @@ func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
 	src := writeFixtureSource(t)
 
 	// Every commit stamps a fresh snapshot object with the current
-	// time and Phase 1 chains no parent, so two commits of unchanged
+	// time and this build chains no parent, so two commits of unchanged
 	// content only produce byte-identical objects, snapshot included,
 	// when both run under the same fixed clock.
 	fixed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)

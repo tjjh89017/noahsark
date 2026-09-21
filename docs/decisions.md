@@ -789,8 +789,7 @@ reports the expected and found uuid and label (the found label comes
 from the cache's own `DISCS` table, when that disc is one the cache
 already knows) and prompts again. An unreadable `DISC.bin` (drive still
 settling, or nothing mounted yet) is retried a few times with a short
-pause before it prompts. `--mount` has no config default: OPERATIONS.md's
-configuration reference names no `restore.mount` key, so the flag is
+pause before it prompts. `--mount` has no config default, so the flag is
 required in this mode.
 
 The disc-swap
@@ -798,17 +797,9 @@ loop walks the tree one time for each disc, in plan order, and reads
 each disc in one pass. A read error on one chunk fails that one file
 and the walk continues; only an error the disc source marks with
 `restore.FatalDiscError`, such as a prompt that cannot be answered,
-stops the whole restore.
-
-`ejectDrive`'s permission hint used to string-match `umount`'s own
-stderr for "permission denied" or "must be superuser", which is
-locale- and version-dependent output to key behavior on. It now checks
-only `umount`'s exit status together with `os.Geteuid() != 0`: an
-`umount` failure while not running as root is treated as the
-permission problem, and the one informational line (pointing at sudo
-or `--no-eject`) still prints at most once per restore; `umount`'s own
-output is instead folded into the generic warning for every other
-failure, so it is not lost, just no longer parsed.
+stops the whole restore. `restore` never unmounts and never ejects: it
+prints the disc it needs and waits, and the operator swaps the disc in
+a second terminal.
 
 A destination file that already exists, with `--overwrite` not given,
 is not automatically a conflict in this mode: the assembler

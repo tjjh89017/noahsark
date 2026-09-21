@@ -61,7 +61,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
 	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's real capacity ("+capacityHelpText()+"); defaults to --capacity, so set it only when --capacity is a smaller limit than the disc")
 	label := fs.String("label", "", "human label for the disc; defaults to the newest ref name and the disc number")
-	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <repo>/staging/plans/<disc uuid>/tree")
+	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <staging.dir>/plans/<disc uuid>/tree")
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
 	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
 	closeDisc := fs.Bool("close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
@@ -219,7 +219,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	copy(discUUID[:], discUUIDBytes)
 
 	if *outDir == "" {
-		*outDir = filepath.Join(repoDir, "staging", "plans", hex.EncodeToString(discUUIDBytes), "tree")
+		*outDir = filepath.Join(cfg.StagingDir, "plans", hex.EncodeToString(discUUIDBytes), "tree")
 	}
 	absOut, err := filepath.Abs(*outDir)
 	if err != nil {

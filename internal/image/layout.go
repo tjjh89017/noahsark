@@ -31,7 +31,7 @@ type BuildOptions struct {
 	// and snapshots/<name>.
 	StagingDir string
 	// Snapshots names every snapshot this run stores, and the REFS
-	// records that point at them. Phase 1 writes one run per disc, so
+	// records that point at them. This build writes one run per disc, so
 	// this run stores every object every listed snapshot reaches.
 	Snapshots []SnapshotRef
 	// TargetCapacitySectors is the pack limit. Build refuses to run
@@ -72,7 +72,7 @@ type Result struct {
 // toolVersion is registry id 1, the reference implementation, version 1.
 const toolVersion = uint32(1)<<24 | 1
 
-// runSeq and discSeq are fixed in Phase 1: one run on one disc, no
+// runSeq and discSeq are fixed: one run on one disc, no
 // append.
 const (
 	buildRunSeq  uint64 = 1
@@ -165,7 +165,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	}
 	var label [64]byte
 	labelLen := copy(label[:], opts.Label)
-	readmeBuf := buildReadme(opts, packTime, label[:labelLen])
+	readmeBuf := buildReadme(opts, packTime, label[:labelLen], buildDiscSeq)
 	readmeHash := sha256.Sum256(readmeBuf)
 	formatHash := sha256.Sum256(FormatTxt)
 	refsBuf, refsHash, err := buildRefs(opts, buildRunSeq)

@@ -11,10 +11,7 @@ import (
 )
 
 // cmdDisc implements "noahsark disc". "noahsark status" lists the
-// discs, so "disc" carries the burn mark and its undo alone. "disc
-// label" and "disc mark-degraded" need a notes.bin this build does not
-// keep, so both are refused rather than silently ignored. See
-// docs/decisions.md, "16. CLI reference".
+// discs, so "disc" carries the burn mark and its undo alone.
 //
 // "disc burned" is not an OPERATIONS.md command; it is this build's
 // explicit stand-in for the missing burn step (see docs/decisions.md,
@@ -47,12 +44,6 @@ func cmdDisc(args []string, stdout, stderr io.Writer) int {
 		return 2
 	case "burned":
 		return cmdDiscBurned(rest, stdout, stderr)
-	case "label":
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc label: not in this build: the on-disc label is fixed at pack time, and notes.bin does not exist yet")
-		return 2
-	case "mark-degraded":
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc mark-degraded: not in this build: notes.bin does not exist yet")
-		return 2
 	default:
 		_, _ = fmt.Fprintf(stderr, "noahsark: disc: unknown subcommand %q\n", sub)
 		return 2

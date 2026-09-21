@@ -656,13 +656,15 @@ repository and the local cache.
 
 **The plan.** `restore` reads the snapshot, the trees and the blobs from the
 cache. It finds the disc of each chunk through the cached INDEX files and
-DISCS tables, and groups the chunks by disc. It orders the discs: most bytes
-first, then the newer disc, then the lower `disc_seq`. The same inputs give
-the same plan. A chunk that no cached INDEX lists is missing; `restore` then
-fails before it reads a disc, and names `recover` as the fix. `restore` prints
-the plan before it reads the first disc: one `disc SEQ "LABEL" (UUID): N
-objects, B bytes` line for each disc, then a `totals:` line. `--dry-run`
-prints the plan and stops.
+DISCS tables, and groups the chunks by disc. The same inputs give the same
+plan. A chunk that no cached INDEX lists is missing; `restore` then fails
+before it reads a disc, and names `recover` as the fix. `restore` prints the
+plan before it reads the first disc: one `disc SEQ "LABEL" (UUID): N objects,
+B bytes` line for each disc, then a `totals:` line, in disc number order.
+`--dry-run` prints the plan and stops. The disc-swap loop also asks for the
+discs in that same order, lowest `disc_seq` first, because the operator looks
+a disc up by the number on its sleeve, except that a disc already in the
+drive and still needed is read first, whatever its number.
 
 **Disc detection.** For each disc of the plan, `restore` reads
 `NOAHSARK/DISC.bin` below `DIR` and compares the `disc_uuid`.
@@ -674,9 +676,9 @@ prints the plan and stops.
 3. A wrong disc: `restore` names the expected and the found disc, then
    prompts: `insert disc SEQ "LABEL" (uuid UUID) into DIR and press Enter`.
    The operator mounts each disc at `DIR`.
-4. After each disc, `restore` runs `umount DIR` and `eject DIR`. `--no-eject`
-   turns this off. When `umount` fails for a user who is not root, `restore`
-   prints one hint line, and the operator removes the disc by hand.
+4. `restore` never unmounts and never ejects. After each disc, it prints the
+   next disc it needs and waits; the operator swaps the disc in a second
+   terminal, mounts it at `DIR`, and presses Enter.
 
 **Order.** For each disc, `restore` walks the tree of the snapshot one time
 and writes each chunk of this disc into the part file of its own file. The
@@ -825,7 +827,7 @@ noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT SNAPSHOT OUT-DIR
 noahsark restore [--include=PATH]... [--overwrite]
                  (--disc=ROOT... | --discs-dir=DIR) SNAPSHOT OUT-DIR
 noahsark restore [--repo=PATH] [--include=PATH]... [--overwrite] --mount=DIR
-                 [--no-eject] [--dry-run] SNAPSHOT OUT-DIR
+                 [--dry-run] SNAPSHOT OUT-DIR
 noahsark recover [--repo=PATH] [--disc=ROOT]... [--discs-dir=DIR]
 noahsark ls      [--repo=PATH] [--long] [--recursive] [--json] [--unstable-only]
                  [--disc=ROOT]... [--discs-dir=DIR] [DISC-ROOT] SNAPSHOT [PATH]
@@ -846,7 +848,7 @@ noahsark log     [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
 | `pack` | `--capacity` | The target capacity ("Capacity"). Default: `pack.capacity`. |
 | `pack` | `--physical-capacity` | The capacity of the medium ("Forced capacity"). Default: the `--capacity` value. |
 | `pack` | `--label` | The human label. Default: the name of the ref whose snapshot is newest, then `disc SEQ`, for example `LATEST disc 0`. |
-| `pack` | `--out` | The directory that receives the disc root. It must be empty or absent. Default `<repo>/staging/plans/<disc uuid>/tree`. |
+| `pack` | `--out` | The directory that receives the disc root. It must be empty or absent. Default `<staging.dir>/plans/<disc uuid>/tree`. |
 | `pack` | `--fec`, `--no-fec` | Write, or do not write, FEC for this run. They override `fec.scheme`. |
 | `pack` | `--close` | Print the sealed burn command. Nothing else changes. |
 | `pack` | `--dry-run` | Predict the disc count and stop ("Dry run"). It takes no `--out`, `--label`, `--fec`, `--no-fec` or `--close`. |
@@ -867,7 +869,6 @@ noahsark log     [--repo=PATH] [--limit=N] [--json] [--disc=ROOT]...
 | `restore` | `--overwrite` | Unlink an existing path first and then create it. Without it, `restore` leaves an existing path alone. |
 | `restore` | `--mount` | The directory where the one drive is mounted. There is no config default. |
 | `restore` | `--dry-run` | Print the plan and stop. It needs `--mount`. |
-| `restore` | `--no-eject` | Do not unmount and eject after each disc. |
 | `ls` | `--long` | Print mode, owner, size and mtime. |
 | `ls` | `--recursive` | Descend into subdirectories. |
 | `ls` | `--unstable-only` | List only the `UNSTABLE` entries. |
@@ -980,7 +981,6 @@ These are all the keys.
 | `staging.retain_after_clean` | duration | `7d` | The retention before `gc` may free a CLEAN object. It counts from the first successful verify. A whole number of days with `d`, or a Go duration. |
 | `gc.min_verified_copies` | integer | 2 | The successful verifies that an object needs before `gc` may free it. A value below 1 is a config error. |
 | `cache.dir` | path | see "Local cache layout" | The local cache location. |
-| `cache.format_version` | integer | 1 | The build accepts the key and does not act on it. |
 
 ## 19. Exit code registry
 

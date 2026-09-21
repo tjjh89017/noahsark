@@ -18,7 +18,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
-// defaultRetryUnstable is commit.retry_unstable's Phase 1 default.
+// defaultRetryUnstable is commit.retry_unstable's default.
 const defaultRetryUnstable = 1
 
 // skipErr marks a source path the walker could not commit: gone since
@@ -40,7 +40,7 @@ func asSkip(err error) (*skipErr, bool) {
 
 // Fixed header lengths of the four object kinds: the common header, the
 // object header, and each kind's own fixed body, before any variable
-// area. These match the header_len a Phase 1 writer records.
+// area. These match the header_len this build's writer records.
 const (
 	chunkHeaderLen    = format.CommonHeaderLen + format.ObjectHeaderLen
 	blobBodyLen       = 24
@@ -90,7 +90,7 @@ type Summary struct {
 }
 
 // UnstablePath names one path the in-flight change detection flagged, and
-// which branch of the rule was taken. Phase 1 has no parent snapshot, so
+// which branch of the rule was taken. This build has no parent snapshot, so
 // the branch is always "flagged": the writer stores the content it read
 // and sets UNSTABLE.
 type UnstablePath struct {
@@ -604,7 +604,7 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 }
 
 // writeSnapshot writes the snapshot object for this commit and returns
-// its content id. Phase 1 has no parent-chaining input, so every commit
+// its content id. This build has no parent-chaining input, so every commit
 // writes a root snapshot: generation 1, an all-zero parent.
 func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	now := w.Now()
@@ -818,7 +818,7 @@ func mtimeOf(info os.FileInfo) (sec int64, nsec int64) {
 }
 
 // fillTimes sets a tree entry's mtime and ctime from info, and marks
-// atime and btime absent. Phase 1 defaults never store atime or btime.
+// atime and btime absent. This build never stores atime or btime.
 func fillTimes(te *format.TreeEntry, info os.FileInfo) {
 	te.EntryFlags |= format.EntryFlagAtimeAbsent | format.EntryFlagBtimeAbsent
 	st, ok := info.Sys().(*syscall.Stat_t)

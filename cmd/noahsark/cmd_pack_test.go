@@ -181,6 +181,48 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	}
 }
 
+// TestPackDefaultOutputFollowsStagingDir checks that pack's default
+// --out is built from the staging.dir config key, not a hardcoded
+// "<repo>/staging" path, so a repository whose staging store was moved
+// still packs into it.
+func TestPackDefaultOutputFollowsStagingDir(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	stagingDir := filepath.Join(work, "elsewhere-staging")
+	src := writeFixtureSource(t)
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	cfgPath := filepath.Join(repo, "config")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.ReplaceAll(string(data), "staging.dir = staging\n", "staging.dir = "+stagingDir+"\n")
+	if edited == string(data) {
+		t.Fatalf("config %q has no staging.dir line to replace: %q", cfgPath, data)
+	}
+	if err := os.WriteFile(cfgPath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(repo, "staging"), stagingDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	path := packedIntoPath(t, out)
+	if !strings.HasPrefix(path, filepath.Join(stagingDir, "plans")) {
+		t.Fatalf("default --out %q is not under the moved staging.dir %q", path, stagingDir)
+	}
+}
+
 // packedIntoPath picks the directory out of pack's "tree: PATH" line.
 func packedIntoPath(t *testing.T, output string) string {
 	t.Helper()

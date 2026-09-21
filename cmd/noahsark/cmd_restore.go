@@ -232,7 +232,7 @@ var errStdinClosed = fmt.Errorf("stdin closed while waiting for the next disc")
 // The mode writes only below OUT-DIR, so it takes no repository lock.
 func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mountDir string, dryRun bool, snapshotArg, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if mountDir == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount is required; OPERATIONS.md's configuration reference names no restore.mount key")
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount is required; there is no config key for it")
 		return 2
 	}
 
@@ -288,6 +288,10 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, snapID object.ID, includes []string, 
 		return 1
 	}
 	discs := discsBySeq(result)
+	allDiscUUIDs := make(map[[16]byte]bool, len(discs))
+	for _, d := range discs {
+		allDiscUUIDs[d.DiscUUID] = true
+	}
 	printPlanText(stdout, discs, result)
 	if len(result.Missing) > 0 {
 		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d object(s) have no run known to the cache; run recover with more discs\n", result.MissingObjectCount())
@@ -322,7 +326,7 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, snapID object.ID, includes []string, 
 		discs = append(discs[:next], discs[next+1:]...)
 
 		md := newMountedDisc(mountDir, d, func() error {
-			return detectDisc(mountDir, c, d, scanner, stdout, stderr, done)
+			return detectDisc(mountDir, c, d, scanner, stdout, stderr, done, allDiscUUIDs)
 		})
 		if err := a.Disc(md, prog); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
@@ -424,7 +428,13 @@ var discSwapRetryPause = 300 * time.Millisecond
 // each call passes over such a disc with no mismatch line: it is only
 // the disc the last step finished, still in the drive, and not a wrong
 // disc the operator inserted. A later look reports it the normal way.
-func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, scanner *bufio.Scanner, stdout, stderr io.Writer, done map[[16]byte]bool) error {
+//
+// needed holds every disc uuid this restore's plan asks for. A disc this
+// repository's cache knows, left in the drive from an earlier run, but
+// outside that set, is not a mismatch: it is simply not wanted this time,
+// and detectDisc says so calmly instead of reporting an expected/found
+// pair.
+func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, scanner *bufio.Scanner, stdout, stderr io.Writer, done, needed map[[16]byte]bool) error {
 	unreadable := 0
 	promptedOnce := false
 	for {
@@ -439,6 +449,15 @@ func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, scanner *bufi
 		case found.UUID == d.DiscUUID:
 			_, _ = fmt.Fprintf(stdout, "%s: found\n", discNameShort(d.DiscSeq, d.Label))
 			return nil
+		case !needed[found.UUID] && discKnownToRepo(c, found.UUID):
+			_, _ = fmt.Fprintf(stderr, "%s is not needed; insert %s into %s and press Enter\n",
+				discNameFound(c, found), discName(d.DiscSeq, d.Label, d.DiscUUID), mountDir)
+			if !scanner.Scan() {
+				return errStdinClosed
+			}
+			unreadable = 0
+			promptedOnce = true
+			continue
 		default:
 			if promptedOnce || !done[found.UUID] {
 				_, _ = fmt.Fprintf(stderr, "expected %s, found %s\n",
@@ -453,6 +472,21 @@ func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, scanner *bufi
 		unreadable = 0
 		promptedOnce = true
 	}
+}
+
+// discKnownToRepo reports whether uuid names a disc this repository's
+// cache has a DISCS row for, whatever that row's label holds.
+func discKnownToRepo(c *cache.Cache, uuid [16]byte) bool {
+	discs, err := c.Discs()
+	if err != nil {
+		return false
+	}
+	for _, row := range discs.Rows {
+		if row.DiscUUID == uuid {
+			return true
+		}
+	}
+	return false
 }
 
 // discNameFound names the disc that is in the drive. Its own DISC.bin

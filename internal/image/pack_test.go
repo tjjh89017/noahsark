@@ -256,6 +256,40 @@ func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 	}
 }
 
+// TestPackReadmeNamesTheRealDiscNumber packs two discs and checks that
+// each README.txt's {disc_seq} slot names that disc's own number, not
+// always 0.
+func TestPackReadmeNamesTheRealDiscNumber(t *testing.T) {
+	stagingDir, snapID := packFixture(t)
+	l, err := stage.Open(stagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markStagedFromCommit(t, stagingDir, snapID, l)
+
+	capacities := []uint64{sectorsFor(7_000_000), sectorsFor(7_000_000), sectorsFor(7_000_000)}
+	var discRoots []string
+	for i, cap := range capacities {
+		outDir := t.TempDir()
+		opts := packOpts(stagingDir, snapID, outDir, cap, byte(i+1), l)
+		if _, err := Pack(opts); err != nil {
+			t.Fatalf("pack %d: %v", i, err)
+		}
+		discRoots = append(discRoots, outDir)
+	}
+
+	for i, root := range discRoots {
+		readme, err := os.ReadFile(filepath.Join(root, "NOAHSARK", "README.txt"))
+		if err != nil {
+			t.Fatalf("disc %d: %v", i, err)
+		}
+		want := fmt.Sprintf("disc sequence: %d", i)
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("disc %d: README.txt does not contain %q:\n%s", i, want, readme)
+		}
+	}
+}
+
 // TestPackNothingToPackRefusesEmptyRun packs a snapshot in full, then
 // packs the same ref again. Every object of that ref is already Packed,
 // so the second call must refuse rather than write a zero-object run,
