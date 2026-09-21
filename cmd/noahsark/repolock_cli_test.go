@@ -109,8 +109,8 @@ func TestStatusRunsWhileRepoLockHeld(t *testing.T) {
 
 // TestGCWarnsOnTruncatedStateLog checks bug 3: a command that opens a
 // state log whose tail was truncated by a crash during an earlier
-// append must print one warning line, matching OPERATIONS.md's "the
-// tool reports a truncated log" rule.
+// append must print one warning line, matching OPERATIONS.md's "State
+// log replay".
 func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")

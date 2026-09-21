@@ -42,8 +42,8 @@ To burn, verify and restore real discs, follow the
 
 - [docs/guide.md](docs/guide.md): the operator guide: the cycle on one
   page, then a reference for restore, gc, recovery, FEC and troubleshooting.
-- [docs/decisions.md](docs/decisions.md): the choices this
-  implementation made where the design left a detail open.
+- [docs/decisions.md](docs/decisions.md): the decisions of the project,
+  by topic: what, and why.
 - [docs/fec-reference.md](docs/fec-reference.md): the Reed-Solomon code,
   written out by hand. The implementation uses
   `github.com/klauspost/reedsolomon`.

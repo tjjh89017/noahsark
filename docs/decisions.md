@@ -1,853 +1,348 @@
-# Implementation decisions
-
-Each entry records a reading of FORMAT.md chosen by the implementation. Each
-entry is named by the FORMAT.md heading it reads.
-
-## 9.3 Checksum column
-
-`ChecksumRecord.Encode` computes and writes `header_crc32c` over bytes 0 to
-15. `Decode` verifies it and refuses a mismatch.
-
-## 6.1 Object kinds and the object header
-
-`internal/object`'s writer compresses a chunk's payload, but always writes a
-blob, a tree and a snapshot with `compression` 0. `Blob.Encode`,
-`Tree.Encode` and `Snapshot.Encode` serialize typed fields straight into
-their fixed offsets; they hold no opaque payload byte slot a generic
-compressor could replace, unlike `Chunk.Payload`. Storing these three kinds
-raw is always a valid outcome of the minimum-gain rule, so this does not
-change what a reader accepts. Compressing them is future work, not a
-disallowed one.
-
-## 6.13 Snapshot
-
-`internal/object`'s `Writer.Commit` takes one source directory and no parent
-snapshot, so every commit it writes is a root snapshot: `parent` all zero.
-Snapshot metadata TLVs (author, host, message, exclude rules) are omitted,
-`meta_count` 0, because no config or CLI layer exists yet to supply them at
-this layer. Parent chaining and metadata belong to a later layer that
-already holds a repository's snapshot history.
-
-Sparse file handling (`SEEK_HOLE` probing, the tree entry `SPARSE` flag,
-hole punching on restore) is deferred to Phase 2. In Phase 1, a hole is
-ordinary zero data: the writer never probes `SEEK_HOLE`, and it never
-claims sparse detection happened.
-
-## 9.5 Decode rule
-
-`internal/fec`'s `Codec.Decode` takes an explicit set of surviving shards
-and applies the base algebraic rule: it picks the `k` shards with the
-lowest index and inverts `[I_k ; C]` restricted to those rows, per the
-normative choice this heading states. It does not run the single-parity
-retry loop itself, because that loop needs the checksum column and the
-content ids INDEX maps into the stripe, and `internal/fec` takes byte
-slices only, with no knowledge of INDEX or the checksum column's file
-layout. The caller (the image package) is expected to try each erasure set
-the retry loop names and call `Decode` again for each attempt. This does
-not change which parity bytes a conforming writer produces or which stripe
-a conforming reader accepts as decoded; it only fixes which package runs
-the retry loop.
-
-## 6.5 Tree entry fixed header and 6.6 Entry flags
-
-`internal/object`'s writer always sets `CTIME_ABSENT` clear, matching the
-default `metadata.ctime` true; no config layer exists yet at this layer to
-override it. The tree entry has no atime field and no birth time field;
-FORMAT.md stores neither.
-
-## 10.1 INDEX, Files table order and self-reference
-
-Section 11.1 states Files table rows follow "FEC stream order", then lists
-`checksum.bin`, every parity file and `RUN2.bin` as the explicit exceptions
-that sit outside that order, appended after every stream row. Read
-literally, that leaves `RUN.bin` (role 2) inside the row order the fixed
-files follow, even though section 7.3 excludes `RUN.bin`'s own bytes from
-the FEC stream. `internal/image` reads this as two different things
-sharing one ordering rule: the Files table row order (used to place rows,
-and read here as the row-placement order: INDEX, RUN, the first-run-only
-fixed files, the catalog files, then every object row) and the FEC stream
-(the bytes actually concatenated for parity, which is the same row order
-with roles 2, 10, 11 and 12 skipped, exactly as section 11.1 states for
-10, 11 and 12, extended here to 2 for the same reason section 7.3 gives).
-This does not change any object's, `DISC.bin`'s, `REFS.bin`'s or
-`DISCS.bin`'s bytes; it fixes only which row a reader expects at which
-position, and the row order is stated in code and verified by round-trip
-tests.
-
-Row order also has a self-reference the section text does not resolve:
-`INDEX.bin`'s own Files row needs `file_hash`, the hash of INDEX.bin's
-whole bytes, but INDEX.bin's bytes are not final until every row,
-including this one, is written. The same is true of `RUN.bin`'s row,
-because `RUN.bin`'s content (`index_bytes`, `index_hash`) is only known
-once INDEX.bin is final, and `RUN.bin` is written after INDEX per the fill
-order in section 8.7. `internal/image` takes the simplest deterministic
-reading: the Files rows for `INDEX.bin`, `RUN.bin`, `RUN2.bin`,
-`checksum.bin` and every parity file carry `file_hash` all zero. Every
-other row (`DISC.bin`, `REFERENCE/decoder.py`, `catalog/REFS.bin`,
-`catalog/DISCS.bin`, and every object file, snapshots included) carries
-the real sha256 of its whole encoded bytes, because those files are fully
-known before INDEX is built. `RUN.bin`'s own `header_crc32c` still lets a
-reader verify it directly; the Files table's `file_hash` for that row is
-redundant with that check, not a reader's only way to verify `RUN.bin`.
-
-Row order for object files (role 13, snapshots and every other object
-kind alike) follows section 11.1's own rule: ascending `content_id`,
-paired by position with the Objects table, which is sorted the same way.
-There is no separate catalog copy of a snapshot; a snapshot is one role
-13 row like any other object.
-
-## 8.2 Files at the volume root: README.txt and FORMAT.txt
-
-`internal/image`'s `Build` writes `/NOAHSARK/README.txt` and
-`/NOAHSARK/FORMAT.txt` at the volume root, directly after `DISC.bin` and
-before `REFERENCE/decoder.py`, matching the fill order section 8.7
-states. `FORMAT.txt` is checked in as `internal/image/format.txt`, copied
-byte for byte from `FORMAT.md` itself; a test compares it against
-`FORMAT.md` on every run, so the two can never drift silently. `README.txt`
-is built from a template checked
-in the same way, `internal/image/readme_template.txt`, with every slot
-substituted at build time from the values `Build` writes into `DISC.bin`
-and the run header. Both rows carry their real `sha256` in the Files
-table and enter the FEC stream, as roles 4 and 5.
-
-## 8.4 README.txt: {label} scope
-
-`{label}` substitutes the superblock's `label` bytes "as they are". A
-writer never stores more than the caller's label text, zero-
-padding the rest of the 64-byte field; `internal/image` substitutes only
-the meaningful, non-padding bytes rather than the full 64-byte field,
-since the padding is not part of the label and would otherwise read as a
-run of `?` characters. This does not change `label` or `label_len` on
-disc; it only fixes what a human-readable substitution should print.
-
-## 22. Test list: corrupting the real image for the restore-heal-restore CI check
-
-The CI check that proves `internal/restore` works against a real UDF
-image, not only an unpacked tree, corrupts the image itself: it loop-
-mounts the image read-write, as the existing mount step already does to
-populate it, then writes the corrupted bytes directly into the files
-under that mount, at the exact file and offset `internal/restore`'s own
-stream-layout logic resolves for a chosen `(column, stripe)` pair. A
-write through a read-write loop mount lands on the image file's own
-sectors, so this is corruption of the image, not a stand-in for it; nothing
-about the check depends on an unpacked tree. `ci-corrupt` picks columns 3
-and 6 of the fixture's one stripe, `README.txt` and `FORMAT.txt`,
-skipping columns 0 and 1, `INDEX.bin` itself: `internal/restore`'s Heal
-needs a readable `INDEX.bin` to resolve the stream layout in the first
-place, so healing `INDEX.bin`'s own bytes is out of scope for this
-implementation (see the object-row-by-position decision below), and this
-CI check does not exercise it.
-
-## 10.1 INDEX, Objects table: resolving an object row's file by position
-
-`internal/image`'s `StreamFiles`, used by both `Read`'s parity
-verification and `internal/restore`'s `Heal`, resolves an object row's
-(role 13) file path directly from `content_id` and `kind`, per section
-3.5, and locates that row's own Files entry by position: the Objects
-table and the role 13 rows are both in ascending `content_id` order, and
-the `j`-th role 13 row describes Objects row `j` (section 11.1). This
-depends on no hash of a file's current bytes, so it does not silently
-misplace a row when one object file is corrupted, which
-`internal/restore`'s `Heal` needs before it can even find the block to
-repair.
-
-## 8.1 The UDF volume: filesystem overhead estimate
-
-FORMAT.md gives the `mkudffs` options and the anchor placement rule but no
-numeric UDF overhead budget. The first version of this estimate, one
-2048-byte sector per file plus a fixed 1 MiB base cost, proved too
-optimistic: on a real dvd+r image, pack selected a run that left only
-about 140 sectors of unmodelled slack, and populating the built image
-with `cp -a` failed with "No space left on device". A smaller pack on
-the same image, with about 70,000 sectors of slack, populated fine.
-
-`EstimateFilesystemOverhead` now charges four terms, checked against a
-real mkudffs UDF 2.01 image, loop-mounted and measured with `df`:
-
-- A fixed base: the space bitmap (one bit per partition sector, rounded
-  up to whole blocks) plus a flat 4 MiB margin for the partition
-  reservations, the anchors, and allocation descriptors this estimate
-  does not itemise.
-- Two blocks per file: a File Entry plus a share of its parent
-  directory's FID space. A real image measured 4096 bytes (2 blocks)
-  per file once the object fanout directories already exist, rising a
-  little past that as directories grow past their first block; the flat
-  2-block charge plus the margin below covers the difference.
-- Two blocks per directory, bounded by the run tree's own layout: at
-  most one directory per `objects/<ab>` fanout prefix (256 of them)
-  plus the tree's fixed top-level directories, whatever the file count.
-- A proportional margin of 0.1% of capacity, for costs that scale with
-  the volume rather than the file count.
-
-At dvd+r capacity the fixed 4 MiB margin plus the proportional 0.1% term
-alone add up to about 8.5 MiB of slack beyond the itemised bitmap,
-per-file and per-directory costs, guarded by a test so a regression back
-toward a thin margin fails. This is still an estimate used only to
-refuse an over-target pack before spending time building it; it does not
-change any on-disc byte.
-
-## 8.1 The UDF volume: keeping files out of the ICB
-
-Small files may be embedded in-ICB by the UDF driver. The writer does not
-pad and sets no mount option. NoahsArk works at the file level and never
-depends on how a filesystem stores a file. A disc whose filesystem cannot
-be mounted counts as lost. Recovery by carving is not a supported
-operation; this build keeps no carving reader. This differs from the
-sector-boundary rule in FORMAT.md; the user will decide on a FORMAT.md
-change.
-
-## 10.1 Profile 0 image build: how the volume is populated
-
-`mkudffs` only makes an empty UDF filesystem; populating it needs a loop
-mount, which needs root. `internal/image`'s `MakeImage` runs `mkudffs`
-itself (needs no root), then always loop-mounts the image, copies the
-`NOAHSARK` tree in with Go's own `filepath.WalkDir`, and unmounts;
-populating is never optional and never gated by an environment
-variable. When the calling process is not root, `MakeImage` removes the
-partial image and returns `ErrPopulateNeedsRoot` rather than shelling
-out to `sudo` itself; `cmd/noahsark`'s `image build` turns that into a
-message naming the exact `sudo noahsark image build ...` line to run
-instead. This follows option (c) from the task's own list: a
-from-scratch Go UDF writer was not attempted, since `udftools`'s own
-`mkudffs` plus a root-only mount-and-copy step is the simplest path
-that reaches conforming UDF bytes with no new binary format code to
-maintain. The earlier design gated the copy step behind `NOAHSARK_CI`
-and left a non-root build with an empty, unpopulated image; that let a
-developer machine silently build a useless image, so it was dropped in
-favour of always populating and refusing loudly when root is missing.
-
-## 16. CLI reference
-
-OPERATIONS.md's "CLI reference" lists the commands and the options of this
-build. This entry keeps only the reasons that the code does not show.
-
-`-h` and `--help` on any command exit 0. A flag must come before the
-positional arguments of a command; one placed after is refused by name,
-because Go's `flag` package stops parsing at the first positional argument
-and would read the flag back as a positional string. An unknown command and
-an unknown flag are refused by the standard library's own `flag` package and
-the command dispatch, exit code 2.
-
-The config is a flat `key = value` file, the simplest format the standard
-library parses without a third-party dependency. The loader refuses an
-unknown key by name and does not accept and ignore it. `sources.root` holds
-one path, because `internal/object`'s `Writer.Commit` takes one source
-directory (see the "6.13 Snapshot" entry above).
-
-`commit` records the new snapshot under the given ref in a flat local ref
-file, `<repo>/refs.txt`. With no `--ref` the ref name is the local date of
-today, `YYYY-MM-DD`; a second commit on the same day moves that name to the
-newer snapshot, and `log` still reaches the older one. `commit` exits 1 when any file was unstable or
-skipped; the data is still committed and safe, only flagged or left out of
-this one snapshot.
-
-`pack` takes no flag that selects which snapshot to place; it always
-carries forward every ref not yet moved onto a run (see
-`addPendingRefs`). When that leaves nothing, it names the newest ref of
-the repository, so a pack after `gc` reports an already-packed
-repository instead of one that never had a commit.
-
-`--capacity` refuses a bare number. It reads as a byte count, it once meant
-sectors, and the two are a factor of 2048 apart with nothing in the output to
-say which one was taken. A preset name gives the real, drive-reported sector
-count, since a marketing size is not the real capacity. `pack` has no
-`--media` flag: the media type that DISC.bin records follows the `--capacity`
-preset, else `BD-R-SL-25`.
-
-`image build` takes the packed tree directory and reads the image length from
-the `DISC.bin` of that tree. It never calls `sudo`: when the calling process
-is not root it prints the exact `sudo noahsark image build ...` line to run.
-
-`verify DISC-ROOT` takes a mounted disc path or a packed tree. Mounting an
-image file needs root, which `verify` never assumes.
-
-A symlink entry gets owner only at restore, through a no-follow `Lchown`; it
-gets no Chmod or Chtimes, since both would follow the link onto its target,
-and this build has no no-follow time call without adding `golang.org/x/sys`
-as a direct dependency.
-
-`ls`, `log` and `restore`'s disc-swap mode resolve SNAPSHOT through
-`internal/cache` when no disc root or `--discs-dir` is given:
-`looksLikeDiscRoot` tells a `DISC-ROOT` positional apart from a snapshot id or
-ref name by testing whether the argument is an existing directory.
-
-`internal/plan.Build` groups every chunk that a restore of SNAPSHOT (or of
-the `--include` paths alone) needs by the disc that holds it, walking cached
-tree and blob objects. `restore`'s disc-swap mode and `restore --dry-run` both
-call it and print the same disc list before any disc is read.
-
-`status` reads the local disc ledger (`discs.bin`, the same rows a DISCS
-table carries) and the staging state log. A counter answers a question the
-operator did not ask; the state word and the `next:` line answer the one they
-did.
-
-The DISCS row carries no used-space field at all; FORMAT.md records only
-`capacity_sectors`. The on-disc DISCS row a run carries for itself always
-leaves `run_hash` zero: the run's own final size and header hash are not
-known until the run is written. The local ledger row, built after the run
-is written, carries the real `run_hash`, so every later run's copy of
-DISCS (and `status`) sees it from the next pack on.
-
-Burning the folder `pack` produces directly, without running `image build`,
-is a documented, supported use: see docs/guide.md.
-
-## 7.6 In-flight change detection
-
-Phase 1 has no parent snapshot: `internal/object`'s `Writer.Commit` always
-writes a root snapshot, with no prior tree to compare against. The branch
-rule of section 6.7 that reuses the parent entry therefore never applies
-in this build; every unstable file takes the other branch, "flagged":
-the writer keeps the content it read and sets the `UNSTABLE` entry flag.
-`Writer` restats a regular file before and after reading it, controlled
-by a `RestatAfterRead` option (default true) and a `RetryUnstable` option
-(default 1). Neither is a config key: `cmd/noahsark`'s `commit` always runs
-with the `Writer` defaults, so the detection always runs, at one retry.
-`commit` prints
-one `unstable PATH branch=flagged` line per flagged path, then the
-count, and exits 1 when the count is nonzero, matching the exit code
-table's "some files could not be read, or were unstable" rule.
-
-A path that vanishes between being listed and being opened or stat'd
-(deleted, renamed, or replaced by a broken symlink out from under the
-walker), or that an open, read or readdir error blocks (for example
-`EACCES` or `EIO`), is a different case from an in-flight content
-change: nothing was read, so there is no content to flag `UNSTABLE`.
-`Writer` reports such a path in `Summary.Skipped`, with the error text
-as the reason, and continues the commit without it, matching the source
-policy table's "unreadable file: skipped and reported, exit code 1"
-rule; `commit` prints a `skipped PATH: REASON` line for each and folds
-the count into the same nonzero-exit check. A read that fails partway
-through a file drops that file's entry entirely rather than staging a
-blob over truncated content; any chunk already written for it stays in
-staging as an orphan, and gc reclaims it like any other object nothing
-references. Only an error on the source root itself, or an error from
-the staging store (a write, a rename, or the state log), still aborts
-the commit and returns a hard error, since a failed destination write
-is never something to paper over.
-
-## 4. Staging state machine
-
-There are five states: STAGED, PACKED, BURNED, CLEAN and ON-DISC.
-ON-DISC is the last one. It means a disc holds the object and staging
-holds no file for it. `gc` records it before it unlinks a staged file,
-and `recover` records it for every object it reads from a disc's
-own catalog. One state covers both, because both say the same thing:
-the bytes are on a disc and nowhere else here. A separate DELETED state
-would say no more, and a rebuilt object was never deleted.
-
-`internal/stage` uses the simplest deterministic record: fixed-width,
-79 bytes (sequence, content id, state, run_seq, disc_uuid, reason,
-verify_count, clean_sec, crc32c), append-only, one record per
-transition. OPERATIONS.md's state log record table gives the same
-layout. The `verify_count` byte counts the successful verifies of the
-object, so `gc` can hold the staged bytes until
-`gc.min_verified_copies` copies read back. `clean_sec` is the unix time
-of the first verify; every later record copies the value forward, so
-the retention counts from the first verify and a second verify never
-restarts it. One file carries it all: there is no companion file. The
-newest record per content id, by file order (equivalently by
-`sequence`), is that object's current state. `EnsureStaged` never
-overwrites an existing record, so a re-commit of already-packed content
-can never resurrect it to STAGED. `disc burned`'s own moment is not
-recorded: nothing in this build ever reads it back.
-
-The torn-tail rule runs one time, at open. A partial record at the end
-of the file, or a last record with a bad CRC, is a crash during an
-append: `Open` cuts the file back to the last good record and reports
-the cut, and every command prints one warning for it. A bad record with
-good records after it is damage: `Open` reports an error, names the
-record and changes no byte, because dropping good records without
-saying so would hide a real fault. Cutting at open, rather than before
-the next append, removes the whole append-time repair path.
-
-`cmd_commit` calls `internal/image.CollectReachable` after a commit and
-marks every object it returns STAGED, rather than having `Writer` itself
-own state.db; this keeps the object writer free of a staging-state
-dependency, at the cost of re-walking the tree once per commit.
-
-`commit` prints a `staged: N objects, B bytes` line after its own
-summary, the repository-wide STAGED total from `image.StagedTotals`, so
-the "pack when staged data nears one disc" rule of OPERATIONS.md's
-packing guidance has a number to check against without waiting for a
-`pack` to report it. `status` (below) prints the same line.
-
-This build has no `burn` or `close` command: the operator burns with
-`growisofs` by hand, following the command `pack` prints. Something
-still has to tell the staging state machine that the burn happened, and
-it cannot be a disc-uuid check inside `verify`: the guide has an
-operator loop-mount and verify the image before burning it, to catch a
-build problem early, and that loop-mounted tree's disc uuid is already
-in the ledger, because `pack` writes the ledger, not a burn step. A
-verify that treated a ledger match alone as proof of burning would mark
-that pre-burn image CLEAN, and `gc` would later delete staging objects
-for a disc that was never actually written.
-
-`noahsark disc burned [--undo] UUID [UUID...]` is the explicit step
-that closes this gap. It moves every PACKED object of each named disc's
-runs to BURNED, and records the burn time (see above). `pack`'s
-next-steps block prints it between the `growisofs` line and the
-`verify` line, so the ordinary flow always runs it right after the
-physical burn. `--undo` reverses it, moving BURNED objects back to
-PACKED with the burn-failed reason, for a burn that turned out bad
-before anyone got as far as `verify`.
-
-`verify` never moves PACKED to BURNED itself. When `--repo` resolves to
-a repository and DISC.bin's uuid matches a row in its disc ledger, a
-passing verify moves the run's BURNED objects to CLEAN and leaves any
-PACKED object of that run alone, printing a line naming the `disc
-burned --repo=<repo>` command to run when one remains PACKED, after the
-`verify: ok` line rather than ahead of it when no object was BURNED
-this pass; a failing verify moves BURNED objects back to PACKED with
-the verify-failed reason, unchanged from before. The `marked N
-object(s) CLEAN` line itself prints only when N is at least 1, since a
-disc already fully CLEAN, or one still fully PACKED, has nothing to
-report there. A verify against a tree whose disc uuid the ledger has
-never seen at all, or run with no `--repo`, changes no staging state.
-
-`gc [--dry-run] [--force-after=DURATION]` implements the GC rules: it
-frees the staged file of a CLEAN object once the fixed 7-day retention
-has passed since its clean time, after
-confirming the object's presence in the cached INDEX of the disc the
-state log says holds it; an object whose disc is not cached is left
-alone and reported separately, never deleted on trust. The ON-DISC
-record goes to the disk before the staged file is unlinked: that one
-append syncs before it closes, so a crash can never take the record
-away and leave the bytes gone. A crash the other way round leaves an
-orphan, a staged file whose object is already ON-DISC, and the next
-`gc` run frees it. No other append syncs, because `commit` writes one
-record per object and a sync per object would set its pace; a lost tail
-there only replays as an object still STAGED, which the next `pack`
-heals. `gc` never trims the local cache: the cache is an accelerator,
-it costs little, and `recover` is the only tool needed to get it
-back.
-
-`--force-after=DURATION` substitutes DURATION for
-the fixed 7-day retention for this one run, using the same duration
-syntax (a whole number of days with a `d` suffix, or anything
-`time.ParseDuration` accepts). `gc` computes what it would delete under
-that shortened window exactly as it always does (`gcPlanStagingObjects`,
-shared with the ordinary path), then, unless `--dry-run` was also
-given, prints the confirmation OPERATIONS.md's CLI reference names,
-`delete N object(s), B bytes? [y/N]`, on stderr and reads one line from
-stdin. `--dry-run` skips the confirmation outright: it changes nothing
-either way, so there is nothing for the operator to approve. There is
-no flag to skip the confirmation: a script pipes the answer in
-(`echo y | noahsark gc --force-after=1h`), which is one explicit act,
-and a killed session with no stdin reads an empty line and deletes
-nothing. Answering anything but `y` or
-`yes` deletes nothing and exits 2, the same code as the refusal, since
-both leave `gc` having done nothing the operator did not ask for.
-
-OPERATIONS.md's own exit codes for `gc` (16.20) are 0 on success, 1
-when nothing was eligible, 2 on failure, with no separate case for
-`--dry-run`. A dry run only reports what a real run would do; it never
-changes anything, so failing to find something to delete is not a
-`--dry-run` failure the way it is a real run's. `--dry-run` always
-exits 0, printing `gc: nothing is eligible yet` and the earliest date
-some CLEAN object reaches the fixed retention, when nothing is
-eligible and every candidate's run is cached (an object skipped because
-its run is not cached prints that separate line instead, since
-"nothing is eligible" would misstate why nothing was deleted). A real
-`gc` run keeps exit 1 for that case, matching OPERATIONS.md.
-
-A staging object at PACKED, BURNED, CLEAN or ON-DISC all name an
-object a disc already holds; only STAGED does not.
-`stage.State.OnDisc()` names this test once, so `pack`'s two "is this
-object already on a disc" checks, `cmd_commit`'s `Known` callback, and
-`status`'s on-disc object count all agree with each other. Before
-this existed, both of `pack`'s checks compared against PACKED alone: an
-object `disc burned` and `verify` had already moved to BURNED or CLEAN
-looked unpacked again to the next `pack`, which copied it a second time
-and rebound it, with `MarkPacked`, to the new disc, silently losing
-cross-disc dedup for every object a burn-and-verify cycle had already
-completed.
-
-## 8. Packing and locality, and 10.1 INDEX Prereqs
-
-`pack` no longer requires the caller to name which snapshot to pack in
-full; it always processes the whole STAGED pool across every snapshot
-the repository has ever committed, since FORMAT.md requires every
-snapshot object on every disc regardless of any other object's state.
-`pack` has no flag that selects which refs this run's `REFS` table
-carries; it always carries every pending ref (see `addPendingRefs`,
-described above).
-
-Selection order is a post-order (children before parent) walk of every
-repository snapshot's tree: a directory's chunks, then its file blobs,
-then its own tree object, then the snapshot object last. A straight
-prefix of this order, filtered to STAGED objects, is always
-dependency-closed: any object a prefix includes has every one of its
-direct children either also in the prefix or already PACKED on an
-earlier run (never STAGED-and-excluded), because a staged child cannot
-occur after its parent in post order. `pack` greedily grows this prefix
-while a trial `CheckCapacity` still passes, and stops at the first
-object that would not fit; nothing past that point is tried, since a
-prefix cut is the only shape locality asks for ("keep together where
-possible"), not a bin-packing search over subsets.
-
-Because the selected set is always dependency-closed, Prereqs
-construction is exact and needs no search: for every selected tree,
-blob or snapshot, a direct child absent from the selected set is
-necessarily already PACKED (by construction), and its recorded
-`disc_uuid` from the state log is the Prereqs row's `disc_uuid`.
-
-`pack` checks that every staged object really holds the content its
-name promises, so corruption in the staging store cannot reach a disc.
-Where the check runs follows from what each kind costs to read. A tree,
-a blob and a snapshot are small and the selection walk decodes them
-anyway, so they are checked there. A chunk is the bulk of the data and
-the walk needs nothing out of it, so it is checked while the run copies
-it into the output tree: the payload streams through a decompressor
-into a hash in the same pass that writes it, so the check adds no read
-and holds no more than one chunk's decoder window. A length that
-differs from the length selection sized the object by is the same fault
-as a payload that hashes to another id. `pack` still reads a chunk once
-more, to hash the staged file for its `INDEX` row; that hash orders the
-role 13 rows, so it must be known before the run is laid out.
-
-A chunk that fails this check fails after part of the run is already
-written. `pack` then removes the whole `NOAHSARK` tree it wrote under
-`--out` and returns. Nothing past the write runs, so no object is
-recorded PACKED, no ledger is saved, and the run and disc sequence
-numbers stay free for the next `pack`. Parity is computed over the same
-stream and is removed with the rest.
-
-`pack` flushes what it wrote before it records anything. One pass at
-the end of the write syncs every file and every directory of the run
-tree and returns the first error it meets. Only then does `pack` mark
-its objects PACKED and save the ledgers, so the state log can never
-claim a run the local disk does not hold. The flush is one pass rather
-than one per file as each file closes: with FEC on, the measured pack
-of 512 MiB took 13.5 s that way against 22.1 s per file. The flush is
-not free either way, since it waits for bytes an unflushed `pack` only
-left to background writeback: the same 512 MiB packs in 5.3 s with no
-flush at all.
-
-## 10.3 DISCS and 12. Disc lifecycle, closing and appending
-
-This build keeps a local ledger of every disc it has packed,
-`<repo>/staging/discs.bin`, reusing `DISCS.bin`'s own container format
-unchanged. There is no burn or read-back step to recover this
-information from a drive, so the ledger is the authoritative source for
-DISCS's earlier rows the next `pack` call writes. Unlike a real disc's
-copy, the ledger's own row for a finished disc always carries the real
-`run_hash` immediately (computed from that disc's own `RUN.bin` right
-after it is built) rather than staying zero until a later run fills it
-in; FORMAT.md's state-transition rule for `run_hash` (zero, then filled,
-never changed) still holds for every row this build ever writes to an
-actual disc tree, since a disc's own row is always written zero and the
-ledger's filled value is only ever copied forward from the next disc
-onward.
-
-Phase 1 keeps one run per disc, so `run_seq` and `disc_seq` are derived
-directly from the ledger's length: `run_seq` is the ledger's row count
-plus one, `disc_seq` equals the row count. `--disc` (continuing an
-existing disc) stays refused, unchanged from the existing reduction.
-
-## 14. Restore, spanning discs
-
-`internal/restore.RestoreMulti` takes several disc roots and looks up
-each needed object directly by its canonical on-disc path on every
-provided root; a snapshot object is looked up the same way as any other
-object, under `/NOAHSARK/snapshots/<id>`, on the one disc that packed it.
-There is no separate catalog copy of a snapshot to fall back to. When an
-object is on none of the
-provided roots, `RestoreMulti` resolves the disc that must hold it from
-whichever provided run's `INDEX` names it (its own Objects row, or a
-Prereqs row pointing at it) plus that run's `DISCS` table, and keeps
-walking every other reachable branch instead of stopping at the first
-miss, so one `*MissingDiscError` at the end names every missing disc's
-uuid and every object needed from it. `cmd/noahsark`'s `restore` keeps
-its single positional `DISC-ROOT` form; a multi-disc restore instead
-names `--discs-dir`, a directory whose immediate subdirectories are disc
-roots.
-
-## 9. Forward error correction
-
-`internal/fec.Codec` encodes and decodes with the
-`github.com/klauspost/reedsolomon` backend, built with
-`reedsolomon.WithCauchyMatrix()` for the configured k and m. That option
-is required and must never change: klauspost's default matrix (a
-Vandermonde matrix) does not match the Cauchy matrix FORMAT.md's rule
-defines, so switching away from `WithCauchyMatrix()` would silently
-change every disc's parity bytes. Before adopting the library, a
-cross-check confirmed the backend produces byte-identical parity to a
-pure Go implementation of FORMAT.md's GF(2^8) arithmetic for k=231,
-m=23 over several hundred random stripes, and recovers identically for
-random erasure sets up to m=23; measured on the development machine,
-the backend ran at 792 MB/s (SSSE3) against the pure Go arithmetic's
-11.7 MB/s. `docs/fec-reference.md` writes up that arithmetic by hand,
-so an implementer who does not want the library can still reproduce
-the parity bytes.
-
-The pure Go reference implementation was then removed from
-`internal/fec` on the user's decision, now that `docs/fec-reference.md`
-records it and the cross-check has passed. The klauspost/reedsolomon
-library is the sole implementation from here on; the worked example
-from FORMAT.md (k=3, m=2, p0=0xE0, p1=0xAD) stays as a test in
-`internal/fec` to confirm the library still matches the spec.
-
-## 9. Forward error correction, FEC scheme registry value 0
-
-The user's decision: FEC becomes optional and is off by default. The
-primary redundancy is burning two identical discs; FEC is a reserve
-feature. FORMAT.md's FEC scheme registry gains id 0, `none`, now the
-default; id 1, `rs255-gf8`, is unchanged and still the only scheme that
-writes a checksum column and parity. The existing Reed-Solomon
-implementation is untouched by this change: `internal/fec` and
-`internal/image`'s scheme 1 path produce the same bytes as before.
-
-`internal/image`'s `BuildOptions` and `PackOptions` gain `FECEnabled
-bool`, false by default, read by both `Build` and `Pack` through a
-shared `appendFECRows`/`writeRunTree` pair that either lays out the
-checksum and parity rows and computes them to disk (scheme 1), or skips
-both entirely (scheme 0): the two writers' row order and byte output
-for a scheme 1 run are unchanged, since that code path is untouched,
-only reached through the same call it always was.
-
-`cmd/noahsark`'s config gains `fec.scheme` (Phase 1, values `none` and
-`rs255-gf8`, default `none`), read as `repoConfig.FECEnabled`; `pack`
-gains `--fec`, which overrides the config to write FEC for one run.
-There is no `--no-fec`: `fec.scheme` in the config is the one switch to
-turn FEC off. `pack` prints which mode it used and the
-stream-block budget that mode consumed.
-
-`internal/image.DataBudgetBlocksNoFEC` is the scheme 0 capacity rule:
-every usable sector after the filesystem overhead estimate, with no
-stripe rounding and no share given to a checksum column or parity,
-against `DataBudgetBlocks`'s existing whole-stripe rule for scheme 1.
-Both are covered by tests in `internal/image`.
-
-`image.Read` skips the parity-header and checksum/parity recomputation
-checks when `run.FECScheme` is not `rs255-gf8`, and verifies every
-object's content id and every Files row's file hash either way, per
-FORMAT.md's new "9.6 Scheme 0: no FEC" subsection. `restore.Heal`
-reads the run header first and refuses a non-`rs255-gf8` run with an
-error naming the run seq, before opening any FEC file.
-
-The default was confirmed after the pack optimization. The checksum
-digest pass is fused into object placement; parity still reads the
-placed stream a second time because the column-major stream layout
-scatters one stripe's blocks across the whole run. Measured on the CI
-runner, media/bd25 cell, 1.26 GB fixture:
-
-| Mode | Before | After |
-|---|---|---|
-| FEC off | 5.38 s, 234 MB/s | 1.94 s, 648 MB/s |
-| FEC on | 11.94 s, 105 MB/s | 4.21 s, 299 MB/s |
-
-Under the 512 MB lowmem cap FEC on runs at 87 MB/s. A 25 GB disc packs
-in about 40 s without FEC and about 85 s with it. The user kept the
-default off: two identical discs are the primary redundancy, FEC costs
-9% of capacity, and small hosts pay three times the pack time.
-
-`reference/decoder.py`'s `cmd_verify` never implemented a checksum-column
-or parity check of its own; it already conformed to the scheme 0 rule by
-construction. Its `parse_run` was missing a `fec_scheme` key in the
-returned dict, filled in here since a scheme-aware reader needs it. A
-checked-in fixture at `reference/testdata/scheme0-fixture`, one small
-run built with `FECEnabled: false`, backs a decoder test asserting
-`cmd_verify` passes and no `checksum.bin` or `parity/` exists.
-
-Test/e2e coverage: `corrupt-heal`, `corrupt-parity`, `corrupt-max`,
-`corrupt-over` and `lowmem` all need FEC on to have anything to
-corrupt and heal, or, for `lowmem`, to exercise the stripe-at-a-time
-memory strategy that scenario checks; `test/e2e/disc/cmd/ci-fixture`
-gained a `-fec` flag and `run.sh`'s `build_fixture` and `scenario_media`
-pass it through for those scenarios only. `cli`, `media` and `chain`
-run at the new default, off, unchanged.
-
-## 8.2 Files at the volume root, and 8.3 Run directory naming: case-insensitive reading
-
-Some burners fold every on-disc name to lowercase: plain ISO 9660
-level 4 with no Rock Ridge is the common case (verified with this
-host's `genisoimage`; `NOAHSARK` becomes `noahsark`, `README.txt`
-becomes `readme.txt`, `RUN.bin` becomes `run.bin`, and so on), and other
-burners or tools may fold names the same way. Object file names and
-their two-hex-digit fan-out directories are unaffected: they are
-already lowercase hex, so folding changes nothing there.
-
-`internal/image.NameCache` resolves one fixed name inside a directory:
-the exact name first, then a case-insensitive match against that
-directory's own listing, cached per directory for the caller's whole
-`Read`, list, restore or heal call. Every fixed name FORMAT.md's volume
-root and run directory sections define is resolved this way in
-`internal/image` (`reader.go`, `listwalk.go`, `walk.go`) and
-`internal/restore` (`restore.go`, `heal.go`); object and fan-out
-directory names stay exact-match. `reference/decoder.py` carries the
-same `NameCache` and the same rule. Writers are unaffected: NoahsArk
-still writes every fixed name in the exact case FORMAT.md defines; only
-reading tolerates a burner's own folding.
-
-This reading has a bearing on the later profile 2 filesystem work: a
-profile that relies on FAT-family case-insensitivity, or on a burner
-that folds names, can reuse this same tolerance instead of a new rule.
-
-## 14. Restore, single-drive disc swap
-
-With no `DISC-ROOT` or `--discs-dir`, and exactly `SNAPSHOT`
-and `OUT-DIR` left over, `restore` resolves `SNAPSHOT` through the
-local cache and builds a plan with `internal/plan.Build`. It then walks the plan's
-discs in order, one at a time, prompting the operator between them: the
-single-drive shape OPERATIONS.md's disc-major order describes, driven
-like an old multi-volume installer instead of needing every disc
-mounted at once. `restore --dry-run` builds and prints the same plan
-and stops there.
-
-`internal/restore.Assembler` reads every tree and blob the restore
-needs straight from the cache: `CheckComplete` already proved every
-tree is cached, and a blob is cached for any snapshot `pack` or
-`recover` has touched since blob caching was added. Only chunk
-payloads still need a disc, so a mounted disc is read for its assigned
-chunk objects alone (`internal/restore.ReadChunkFromRoot`, the same
-canonical `objects/<fanout>/<id>` path `Restore` and `RestoreMulti`
-already use). A blob the cache does not hold is a hard error in this
-mode, since there is no path yet to fetch a blob object from a mounted
-disc mid-walk.
-
-There is no spool. `Assembler.Disc` walks the snapshot's tree one time
-for each disc: for each regular file in scope it reads the blob from
-the cache, and for each chunk of that file that is on this disc it
-reads the chunk, verifies it and `WriteAt`s it into the file's part
-file at the chunk's own offset. The first walk creates every directory
-and symlink, and decides each existing destination with
-`existingFileStatus`; a later walk creates nothing and touches only the
-files that are not complete yet. Each byte is copied one time, and
-nothing the restore holds grows with the size of the snapshot: one
-disc's object id set, one chunk, and the blob entries of one file.
-
-For each file that is not complete the assembler keeps one small record
-(how many blob entries still owe their bytes, and whether the part file
-was already on disk when this run first opened it). That record holds
-no chunk id and no path list, so a snapshot of any size costs the same
-per unfinished file. The record is dropped when the file gets its final
+# Decisions
+
+Each entry states one decision: what, and why. The entries are ordered by
+topic. `FORMAT.md` and `OPERATIONS.md` hold the rules; this file holds the
+reasons that the code does not show. A decision about a deleted feature is
+deleted too; the git history keeps it.
+
+## Scope and release
+
+**A simple tool for one person.** The flow is: commit, pack one run on one
+disc, burn two identical copies, verify, store, restore. A feature must show
+that it is worth its complexity against that flow. An operator must be able to
+walk the whole flow with `docs/guide.md`.
+
+**No tag yet; a breaking change is fine before the first release.** No tag
+means no release, thus no disc in the field carries the old bytes. The project
+deletes a thing; it does not annotate it as deprecated. No one makes a tag
+until the owner says so.
+
+**One run on one disc. No append.** An append brings the hard problems: the
+spare area can run out, the directory blocks move, and the tool needs an image
+mirror. A blank disc is cheap. The default burn still leaves the disc open, so
+a later version can use the space.
+
+**No scheduler and no daemon.** `commit` is a batch job. The operator or an
+external scheduler runs it. The repository lock keeps two commits apart.
+
+**Memory is bounded by the chunk size and the stripe size.** Peak memory never
+follows the data size. `commit`, `pack`, `verify` and `restore` stream. The
+`lowmem` e2e cell runs the 25 GB flow under a memory limit to prove it.
+
+## Redundancy and recovery
+
+**Two identical discs are the redundancy.** The operator burns each image two
+times and stores the copies in different places. A second copy is simple, it
+needs no code, and it survives the total loss of one disc, which parity on the
+same disc does not.
+
+**FEC is optional and off by default.** `fec.scheme` is `none`; `pack --fec`
+writes Reed-Solomon parity for one run. FEC costs 9 percent of the capacity,
+and a small host pays about three times the pack time. Measured on the CI
+runner with a 1.26 GB fixture: 1.94 s without FEC, 4.21 s with it. There is no
+`--no-fec`: the config key is the one switch. The capacity budget follows the
+switch.
+
+**No recovery by carving.** A disc whose filesystem does not mount counts as
+dead. The tool reads every file by name through the filesystem. UDF can embed
+a small file inside its File Entry, and the writer adds no padding to prevent
+that. The second copy is the answer to a dead disc.
+
+**The Reed-Solomon backend is `klauspost/reedsolomon` with
+`WithCauchyMatrix()`.** The default matrix of the library is a Vandermonde
+matrix and gives other parity bytes, thus the option must never change. A
+cross-check against a pure Go implementation of FORMAT.md's arithmetic gave
+byte-identical parity for `k = 231`, `m = 23`. The library ran at 792 MB/s
+against 11.7 MB/s. The pure Go code was then deleted; `docs/fec-reference.md`
+writes the arithmetic up by hand, and the worked example of FORMAT.md stays as
+a test.
+
+**The FEC package takes byte slices only.** `internal/fec` knows nothing of
+INDEX or of the checksum column file. The caller in `internal/restore` picks
+the erasure sets and calls `Decode` for each attempt. This fixes which package
+runs the retry loop, and changes no byte.
+
+**`verify --heal` always writes into `--out`.** It never repairs a disc root
+in place. The damaged copy stays as evidence, and a failed heal loses nothing.
+
+**Heal needs a readable `INDEX.bin`.** Heal finds the stream layout through
+INDEX. An object row is found by position: the Objects table and the object
+file rows share the ascending content id order. No hash of the current bytes
+of a file takes part, thus a corrupt file cannot misplace a row.
+
+## Burning and disc lifecycle
+
+**The tool does not burn.** The operator runs the `growisofs` line that `pack`
+prints. The burn needs a device, often root, and a human who loads the disc.
+A printed line is simple to read, to edit and to repeat for the second copy.
+
+**The default burn leaves the disc open.** `-dvd-compat` is never passed by
+default. Only `pack --close` prints the sealed variant, and it changes the
+printed command only. A close is permanent, thus it must be an explicit act.
+
+**Only `disc burned` marks a burn. Only `verify` makes CLEAN.** The tool never
+concludes by itself that a burn occurred. The guide tells the operator to
+loop-mount and verify the image before the burn. The uuid of that image is
+already in the ledger, because `pack` writes the ledger. A `verify` that took
+a ledger match as the proof of a burn would mark that image CLEAN, and `gc`
+would later delete staged data for a disc that no one burned.
+
+**The tool never runs `sudo` and never mounts a device.** The operator mounts
+a disc and gives the mount point. A tool that raises its own privileges hides
+what it does. The one exception is `image build`: it loop-mounts the image
+file that it builds, and it needs root for that. When it is not root, it
+prints the exact `sudo noahsark image build ...` line and stops.
+
+**A disc is keyed by its uuid. A sequence number is a label.** The host
+assigns `run_seq` and `disc_seq` from local state. After a lost repository two
+discs can carry the same number. The state log, the cache and the Prereqs
+table all name the disc uuid. The `DISC` argument accepts the number, the
+uuid, a uuid prefix or the label, and refuses a value that matches two discs.
+
+**The disc ledger is a local `DISCS.bin`.** `<staging>/discs.bin` uses the
+on-disc container unchanged. There is no read-back step that can recover the
+earlier rows from a drive, thus the ledger is their source for the next
+`pack`. The ledger row carries the real `run_hash`; the row that a disc
+carries for itself keeps it zero, because the run is not final when the row is
+written.
+
+**The tool keeps no shelf notes.** The operator writes the label and the
+storage place on the sleeve. A disc is good or is discarded.
+
+## Image build
+
+**`mkudffs` plus a loop mount, not a UDF writer in Go.** `mkudffs` makes an
+empty volume only, and the Linux kernel fills it through a loop mount. This is
+the shortest path to conforming UDF bytes with no new format code. The copy
+always runs: an earlier design made it optional, and a developer machine then
+built an empty image with no error.
+
+**Never `--media-type=bdr` or `dvdr`.** Both make a write-once VAT volume. The
+kernel mounts such a volume read-only, thus nothing can fill it.
+
+**The image length comes from `DISC.bin`.** `image build` has no `--capacity`
+option. One value serves the packer, the image and the FEC layout, thus the
+three cannot disagree.
+
+**The filesystem overhead is an estimate with a wide margin.** FORMAT.md gives
+no UDF overhead budget. A first estimate of one block for each file failed on
+a real DVD+R image with "No space left on device". The estimate now charges
+the space bitmap, 4 MiB, two blocks for each file, two blocks for each
+directory, and 0.1 percent of the capacity. A test guards the margin. The
+estimate changes no disc byte.
+
+## Staging and gc
+
+**Five states, and ON-DISC is the last one.** ON-DISC means that a disc holds
+the object and staging holds no file for it. `gc` and `recover` both record
+it, because both say the same thing. A separate DELETED state would say no
+more.
+
+**One fixed-width state record, one file.** The record is 79 bytes and the log
+is append-only. The newest record of an id is its state. The record carries
+the verify count and the time of the first verify, thus there is no companion
+file. An existing record is never replaced by STAGED, thus a second commit of
+packed content cannot bring it back to STAGED.
+
+**The torn tail is cut one time, at open.** A partial or bad last record is a
+crash during an append; a lock holder cuts it and warns. A bad record with
+good records after it is damage; the tool stops and changes nothing, because a
+silent drop of good records would hide a real fault. A read-only command never
+truncates: it could see an append that is still in progress.
+
+**`gc` needs 2 verified copies and 7 days.** Two identical discs are the
+redundancy, thus `gc` holds the staged data until the second copy passes
+`verify`. `gc.min_verified_copies` is the key, for an operator who keeps one
+copy only. The 7 days are fixed; `gc --force-after` is the escape, and it asks
+for a confirmation. There is no flag that skips the confirmation: a script
+pipes `y` in, which is one explicit act.
+
+**`gc` confirms through the cached INDEX before it frees.** An object whose
+disc is not cached is left alone and reported. `gc` never deletes on trust.
+
+**Only the ON-DISC append syncs.** That record reaches the disk before the
+unlink, thus a crash cannot leave the bytes gone and the record lost. `commit`
+writes one record for each object, and a sync for each would set its pace. A
+lost tail there replays as STAGED, and the next `pack` handles it.
+
+**The cache lives in `<repo>/cache/` and is never trimmed.** It is an
+accelerator, it is small, and `recover` builds it again. There is no key and
+no flag for its place or its size. CI deletes it and restores from the disc
+images alone.
+
+**PACKED or later means "a disc holds it".** One test, `State.OnDisc()`,
+serves `pack`, `commit` and `status`. An earlier `pack` compared against
+PACKED only, and copied a BURNED object a second time.
+
+## Commit
+
+**Every snapshot is a root snapshot, from one source root.** The build writes
+no parent id and reads every file on every run. Dedup makes the second commit
+cheap in space. The quick check and parent chains were cut: they add state
+that can be wrong.
+
+**The default ref is the date of today.** With no `--ref`, `commit` moves
+`YYYY-MM-DD`. No ref name is reserved, and there is no `LATEST`. A reader
+takes the record with the highest time.
+
+**An unstable file is stored and flagged.** `commit` stats, reads, and stats
+again, with one retry. There is no parent entry to reuse, thus the content
+that was read last is stored with the `UNSTABLE` flag, and the exit code is 1.
+The detection has no switch.
+
+**An unreadable or vanished file is skipped and reported.** Nothing was read,
+thus there is nothing to flag. The snapshot is still written, and the exit
+code is 1. Only an error on the source root or in the staging store stops the
+commit.
+
+**`commit` records the real uid and gid, and the names when the host has
+them.** It caches one name lookup for each distinct id. A lookup that fails
+records no name and is not an error.
+
+**Only a chunk is compressed.** A blob, a tree and a snapshot are written with
+compression 0. They are small, and raw storage is always a valid result of the
+minimum-gain rule.
+
+**A hole is ordinary zero data.** The writer never probes `SEEK_HOLE`. Equal
+zero chunks deduplicate to one object.
+
+**The object writer does not own the state log.** `commit` collects the
+reachable objects after the write and marks them STAGED. This costs one more
+walk of the tree and keeps `internal/object` free of staging state.
+
+## Pack
+
+**`pack` takes the whole STAGED pool.** It has no option that selects a
+snapshot or a ref. Every run carries every pending ref and every snapshot
+object, thus the newest disc names every ref of the repository.
+
+**The selection is a prefix of a post-order walk.** A child comes before its
+parent, thus every prefix is dependency-closed, and the Prereqs rows need no
+search. `pack` grows the prefix while the capacity check passes and stops at
+the first object that does not fit. Locality asks for "keep together", not for
+a bin-packing search.
+
+**`--capacity` refuses a bare number.** A bare number once meant sectors and
+reads as bytes, a factor of 2048 apart. A preset gives the real sector count
+of the medium, because a marketing size is not the capacity. `pack` reads no
+drive.
+
+**`pack` checks each staged object where the read is free.** A tree, a blob
+and a snapshot are checked in the selection walk, which decodes them anyway. A
+chunk is checked while it is copied into the disc root. A failure removes the
+part-written disc root and records nothing.
+
+**`pack` syncs in one pass, then records.** One pass at the end syncs every
+file and directory. Only then does `pack` mark PACKED and save the ledgers. A
+512 MiB pack with FEC took 13.5 s that way, against 22.1 s with a sync for
+each file.
+
+**`FORMAT.txt` is a byte copy of `FORMAT.md`.** It is checked in as
+`internal/image/format.txt`, and a test compares the two. `README.txt` comes
+from a checked-in template. The `{label}` slot receives the label text without
+the zero padding of the 64-byte field.
+
+**Files that are final only after INDEX carry a zero `file_hash`.**
+`INDEX.bin`, `RUN.bin`, `RUN2.bin`, the checksum file and the parity files
+cannot hold a hash of themselves in INDEX. The run header and their own CRCs
+protect them.
+
+## Restore
+
+**One write path, through a part file.** Both modes write
+`.<name>.noahsark-part` and give the file its final name with `link` after the
+last chunk is verified. `link` fails when the name exists, thus the
+no-overwrite rule has no race, and a part-written file never carries the final
 name.
 
-The part file is `<dir>/.<name>.noahsark-part`, opened with
-`O_CREATE|O_NOFOLLOW` (never `O_EXCL`: a later disc opens it again) in
-the directory `ensureDir` already made with the no-follow rule. A
-snapshot that itself holds a file of that name gets a numbered suffix
-instead, decided from the directory's own tree entries, thus the same
-name each run. `Truncate` sets the final size one time, so a sparse
-tail is right. The final name appears through `link(part, final)` and
-then `unlink(part)`: `link` fails with `EEXIST`, so the no-overwrite
-rule holds with no race and a half-written file never carries the final
-name. `--overwrite` unlinks the path in the way first, and never
-removes a directory tree. `linkPart` falls back to `Lstat` and
-`Rename` when the filesystem has no hard link (`EPERM`, `ENOTSUP`,
-`ENOSYS`); that fallback has a small race, and `linkFile` is the seam a
-test drives it through.
+**The disc-swap mode has no spool and no plan file.** For each disc, `restore`
+walks the tree one time and writes each chunk of that disc at its own offset.
+It holds one small record for each file that is not complete. Each byte is
+copied one time.
 
-At each open of a part file left by an earlier run, each chunk of this
-disc is checked against its content id and skipped when it is already
-there. So a rerun asks only for the discs that still hold a chunk some
-incomplete file needs: `mountedDisc.Read` prompts at the first chunk it
-must actually read, and a disc that owes nothing any more is never
-detected and never prompted for. A killed run leaves hidden part files;
-the next successful run completes them and unlinks them. A restore
-never removes a part file it did not write or need.
+**Resume is a check, not a journal.** At each open of a part file, the chunks
+that are already there are checked against their content ids. A file that
+already exists and matches its tree entry counts as resumed. A second run asks
+only for the discs that it still needs.
 
-Disc detection (`cmd/noahsark`'s `detectDisc`) reads
-`--mount`'s `NOAHSARK/DISC.bin` and compares its uuid: a match prints
-`disc <seq> <label>: found` and moves on with no prompt. A mismatch
-reports the expected and found uuid and label (the found label comes
-from the cache's own `DISCS` table, when that disc is one the cache
-already knows) and prompts again. An unreadable `DISC.bin` (drive still
-settling, or nothing mounted yet) is retried a few times with a short
-pause before it prompts. `--mount` has no config default, so the flag is
-required in this mode.
+**`restore` never unmounts and never ejects.** It names the disc that it
+needs and waits. The operator swaps the disc in a second terminal. `--mount`
+has no config default.
 
-The disc-swap
-loop walks the tree one time for each disc, in plan order, and reads
-each disc in one pass. A read error on one chunk fails that one file
-and the walk continues; only an error the disc source marks with
-`restore.FatalDiscError`, such as a prompt that cannot be answered,
-stops the whole restore. `restore` never unmounts and never ejects: it
-prints the disc it needs and waits, and the operator swaps the disc in
-a second terminal.
+**The all-discs mode needs no repository.** It reads the REFS and the INDEX of
+the given discs. It names every missing disc and every file that it cannot
+restore in one report at the end, and does not stop at the first one.
 
-A destination file that already exists, with `--overwrite` not given,
-is not automatically a conflict in this mode: the assembler
-checks it against the tree entry it must match, either by size and
-mtime (the way `applyMetadata` leaves a file this restore wrote itself)
-or by hashing dest's bytes at each blob entry's own offset and length
-and comparing against that entry's content id, which needs no disc
-access. A match counts as resumed, not skipped, so a rerun after a
-killed session reports `resumed: N file(s) already restored` and exits
-0 once nothing else is wrong; only a genuine mismatch still counts as
-skipped and keeps the exit-1, `--overwrite`-to-replace behavior. A
-resumed file also gets its own leftover part file removed: a run killed
-between `link` and `unlink` is the one way both names can exist at
-once.
+**Owner first, then mode, then times.** A `chown` clears the setuid and the
+setgid bits, and the `chmod` after it puts them back. Go holds setuid, setgid
+and sticky outside the low 12 bits of `os.FileMode`, thus `restore` translates
+the three bits.
 
-`RestoreMulti` keeps its own write path (`openForWrite` and
-`writeChunks`). It has every disc at one time, so it writes each file
-one time, and it leaves a file that a missing disc cut short in place
-on purpose, with the missing-disc error naming what would finish it.
-Part files would change that behavior and would not remove a line, so
-the two engines stay apart.
+**`restore` applies the uid and the gid, never the names.** A name can point
+at a different id on the restoring host. A `restore` that is not root applies
+no owner and prints no warning: an ordinary user who restores their own files
+is the normal case.
 
-## 6. Concurrency and locking
+**A symlink gets its target and, as root, its owner.** A `chmod` or a time
+call would follow the link, and the standard library has no no-follow time
+call.
 
-`internal/repolock` implements the repository lock: a non-blocking
-exclusive `flock` on `<repo>/lock`, and nothing else. It never treats
-the lock file's existence as the lock, and never removes it, so a
-competing `open` always locks the same inode. A command that cannot get
-its lock prints `repository lock <path> is held; another noahsark
-command runs on this repository` and exits 1, matching OPERATIONS.md's
-rule.
+**`restore` never removes a directory tree.** `--overwrite` unlinks a file or
+a symlink. A directory that holds entries where a file must go is reported.
 
-Every state-writing command this build has takes the lock before it
-opens the state log: `init` (on the directory it just created),
-`commit`, `pack`, `gc` (`--dry-run` included, since it still replays the
-log to report what it would delete), `disc burned` and `recover`.
-`verify` takes it only when
-`--repo` resolves to a repository; with no `--repo` it never touches any
-repository's state, the same reasoning that already applies to `image
-build`, and to `ls` and `log` reading straight from a disc instead of
-the cache. `ls`, `log`, `status` and every mode of `restore` take no
-lock at all: with no spool, a restore writes only below its own output
-directory.
+**A reader accepts a case-folded fixed name.** Some burners fold names to
+lower case, for example plain ISO 9660 level 4. The reader tries the exact
+name first, then a match without case in the listing of that directory.
+Object names are lower-case hex already. The writer still writes the exact
+case. `reference/decoder.py` follows the same rule.
 
-`status` is the one lock-free command that still opens the state
-log, so it uses `stage.OpenReadOnly` instead of `stage.Open`: both
-replay the log the same way and cut the same torn tail from the
-in-memory result, but only `stage.Open` (used by the exclusive lock
-holders) also truncates the file on disk. A lock-free `status` that
-raced a concurrent append could otherwise observe a torn tail that is
-really an append still in progress, and truncating it would corrupt the
-writer's work; `stage.OpenReadOnly` leaves the file untouched, so this
-can never happen. `restore`'s all-discs-at-once mode never resolves a
-repository at all in this build, so it takes no lock, the same as
-`verify` and `image build` with no `--repo`.
+## CLI and config
 
-## 6. Objects, tree entry uid and gid
+**Exit codes are 0, 1 and 2.** 0 is success, 1 is a failure at run time, 2 is
+a usage error. No command keeps a special code. A partial success that needs
+the operator, such as an unstable file, is 1. An outcome that needs no action,
+such as `gc` with nothing eligible, is 0.
 
-`commit` records the real uid and the real gid of each source path, from
-`syscall.Stat_t`, and the user name and the group name TLVs when the host
-names the ids. It caches one name lookup for each distinct id of the commit,
-thus the cache holds one entry for each owner, never one for each file. A
-lookup that fails records no name; it is not an error. A platform whose
-`os.FileInfo` carries no `*syscall.Stat_t` keeps uid 0 and gid 0, the same
-runtime type assertion the walker already uses for the device id and for the
-times. The recorded bytes of a tree change, thus the content id of a tree
-changes. This is correct: the tree holds different metadata.
+**Options come before the positional arguments.** Go's `flag` package stops at
+the first positional argument. An option after it would be read as a path,
+thus the build refuses it by name.
 
-A snapshot committed by an older build holds uid 0 and gid 0 for every entry.
-A `restore` that runs as root applies what the snapshot holds, thus it makes
-every such path owned by `root:root`. This build leaves that behaviour alone:
-the snapshot is the truth about what was backed up, and a restore never
-invents an owner the snapshot does not name. An operator who wants the real
-owner commits the source again with this build. A `restore` that does not run
-as root is unaffected: it applies no owner at all.
+**The config is a flat `key = value` file with six keys.** The standard
+library parses it. The loader refuses an unknown key by name. A key exists
+only when an operator needs it: `staging.dir` stays because staging holds tens
+of gigabytes and can need another disk.
 
-## 15. Metadata restore policy, the order of the three calls
+**A `DISC-ROOT` is an argument that is an existing directory.** `ls`, `log`
+and `restore` tell a disc root from a snapshot id or a ref name this way, and
+need no separate option for the common case.
 
-`restore` applies the owner, then the mode, then the times. A `chown` clears
-the setuid and the setgid bits of a file, so a `chmod` that ran before it
-would lose them. The `chmod` after the `chown` puts them back.
+**`status` prints a state word and one `next:` line.** A counter answers a
+question that the operator did not ask. The `next:` line answers the one that
+they did.
 
-The stored mode is the raw Unix permission bits. Go holds setuid, setgid and
-sticky outside the low 12 bits of `os.FileMode`, so `restore` translates the
-three bits before it calls `os.Chmod`. A direct conversion of the stored bits
-dropped all three, and a restored setuid file came back as 0755.
+**`pack` prints the next steps.** The block holds the exact `image build`,
+`growisofs`, `disc burned` and `verify` lines for the disc, in order, so that
+the ordinary flow cannot skip `disc burned`.
+
+## Locking
+
+**One non-blocking exclusive `flock` on `<repo>/lock`.** A command that writes
+local state takes it and fails at once when it is held. It never waits. The
+lock file is never removed, thus every `open` locks the same inode.
+
+**A read-only command takes no lock.** `ls`, `log`, `status`, `pack --dry-run`
+and every mode of `restore` take none. `status` opens the state log with the
+read-only replay, which never truncates the file.
+
+## Testing
+
+**Test image-first.** Every burn test uses a real `mkudffs` image and a real
+loop mount. Physical burns are a manual checklist, not CI.
+
+**The heal test corrupts the real image.** It loop-mounts the image
+read-write and writes bad bytes into the files at the exact stripe position.
+The write lands on the sectors of the image file, thus the test does not
+depend on an unpacked tree.
+
+**A probe records an unknown answer; a test asserts a known one.** A probe
+moves into the test list when its answer is stable.

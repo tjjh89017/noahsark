@@ -72,9 +72,8 @@ var ErrPopulateNeedsRoot = errors.New("populating the UDF image needs root for t
 // ErrPopulateNeedsRoot rather than shelling out to sudo itself. prog
 // reports bytes copied during populate; a nil prog reports nothing.
 //
-// Reading: docs/decisions.md, "Profile 0 image build: how the volume is
-// populated" records why this is the chosen path over a from-scratch Go
-// UDF writer.
+// docs/decisions.md, "Image build", records why this is the chosen path
+// over a from-scratch Go UDF writer.
 func MakeImage(dir, imagePath string, sectors uint64, prog *progress.Reporter) error {
 	if _, err := CheckTools(); err != nil {
 		return err

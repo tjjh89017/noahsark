@@ -20,12 +20,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdPack implements "noahsark pack". It reduces OPERATIONS.md's pack
-// flags: object selection by staging fill or age (disc.min_fill,
-// disc.max_wait), locality presets and burn-plan output do not exist in
-// this build, so pack instead takes every pending ref; there is no way
-// to name a snapshot explicitly. See docs/decisions.md, "16. CLI
-// reference".
+// cmdPack implements "noahsark pack". pack takes every pending ref;
+// there is no way to name a snapshot explicitly. See docs/decisions.md,
+// "Pack".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark pack [--capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
 		"Pack staged objects onto the next disc.", stderr)
@@ -409,8 +406,6 @@ func (s *stringList) Set(v string) error {
 	return nil
 }
 
-// burnerDefaultDevice and burnerDefaultSpeed match burner.device and
-// burner.speed's own defaults (OPERATIONS.md's configuration reference).
 // This build has no burn command and no burner config keys, so the
 // printed burn line always uses these defaults; a user with a different
 // device or speed edits the printed line before running it.
@@ -434,7 +429,7 @@ const (
 // `disc burned` comes before `verify`: verify never moves an object
 // from PACKED to BURNED itself, since a loop-mounted image checked
 // before burning has the same disc uuid and would otherwise look
-// burned too. See docs/decisions.md, "4. Staging state machine".
+// burned too. See docs/decisions.md, "Burning and disc lifecycle".
 func printNextSteps(stdout io.Writer, repoArg, treeDir string, discSeq uint64, sealDisc bool) {
 	imagePath := treeDir + ".img"
 	spareMode := "spare:min"

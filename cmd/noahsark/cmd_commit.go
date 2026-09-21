@@ -26,11 +26,8 @@ func defaultRefName() string {
 // it to reach the Writer's Stat seam before Commit runs.
 var newWriter = object.NewWriter
 
-// cmdCommit implements "noahsark commit". It reduces OPERATIONS.md's
-// commit flags to an optional source path and --ref: the quick check,
-// excludes, source-type override, mirror mode and commit bundles all
-// need a config or state layer this build does not have. See
-// docs/decisions.md, "16. CLI reference".
+// cmdCommit implements "noahsark commit". See docs/decisions.md,
+// "Commit".
 func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]",
 		"Commit a source directory tree as a new snapshot.", stderr)

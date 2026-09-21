@@ -13,8 +13,8 @@
 # readers still accept it.
 #
 # The main image in this scenario still uses the docs/guide.md
-# "Burn the disc" directory alternative (Rock Ridge, not FORMAT.md's Phase 3
-# profile 2): Rock Ridge keeps exact case, so iso_assert_fixed_files can
+# "Image build, rehearsal and other options" directory alternative (Rock
+# Ridge): Rock Ridge keeps exact case, so iso_assert_fixed_files can
 # compare the mount against the packed tree byte for byte. See lib.sh
 # for build_binary and the media_* helpers, and assert.sh for
 # assert_dirs_equal and assert_listing_matches.

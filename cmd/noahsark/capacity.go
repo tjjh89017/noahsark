@@ -13,8 +13,7 @@ import (
 // write-once optical media, keyed by lower-case preset name. A marketing
 // size such as "25 GB" is decimal-rounded and is not the sector count a
 // drive actually reports; these values are the real counts, checked
-// against dvd+rw-mediainfo output. See docs/decisions.md,
-// "16. CLI reference".
+// against dvd+rw-mediainfo output. See docs/decisions.md, "Pack".
 var capacityPresets = map[string]uint64{
 	"dvd+r": 2_295_104,
 	"dvd-r": 2_298_496,
@@ -39,7 +38,7 @@ var capacityPresets = map[string]uint64{
 // a factor of 2048 apart, and the operator has no way to see which one
 // the tool took.
 //
-// Reading: docs/decisions.md, "16. CLI reference".
+// See docs/decisions.md, "Pack".
 func parseCapacity(s string) (uint64, error) {
 	if sectors, ok := capacityPresets[strings.ToLower(s)]; ok {
 		return sectors, nil

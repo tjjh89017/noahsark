@@ -37,8 +37,8 @@ var gcRemove = os.Remove
 
 // cmdGC implements "noahsark gc". It frees the staging bytes of an
 // object that two verified copies already hold, and nothing else: the
-// local cache is never trimmed. See docs/decisions.md, "4. Staging
-// state machine".
+// local cache is never trimmed. See docs/decisions.md, "Staging and
+// gc".
 func cmdGC(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("noahsark gc [--dry-run] [--force-after=DURATION]",
 		"Delete the staged files of objects that verified discs hold.", stderr)

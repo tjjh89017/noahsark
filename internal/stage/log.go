@@ -6,7 +6,7 @@
 //
 // The state log is a fixed-width, append-only file. Each record carries
 // a CRC-32C, so a reader replays it and stops cleanly at a torn tail.
-// See docs/decisions.md, "4. Staging state machine".
+// See docs/decisions.md, "Staging and gc".
 package stage
 
 import (
