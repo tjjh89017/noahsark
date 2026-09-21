@@ -206,9 +206,8 @@ func (m *Manifest) MarkSpooled(id object.ID) {
 // WriteReady writes every pending file whose chunks are all spooled,
 // reading each chunk from spoolDir, and frees a spooled chunk once
 // every file that needed it is written. It reports how many files it
-// wrote and how many spool bytes it freed, so a caller enforcing
-// restore.staging_budget can keep a running total without re-statting
-// spoolDir.
+// wrote and how many spool bytes it freed, so a caller tracking the
+// spool's size can keep a running total without re-statting spoolDir.
 func (m *Manifest) WriteReady(spoolDir string, prog *progress.Reporter) (written int, freedBytes uint64, err error) {
 	for _, pf := range m.files {
 		if pf.written || len(pf.remaining) > 0 {
@@ -261,31 +260,6 @@ func writeChunksFrom(f *os.File, entries []format.BlobEntry, prog *progress.Repo
 		return data, true, nil
 	})
 	return err
-}
-
-// FileExceedingBudget returns the path and total chunk bytes of the
-// first not-yet-written pending file whose chunks alone add up to more
-// than budget, in the manifest's build order. It reports ok=false when
-// budget is 0 (unlimited) or every file fits, so a caller can check this
-// once, before any disc is read: no split of that file's own chunks
-// across passes could keep the spool under budget.
-func (m *Manifest) FileExceedingBudget(budget uint64) (path string, bytes uint64, ok bool) {
-	if budget == 0 {
-		return "", 0, false
-	}
-	for _, pf := range m.files {
-		if pf.written {
-			continue
-		}
-		var total uint64
-		for _, be := range pf.entries {
-			total += be.Length
-		}
-		if total > budget {
-			return pf.path, total, true
-		}
-	}
-	return "", 0, false
 }
 
 // Finish applies directory metadata in a deferred pass, deepest

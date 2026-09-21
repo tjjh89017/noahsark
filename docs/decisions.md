@@ -258,7 +258,7 @@ favour of always populating and refusing loudly when root is missing.
 ## 16. CLI reference
 
 `cmd/noahsark` implements the Phase 1 command set: `init`, `commit`,
-`pack`, `image build`, `verify`, `restore`, `ls`, `log`, `plan`,
+`pack`, `image build`, `verify`, `restore`, `ls`, `log`,
 `recover`, `status`, `disc burned` and `gc`. Every command
 below keeps OPERATIONS.md's name; a flag is reduced or renamed only
 when the Go packages this build calls have no way to honour it yet,
@@ -266,10 +266,10 @@ since no ref log, locality planner or burn plan exists in this build.
 `disc burned` is not an OPERATIONS.md command; it is this build's
 stand-in for the missing `burn` step, explained in "4. Staging state
 machine" above. A staging state log (`internal/stage`) and a local
-cache (`internal/cache`) do now exist, so `ls`, `log` and `plan`
-resolve SNAPSHOT through the cache when no disc is given, and `disc
-burned`, `verify` and `gc` drive the staging state machine; the
-paragraphs below on those commands describe both paths.
+cache (`internal/cache`) do now exist, so `ls`, `log` and `restore`'s
+disc-swap mode resolve SNAPSHOT through the cache when no disc is
+given, and `disc burned`, `verify` and `gc` drive the staging state
+machine; the paragraphs below on those commands describe both paths.
 
 `-h` and `--help` on any command exit 0 and print that command's
 positionals and flags; they never count as a usage error. A flag must
@@ -448,9 +448,8 @@ path, restoring everything under it when it names a directory) and
 `--overwrite` are implemented: `restore` otherwise leaves an existing
 path alone rather than overwrite it, reports `skipped N existing
 path(s)` and exits 1 when any were left alone, so a repeated restore
-never silently overwrites unless asked. `--plan`, `--staging-budget`,
-`--interactive` and `--no-eject` are now defined, for the disc-swap
-mode's `--mount` and `--plan` resume. Every other restore flag
+never silently overwrites unless asked. `--mount`, `--no-eject` and
+`--dry-run` are now defined, for the disc-swap mode. Every other restore flag
 (`--drives`, `--no-owner`, `--numeric-owner`, `--no-flags`,
 `--no-times`, `--no-hardlinks`, `--metadata-strict`, `--report`,
 `--report-replay`, `--strict-unstable`) is Phase 1 but not defined,
@@ -473,35 +472,29 @@ Chtimes, since both would follow the link onto its target, and this
 build has no no-follow time call without adding `golang.org/x/sys` as a
 direct dependency.
 
-`ls`, `log` and `plan` resolve SNAPSHOT through `internal/cache` when
-no disc root, `--disc` or `--discs-dir` is given: `looksLikeDiscRoot`
-tells a `DISC-ROOT` positional apart from a snapshot id or ref name by
-testing whether the argument is an existing directory, since a disc
-root always is one and the other two never are in ordinary use. `ls`
-and `log` keep their old disc-reading path unchanged when a disc is
-named; `plan` reads the cache only, matching OPERATIONS.md's "reads
-nothing from a disc beyond the catalog." All three report the same
-incomplete-cache message and exit code 1 through the shared
-`reportSourceError`/`formatIncompleteError` helpers, resolving the
-disc to insert through `cache.LocateObject` and `cache.DiscRow`
-where a cached disc's INDEX or DISCS table allows it.
+`ls`, `log` and `restore`'s disc-swap mode resolve SNAPSHOT through
+`internal/cache` when no disc root, `--disc` or `--discs-dir` is given:
+`looksLikeDiscRoot` tells a `DISC-ROOT` positional apart from a
+snapshot id or ref name by testing whether the argument is an existing
+directory, since a disc root always is one and the other two never are
+in ordinary use. `ls` and `log` keep their old disc-reading path
+unchanged when a disc is named; the disc-swap mode reads the cache
+only, matching OPERATIONS.md's "reads nothing from a disc beyond the
+catalog." All three report the same incomplete-cache message and exit
+code 1 through the shared `reportSourceError`/`formatIncompleteError`
+helpers, resolving the disc to insert through `cache.LocateObject` and
+`cache.DiscRow` where a cached disc's INDEX or DISCS table allows it.
 
-`plan` groups every object a restore of SNAPSHOT (or of `--include`'s
-paths alone) would need by the disc that holds it, walking cached tree
-and blob objects; a blob the cache does not hold still counts as one
-object, since blob caching only covers what pack or recover
-processed after it was added, and its own absence is not, by itself,
-an incomplete cache the way a missing tree is. `--staging-budget` is
-now defined. `--drives`, `--score` and `--target` are not defined,
-since no multi-drive planner or byte-vs-object scoring exists yet, and
-`plan` records no restore target. The JSON `--out`
-writes covers `discs[]`'s `order`, `disc_uuid`, `disc_seq`, `label`,
-`objects_to_read` and `bytes_to_read`, `missing_discs`,
-`peak_staging_bytes` (the largest single object of known size),
-`switches` and `passes`; every other "14.4 The plan file" field
-(`objects_exact`, `objects_probable`, `estimated_seconds`,
-`degraded_runs` and the rest) needs a filter, a time model or a health
-report this build does not have.
+`internal/plan.Build` groups every object a restore of SNAPSHOT (or of
+`--include`'s paths alone) would need by the disc that holds it,
+walking cached tree and blob objects; a blob the cache does not hold
+still counts as one object, since blob caching only covers what pack
+or recover processed after it was added, and its own absence is not,
+by itself, an incomplete cache the way a missing tree is. `restore`'s
+disc-swap mode and `restore --dry-run` both call it and print the same
+disc list before any disc is read. `--drives`, `--score` and `--target`
+are not defined, since no multi-drive planner or byte-vs-object
+scoring exists yet, and this build records no persisted restore plan.
 
 None of these reductions change any byte a conforming writer puts on a
 disc or a conforming reader accepts; they change only which command-line
@@ -928,13 +921,13 @@ that folds names, can reuse this same tolerance instead of a new rule.
 
 With no `DISC-ROOT`, `--disc` or `--discs-dir`, and exactly `SNAPSHOT`
 and `OUT-DIR` left over, `restore` resolves `SNAPSHOT` through the
-local cache and builds the same plan `plan` prints, by sharing
-`internal/plan` (moved out of `cmd/noahsark/cmd_plan.go` so both
-commands call the same planner). It then walks the plan's discs in
-order, one at a time, prompting the operator between them: the
+local cache and builds a plan with `internal/plan.Build`, the package
+`cmd/noahsark/cmd_plan.go` used to own alone. It then walks the plan's
+discs in order, one at a time, prompting the operator between them: the
 single-drive shape OPERATIONS.md's disc-major order describes, driven
 like an old multi-volume installer instead of needing every disc
-mounted at once.
+mounted at once. `restore --dry-run` builds and prints the same plan
+and stops there.
 
 `internal/restore.BuildManifest` reads every tree and blob the
 restore needs straight from the cache: `CheckComplete` already proved
@@ -964,56 +957,22 @@ prompt.
 
 Disc detection (`cmd/noahsark`'s `detectDisc`) reads
 `--mount`'s `NOAHSARK/DISC.bin` and compares its uuid: a match prints
-`disc <seq> <label>: found` and moves on with no prompt, unless
-`--interactive` is set, in which case it prompts once and accepts the
-next matching read. A mismatch reports the expected and found uuid and
-label (the found label comes from the cache's own `DISCS` table, when
-that disc is one the cache already knows) and prompts again. An
-unreadable `DISC.bin` (drive still settling, or nothing mounted yet) is
-retried a few times with a short pause before it prompts. `--mount` has
-no config default: OPERATIONS.md's configuration reference names no
-`restore.mount` key, so the flag is required in this mode.
+`disc <seq> <label>: found` and moves on with no prompt. A mismatch
+reports the expected and found uuid and label (the found label comes
+from the cache's own `DISCS` table, when that disc is one the cache
+already knows) and prompts again. An unreadable `DISC.bin` (drive still
+settling, or nothing mounted yet) is retried a few times with a short
+pause before it prompts. `--mount` has no config default: OPERATIONS.md's
+configuration reference names no `restore.mount` key, so the flag is
+required in this mode.
 
-`restore.staging_budget`, or `--staging-budget` (same unit suffixes as
-`--capacity`, parsed by the new, shared `parseByteSize`), bounds
-`staging/restore/`'s peak size, section 14.3's staging budget. The
-disc-swap loop tracks a running spool-bytes total itself (seeded from
-whatever `resumeSpool` finds already on disk) rather than statting the
-directory on every write: `Manifest.WriteReady` now also returns the
-bytes it just freed, so the total moves by exactly what was written and
-freed, no re-scan needed. `internal/plan.ComputePasses` buckets each
-disc's chunk objects, in the plan's own order, into passes of at most
-budget bytes; it is a conservative, cache-only estimate (it assumes no
-freeing until a whole pass finishes, since `plan` builds no per-file
-manifest), so a real restore, which frees a file's chunks the moment
-that file is complete, may need fewer passes than predicted but never
-more. Both `plan` and `restore` print the resulting `passes` and
-`peak_staging_bytes`; `restore`'s own loop prints `pass N/M` between
-passes on the same disc, with no re-detection and no new prompt, since
-the disc never left the drive.
-
-Before any disc is read, `restore` also checks every pending file's own
-chunk total against the budget (`Manifest.FileExceedingBudget`): no
-split of one file's chunks across passes can keep it under a budget
-smaller than the file itself, so this is refused up front, naming the
-file and the budget, at exit code 2, rather than discovered mid-restore
-after some other disc has already been read.
-
-`restore --plan=FILE` resumes a plan `plan --out=FILE` wrote, instead
-of building one: it takes the file's `snapshot`, `include` and disc
-order (matched back to a freshly built `internal/plan.Result` by disc
-uuid, so the actual object-to-disc assignment still comes from the
-current cache, only the order is pinned) rather than recomputing them.
-The positional argument becomes `OUT-DIR` alone; `SNAPSHOT` would be
-redundant with the plan file and `--include` is refused alongside
-`--plan` for the same reason, one source of truth for what gets
-restored. The plan file's `repo_uuid` (hyphenated lowercase, matching
-`internal/plan.UUIDText`) and `created` (RFC 3339, from a package-level
-clock a test can replace) are new plan-JSON fields, added so a resumed
-plan can be checked against the repository it is resumed into: a
-`repo_uuid` mismatch, or a `snapshot` the cache does not have complete,
-is refused by name rather than silently replanning against the wrong
-repository.
+There is no staging budget and no persisted plan file: the disc-swap
+loop spools what one disc's plan entry needs in a single pass, reads
+the next disc, and so on, one pass for each disc. `Manifest.WriteReady`
+frees a chunk's spooled bytes as soon as the last file needing it is
+written, so the spool never holds more than what the discs already
+read, and not yet freed, still owe; nothing here grows with the size of
+the snapshot, only with one disc's own share of it.
 
 `ejectDrive`'s permission hint used to string-match `umount`'s own
 stderr for "permission denied" or "must be superuser", which is
@@ -1056,7 +1015,8 @@ log to report what it would delete), `disc burned`, `recover` and
 `--repo` resolves to a repository; with no `--repo` it never touches any
 repository's state, the same reasoning that already applies to `image
 build`, and to `ls` and `log` reading straight from a disc instead of
-the cache. `plan`, `ls`, `log` and `status` take no lock at all.
+the cache. `ls`, `log`, `status` and `restore --dry-run` take no lock at
+all.
 
 `status` is the one lock-free command that still opens the state
 log, so it uses `stage.OpenReadOnly` instead of `stage.Open`: both

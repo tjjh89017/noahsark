@@ -16,9 +16,9 @@ import (
 )
 
 // discSwapFixture packs writeMultiDiscFixtureSource's tree across two
-// small forced capacities, into two disc-root trees, the same way
-// multiDiscPlanFixture does, and also returns the committed source
-// directory so a restore can be checked byte for byte.
+// small forced capacities, into two disc-root trees, and also returns
+// the committed source directory so a restore can be checked byte for
+// byte.
 func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string) {
 	t.Helper()
 	work := t.TempDir()
@@ -45,14 +45,24 @@ func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string
 	return repo, snapID, src, discRoots
 }
 
-// planOrderDiscSeqs runs "plan" with args and returns the disc_seq
-// values it names, in plan order.
-func planOrderDiscSeqs(t *testing.T, args ...string) []int {
+// restoreDryRunDiscSeqs runs "restore --dry-run" with flagsAndSnapshot
+// (every element but the last is a flag, the last is SNAPSHOT) and
+// returns the disc_seq values it names, in plan order. --mount and
+// OUT-DIR are filled with throwaway paths: --dry-run never reads or
+// writes either.
+func restoreDryRunDiscSeqs(t *testing.T, flagsAndSnapshot ...string) []int {
 	t.Helper()
-	full := append([]string{"plan"}, args...)
+	if len(flagsAndSnapshot) == 0 {
+		t.Fatal("restoreDryRunDiscSeqs: no SNAPSHOT given")
+	}
+	flags := flagsAndSnapshot[:len(flagsAndSnapshot)-1]
+	snapID := flagsAndSnapshot[len(flagsAndSnapshot)-1]
+
+	full := append([]string{"restore"}, flags...)
+	full = append(full, "--mount="+t.TempDir(), "--dry-run", snapID, filepath.Join(t.TempDir(), "out"))
 	code, out := runCmd(t, full...)
 	if code != 0 {
-		t.Fatalf("plan: exit %d: %s", code, out)
+		t.Fatalf("restore --dry-run: exit %d: %s", code, out)
 	}
 	var seqs []int
 	for line := range strings.SplitSeq(out, "\n") {
@@ -61,22 +71,23 @@ func planOrderDiscSeqs(t *testing.T, args ...string) []int {
 		}
 		var seq int
 		if _, err := fmt.Sscanf(line, "disc %d", &seq); err != nil {
-			t.Fatalf("parse plan line %q: %v", line, err)
+			t.Fatalf("parse restore --dry-run line %q: %v", line, err)
 		}
 		seqs = append(seqs, seq)
 	}
 	if len(seqs) == 0 {
-		t.Fatalf("no disc line in plan output %q", out)
+		t.Fatalf("no disc line in restore --dry-run output %q", out)
 	}
 	return seqs
 }
 
 // chunkDiscSeqs opens repo's cache directly and builds the same plan
-// "plan" would, restricted to include, returning the disc_seq of every
-// disc that plan assigns at least one chunk object to. A disc a plan
-// names only for a tree or blob object never needs a physical visit:
-// BuildManifest resolves those from the cache, so this is the set of
-// discs a disc-swap restore of include would actually prompt for.
+// restore --dry-run would, restricted to include, returning the
+// disc_seq of every disc that plan assigns at least one chunk object
+// to. A disc the plan names only for a tree or blob object never needs
+// a physical visit: BuildManifest resolves those from the cache, so
+// this is the set of discs a disc-swap restore of include would
+// actually prompt for.
 func chunkDiscSeqs(t *testing.T, repo, snapID, include string) []int {
 	t.Helper()
 	c, err := cache.Open(repoCacheDir(t, repo))
@@ -156,7 +167,7 @@ func setRestoreStdin(t *testing.T, r io.Reader) {
 func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := planOrderDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -188,7 +199,7 @@ func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := planOrderDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -221,7 +232,7 @@ func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
 func TestRestoreDiscSwapResume(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := planOrderDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -311,7 +322,7 @@ func TestRestoreDiscSwapIncludeNarrowsToOneDisc(t *testing.T) {
 func TestRestoreDiscSwapNoEject(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := planOrderDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
@@ -343,7 +354,7 @@ func TestRestoreDiscSwapNoEject(t *testing.T) {
 func TestRestoreDiscSwapNoEjectStillReportsAGenuineMismatch(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, _, discRoots := discSwapFixture(t)
-	seqs := planOrderDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -422,21 +433,21 @@ func TestRestoreSnapshotIDPrefixNamesItself(t *testing.T) {
 	}
 }
 
-// TestPlanDiscListMatchesTheDiscsRestoreReads checks, for a range of
-// --include scopes, that "plan"'s printed disc list is exactly the
-// discs that hold a needed chunk: the same discs a disc-swap restore
-// of that scope actually reads. A disc plan names only because it
-// holds a needed tree or blob object, never read from a disc since
-// BuildManifest resolves those from the cache, would otherwise make
-// plan list a disc restore never asks for.
-func TestPlanDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
+// TestDryRunDiscListMatchesTheDiscsRestoreReads checks, for a range of
+// --include scopes, that "restore --dry-run"'s printed disc list is
+// exactly the discs that hold a needed chunk: the same discs a
+// disc-swap restore of that scope actually reads. A disc the plan
+// names only because it holds a needed tree or blob object, never read
+// from a disc since BuildManifest resolves those from the cache, would
+// otherwise make the dry-run list a disc restore never asks for.
+func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, src, _ := discSwapFixture(t)
 
 	for i := range 6 {
 		sub := fmt.Sprintf("sub%d", i)
 		include := strings.TrimPrefix(filepath.Join(src, sub), "/")
-		planned := planOrderDiscSeqs(t, "--repo="+repo, "--include="+include, snapID)
+		planned := restoreDryRunDiscSeqs(t, "--repo="+repo, "--include="+include, snapID)
 		want := chunkDiscSeqs(t, repo, snapID, include)
 		if !slices.Equal(planned, want) {
 			t.Fatalf("--include=%s: plan named disc_seq %v, want exactly the chunk-holding discs %v", include, planned, want)

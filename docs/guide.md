@@ -383,17 +383,17 @@ not need `<REPO>`.
 
 ```sh
 noahsark log --repo=<REPO>
-noahsark plan --repo=<REPO> <REF>
+noahsark restore --repo=<REPO> --mount=<MOUNT> --dry-run <REF> <RESTORE_DIR>
 ```
 
 `log` lists the snapshots, newest first, with their refs. The first
-column is the full snapshot id. `restore`, `ls` and `plan` take that id
-in place of a `<REF>`. `plan` lists the discs that the restore needs, by
-disc number: the number, the label, the uuid, the objects and the bytes.
-It prints a pass count only when you set `--staging-budget`. The two
-commands read the local cache, not a disc. If `<REPO>` is lost, use
-`noahsark log <MOUNT>` on the newest disc. Use a `<REF>` or a snapshot id
-where a command takes a snapshot.
+column is the full snapshot id. `restore` and `ls` take that id in place
+of a `<REF>`. `restore --dry-run` lists the discs that the restore needs,
+by disc number: the number, the label, the uuid and the objects. It reads
+the local cache, not a disc, and writes nothing. It needs `--mount`: with
+every disc mounted together instead, there is no disc order to preview.
+If `<REPO>` is lost, use `noahsark log <MOUNT>` on the newest disc. Use a
+`<REF>` or a snapshot id where a command takes a snapshot.
 
 ### One drive
 
@@ -413,7 +413,7 @@ Load that disc, mount it at `<MOUNT>` and press Enter. A wrong disc
 gives `expected disc ..., found ...` and the same prompt again. If the
 session stops, run the same command again. It continues and asks only
 for the discs that it still needs. Add `--no-eject` to keep the tray
-closed. Add `--staging-budget=<SIZE>` to limit the temporary disk space.
+closed.
 
 ### All discs mounted
 
@@ -451,8 +451,7 @@ not restored: 1 existing path(s), 1 unsupported entry(ies); see the warning(s) a
 of the rest. The summary line counts each kind.
 
 - To restore only some paths, add `--include=<PATH>` one or more times.
-  `plan` takes the same flag. Get the paths from
-  `noahsark ls --recursive --repo=<REPO> <REF>`.
+  Get the paths from `noahsark ls --recursive --repo=<REPO> <REF>`.
 - `restore` does not replace a path that exists, of any kind: a file, a
   directory or a symlink. It leaves the path as it is and names it.
   The exit code is 1. Add `--overwrite` to replace them. `restore`
@@ -619,7 +618,7 @@ much and you want a complete new set, do steps 2 to 9 with a new
 | `no snapshot given; name a ref, or a snapshot id from noahsark log`, exit code 2 | The `<SNAPSHOT>` argument is empty, often an unset shell variable. Give a ref name, or the snapshot id from the first column of `log`. |
 | `restore`: `no such disc root: <PATH>` | The first argument of `restore <DISC-ROOT> <SNAPSHOT> <RESTORE_DIR>` must be a mounted disc or an unpacked disc directory. Check the path. |
 | `log`: `roots: (none)` | The root tree is on a disc that you did not give. Give all discs, or run `recover`. |
-| `plan`: `cache: no disc is cached yet` | Run `recover` with a disc, then plan again. |
+| `restore --dry-run`: `cache: no disc is cached yet` | Run `recover` with a disc, then try `--dry-run` again. |
 | `<DISC>`: `matches more than one disc` | Two discs carry the same `seq`. Give the uuid, or the first 8 characters of it, from the list in the message. |
 | `no noahsark repository found` | Give `--repo=<REPO>` or set `NOAHSARK_REPO`. |
 | `repository lock <REPO>/lock is held; another noahsark command runs on this repository`, exit code 1 | Wait for the other noahsark command to end, then run the command again. |

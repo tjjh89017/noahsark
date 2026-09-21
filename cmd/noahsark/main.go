@@ -59,8 +59,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdRecover(rest, stdout, stderr, prog)
 	case "status":
 		return cmdStatus(rest, stdout, stderr)
-	case "plan":
-		return cmdPlan(rest, stdout, stderr)
 	case "disc":
 		return cmdDisc(rest, stdout, stderr)
 	case "gc":
@@ -120,7 +118,6 @@ Commands:
   restore        restore a snapshot from a disc, or from a mounted drive
   ls             list a snapshot's tree
   log            list a repository's snapshots
-  plan           plan a restore's disc order from the local cache
   status         show what is staged, every disc's state, and what to do next
   recover        rebuild a repository's state log and ledgers from discs
   disc           mark a disc burned, or undo that mark
