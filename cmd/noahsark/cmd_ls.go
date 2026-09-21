@@ -13,17 +13,16 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// cmdLs implements "noahsark ls". With no DISC-ROOT or --discs-dir,
-// SNAPSHOT (an id or a ref name) resolves through the local cache, so
-// ls needs no disc present; give a disc root or --discs-dir to read
-// straight from a disc instead, the same way restore and verify do. ls
-// reads tree objects only; it never opens a chunk.
+// cmdLs implements "noahsark ls". With no DISC-ROOT, SNAPSHOT (an id or
+// a ref name) resolves through the local cache, so ls needs no disc
+// present; give one or more DISC-ROOT positionals to read straight from
+// a disc instead, the same way restore and verify do. ls reads tree
+// objects only; it never opens a chunk.
 func cmdLs(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("noahsark ls [--long] [--recursive] [DISC-ROOT...] SNAPSHOT [PATH]",
-		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts --discs-dir or one or more DISC-ROOT positionals to read a disc instead. "+
+		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead. "+
 			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.", stderr)
 	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
-	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	long := fs.Bool("long", false, "print mode, owner, size and mtime")
 	recursive := fs.Bool("recursive", false, "descend into subdirectories")
 	if err := fs.Parse(args); err != nil {
@@ -33,26 +32,22 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	multi := *discsDir != ""
 	// Leading positional arguments that name an existing directory are
 	// DISC-ROOTs; at least one argument stays unconsumed for SNAPSHOT.
 	// This needs no guess: SNAPSHOT and PATH are never paths that already
 	// exist on this host.
-	var discRootArgs []string
-	if !multi {
-		end := max(fs.NArg()-1, 0)
-		i := 0
-		for i < end && looksLikeDiscRoot(fs.Arg(i)) {
-			i++
-		}
-		discRootArgs = fs.Args()[:i]
+	end := max(fs.NArg()-1, 0)
+	i := 0
+	for i < end && looksLikeDiscRoot(fs.Arg(i)) {
+		i++
 	}
+	discRootArgs := fs.Args()[:i]
 	discRootGiven := len(discRootArgs) > 0
-	if !multi && !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
+	if !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
 		_, _ = fmt.Fprintf(stderr, "noahsark: ls: no such disc root: %s\n", fs.Arg(0))
 		return 2
 	}
-	cacheMode := !multi && !discRootGiven
+	cacheMode := !discRootGiven
 
 	var src snapshotSource
 	var cacheObj *cache.Cache
@@ -70,12 +65,6 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		src, cacheObj = cs, c
-	case multi:
-		if fs.NArg() < 1 || fs.NArg() > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls --discs-dir=DIR [--long] [--recursive] SNAPSHOT [PATH]")
-			return 2
-		}
-		positional = fs.Args()
 	default:
 		positional = fs.Args()[len(discRootArgs):]
 		if len(positional) < 1 || len(positional) > 2 {
@@ -85,12 +74,7 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !cacheMode {
-		discRoots, err := resolveDiscRoots(*discsDir, discRootArgs)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-			return 2
-		}
-		restoreSrc, err := restore.OpenSource(discRoots)
+		restoreSrc, err := restore.OpenSource(discRootArgs)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
 			return 1

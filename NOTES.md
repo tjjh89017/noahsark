@@ -462,6 +462,7 @@ version that changed what an operator or a reader sees.
 
 | Document version | Change |
 |---|---|
+| 0.6.2 | `restore`, `ls`, `log` and `recover` lose `--discs-dir`; give a shell glob such as `/mnt/discs/*` as `DISC-ROOT` arguments instead. No on-disc format change. |
 | 0.6.1 | `verify` checks header_crc32c and file_hash the same way `restore` does, closing the gap where a disc could read clean and then fail restore. `verify --heal` no longer counts a healed directory as a verified copy. No on-disc format change. |
 | 0.6.0 | The documents are cut to the size of the tool. No behaviour changes. |
 | 0.5.4 | `pack` loses the flags that select objects, and the config keeps six keys. |

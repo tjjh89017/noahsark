@@ -13,16 +13,15 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// cmdLog implements "noahsark log". With no DISC-ROOT or --discs-dir,
-// it resolves REF|SNAPSHOT, and lists every known snapshot with none
-// given, through the local cache, so log needs no disc present; give a
-// disc root or --discs-dir to read straight from a disc instead, the
-// same way ls, restore and verify do.
+// cmdLog implements "noahsark log". With no DISC-ROOT, it resolves
+// REF|SNAPSHOT, and lists every known snapshot with none given, through
+// the local cache, so log needs no disc present; give one or more
+// DISC-ROOT positionals to read straight from a disc instead, the same
+// way ls, restore and verify do.
 func cmdLog(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("noahsark log [DISC-ROOT...] [REF|SNAPSHOT]",
-		"Print a snapshot's history. Resolves through the local cache with no disc given; accepts --discs-dir or one or more DISC-ROOT positionals to read a disc instead.", stderr)
+		"Print a snapshot's history. Resolves through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead.", stderr)
 	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
-	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -30,25 +29,21 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	multi := *discsDir != ""
 	// Leading positional arguments that name an existing directory are
 	// DISC-ROOTs; REF|SNAPSHOT is never a path that already exists on
 	// this host, so every argument can be checked the same way, and all
 	// of them may be DISC-ROOTs, leaving REF|SNAPSHOT unset (list-all).
-	var discRootArgs []string
-	if !multi {
-		i := 0
-		for i < fs.NArg() && looksLikeDiscRoot(fs.Arg(i)) {
-			i++
-		}
-		discRootArgs = fs.Args()[:i]
+	i := 0
+	for i < fs.NArg() && looksLikeDiscRoot(fs.Arg(i)) {
+		i++
 	}
+	discRootArgs := fs.Args()[:i]
 	discRootGiven := len(discRootArgs) > 0
-	if !multi && !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
+	if !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
 		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", fs.Arg(0))
 		return 2
 	}
-	cacheMode := !multi && !discRootGiven
+	cacheMode := !discRootGiven
 
 	var src snapshotSource
 	var cacheObj *cache.Cache
@@ -66,12 +61,6 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		src, cacheObj = cs, c
-	case multi:
-		if fs.NArg() > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log --discs-dir=DIR [REF|SNAPSHOT]")
-			return 2
-		}
-		positional = fs.Args()
 	default:
 		positional = fs.Args()[len(discRootArgs):]
 		if len(positional) > 1 {
@@ -81,12 +70,7 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !cacheMode {
-		discRoots, err := resolveDiscRoots(*discsDir, discRootArgs)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-			return 2
-		}
-		restoreSrc, err := restore.OpenSource(discRoots)
+		restoreSrc, err := restore.OpenSource(discRootArgs)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
 			return 1
@@ -163,7 +147,34 @@ func logAll(src snapshotSource, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "%s  %s  refs: %s  roots: %s  size: %d\n",
 			r.ID, r.Time, joinOrNone(r.Refs), joinOrNone(r.Roots), r.TotalSize)
 	}
+	printRefsOnAnotherDisc(stdout, ids, refs)
 	return 0
+}
+
+// printRefsOnAnotherDisc lists every ref whose own snapshot object is
+// not among ids: gc can free an old run's staged snapshot object once it
+// is no longer needed there, so a later pack stops carrying that
+// snapshot object forward, while REFS.bin still carries the ref itself
+// forward on every run. Such a ref must still appear in log, naming the
+// disc it needs instead of vanishing from the list.
+func printRefsOnAnotherDisc(stdout io.Writer, ids []object.ID, refs *format.RefsTable) {
+	known := make(map[object.ID]bool, len(ids))
+	for _, id := range ids {
+		known[id] = true
+	}
+	var elsewhere []format.RefRecord
+	for _, rec := range refs.Records {
+		if !known[object.ID(rec.SnapshotID)] {
+			elsewhere = append(elsewhere, rec)
+		}
+	}
+	sort.Slice(elsewhere, func(i, j int) bool {
+		return string(elsewhere[i].Name[:elsewhere[i].NameLen]) < string(elsewhere[j].Name[:elsewhere[j].NameLen])
+	})
+	for _, rec := range elsewhere {
+		_, _ = fmt.Fprintf(stdout, "%s  refs: %s  on another disc\n",
+			object.ID(rec.SnapshotID).TextForm(), string(rec.Name[:rec.NameLen]))
+	}
 }
 
 // logOne prints one snapshot's own details.

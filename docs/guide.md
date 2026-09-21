@@ -210,8 +210,8 @@ Give a ref, or the snapshot id from the first column of `log`.
 **Several discs together.** With every disc already mounted, name each mount
 point: `noahsark restore /mnt/a /mnt/b 2026-09-21 /srv/restore`. To read a
 directory of mount points instead, mount or copy each disc root into its own
-directory below `/mnt/discs`, then run
-`noahsark restore --discs-dir=/mnt/discs 2026-09-21 /srv/restore`.
+directory below `/mnt/discs`, then let the shell expand a glob into the
+`DISC-ROOT` list: `noahsark restore /mnt/discs/* 2026-09-21 /srv/restore`.
 
 **One drive.** This mode needs the repository. `--dry-run` lists the discs
 and stops.
@@ -318,7 +318,7 @@ as both copies of the disc are burned; `gc` then finds less to free. A
 Rebuild the state from the discs before the next pack:
 
 ```
-$ noahsark recover --repo=/srv/ark/repo --discs-dir=/mnt/discs
+$ noahsark recover --repo=/srv/ark/repo /mnt/discs/*
 recover: 3 disc(s) read, repo /srv/ark/repo
 objects recorded: 19 on disc, 0 already known
 discs known: 3, refs restored: 3
@@ -395,7 +395,7 @@ Exit codes: 0 is success, 1 is a failure at run time, 2 is a usage error.
 | `matches no disc` or `matches more than one disc` | Give the disc number, or the first 8 characters of the uuid, from the list in the message. |
 | A disc does not mount, or `verify` fails | `verify` removes the burn mark. Discard the disc, burn a new one from the same tree, run `noahsark disc burned N`, then `verify`. Use the other copy until then. |
 | `gc`: `1 of 2 copies verified; N object(s) held` | Verify the second copy (step 4), then run `gc` again. |
-| `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them, as `DISC-ROOT` arguments or with `--discs-dir`, or use `--mount`. |
+| `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them as `DISC-ROOT` arguments, or use `--mount`. |
 | `ref ... is not on the provided disc(s)` | A newer disc holds the ref. Give the newest disc too. |
 | `restore`: `stdin closed while waiting for the next disc` | Run `restore` in a terminal, not in a pipe. Run it again to continue. |
 | `image build`: `mkudffs: ... executable file not found` | Install `udftools` 2.3 or later. |

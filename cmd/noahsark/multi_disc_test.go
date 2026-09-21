@@ -63,6 +63,7 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	discsDir := filepath.Join(work, "discs")
+	var discRoots []string
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(discsDir, fmt.Sprintf("disc%d", i))
@@ -76,10 +77,12 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 		if !strings.Contains(out, "remaining staged:") {
 			t.Fatalf("pack %d: output %q missing the remaining-staged report", i, out)
 		}
+		discRoots = append(discRoots, treeDir)
 	}
 
 	restoredDir := filepath.Join(work, "restored")
-	args := []string{"restore", "--discs-dir=" + discsDir, snapID, restoredDir}
+	args := append([]string{"restore"}, discRoots...)
+	args = append(args, snapID, restoredDir)
 	if code, out := runCmd(t, args...); code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -89,8 +92,7 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 
 // TestMultiDiscRestorePositionalDiscRoots packs a two-disc sequence, then
 // restores by naming both disc roots as positional DISC-ROOT arguments,
-// with no --discs-dir, the same way an operator names two already-mounted
-// drives at once.
+// the same way an operator names two already-mounted drives at once.
 func TestMultiDiscRestorePositionalDiscRoots(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -126,7 +128,7 @@ func TestMultiDiscRestorePositionalDiscRoots(t *testing.T) {
 }
 
 // TestMultiDiscRestoreMissingDiscNamesIt packs a sequence, then restores
-// with one disc root left out of --discs-dir, and asserts the failure
+// with one disc root left off the command line, and asserts the failure
 // names a missing disc.
 func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	work := t.TempDir()
@@ -143,15 +145,11 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	snapID := snapshotIDFromCommit(t, out)
 
 	discsDir := filepath.Join(work, "discs")
-	// disc1 is packed outside discsDir, so --discs-dir leaves it out.
-	otherDir := filepath.Join(work, "other")
+	// disc1's root is never passed to restore, so it is left off.
+	var discRoots []string
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
-		dir := discsDir
-		if i == 1 {
-			dir = otherDir
-		}
-		treeDir := filepath.Join(dir, fmt.Sprintf("disc%d", i))
+		treeDir := filepath.Join(discsDir, fmt.Sprintf("disc%d", i))
 		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
 			// exit 1 is expected for the first two, checked above; this
 			// branch only guards against a hard failure (exit 2).
@@ -159,10 +157,14 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 				t.Fatalf("pack %d: exit %d: %s", i, code, out)
 			}
 		}
+		if i != 1 {
+			discRoots = append(discRoots, treeDir)
+		}
 	}
 
 	restoredDir := filepath.Join(work, "restored")
-	args := []string{"restore", "--discs-dir=" + discsDir, snapID, restoredDir}
+	args := append([]string{"restore"}, discRoots...)
+	args = append(args, snapID, restoredDir)
 	code, out = runCmd(t, args...)
 	if code != 1 {
 		t.Fatalf("restore: exit %d, want 1: %s", code, out)

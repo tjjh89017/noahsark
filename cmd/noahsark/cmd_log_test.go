@@ -29,6 +29,59 @@ func TestLogListsKnownSnapshots(t *testing.T) {
 	}
 }
 
+// TestLogNamesARefOnAnotherDiscAfterGC checks that log on a disc root
+// still lists a ref whose own snapshot object gc has freed from
+// staging: REFS.bin carries the ref forward on every later run, but
+// packing stops carrying the freed snapshot object itself, so it is no
+// longer physically on the newest disc.
+func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
+	oldClock := gcClock
+	defer func() { gcClock = oldClock }()
+
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	srcA := writeRefsCarryFixture(t, "A")
+
+	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "commit", "--repo="+repo, "--ref=A", srcA)
+	if code != 0 {
+		t.Fatalf("commit A: exit %d: %s", code, out)
+	}
+	snapA := snapshotIDFromCommit(t, out)
+	before := time.Now()
+	packAndVerifyDisc(t, work, repo, srcA)
+
+	// Past the fixed 7-day retention: gc frees disc A's run, including
+	// its own staged snapshot object.
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+		t.Fatalf("gc: exit %d: %s", code, out)
+	}
+
+	srcB := writeRefsCarryFixture(t, "B")
+	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=B", srcB); code != 0 {
+		t.Fatalf("commit B: exit %d: %s", code, out)
+	}
+	code, out = runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+filepath.Join(work, "disc-b"))
+	if code != 0 {
+		t.Fatalf("pack B: exit %d: %s", code, out)
+	}
+	discB := packedTreeDir(t, out)
+
+	code, out = runCmd(t, "log", discB)
+	if code != 0 {
+		t.Fatalf("log disc-b: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "refs: B") {
+		t.Fatalf("log output %q is missing ref B", out)
+	}
+	if !strings.Contains(out, snapA) || !strings.Contains(out, "refs: A") || !strings.Contains(out, "on another disc") {
+		t.Fatalf("log output %q does not name ref A's snapshot on another disc", out)
+	}
+}
+
 // TestLogWithArgumentPrintsOneSnapshotsDetails checks that log SNAPSHOT
 // prints that snapshot's own details instead of a listing line.
 func TestLogWithArgumentPrintsOneSnapshotsDetails(t *testing.T) {

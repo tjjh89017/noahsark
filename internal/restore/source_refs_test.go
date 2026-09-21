@@ -75,8 +75,8 @@ func overwriteREFS(t *testing.T, discRoot string, repoUUID [16]byte, recs []form
 // the second ref back out of the first disc's own REFS, the way a disc
 // packed before pack carried refs forward would read. Refs must still
 // resolve both ref names by merging every provided disc's REFS, however
-// the disc roots are ordered, the way OpenSource's caller (e.g.
-// --discs-dir lexical order) hands them over.
+// the disc roots are ordered, the way OpenSource's caller (e.g. a shell
+// glob's own order) hands them over.
 func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	stagingDir := t.TempDir()
 	l, err := stage.Open(stagingDir)

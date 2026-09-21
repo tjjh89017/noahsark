@@ -232,8 +232,8 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	}
 
 	// The first two discs pack into remainingDir, and the newest packs
-	// elsewhere, so --discs-dir=remainingDir later feeds exactly those
-	// two without also re-feeding the newest.
+	// elsewhere, so passing those two disc roots later feeds exactly
+	// them without also re-feeding the newest.
 	remainingDir := filepath.Join(work, "remaining")
 	var discRoots []string
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
@@ -286,7 +286,7 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 
 	// Feed the remaining two discs: now every disc named in DISCS has
 	// itself been fed, and the rebuild must say ok.
-	code, out = runCmd(t, "recover", "--repo="+repo, "--discs-dir="+remainingDir)
+	code, out = runCmd(t, "recover", "--repo="+repo, discRoots[0], discRoots[1])
 	if code != 0 {
 		t.Fatalf("recover (remaining two): exit %d, want 0: %s", code, out)
 	}
@@ -696,7 +696,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		src  string
 	}{{snap1, src1}, {snap2, src2}, {snap3, src3}} {
 		outDir := filepath.Join(work, fmt.Sprintf("restored-%d", i))
-		code, out := runCmd(t, "restore", "--discs-dir="+filepath.Join(work, "discs"), pair.snap, outDir)
+		code, out := runCmd(t, "restore", discOne, discTwoLost, discThree, pair.snap, outDir)
 		if code != 0 {
 			t.Fatalf("restore %s: exit %d: %s", pair.snap, code, out)
 		}
@@ -724,11 +724,11 @@ func byLabel(t *testing.T, rows []discSummary, label string) int {
 }
 
 // TestRecoverRepeatTwoDiscFeedIsAccepted feeds two discs together
-// in one recover call, through --discs-dir, then repeats that exact
-// same call: both calls must exit 0 and say ok. A disc named in a
-// call's own --discs-dir is fed by that call, whether or not it was
-// ever fed before; this must never be refused as though a different
-// disc were reusing its run_seq and disc_seq.
+// in one recover call, then repeats that exact same call: both calls
+// must exit 0 and say ok. A disc named in a call's own disc root list
+// is fed by that call, whether or not it was ever fed before; this
+// must never be refused as though a different disc were reusing its
+// run_seq and disc_seq.
 func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -763,7 +763,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "recover", "--repo="+repo, "--discs-dir="+discsDir)
+	code, out := runCmd(t, "recover", "--repo="+repo, tree1, tree2)
 	if code != 0 {
 		t.Fatalf("recover (2-disc #1): exit %d: %s", code, out)
 	}
@@ -771,7 +771,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 		t.Fatalf("2-disc #1 output %q does not say ok", out)
 	}
 
-	code, out = runCmd(t, "recover", "--repo="+repo, "--discs-dir="+discsDir)
+	code, out = runCmd(t, "recover", "--repo="+repo, tree1, tree2)
 	if code != 0 {
 		t.Fatalf("recover (2-disc #2, repeat): exit %d: %s", code, out)
 	}
