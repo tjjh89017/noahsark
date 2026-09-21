@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -180,10 +182,11 @@ type Writer struct {
 	// staging with it; the object stays on the disc that holds it.
 	OnDisc func(id ID) bool
 
-	reachable map[ID]uint64
-	rootAbs   string
-	rootDev   uint64
-	rootDevOK bool
+	reachable  map[ID]uint64
+	rootAbs    string
+	rootDev    uint64
+	rootDevOK  bool
+	ownerNames *nameCache
 }
 
 // NewWriter returns a Writer that stages objects under stagingDir using
@@ -218,6 +221,7 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	}
 
 	w.reachable = make(map[ID]uint64)
+	w.ownerNames = newNameCache()
 	w.rootAbs = absRoot
 	w.rootDev, w.rootDevOK = 0, false
 	if w.OneFileSystem {
@@ -249,11 +253,12 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 		Mode:      permBits(rootInfo),
 		Name:      []byte(encodeRootName(absRoot)),
 		ContentID: rootDirTree,
-		TLVs: []format.TLV{
-			{Type: format.TLVTypeRootPath, Payload: []byte(absRoot)},
-		},
 	}
 	fillTimes(&rootEntry, rootInfo)
+	// A TLV area is sorted by type, thus the owner names go in before
+	// the root path.
+	w.fillOwner(&rootEntry, rootInfo)
+	rootEntry.TLVs = append(rootEntry.TLVs, format.TLV{Type: format.TLVTypeRootPath, Payload: []byte(absRoot)})
 
 	rootTreeID, err := w.writeTree([]format.TreeEntry{rootEntry}, &sum)
 	if err != nil {
@@ -351,7 +356,7 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 				return te, err
 			}
 			te.ContentID = id
-			return te, nil
+			break
 		}
 		id, err := w.commitDir(path, sum)
 		if err != nil {
@@ -396,6 +401,9 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 	default:
 		return te, fmt.Errorf("object: unsupported entry type for %s", path)
 	}
+	// The owner names go in last, because a TLV area is sorted by type
+	// and only the symlink target has a lower type.
+	w.fillOwner(&te, info)
 	return te, nil
 }
 
@@ -824,6 +832,63 @@ func fillTimes(te *format.TreeEntry, info os.FileInfo) {
 	te.MtimeNsec = uint32(st.Mtim.Nsec)
 	te.CtimeSec = st.Ctim.Sec
 	te.CtimeNsec = uint32(st.Ctim.Nsec)
+}
+
+// fillOwner sets a tree entry's uid and gid from info, and adds the user
+// name and the group name TLVs when the host can name the ids. A
+// platform whose os.FileInfo carries no *syscall.Stat_t keeps 0 for
+// both ids and adds no name. A lookup that fails adds no name; it is
+// not an error.
+func (w *Writer) fillOwner(te *format.TreeEntry, info os.FileInfo) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return
+	}
+	te.UID = st.Uid
+	te.GID = st.Gid
+	if name := w.ownerNames.user(st.Uid); name != "" {
+		te.TLVs = append(te.TLVs, format.TLV{Type: format.TLVTypeUserName, Payload: []byte(name)})
+	}
+	if name := w.ownerNames.group(st.Gid); name != "" {
+		te.TLVs = append(te.TLVs, format.TLV{Type: format.TLVTypeGroupName, Payload: []byte(name)})
+	}
+}
+
+// nameCache holds the name of each uid and each gid one commit meets, so
+// a commit looks up one owner one time. It holds one entry for each
+// distinct owner of the source tree, never one for each file. An empty
+// name means the lookup failed, and is cached too.
+type nameCache struct {
+	users  map[uint32]string
+	groups map[uint32]string
+}
+
+func newNameCache() *nameCache {
+	return &nameCache{users: make(map[uint32]string), groups: make(map[uint32]string)}
+}
+
+func (n *nameCache) user(uid uint32) string {
+	if name, ok := n.users[uid]; ok {
+		return name
+	}
+	name := ""
+	if u, err := user.LookupId(strconv.FormatUint(uint64(uid), 10)); err == nil {
+		name = u.Username
+	}
+	n.users[uid] = name
+	return name
+}
+
+func (n *nameCache) group(gid uint32) string {
+	if name, ok := n.groups[gid]; ok {
+		return name
+	}
+	name := ""
+	if g, err := user.LookupGroupId(strconv.FormatUint(uint64(gid), 10)); err == nil {
+		name = g.Name
+	}
+	n.groups[gid] = name
+	return name
 }
 
 // permBits returns mode bits 0 to 11: rwxrwxrwx plus setuid, setgid and

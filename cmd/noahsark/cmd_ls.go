@@ -94,7 +94,7 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 	snapID, err := src.ParseSnapshotArg(positional[0])
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-		return 2
+		return exitForSnapshotArg(err)
 	}
 	var pathArg string
 	if len(positional) > 1 {
@@ -384,6 +384,27 @@ func modeString(e format.TreeEntry) string {
 			b[i+1] = bits[i]
 		} else {
 			b[i+1] = '-'
+		}
+	}
+	// setuid, setgid and sticky each replace the execute character of
+	// their own triple, upper case when that triple has no execute bit.
+	for _, m := range []struct {
+		bit  uint32
+		pos  int
+		set  byte
+		nset byte
+	}{
+		{0o4000, 3, 's', 'S'},
+		{0o2000, 6, 's', 'S'},
+		{0o1000, 9, 't', 'T'},
+	} {
+		if e.Mode&m.bit == 0 {
+			continue
+		}
+		if b[m.pos] == 'x' {
+			b[m.pos] = m.set
+		} else {
+			b[m.pos] = m.nset
 		}
 	}
 	return string(b)

@@ -24,25 +24,43 @@ var (
 	privileged = func() bool { return os.Geteuid() == 0 }
 )
 
-// applyMetadata sets mode, mtime and, when this restore is privileged,
-// owner from e. Each field is applied independently: a failure on one
-// field is recorded and does not stop the other fields from being
-// tried. When this restore is not privileged, ownership is skipped
-// outright rather than attempted and reported, matching the implied
-// --no-owner rule for a non-root restore.
+// applyMetadata sets owner, mode and mtime from e, in that order: a
+// chown clears the setuid and the setgid bits, thus the chmod must come
+// after it. Each field is applied independently: a failure on one field
+// is recorded and does not stop the other fields from being tried. When
+// this restore is not privileged, ownership is skipped outright rather
+// than attempted and reported, matching the implied --no-owner rule for
+// a non-root restore.
 func applyMetadata(dest string, e format.TreeEntry, wp *writePolicy) {
-	if err := chmodFn(dest, os.FileMode(e.Mode&0o7777)); err != nil {
+	if privileged() {
+		if err := chownFn(dest, int(e.UID), int(e.GID)); err != nil {
+			wp.metadataFailed(dest, "owner", err)
+		}
+	}
+	if err := chmodFn(dest, modeFromEntry(e.Mode)); err != nil {
 		wp.metadataFailed(dest, "mode", err)
 	}
 	mtime := time.Unix(e.MtimeSec, int64(e.MtimeNsec))
 	if err := chtimesFn(dest, mtime, mtime); err != nil {
 		wp.metadataFailed(dest, "times", err)
 	}
-	if privileged() {
-		if err := chownFn(dest, int(e.UID), int(e.GID)); err != nil {
-			wp.metadataFailed(dest, "owner", err)
-		}
+}
+
+// modeFromEntry converts a tree entry's stored permission bits to an
+// os.FileMode. Go holds setuid, setgid and sticky in high bits of its
+// own, thus a direct conversion of the stored bits drops all three.
+func modeFromEntry(mode uint32) os.FileMode {
+	m := os.FileMode(mode & 0o777)
+	if mode&0o4000 != 0 {
+		m |= os.ModeSetuid
 	}
+	if mode&0o2000 != 0 {
+		m |= os.ModeSetgid
+	}
+	if mode&0o1000 != 0 {
+		m |= os.ModeSticky
+	}
+	return m
 }
 
 // applySymlinkOwner sets a symlink's own owner with a no-follow chown,

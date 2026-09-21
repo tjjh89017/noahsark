@@ -54,7 +54,7 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	}
 	refs, err := s.c.Refs()
 	if err != nil {
-		return object.ID{}, err
+		return object.ID{}, &cacheReadError{err: err}
 	}
 	for _, r := range refs.Records {
 		if string(r.Name[:r.NameLen]) == arg {
@@ -62,6 +62,28 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 		}
 	}
 	return object.ID{}, &refNotFoundError{arg: arg}
+}
+
+// cacheReadError marks a snapshot argument that did not resolve because
+// the cache itself could not be read: an empty cache holds no REFS
+// table. The argument may well be good, thus this is a failure at run
+// time, not a usage error.
+type cacheReadError struct{ err error }
+
+func (e *cacheReadError) Error() string { return e.err.Error() }
+
+func (e *cacheReadError) Unwrap() error { return e.err }
+
+// exitForSnapshotArg gives the exit code for a SNAPSHOT argument that
+// did not resolve. A malformed id, and a name that matches no ref, are
+// usage errors, code 2. A cache that could not be read is a failure at
+// run time, code 1, the code every other read failure takes; ls and log
+// then report an empty cache the same way.
+func exitForSnapshotArg(err error) int {
+	if _, ok := errors.AsType[*cacheReadError](err); ok {
+		return 1
+	}
+	return 2
 }
 
 // refNotFoundError reports that arg matched no snapshot id and no name

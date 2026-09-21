@@ -114,7 +114,7 @@ Commands:
   commit         stage a source directory as a snapshot
   pack           write staged snapshots onto the next disc
   image build    build a disc image from a run tree
-  verify         check a disc image, or heal it from a second copy
+  verify         check a disc, and heal a damaged object from the run's parity
   restore        restore a snapshot from a disc, or from a mounted drive
   ls             list a snapshot's tree
   log            list a repository's snapshots

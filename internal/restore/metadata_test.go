@@ -6,8 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tjjh89017/noahsark/internal/format"
 )
 
 // withChmodError overrides chmodFn for the duration of the test, always
@@ -136,6 +140,78 @@ func TestApplyMetadataReportsOwnerFailureWhenPrivileged(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no owner failure reported although chown was forced to fail while privileged")
+	}
+}
+
+// TestApplyMetadataAppliesOwnerBeforeModeAndTimes records the order of
+// the three calls. A chown clears the setuid and the setgid bits, thus
+// the chmod must come after the chown, and the times last.
+func TestApplyMetadataAppliesOwnerBeforeModeAndTimes(t *testing.T) {
+	withPrivileged(t, true)
+
+	var order []string
+	origChown, origChmod, origChtimes := chownFn, chmodFn, chtimesFn
+	chownFn = func(string, int, int) error { order = append(order, "owner"); return nil }
+	chmodFn = func(string, os.FileMode) error { order = append(order, "mode"); return nil }
+	chtimesFn = func(string, time.Time, time.Time) error { order = append(order, "times"); return nil }
+	t.Cleanup(func() { chownFn, chmodFn, chtimesFn = origChown, origChmod, origChtimes })
+
+	var wp writePolicy
+	applyMetadata("some/path", format.TreeEntry{Mode: 0o4755, UID: 1000, GID: 1000}, &wp)
+
+	want := []string{"owner", "mode", "times"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("call order = %v, want %v", order, want)
+	}
+	if wp.report.Total() != 0 {
+		t.Fatalf("report holds %d problem(s), want none", wp.report.Total())
+	}
+}
+
+// TestSetuidModeSurvivesARealChown runs the real chown and the real
+// chmod against a file this user owns, and asserts the setuid bit is
+// there afterward. A chown clears that bit, so this fails whenever the
+// chmod runs first.
+func TestSetuidModeSurvivesARealChown(t *testing.T) {
+	withPrivileged(t, true)
+
+	path := filepath.Join(t.TempDir(), "setuid")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var wp writePolicy
+	e := format.TreeEntry{Mode: 0o4755, UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}
+	applyMetadata(path, e, &wp)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()|os.ModeSetuid != info.Mode()&(os.ModePerm|os.ModeSetuid) {
+		t.Fatalf("mode = %v, want the setuid bit set", info.Mode())
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("mode = %v, want 0755 plus setuid", info.Mode().Perm())
+	}
+}
+
+// TestUnprivilegedRestoreReportsNothingForAForeignOwner asserts that a
+// snapshot that records a real owner, restored by an ordinary user, adds
+// no problem for each path. A restore of one's own files is the normal
+// case and must stay silent about ownership.
+func TestUnprivilegedRestoreReportsNothingForAForeignOwner(t *testing.T) {
+	withPrivileged(t, false)
+	withChownError(t, errors.New("chown must not be called"))
+
+	path := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var wp writePolicy
+	applyMetadata(path, format.TreeEntry{Mode: 0o644, UID: 0, GID: 0}, &wp)
+
+	if wp.report.Total() != 0 {
+		t.Fatalf("report holds %d problem(s), want none: %+v", wp.report.Total(), wp.report.Problems)
 	}
 }
 

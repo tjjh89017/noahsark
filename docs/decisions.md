@@ -864,3 +864,34 @@ writer's work; `stage.OpenReadOnly` leaves the file untouched, so this
 can never happen. `restore`'s all-discs-at-once mode never resolves a
 repository at all in this build, so it takes no lock, the same as
 `verify` and `image build` with no `--repo`.
+
+## 6. Objects, tree entry uid and gid
+
+`commit` records the real uid and the real gid of each source path, from
+`syscall.Stat_t`, and the user name and the group name TLVs when the host
+names the ids. It caches one name lookup for each distinct id of the commit,
+thus the cache holds one entry for each owner, never one for each file. A
+lookup that fails records no name; it is not an error. A platform whose
+`os.FileInfo` carries no `*syscall.Stat_t` keeps uid 0 and gid 0, the same
+runtime type assertion the walker already uses for the device id and for the
+times. The recorded bytes of a tree change, thus the content id of a tree
+changes. This is correct: the tree holds different metadata.
+
+A snapshot committed by an older build holds uid 0 and gid 0 for every entry.
+A `restore` that runs as root applies what the snapshot holds, thus it makes
+every such path owned by `root:root`. This build leaves that behaviour alone:
+the snapshot is the truth about what was backed up, and a restore never
+invents an owner the snapshot does not name. An operator who wants the real
+owner commits the source again with this build. A `restore` that does not run
+as root is unaffected: it applies no owner at all.
+
+## 15. Metadata restore policy, the order of the three calls
+
+`restore` applies the owner, then the mode, then the times. A `chown` clears
+the setuid and the setgid bits of a file, so a `chmod` that ran before it
+would lose them. The `chmod` after the `chown` puts them back.
+
+The stored mode is the raw Unix permission bits. Go holds setuid, setgid and
+sticky outside the low 12 bits of `os.FileMode`, so `restore` translates the
+three bits before it calls `os.Chmod`. A direct conversion of the stored bits
+dropped all three, and a restored setuid file came back as 0755.

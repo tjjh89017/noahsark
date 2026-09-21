@@ -181,7 +181,7 @@ func populateImage(dir, imagePath string, sectors uint64, prog *progress.Reporte
 			// The bare error names the temp mount point, a path with
 			// no meaning to the user; report the volume's own capacity
 			// and the fix instead.
-			return fmt.Errorf("populate: image capacity of %d sectors (%d bytes) is full; raise --capacity", sectors, sectors*SectorSize)
+			return fmt.Errorf("populate: the tree is larger than the image capacity of %d sectors (%d bytes), which DISC.bin holds; pack again with a larger capacity", sectors, sectors*SectorSize)
 		}
 		return fmt.Errorf("populate: %w", err)
 	}
