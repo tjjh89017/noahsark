@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -14,21 +13,16 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// cmdLog implements "noahsark log". With no DISC-ROOT, --disc or
-// --discs-dir, it resolves REF|SNAPSHOT, and lists every known
-// snapshot with none given, through the local cache, so log needs no
-// disc present; give a disc root, --disc or --discs-dir to read
-// straight from a disc instead, the same way ls, restore and verify
-// do.
+// cmdLog implements "noahsark log". With no DISC-ROOT or --discs-dir,
+// it resolves REF|SNAPSHOT, and lists every known snapshot with none
+// given, through the local cache, so log needs no disc present; give a
+// disc root or --discs-dir to read straight from a disc instead, the
+// same way ls, restore and verify do.
 func cmdLog(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark log [--limit=N] [--json] [DISC-ROOT] [REF|SNAPSHOT]",
-		"Print a snapshot's history. Resolves through the local cache with no disc given; accepts --disc (repeatable), --discs-dir or a DISC-ROOT positional to read a disc instead.", stderr)
+	fs := newFlagSet("noahsark log [DISC-ROOT...] [REF|SNAPSHOT]",
+		"Print a snapshot's history. Resolves through the local cache with no disc given; accepts --discs-dir or one or more DISC-ROOT positionals to read a disc instead.", stderr)
 	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
-	var discFlags stringList
-	fs.Var(&discFlags, "disc", "a disc root to read from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
-	limit := fs.Int("limit", 0, "print at most this many entries; 0 means no limit")
-	jsonOut := fs.Bool("json", false, "print JSON")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -36,8 +30,20 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	multi := len(discFlags) > 0 || *discsDir != ""
-	discRootGiven := !multi && fs.NArg() > 0 && looksLikeDiscRoot(fs.Arg(0))
+	multi := *discsDir != ""
+	// Leading positional arguments that name an existing directory are
+	// DISC-ROOTs; REF|SNAPSHOT is never a path that already exists on
+	// this host, so every argument can be checked the same way, and all
+	// of them may be DISC-ROOTs, leaving REF|SNAPSHOT unset (list-all).
+	var discRootArgs []string
+	if !multi {
+		i := 0
+		for i < fs.NArg() && looksLikeDiscRoot(fs.Arg(i)) {
+			i++
+		}
+		discRootArgs = fs.Args()[:i]
+	}
+	discRootGiven := len(discRootArgs) > 0
 	if !multi && !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
 		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", fs.Arg(0))
 		return 2
@@ -50,7 +56,7 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case cacheMode:
 		if fs.NArg() > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [--limit=N] [--json] [REF|SNAPSHOT]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [REF|SNAPSHOT]")
 			return 2
 		}
 		positional = fs.Args()
@@ -62,20 +68,20 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 		src, cacheObj = cs, c
 	case multi:
 		if fs.NArg() > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log --disc=ROOT [--disc=ROOT]... [--limit=N] [--json] [REF|SNAPSHOT]")
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark log --discs-dir=DIR [REF|SNAPSHOT]")
 			return 2
 		}
 		positional = fs.Args()
 	default:
-		if fs.NArg() < 1 || fs.NArg() > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [--limit=N] [--json] DISC-ROOT [REF|SNAPSHOT]")
+		positional = fs.Args()[len(discRootArgs):]
+		if len(positional) > 1 {
+			_, _ = fmt.Fprintln(stderr, "usage: noahsark log DISC-ROOT... [REF|SNAPSHOT]")
 			return 2
 		}
-		positional = fs.Args()[1:]
 	}
 
 	if !cacheMode {
-		discRoots, err := resolveDiscRoots(discFlags, *discsDir, fs.Args())
+		discRoots, err := resolveDiscRoots(*discsDir, discRootArgs)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
 			return 2
@@ -89,25 +95,24 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(positional) == 1 {
-		return logOne(src, cacheObj, positional[0], *jsonOut, stdout, stderr)
+		return logOne(src, cacheObj, positional[0], stdout, stderr)
 	}
-	return logAll(src, *limit, *jsonOut, stdout, stderr)
+	return logAll(src, stdout, stderr)
 }
 
 // logRecord is one snapshot's history line: its id, time, the ref names
 // pointing at it, the root paths it covers, and the counts the snapshot
 // itself stores.
 type logRecord struct {
-	ID        string   `json:"id"`
-	Parent    string   `json:"parent,omitempty"`
-	Time      string   `json:"time"`
-	Refs      []string `json:"refs"`
-	Roots     []string `json:"roots"`
-	TotalSize uint64   `json:"total_size"`
+	ID        string
+	Parent    string
+	Time      string
+	Refs      []string
+	Roots     []string
+	TotalSize uint64
 
 	// timeNanos is the snapshot's own time, at the full precision the
-	// snapshot record carries, unexported so it never reaches the JSON
-	// or text output: Time above is already the printed form,
+	// snapshot record carries: Time above is already the printed form,
 	// truncated to whole seconds. logAll's sort uses this so two
 	// snapshots committed in the same second, which tie on the printed
 	// Time, still order newest first when the record's own nanoseconds
@@ -115,9 +120,8 @@ type logRecord struct {
 	timeNanos int64
 }
 
-// logAll lists every snapshot the provided discs know, newest first,
-// limited to limit entries when limit is greater than zero.
-func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Writer) int {
+// logAll lists every snapshot the provided discs know, newest first.
+func logAll(src snapshotSource, stdout, stderr io.Writer) int {
 	ids, err := src.SnapshotIDs()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
@@ -154,19 +158,7 @@ func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Write
 		}
 		return a.ID < b.ID
 	})
-	if limit > 0 && len(records) > limit {
-		records = records[:limit]
-	}
 
-	if jsonOut {
-		b, err := json.MarshalIndent(records, "", "  ")
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-			return 1
-		}
-		_, _ = fmt.Fprintln(stdout, string(b))
-		return 0
-	}
 	for _, r := range records {
 		_, _ = fmt.Fprintf(stdout, "%s  %s  refs: %s  roots: %s  size: %d\n",
 			r.ID, r.Time, joinOrNone(r.Refs), joinOrNone(r.Roots), r.TotalSize)
@@ -175,7 +167,7 @@ func logAll(src snapshotSource, limit int, jsonOut bool, stdout, stderr io.Write
 }
 
 // logOne prints one snapshot's own details.
-func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, jsonOut bool, stdout, stderr io.Writer) int {
+func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, stdout, stderr io.Writer) int {
 	id, err := src.ParseSnapshotArg(arg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
@@ -192,15 +184,6 @@ func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, jsonOut bool,
 	}
 	r := buildLogRecord(src, id, snap, refs)
 
-	if jsonOut {
-		b, err := json.MarshalIndent(r, "", "  ")
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-			return 1
-		}
-		_, _ = fmt.Fprintln(stdout, string(b))
-		return 0
-	}
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", r.ID)
 	parent := r.Parent
 	if parent == "" {

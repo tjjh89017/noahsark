@@ -58,10 +58,10 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	}
 }
 
-// TestGCRetentionGate runs gc with a fake clock before and after
-// staging.retain_after_clean has passed: gc must delete nothing before,
-// and delete the CLEAN run's objects after, in both --dry-run and a
-// real run.
+// TestGCRetentionGate runs gc with a fake clock before and after the
+// fixed 7-day retention has passed: gc must delete nothing before, and
+// delete the CLEAN run's objects after, in both --dry-run and a real
+// run.
 func TestGCRetentionGate(t *testing.T) {
 	oldClock := gcClock
 	defer func() { gcClock = oldClock }()
@@ -73,14 +73,12 @@ func TestGCRetentionGate(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
-
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
 	// Before the retention period: nothing is eligible. --dry-run always
 	// exits 0, and names when the run's objects will become eligible.
-	gcClock = func() time.Time { return before.Add(30 * time.Minute) }
+	gcClock = func() time.Time { return before.Add(24 * time.Hour) }
 	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (before retention): exit %d, want 0: %s", code, out)
@@ -97,7 +95,7 @@ func TestGCRetentionGate(t *testing.T) {
 
 	// After the retention period: dry-run reports what it would do,
 	// without changing anything.
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 	code, out = runCmd(t, "gc", "--repo="+repo, "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after retention): exit %d: %s", code, out)
@@ -153,11 +151,9 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
-
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 
 	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
 	if code != 0 {
@@ -200,7 +196,6 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
 	cacheDir := cache.Dir(repo)
 
 	before := time.Now()
@@ -211,7 +206,7 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 	code, out := runCmd(t, "gc", "--repo="+repo)
 	if code != 0 {
 		t.Fatalf("gc: exit %d, want 0: %s", code, out)
@@ -417,8 +412,6 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
-
 	before := time.Now()
 	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
@@ -433,7 +426,7 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 
 	// A packed disc keeps its plan directory: the operator has not
 	// burned it yet.
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
 		t.Fatalf("gc (packed): exit %d: %s", code, out)
 	}

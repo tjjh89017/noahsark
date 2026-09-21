@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -75,28 +74,15 @@ func TestSecondVerifyRaisesTheVerifyCount(t *testing.T) {
 }
 
 // discListCounts returns the clean object count and the verified column
-// of the first disc, read from "status --json".
+// of the first disc, read the same way "status" computes them.
 func discListCounts(t *testing.T, repo string) (clean int, verified string) {
 	t.Helper()
-	code, out := runCmd(t, "status", "--repo="+repo, "--json")
-	if code != 0 {
-		t.Fatalf("status --json: exit %d: %s", code, out)
+	discs := statusDiscs(t, repo)
+	if len(discs) == 0 {
+		t.Fatalf("status names no disc")
 	}
-	var parsed struct {
-		Discs []struct {
-			CleanObjects   int `json:"clean_objects"`
-			VerifiedCopies int `json:"verified_copies"`
-			MinCopies      int `json:"min_verified_copies"`
-		} `json:"discs"`
-	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("status --json: invalid JSON: %v: %s", err, out)
-	}
-	if len(parsed.Discs) == 0 {
-		t.Fatalf("status --json names no disc: %s", out)
-	}
-	d := parsed.Discs[0]
-	return d.CleanObjects, strconv.Itoa(d.VerifiedCopies) + "/" + strconv.Itoa(d.MinCopies)
+	d := discs[0]
+	return d.CleanObjects, strconv.Itoa(int(d.VerifiedCopies)) + "/" + strconv.Itoa(d.MinCopies)
 }
 
 // TestGCHoldsObjectsUntilTheSecondVerify checks that one verify is not
@@ -113,14 +99,12 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
-
 	before := time.Now()
 	mounted := packBurnDisc(t, work, repo, src)
 	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
 		t.Fatalf("verify copy 1: exit %d: %s", code, out)
 	}
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 
 	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
 	if code != 0 {
@@ -191,7 +175,6 @@ func TestGCMinVerifiedCopiesOne(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
 	appendConfigLine(t, repo, "gc.min_verified_copies = 1")
 
 	before := time.Now()
@@ -204,7 +187,7 @@ func TestGCMinVerifiedCopiesOne(t *testing.T) {
 		t.Fatalf("verify output %q, want the 1 of 1 line", out)
 	}
 
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 	code, out = runCmd(t, "gc", "--repo="+repo)
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)

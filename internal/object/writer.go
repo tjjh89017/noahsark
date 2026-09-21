@@ -18,7 +18,8 @@ import (
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
-// defaultRetryUnstable is commit.retry_unstable's default.
+// defaultRetryUnstable is the fixed number of times commit re-reads an
+// unstable file before giving up on it.
 const defaultRetryUnstable = 1
 
 // skipErr marks a source path the walker could not commit: gone since

@@ -44,7 +44,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		"Delete the staged files of objects that verified discs hold.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
 	dryRun := fs.Bool("dry-run", false, "print what would be deleted, and free nothing")
-	forceAfter := fs.String("force-after", "", "shorten retention to this duration for this run only, ignoring staging.retain_after_clean; it does not pass by gc.min_verified_copies; requires confirmation")
+	forceAfter := fs.String("force-after", "", "shorten the 7-day retention to this duration for this run only; it does not pass by gc.min_verified_copies; requires confirmation")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -104,13 +104,13 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	retainAfterClean := cfg.RetainAfterClean
+	effectiveRetainAfterClean := retainAfterClean
 	if retainAfterCleanOverride >= 0 {
-		retainAfterClean = retainAfterCleanOverride
+		effectiveRetainAfterClean = retainAfterCleanOverride
 	}
 
 	discNames := discNamesFromLedger(cfg.StagingDir, repoUUID)
-	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, retainAfterClean, cfg.MinVerifiedCopies, gcClock())
+	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, cfg.MinVerifiedCopies, gcClock())
 	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
 	if retainAfterCleanOverride >= 0 && !*dryRun && len(candidates) > 0 {
 		if code, ok := confirmForceAfter(candidates, stdout, stderr); !ok {
@@ -150,7 +150,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if objDeleted == 0 && dirDeleted == 0 && *dryRun && uncached == 0 {
-		printNothingEligibleYet(stdout, stageLog, cfg.RetainAfterClean, cfg.MinVerifiedCopies)
+		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, cfg.MinVerifiedCopies)
 	}
 	// Nothing eligible, whether reported by --dry-run or found true by a
 	// real run, is success: gc did everything the repository's state

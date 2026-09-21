@@ -88,7 +88,6 @@ func TestSnapshotArgEmptyNamesItself(t *testing.T) {
 
 	cases := [][]string{
 		{"restore", treeDir, "", filepath.Join(t.TempDir(), "out")},
-		{"restore", "--disc=" + treeDir, "", filepath.Join(t.TempDir(), "out")},
 		{"ls", treeDir, ""},
 		{"ls", "--repo=" + repo, ""},
 		{"restore", "--repo=" + repo, "--mount=" + t.TempDir(), "--dry-run", "", filepath.Join(t.TempDir(), "out")},

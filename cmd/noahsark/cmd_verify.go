@@ -39,11 +39,11 @@ import (
 // object still at BURNED back to PACKED, with the verify-failed reason,
 // and leaves the CLEAN objects alone.
 func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark verify [--repo=DIR] [--heal] [--out=DIR] DISC-ROOT",
+	fs := newFlagSet("noahsark verify [--repo=DIR] [--heal --out=DIR] DISC-ROOT",
 		"Read a disc tree back and check it, optionally healing it first.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory, to update its staging state on a burned disc")
-	heal := fs.Bool("heal", false, "repair the disc with Reed-Solomon parity before reporting")
-	healOut := fs.String("out", "", "heal into this directory instead of in place")
+	heal := fs.Bool("heal", false, "repair the disc with Reed-Solomon parity before reporting; requires --out")
+	healOut := fs.String("out", "", "heal into this directory; required with --heal")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
@@ -51,16 +51,17 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 2
 	}
 	if fs.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] [--heal] [--out=DIR] DISC-ROOT")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] [--heal --out=DIR] DISC-ROOT")
+		return 2
+	}
+	if *heal && *healOut == "" {
+		_, _ = fmt.Fprintln(stderr, "noahsark: verify: --heal needs --out; healing in place is no longer supported")
 		return 2
 	}
 	imagePath := fs.Arg(0)
 
 	target := imagePath
 	if *heal {
-		if *healOut == "" {
-			_, _ = fmt.Fprintf(stdout, "heal: no --out; repairing %s in place\n", imagePath)
-		}
 		reports, err := restore.HealWithProgress(imagePath, *healOut, prog)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
@@ -71,9 +72,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 			blocks += len(r.DataColumns) + len(r.ParityColumns)
 		}
 		_, _ = fmt.Fprintf(stdout, "heal: repaired %d block(s)\n", blocks)
-		if *healOut != "" {
-			target = *healOut
-		}
+		target = *healOut
 	}
 
 	ident, identOK := identifyDiscAndRun(target)
@@ -103,7 +102,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		hint, notInRepo := applyVerifyOutcome(repoDir, target, ident, identOK, verifyErr, &outcome, stderr)
 		if notInRepo {
 			releaseLock(lk)
-			_, _ = fmt.Fprintf(stderr, "noahsark: verify: %s is not in repository %s; check --repo, or run noahsark recover --disc=%s to add it\n",
+			_, _ = fmt.Fprintf(stderr, "noahsark: verify: %s is not in repository %s; check --repo, or run noahsark recover %s to add it\n",
 				ident.name(), repoDir, target)
 			return 1
 		}

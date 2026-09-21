@@ -74,17 +74,16 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 		outDir := t.TempDir()
 		sectors := (capBytes + image.SectorSize - 1) / image.SectorSize
 		opts := image.PackOptions{
-			StagingDir:              stagingDir,
-			Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: multiFixedClock()}},
-			TargetCapacitySectors:   sectors,
-			PhysicalCapacitySectors: sectors,
-			OutputDir:               outDir,
-			RepoUUID:                [16]byte{9, 9, 9},
-			DiscUUID:                [16]byte{byte(i + 1)},
-			Label:                   fmt.Sprintf("disc-%d", i),
-			FECEnabled:              true,
-			Now:                     multiFixedClock,
-			StageLog:                l,
+			StagingDir:            stagingDir,
+			Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: multiFixedClock()}},
+			TargetCapacitySectors: sectors,
+			OutputDir:             outDir,
+			RepoUUID:              [16]byte{9, 9, 9},
+			DiscUUID:              [16]byte{byte(i + 1)},
+			Label:                 fmt.Sprintf("disc-%d", i),
+			FECEnabled:            true,
+			Now:                   multiFixedClock,
+			StageLog:              l,
 		}
 		if _, err := image.Pack(opts); err != nil {
 			// A capacity large enough to finish every remaining object
@@ -203,17 +202,16 @@ func packOneDisc(t *testing.T, stagingDir string, l *stage.Log, src string, repo
 	dir := t.TempDir()
 	sectors := (uint64(20_000_000) + image.SectorSize - 1) / image.SectorSize
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
-		TargetCapacitySectors:   sectors,
-		PhysicalCapacitySectors: sectors,
-		OutputDir:               dir,
-		RepoUUID:                repoUUID,
-		DiscUUID:                discUUID,
-		Label:                   label,
-		FECEnabled:              true,
-		Now:                     multiFixedClock,
-		StageLog:                l,
+		StagingDir:            stagingDir,
+		Snapshots:             []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
+		TargetCapacitySectors: sectors,
+		OutputDir:             dir,
+		RepoUUID:              repoUUID,
+		DiscUUID:              discUUID,
+		Label:                 label,
+		FECEnabled:            true,
+		Now:                   multiFixedClock,
+		StageLog:              l,
 	}); err != nil {
 		t.Fatalf("pack %s: %v", label, err)
 	}
@@ -329,17 +327,16 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	disc1Dir := t.TempDir()
 	disc1Sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "ONE", ID: snap1, Time: multiFixedClock()}},
-		TargetCapacitySectors:   disc1Sectors,
-		PhysicalCapacitySectors: disc1Sectors,
-		OutputDir:               disc1Dir,
-		RepoUUID:                [16]byte{9, 9, 9},
-		DiscUUID:                [16]byte{1},
-		Label:                   "disc-one",
-		FECEnabled:              true,
-		Now:                     multiFixedClock,
-		StageLog:                l,
+		StagingDir:            stagingDir,
+		Snapshots:             []image.SnapshotRef{{Name: "ONE", ID: snap1, Time: multiFixedClock()}},
+		TargetCapacitySectors: disc1Sectors,
+		OutputDir:             disc1Dir,
+		RepoUUID:              [16]byte{9, 9, 9},
+		DiscUUID:              [16]byte{1},
+		Label:                 "disc-one",
+		FECEnabled:            true,
+		Now:                   multiFixedClock,
+		StageLog:              l,
 	}); err != nil {
 		t.Fatalf("pack disc 1: %v", err)
 	}
@@ -366,17 +363,16 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	disc2Dir := t.TempDir()
 	disc2Sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "TWO", ID: snap2, Time: multiFixedClock()}},
-		TargetCapacitySectors:   disc2Sectors,
-		PhysicalCapacitySectors: disc2Sectors,
-		OutputDir:               disc2Dir,
-		RepoUUID:                [16]byte{9, 9, 9},
-		DiscUUID:                [16]byte{2},
-		Label:                   "disc-two",
-		FECEnabled:              true,
-		Now:                     multiFixedClock,
-		StageLog:                l,
+		StagingDir:            stagingDir,
+		Snapshots:             []image.SnapshotRef{{Name: "TWO", ID: snap2, Time: multiFixedClock()}},
+		TargetCapacitySectors: disc2Sectors,
+		OutputDir:             disc2Dir,
+		RepoUUID:              [16]byte{9, 9, 9},
+		DiscUUID:              [16]byte{2},
+		Label:                 "disc-two",
+		FECEnabled:            true,
+		Now:                   multiFixedClock,
+		StageLog:              l,
 	}); err != nil {
 		t.Fatalf("pack disc 2: %v", err)
 	}
@@ -473,17 +469,16 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 		dir := t.TempDir()
 		sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
 		if _, err := image.Pack(image.PackOptions{
-			StagingDir:              stagingDir,
-			Snapshots:               []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
-			TargetCapacitySectors:   sectors,
-			PhysicalCapacitySectors: sectors,
-			OutputDir:               dir,
-			RepoUUID:                [16]byte{9, 9, 9},
-			DiscUUID:                [16]byte{discUUID},
-			Label:                   label,
-			FECEnabled:              true,
-			Now:                     multiFixedClock,
-			StageLog:                l,
+			StagingDir:            stagingDir,
+			Snapshots:             []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
+			TargetCapacitySectors: sectors,
+			OutputDir:             dir,
+			RepoUUID:              [16]byte{9, 9, 9},
+			DiscUUID:              [16]byte{discUUID},
+			Label:                 label,
+			FECEnabled:            true,
+			Now:                   multiFixedClock,
+			StageLog:              l,
 		}); err != nil {
 			t.Fatalf("pack disc %d: %v", discUUID, err)
 		}

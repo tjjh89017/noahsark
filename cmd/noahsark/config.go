@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/tjjh89017/noahsark/internal/object"
 )
 
 // configFileName is the config file name inside a repository directory.
@@ -31,11 +29,6 @@ type repoConfig struct {
 	// Writer.Commit's single source directory. Empty means init was
 	// never given --source.
 	SourceRoot string
-	// RestatAfterRead is commit.restat_after_read. Defaults true.
-	RestatAfterRead bool
-	// RetryUnstable is commit.retry_unstable. Defaults to
-	// object.defaultRetryUnstable's value.
-	RetryUnstable int
 	// FECEnabled is fec.scheme != "none": whether pack writes a
 	// Reed-Solomon checksum column and parity. Defaults false: burning
 	// two identical discs is the primary redundancy; FEC is a reserve
@@ -45,18 +38,11 @@ type repoConfig struct {
 	// command line names none. It keeps the text the operator wrote, so
 	// a preset name still selects the media type it names.
 	PackCapacity string
-	// RetainAfterClean is staging.retain_after_clean: how long an
-	// object stays CLEAN before gc may free its staged file.
-	RetainAfterClean time.Duration
 	// MinVerifiedCopies is gc.min_verified_copies: how many successful
 	// verifies an object needs before gc may delete it. The default of 2
 	// keeps the staged bytes until the second identical disc passes
 	// verify.
 	MinVerifiedCopies int
-	// ExcludePatterns is sources.exclude: every exclude pattern the
-	// config file names, in the order it names them. The key is
-	// repeatable: one line for each pattern.
-	ExcludePatterns []object.Pattern
 	// badKeys holds the error of every key whose value did not parse.
 	// readConfig keeps the default for such a key and reports nothing;
 	// the command that reads the key calls checkKeys and refuses there.
@@ -80,41 +66,34 @@ func (c repoConfig) checkKeys(keys ...string) error {
 // refuses a bad value of one of its own keys and runs with a bad value
 // of every other key, so a fault in one key stops one command only.
 var (
-	configKeysForCommit = []string{"sources.root", "commit.restat_after_read", "commit.retry_unstable", "sources.exclude"}
+	configKeysForCommit = []string{"sources.root"}
 	configKeysForPack   = []string{"pack.capacity", "fec.scheme"}
-	configKeysForGC     = []string{"staging.retain_after_clean", "gc.min_verified_copies"}
+	configKeysForGC     = []string{"gc.min_verified_copies"}
 	configKeysForVerify = []string{"gc.min_verified_copies"}
 )
 
 // knownConfigKeys names every key this build reads. A key present in the
 // file that is not here is unknown.
 var knownConfigKeys = map[string]bool{
-	"repo.uuid":                  true,
-	"staging.dir":                true,
-	"sources.root":               true,
-	"commit.restat_after_read":   true,
-	"commit.retry_unstable":      true,
-	"fec.scheme":                 true,
-	"pack.capacity":              true,
-	"staging.retain_after_clean": true,
-	"gc.min_verified_copies":     true,
-	"sources.exclude":            true,
+	"repo.uuid":              true,
+	"staging.dir":            true,
+	"sources.root":           true,
+	"fec.scheme":             true,
+	"pack.capacity":          true,
+	"gc.min_verified_copies": true,
 }
 
-// defaultRetryUnstable is commit.retry_unstable's default, applied
-// when the config file does not set the key.
-const defaultRetryUnstable = 1
-
-// defaultRetainAfterClean is staging.retain_after_clean's default: 7
-// days.
-const defaultRetainAfterClean = 7 * 24 * time.Hour
+// retainAfterClean is how long an object stays CLEAN before gc may
+// free its staged file: a fixed 7 days. gc --force-after shortens this
+// for one run only.
+const retainAfterClean = 7 * 24 * time.Hour
 
 // defaultMinVerifiedCopies is gc.min_verified_copies' default: 2, one
 // verify for each of the two identical discs.
 const defaultMinVerifiedCopies = 2
 
-// parseRetentionDuration parses a duration for staging.retain_after_clean:
-// a plain integer with a "d" suffix for whole days, since
+// parseRetentionDuration parses a duration for gc --force-after: a
+// plain integer with a "d" suffix for whole days, since
 // time.ParseDuration has no day unit and a retention period is
 // ordinarily counted in days, or any duration string time.ParseDuration
 // itself accepts.
@@ -150,9 +129,6 @@ func readConfig(path string) (repoConfig, error) {
 	defer func() { _ = f.Close() }()
 
 	c := repoConfig{
-		RestatAfterRead:   true,
-		RetryUnstable:     defaultRetryUnstable,
-		RetainAfterClean:  defaultRetainAfterClean,
 		MinVerifiedCopies: defaultMinVerifiedCopies,
 	}
 	sc := bufio.NewScanner(f)
@@ -183,20 +159,6 @@ func readConfig(path string) (repoConfig, error) {
 				break
 			}
 			c.SourceRoot = value
-		case "commit.restat_after_read":
-			b, err := strconv.ParseBool(value)
-			if err != nil {
-				c.bad(key, fmt.Errorf("config: commit.restat_after_read: %w", err))
-				break
-			}
-			c.RestatAfterRead = b
-		case "commit.retry_unstable":
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				c.bad(key, fmt.Errorf("config: commit.retry_unstable: %w", err))
-				break
-			}
-			c.RetryUnstable = n
 		case "fec.scheme":
 			switch value {
 			case "none":
@@ -212,13 +174,6 @@ func readConfig(path string) (repoConfig, error) {
 				break
 			}
 			c.PackCapacity = value
-		case "staging.retain_after_clean":
-			d, err := parseRetentionDuration(value)
-			if err != nil {
-				c.bad(key, fmt.Errorf("config: staging.retain_after_clean: %w", err))
-				break
-			}
-			c.RetainAfterClean = d
 		case "gc.min_verified_copies":
 			n, err := strconv.Atoi(value)
 			if err != nil {
@@ -230,13 +185,6 @@ func readConfig(path string) (repoConfig, error) {
 				break
 			}
 			c.MinVerifiedCopies = n
-		case "sources.exclude":
-			pat, err := object.ParsePattern(value)
-			if err != nil {
-				c.bad(key, fmt.Errorf("config: sources.exclude: %s: %w", path, err))
-				break
-			}
-			c.ExcludePatterns = append(c.ExcludePatterns, pat)
 		}
 	}
 	if err := sc.Err(); err != nil {

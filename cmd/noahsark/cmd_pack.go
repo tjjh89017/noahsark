@@ -23,33 +23,23 @@ import (
 // cmdPack implements "noahsark pack". It reduces OPERATIONS.md's pack
 // flags: object selection by staging fill or age (disc.min_fill,
 // disc.max_wait), locality presets and burn-plan output do not exist in
-// this build, so pack instead takes the snapshot(s) to place explicitly,
-// by --ref or repeated --snapshot; with neither given, it carries
-// forward every pending ref. See docs/decisions.md, "16. CLI
+// this build, so pack instead takes every pending ref; there is no way
+// to name a snapshot explicitly. See docs/decisions.md, "16. CLI
 // reference".
 func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark pack [--ref=NAME | --snapshot=ID]... [--capacity=SIZE] [--physical-capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec | --no-fec] [--close] [--dry-run]",
+	fs := newFlagSet("noahsark pack [--capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
 		"Pack staged objects onto the next disc.", stderr)
 	repoFlag := fs.String("repo", "", "repository root")
-	ref := fs.String("ref", "", "extra ref name to carry onto the disc; every pending ref is carried regardless")
-	var snapshotFlags stringList
-	fs.Var(&snapshotFlags, "snapshot", "snapshot id to pack; repeatable")
 	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
-	physicalCapacityStr := fs.String("physical-capacity", "", "the disc's real capacity ("+capacityHelpText()+"); defaults to --capacity, so set it only when --capacity is a smaller limit than the disc")
 	label := fs.String("label", "", "human label for the disc; defaults to the newest ref name and the disc number")
 	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <staging.dir>/plans/<disc uuid>/tree")
 	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
-	fecOff := fs.Bool("no-fec", false, "write no FEC for this run; overrides fec.scheme")
 	closeDisc := fs.Bool("close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
 	dryRun := fs.Bool("dry-run", false, "print the discs the staged data needs at this capacity, and stop; writes nothing")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
 	}
 	if checkPositionalsForFlags("pack", fs, stderr) {
-		return 2
-	}
-	if *fecOn && *fecOff {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --fec and --no-fec are mutually exclusive")
 		return 2
 	}
 
@@ -96,38 +86,8 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 2
 	}
 
-	physicalCapacitySectors := capacitySectors
-	if *physicalCapacityStr != "" {
-		physicalCapacitySectors, err = parseCapacity(*physicalCapacityStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-			return 2
-		}
-	}
-
-	snapIDs := []string(snapshotFlags)
-	if *ref != "" && len(snapIDs) > 0 {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack: --ref and --snapshot are mutually exclusive")
-		return 2
-	}
 	var snapshots []image.SnapshotRef
 	now := time.Now()
-	if *ref != "" {
-		id, err := resolveRef(repoDir, *ref)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-			return 1
-		}
-		snapshots = append(snapshots, image.SnapshotRef{Name: *ref, ID: id, Time: now})
-	}
-	for _, s := range snapIDs {
-		id, err := parseSnapshotID(s)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-			return 2
-		}
-		snapshots = append(snapshots, image.SnapshotRef{Name: id.TextForm(), ID: id, Time: now})
-	}
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
@@ -141,11 +101,11 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 1
 	}
 
-	// With no --ref and no --snapshot, addPendingRefs above already
-	// carried forward every ref pack has not yet moved onto a run. When
-	// that left nothing, name the newest ref of the repository, so a
-	// pack after gc reports an already-packed repository instead of one
-	// that never had a commit.
+	// addPendingRefs above already carried forward every ref pack has
+	// not yet moved onto a run. When that left nothing, name the
+	// newest ref of the repository, so a pack after gc reports an
+	// already-packed repository instead of one that never had a
+	// commit.
 	if len(snapshots) == 0 {
 		if newest := newestRef(cfg.StagingDir, allRepoRefs(repoDir)); newest != nil {
 			newest.Time = now
@@ -156,8 +116,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	fecEnabled := cfg.FECEnabled
 	if *fecOn {
 		fecEnabled = true
-	} else if *fecOff {
-		fecEnabled = false
 	}
 
 	// labelFor answers what label a disc with this number gets, so a
@@ -171,7 +129,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 
 	if *dryRun {
-		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, physicalCapacitySectors, fecEnabled, labelFor)
+		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, fecEnabled, labelFor)
 	}
 
 	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
@@ -214,17 +172,16 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	warnIfTruncated("pack", stageLog, stderr)
 
 	opts := image.PackOptions{
-		StagingDir:              cfg.StagingDir,
-		Snapshots:               snapshots,
-		TargetCapacitySectors:   capacitySectors,
-		PhysicalCapacitySectors: physicalCapacitySectors,
-		OutputDir:               absOut,
-		RepoUUID:                repoUUID,
-		DiscUUID:                discUUID,
-		Label:                   discLabel,
-		FECEnabled:              fecEnabled,
-		StageLog:                stageLog,
-		Progress:                prog,
+		StagingDir:            cfg.StagingDir,
+		Snapshots:             snapshots,
+		TargetCapacitySectors: capacitySectors,
+		OutputDir:             absOut,
+		RepoUUID:              repoUUID,
+		DiscUUID:              discUUID,
+		Label:                 discLabel,
+		FECEnabled:            fecEnabled,
+		StageLog:              stageLog,
+		Progress:              prog,
 	}
 	result, err := image.Pack(opts)
 	if err != nil {
@@ -232,11 +189,6 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) holds not one object; %s\n",
 				capacityArg, capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
-			return 2
-		}
-		if exceeds, ok := errors.AsType[*image.ErrCapacityExceedsPhysical](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) is above the physical capacity (%d bytes)\n",
-				capacityArg, exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
 			return 2
 		}
 		if errors.Is(err, image.ErrNothingToPack) {
@@ -286,7 +238,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 // tree, no state record, no cache entry, no ledger row, and no sequence
 // number is used. It takes no repository lock, since it only reads the
 // staging store and the ledgers.
-func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors, physicalCapacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
+func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
 	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -295,13 +247,12 @@ func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, 
 	warnIfTruncated("pack", stageLog, stderr)
 
 	opts := image.PackOptions{
-		StagingDir:              cfg.StagingDir,
-		Snapshots:               snapshots,
-		TargetCapacitySectors:   capacitySectors,
-		PhysicalCapacitySectors: physicalCapacitySectors,
-		RepoUUID:                repoUUID,
-		FECEnabled:              fecEnabled,
-		StageLog:                stageLog,
+		StagingDir:            cfg.StagingDir,
+		Snapshots:             snapshots,
+		TargetCapacitySectors: capacitySectors,
+		RepoUUID:              repoUUID,
+		FECEnabled:            fecEnabled,
+		StageLog:              stageLog,
 	}
 	discs, err := image.DryRun(opts, labelFor)
 	printDryRunDiscs(stdout, discs)
@@ -310,11 +261,6 @@ func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, 
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity (%d bytes) holds not one object; %s\n",
 				capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
-			return 2
-		}
-		if exceeds, ok := errors.AsType[*image.ErrCapacityExceedsPhysical](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity (%d bytes) is above the physical capacity (%d bytes)\n",
-				exceeds.TargetSectors*image.SectorSize, exceeds.PhysicalSectors*image.SectorSize)
 			return 2
 		}
 		if errors.Is(err, image.ErrNothingToPack) {

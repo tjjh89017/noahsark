@@ -56,11 +56,10 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 0d")
-
 	packAndVerifyDisc(t, work, repo, src)
 
-	code, out := runCmd(t, "gc", "--repo="+repo)
+	setGCStdin(t, strings.NewReader("y\n"))
+	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0d")
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}

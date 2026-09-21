@@ -1,12 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // statusDiscLineRe matches one disc line of "status": the disc number,
@@ -111,9 +113,10 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 	}
 }
 
-// TestStatusJSONKeepsExactNumbers checks --json still carries the exact
-// counts the one-word text form leaves out.
-func TestStatusJSONKeepsExactNumbers(t *testing.T) {
+// TestStatusDiscsKeepsExactNumbers checks that the disc summaries
+// behind "status" carry the exact counts the one-word text form leaves
+// out.
+func TestStatusDiscsKeepsExactNumbers(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -129,29 +132,23 @@ func TestStatusJSONKeepsExactNumbers(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "status", "--repo="+repo, "--json")
-	if code != 0 {
-		t.Fatalf("status --json: exit %d: %s", code, out)
+	discs := statusDiscs(t, repo)
+	if len(discs) != 1 || discs[0].Label != "json disc" {
+		t.Fatalf("status discs = %+v, want one disc labelled %q", discs, "json disc")
 	}
-	var parsed struct {
-		Discs []struct {
-			UUID          string `json:"uuid"`
-			Label         string `json:"label"`
-			PackedObjects int    `json:"packed_objects"`
-		} `json:"discs"`
-		StagedObjects int `json:"staged_objects"`
-	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("status --json: invalid JSON: %v: %s", err, out)
-	}
-	if len(parsed.Discs) != 1 || parsed.Discs[0].Label != "json disc" {
-		t.Fatalf("status --json = %+v, want one disc labelled %q", parsed, "json disc")
-	}
-	if parsed.Discs[0].PackedObjects == 0 {
+	if discs[0].PackedObjects == 0 {
 		t.Fatalf("packed_objects = 0, want the exact count after a pack")
 	}
-	if parsed.StagedObjects != 0 {
-		t.Fatalf("staged_objects = %d, want 0", parsed.StagedObjects)
+	cfg, err := readConfig(configPath(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagedObjects, _, err := stagedTotals(cfg.StagingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stagedObjects != 0 {
+		t.Fatalf("staged_objects = %d, want 0", stagedObjects)
 	}
 }
 
@@ -177,7 +174,7 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "recover", "--repo="+repo, "--disc="+treeDir); code != 0 {
+	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -233,30 +230,26 @@ func TestStatusAfterCommitAsksForAPack(t *testing.T) {
 	}
 }
 
-// statusDisc is one disc of "status --json", as the tests read it.
-type statusDisc struct {
-	UUID          string `json:"uuid"`
-	Seq           uint64 `json:"seq"`
-	Label         string `json:"label"`
-	CapacityBytes uint64 `json:"capacity_bytes"`
-	UsedBytes     uint64 `json:"used_bytes"`
-	OnDiscObjects int    `json:"on_disc_objects"`
-	PackedObjects int    `json:"packed_objects"`
-	CleanObjects  int    `json:"clean_objects"`
-}
-
-// statusDiscs runs "status --json" and returns its disc rows.
-func statusDiscs(t *testing.T, repo string) []statusDisc {
+// statusDiscs reads repo's disc summaries the same way "status"
+// computes them, straight through the internal packages: there is no
+// --json to shell out through and parse.
+func statusDiscs(t *testing.T, repo string) []discSummary {
 	t.Helper()
-	code, out := runCmd(t, "status", "--repo="+repo, "--json")
-	if code != 0 {
-		t.Fatalf("status --json: exit %d: %s", code, out)
+	cfg, err := readConfig(configPath(repo))
+	if err != nil {
+		t.Fatalf("readConfig: %v", err)
 	}
-	var parsed struct {
-		Discs []statusDisc `json:"discs"`
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		t.Fatalf("decodeUUID: %v", err)
 	}
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatalf("status --json: invalid JSON: %v: %s", err, out)
+	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	if err != nil {
+		t.Fatalf("LoadDiscsLedger: %v", err)
 	}
-	return parsed.Discs
+	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
+	if err != nil {
+		t.Fatalf("stage.OpenReadOnly: %v", err)
+	}
+	return summarizeDiscs(ledger.Rows, stageLog, cfg.MinVerifiedCopies)
 }

@@ -50,7 +50,7 @@ scenario_incremental() {
 	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" --ref=BASE $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
+	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
 	t1=$(date +%s)
 	pack_rate_line "incremental: pack disc 1" "$INCREMENTAL_BASE_BYTES" "$t0" "$t1"
 	local size1
@@ -94,7 +94,7 @@ scenario_incremental() {
 	local tree2="$work/tree2" image2="$work/disc2.img" mnt2="$work/mnt2"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" --ref=NEXT $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
+	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
 	t1=$(date +%s)
 	pack_rate_line "incremental: pack disc 2" "$INCREMENTAL_ADD_BYTES" "$t0" "$t1"
 	local size2
@@ -123,12 +123,12 @@ scenario_incremental() {
 	log "incremental: deleted repo (cache and staging) before restore"
 
 	local restored_base="$work/restored-base"
-	"$BIN" restore --disc="$mnt1" "$snap1" "$restored_base"
+	"$BIN" restore "$mnt1" "$snap1" "$restored_base"
 	run_tool ci-incremental-fixture check "$restored_base$src" "$hashes_base"
 	log "incremental: BASE restored from disc 1 alone matches"
 
 	local restored_next="$work/restored-next"
-	"$BIN" restore --disc="$mnt1" --disc="$mnt2" "$snap2" "$restored_next"
+	"$BIN" restore "$mnt1" "$mnt2" "$snap2" "$restored_next"
 	run_tool ci-incremental-fixture check "$restored_next$src" "$hashes_next"
 	log "incremental: NEXT restored from both discs matches"
 

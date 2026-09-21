@@ -192,9 +192,9 @@ The restored files are below `/srv/drill`, with the full source path.
 
 ## Commit: excludes and warnings
 
-To exclude paths, add `--exclude=<PATTERN>` (repeatable), set
-`sources.exclude` in the config, or put a `.noahsarkignore` file in the
-source root, one pattern on each line. `*.tmp` or `node_modules` matches a
+To exclude paths, add `--exclude=<PATTERN>` (repeatable) or put a
+`.noahsarkignore` file in the source root, one pattern on each line.
+`*.tmp` or `node_modules` matches a
 name at any depth. `/cache` is anchored at the source root. A trailing `/`
 matches a directory only. There is no negation (`!`). `--one-file-system`
 keeps `commit` off other mounted filesystems. An `unstable <PATH>` line
@@ -207,10 +207,11 @@ commit again when the source is quiet.
 If the repository is lost, run `noahsark log /mnt/ark` on the newest disc.
 Give a ref, or the snapshot id from the first column of `log`.
 
-**Several discs together.** Mount or copy each disc root into its own
+**Several discs together.** With every disc already mounted, name each mount
+point: `noahsark restore /mnt/a /mnt/b 2026-09-21 /srv/restore`. To read a
+directory of mount points instead, mount or copy each disc root into its own
 directory below `/mnt/discs`, then run
-`noahsark restore --discs-dir=/mnt/discs 2026-09-21 /srv/restore`. You can
-also repeat `--disc=<MOUNT>` for each root.
+`noahsark restore --discs-dir=/mnt/discs 2026-09-21 /srv/restore`.
 
 **One drive.** This mode needs the repository. `--dry-run` lists the discs
 and stops.
@@ -324,7 +325,7 @@ discs known: 3, refs restored: 3
 recover: ok
 ```
 
-With one drive, run `noahsark recover --repo=/srv/ark/repo --disc=/mnt/ark`
+With one drive, run `noahsark recover --repo=/srv/ark/repo /mnt/ark`
 one time for each disc, in any order. `rebuild is partial: disc 1 "..." (...) not fed
 yet`, exit 1, names a disc that you must still give. Until you give it,
 `status` shows that disc as `not fed` and `next:` names `recover` again.
@@ -347,8 +348,8 @@ old discs.
 
 Two identical discs are the redundancy. FEC (Reed-Solomon parity) is an
 option and is off by default. Add `--fec` to `pack`, or set
-`fec.scheme = rs255-gf8` in the config. `--no-fec` overrides the config for
-one pack. `pack` then prints `fec: on`. FEC uses approximately 9% of the
+`fec.scheme = rs255-gf8` in the config to turn it on for every pack. `pack`
+then prints `fec: on`. FEC uses approximately 9% of the
 disc. `noahsark verify --heal --out=<DIR> <MOUNT>` writes a repaired disc
 root into `<DIR>` and prints `heal: repaired N block(s)`. It refuses a
 disc without FEC: `has no FEC`.
@@ -390,7 +391,7 @@ Exit codes: 0 is success, 1 is a failure at run time, 2 is a usage error.
 | `matches no disc` or `matches more than one disc` | Give the disc number, or the first 8 characters of the uuid, from the list in the message. |
 | A disc does not mount, or `verify` fails | `verify` removes the burn mark. Discard the disc, burn a new one from the same tree, run `noahsark disc burned N`, then `verify`. Use the other copy until then. |
 | `gc`: `1 of 2 copies verified; N object(s) held` | Verify the second copy (step 4), then run `gc` again. |
-| `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them with `--disc` or `--discs-dir`, or use `--mount`. |
+| `restore`: `missing disc(s)`, exit 1 | The message lists each disc. Give all of them, as `DISC-ROOT` arguments or with `--discs-dir`, or use `--mount`. |
 | `ref ... is not on the provided disc(s)` | A newer disc holds the ref. Give the newest disc too. |
 | `restore`: `stdin closed while waiting for the next disc` | Run `restore` in a terminal, not in a pipe. Run it again to continue. |
 | `image build`: `mkudffs: ... executable file not found` | Install `udftools` 2.3 or later. |

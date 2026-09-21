@@ -134,16 +134,15 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 	treeDir = t.TempDir()
 	capSectors := (uint64(768<<20) + image.SectorSize - 1) / image.SectorSize
 	opts := image.BuildOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
-		TargetCapacitySectors:   capSectors,
-		PhysicalCapacitySectors: capSectors,
-		OutputDir:               treeDir,
-		RepoUUID:                [16]byte{1, 2, 3, 4},
-		DiscUUID:                [16]byte{5, 6, 7, 8},
-		Label:                   "restore-mem-test",
-		FECEnabled:              true,
-		Now:                     fixedClock,
+		StagingDir:            stagingDir,
+		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
+		TargetCapacitySectors: capSectors,
+		OutputDir:             treeDir,
+		RepoUUID:              [16]byte{1, 2, 3, 4},
+		DiscUUID:              [16]byte{5, 6, 7, 8},
+		Label:                 "restore-mem-test",
+		FECEnabled:            true,
+		Now:                   fixedClock,
 	}
 	if _, err := image.Build(opts); err != nil {
 		t.Fatal(err)

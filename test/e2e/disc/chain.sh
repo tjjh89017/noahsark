@@ -9,10 +9,9 @@
 set -euo pipefail
 
 # pack packs every staged object in the whole repository, from every
-# commit, whichever --ref or --snapshot it is told to pack: the flag
-# only picks which snapshot the packed run's REFS table names, not which
-# objects are candidates. So this scenario commits two independent
-# fixtures, A and B, each its own snapshot, each sized to CHAIN_HALF_BYTES.
+# commit; it takes what is staged and names no snapshot of its own. So
+# this scenario commits two independent fixtures, A and B, each its own
+# snapshot, each sized to CHAIN_HALF_BYTES.
 # pack's internal candidate order walks every commit in ascending
 # snapshot-id order, one commit's whole tree before the next, so
 # whichever of A or B has the lexicographically smaller id is the one
@@ -67,35 +66,32 @@ chain_media_order() {
 	esac
 }
 
-# chain_media_pack_flags MEDIA prints the pack --capacity (and, for a
-# forced media, --physical-capacity) flags for one real disc, at
-# media_sectors' raw target: pack's own budget already reserves the
-# filesystem overhead a run needs, in whole FEC stripes, so packing at
-# the preset's full sector count leaves the run inside the real UDF
-# image mkudffs builds at the same capacity. media_capacity_flags'
-# preset names leave no room to compute a physical capacity for the
-# forced case, so this builds the flags from media_sectors' numbers
-# instead. --capacity refuses a bare number, so each count is given in
-# whole binary kibibytes, two per sector.
+# chain_media_pack_flags MEDIA prints the pack --capacity flag for one
+# real disc, at media_sectors' raw target: pack's own budget already
+# reserves the filesystem overhead a run needs, in whole FEC stripes,
+# so packing at the preset's full sector count leaves the run inside
+# the real UDF image mkudffs builds at the same capacity.
+# media_capacity_flags' preset names leave no room to compute this from
+# a preset name for the bd25-forced-10g case, so this builds the flag
+# from media_sectors' number instead. --capacity refuses a bare number,
+# so the count is given in whole binary kibibytes, two per sector.
 chain_media_pack_flags() {
-	local media="$1" target physical
-	read -r target physical <<<"$(media_sectors "$media")"
+	local media="$1" target
+	target="$(media_sectors "$media")"
 	case "$media" in
-	dvd+r | bd25) echo "--capacity=$((target * 2))KiB" ;;
-	bd25-forced-10g) echo "--capacity=$((target * 2))KiB --physical-capacity=$((physical * 2))KiB" ;;
+	dvd+r | bd25 | bd25-forced-10g) echo "--capacity=$((target * 2))KiB" ;;
 	*) fail "unknown chain media: $media" ;;
 	esac
 }
 
 # chain_small_kind_flags KIND prints the pack flags for one of
 # scenario_chain_small's three tiny, distinctly-sized stand-ins for
-# dvd+r, bd25 and a forced-capacity BD: small, but shaped the same way
-# (the third is a smaller logical capacity than its physical size).
+# dvd+r, bd25 and a third, smaller-capacity disc.
 chain_small_kind_flags() {
 	case "$1" in
 	dvd) echo "--capacity=180000KiB" ;;
 	bd25) echo "--capacity=180000KiB" ;;
-	bd10) echo "--capacity=40000KiB --physical-capacity=180000KiB" ;;
+	bd10) echo "--capacity=40000KiB" ;;
 	*) fail "unknown chain-small kind: $1" ;;
 	esac
 }
@@ -126,12 +122,9 @@ chain_pack_one() {
 
 	local code
 	set +e
-	# --ref=A: pack requires a resolvable ref or --snapshot even though,
-	# per this file's own top comment, the ref it is given never narrows
-	# which objects it packs. Fixture A always exists, so it always
-	# resolves.
+	# pack takes every pending ref; it names none of its own.
 	# shellcheck disable=SC2086 # packflags is a list of --capacity[=...] words
-	"$BIN" pack --repo="$repo" --ref=A $packflags --out="$tree" >"$logf" 2>&1
+	"$BIN" pack --repo="$repo" $packflags --out="$tree" >"$logf" 2>&1
 	code=$?
 	set -e
 	cat "$logf"
@@ -191,12 +184,7 @@ chain_assert_missing_disc() {
 	shift 3
 	local missing_uuid
 	missing_uuid="$(run_tool ci-disc-uuid "$missing_root")"
-	local args=(restore)
-	local d
-	for d in "$@"; do
-		args+=("--disc=$d")
-	done
-	args+=("$snap" "$out")
+	local args=(restore "$@" "$snap" "$out")
 	local result code
 	set +e
 	result="$("$BIN" "${args[@]}" 2>&1)"
@@ -336,7 +324,7 @@ chain_run() {
 	done
 
 	local restored="$work/restored"
-	"$BIN" restore --disc="${discroots[0]}" --disc="${discroots[1]}" --disc="${discroots[2]}" "$snap" "$restored"
+	"$BIN" restore "${discroots[@]}" "$snap" "$restored"
 	run_tool ci-chain-fixture check "$restored$src" "$sample" "$full"
 	log "$label: restored sample and full manifest match"
 

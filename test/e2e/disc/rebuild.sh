@@ -42,7 +42,7 @@ scenario_rebuild() {
 	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" --ref=BASE $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
+	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
 	t1=$(date +%s)
 	pack_rate_line "rebuild: pack disc 1" "$REBUILD_BASE_BYTES" "$t0" "$t1"
 	local size1
@@ -62,21 +62,21 @@ scenario_rebuild() {
 	# log, ls --recursive and restore must all work with no repository:
 	# they read the disc's own catalog, never --repo.
 	local log_out
-	log_out="$("$BIN" log --disc="$mnt1")"
+	log_out="$("$BIN" log "$mnt1")"
 	echo "$log_out"
 	if ! echo "$log_out" | grep -qF "$snap1"; then
 		fail "rebuild: log with no repository did not list snapshot $snap1"
 	fi
 
 	local ls_out
-	ls_out="$("$BIN" ls --disc="$mnt1" --recursive "$snap1")"
+	ls_out="$("$BIN" ls --recursive "$mnt1" "$snap1")"
 	if [ -z "$ls_out" ]; then
 		fail "rebuild: ls --recursive with no repository printed nothing"
 	fi
 	log "rebuild: ls --recursive with no repository listed $(echo "$ls_out" | wc -l) entries"
 
 	local restored_whole="$work/restored-whole"
-	"$BIN" restore --disc="$mnt1" "$snap1" "$restored_whole"
+	"$BIN" restore "$mnt1" "$snap1" "$restored_whole"
 	assert_dirs_equal "$restored_whole$src" "$src"
 	log "rebuild: whole-snapshot restore with no repository matches"
 
@@ -89,17 +89,17 @@ scenario_rebuild() {
 	[ -n "$one_dir" ] || fail "rebuild: no top-level directory found in the fixture"
 
 	local restored_file="$work/restored-file"
-	"$BIN" restore --disc="$mnt1" "--include=${one_file#/}" "$snap1" "$restored_file"
+	"$BIN" restore "--include=${one_file#/}" "$mnt1" "$snap1" "$restored_file"
 	diff -q "$restored_file$one_file" "$one_file" || fail "rebuild: --include restore of $one_file does not match"
 
 	local restored_dir="$work/restored-dir"
-	"$BIN" restore --disc="$mnt1" "--include=${one_dir#/}" "$snap1" "$restored_dir"
+	"$BIN" restore "--include=${one_dir#/}" "$mnt1" "$snap1" "$restored_dir"
 	assert_dirs_equal "$restored_dir$one_dir" "$one_dir"
 	log "rebuild: --include restore of one file and one directory matches"
 
 	# recover with disc 1 alone: exit 0, and the state
 	# log's on-disc count must equal disc 1's own INDEX object count.
-	"$BIN" recover --repo="$repo" --disc="$mnt1"
+	"$BIN" recover --repo="$repo" "$mnt1"
 	local index_count1 ondisc_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
 	ondisc_count1="$(run_tool ci-state-count "$repo/staging")"
@@ -124,7 +124,7 @@ scenario_rebuild() {
 	local tree2="$work/tree2" image2="$work/disc2.img" mnt2="$work/mnt2"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" --ref=NEXT $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
+	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
 	t1=$(date +%s)
 	pack_rate_line "rebuild: pack disc 2" "$REBUILD_ADD_BYTES" "$t0" "$t1"
 	local size2
@@ -153,13 +153,13 @@ scenario_rebuild() {
 	chain_assert_missing_disc "$snap2" "$work/restored-next-missing-disc1" "$mnt1" "$mnt2"
 
 	local restored_next="$work/restored-next"
-	"$BIN" restore --disc="$mnt1" --disc="$mnt2" "$snap2" "$restored_next"
+	"$BIN" restore "$mnt1" "$mnt2" "$snap2" "$restored_next"
 	run_tool ci-incremental-fixture check "$restored_next$src" "$hashes_next"
 	log "rebuild: NEXT restored from both discs matches"
 
 	# recover again, with both discs: exit 0, same on-disc count as
 	# after the first rebuild plus disc 2's own new objects.
-	"$BIN" recover --repo="$repo" --disc="$mnt1" --disc="$mnt2"
+	"$BIN" recover --repo="$repo" "$mnt1" "$mnt2"
 	local index_count2 ondisc_count2 want_count2
 	index_count2="$(run_tool ci-index-count "$mnt2")"
 	ondisc_count2="$(run_tool ci-state-count "$repo/staging")"
@@ -169,7 +169,7 @@ scenario_rebuild() {
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
-	"$BIN" recover --repo="$repo" --disc="$mnt1" --disc="$mnt2"
+	"$BIN" recover --repo="$repo" "$mnt1" "$mnt2"
 	local ondisc_count3
 	ondisc_count3="$(run_tool ci-state-count "$repo/staging")"
 	if [ "$ondisc_count3" != "$ondisc_count2" ]; then
@@ -183,7 +183,7 @@ scenario_rebuild() {
 	uuid1="$(run_tool ci-disc-uuid "$mnt1")"
 	local rebuild_out rebuild_code
 	set +e
-	rebuild_out="$("$BIN" recover --repo="$repo" --disc="$mnt2" 2>&1)"
+	rebuild_out="$("$BIN" recover --repo="$repo" "$mnt2" 2>&1)"
 	rebuild_code=$?
 	set -e
 	echo "$rebuild_out"

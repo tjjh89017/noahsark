@@ -154,7 +154,6 @@ func TestBuildMemoryBounded(t *testing.T) {
 	outDir := t.TempDir()
 	opts := testOpts(t, stagingDir, snapID, outDir)
 	opts.TargetCapacitySectors = memFixtureCapacitySectors
-	opts.PhysicalCapacitySectors = memFixtureCapacitySectors
 
 	sampler := startPeakMemSampler()
 	if _, err := Build(opts); err != nil {
@@ -171,7 +170,6 @@ func TestReadMemoryBounded(t *testing.T) {
 	outDir := t.TempDir()
 	opts := testOpts(t, stagingDir, snapID, outDir)
 	opts.TargetCapacitySectors = memFixtureCapacitySectors
-	opts.PhysicalCapacitySectors = memFixtureCapacitySectors
 	if _, err := Build(opts); err != nil {
 		t.Fatal(err)
 	}

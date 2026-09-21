@@ -27,11 +27,9 @@ import (
 // existing repository directory. See docs/decisions.md,
 // "16. CLI reference".
 func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark recover [--disc=ROOT]... [--discs-dir=DIR]",
+	fs := newFlagSet("noahsark recover [DISC-ROOT... | --discs-dir=DIR]",
 		"Rebuild the repository state from one or more discs.", stderr)
 	repoFlag := fs.String("repo", "", "repository directory to create or use")
-	var discFlags stringList
-	fs.Var(&discFlags, "disc", "a disc root to rebuild from; repeatable")
 	discsDir := fs.String("discs-dir", "", "a directory whose immediate subdirectories are mounted disc roots")
 	if err := fs.Parse(args); err != nil {
 		return exitForFlagParse(err)
@@ -40,7 +38,7 @@ func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 		return 2
 	}
 
-	discRoots, err := resolveDiscRoots(discFlags, *discsDir, fs.Args())
+	discRoots, err := resolveDiscRoots(*discsDir, fs.Args())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 2

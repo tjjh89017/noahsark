@@ -48,14 +48,14 @@ FIXED_MEDIA="dvd+r"
 # non-empty, builds the run with Reed-Solomon FEC; a corrupt-and-heal
 # scenario needs it, since there is nothing to heal without it.
 build_fixture() {
-	local media="$1" work="$2" content="${3:-}" fec="${4:-}" target physical
-	read -r target physical <<<"$(media_sectors "$media")"
+	local media="$1" work="$2" content="${3:-}" fec="${4:-}" target
+	target="$(media_sectors "$media")"
 	local fecflag=()
 	[ -n "$fec" ] && fecflag=(-fec)
 	if [ -n "$content" ]; then
-		run_tool ci-fixture "${fecflag[@]}" "$work" "$target" "$physical" "$content"
+		run_tool ci-fixture "${fecflag[@]}" "$work" "$target" "$content"
 	else
-		run_tool ci-fixture "${fecflag[@]}" "$work" "$target" "$physical"
+		run_tool ci-fixture "${fecflag[@]}" "$work" "$target"
 	fi
 }
 
@@ -245,7 +245,7 @@ scenario_cli() {
 scenario_media() {
 	local media="$1" fec="${2:-}" work="$WORK/media"
 	local repo small_src small_src2 tree image mnt restored
-	local capflag physflag small_mb apparent packfec
+	local capflag small_mb apparent packfec
 	packfec=""
 	[ -n "$fec" ] && packfec="--fec"
 	repo="$work/repo"
@@ -265,11 +265,9 @@ scenario_media() {
 	case "$media" in
 	bd25-forced-10g)
 		capflag="--capacity=10GiB"
-		physflag="--physical-capacity=bd25"
 		;;
 	*)
 		capflag="--capacity=$media"
-		physflag=""
 		;;
 	esac
 
@@ -284,7 +282,7 @@ scenario_media() {
 	bytes=$((small_mb * 1024 * 1024))
 
 	t0=$(date +%s.%N)
-	"$BIN" pack --repo="$repo" --ref=SMALL "$capflag" $physflag $packfec --out="$tree"
+	"$BIN" pack --repo="$repo" "$capflag" $packfec --out="$tree"
 	t1=$(date +%s.%N)
 	if [ -n "$fec" ]; then
 		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
@@ -306,7 +304,7 @@ scenario_media() {
 		echo "$commit_out2"
 
 		t0=$(date +%s.%N)
-		"$BIN" pack --repo="$repo" --ref=SMALL2 "$capflag" $physflag --fec --out="$tree_fec"
+		"$BIN" pack --repo="$repo" "$capflag" --fec --out="$tree_fec"
 		t1=$(date +%s.%N)
 		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
 

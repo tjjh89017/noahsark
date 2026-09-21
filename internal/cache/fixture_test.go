@@ -58,16 +58,15 @@ func buildFixtureRun(t *testing.T) (runRoot string, snapID object.ID) {
 
 	outDir := filepath.Join(t.TempDir(), "run")
 	opts := image.PackOptions{
-		StagingDir:              stagingDir,
-		Snapshots:               []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
-		TargetCapacitySectors:   capacitySectors,
-		PhysicalCapacitySectors: capacitySectors,
-		OutputDir:               outDir,
-		RepoUUID:                [16]byte{1, 2, 3, 4},
-		DiscUUID:                [16]byte{5, 6, 7, 8},
-		Label:                   "test-disc",
-		Now:                     fixedClock,
-		StageLog:                l,
+		StagingDir:            stagingDir,
+		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
+		TargetCapacitySectors: capacitySectors,
+		OutputDir:             outDir,
+		RepoUUID:              [16]byte{1, 2, 3, 4},
+		DiscUUID:              [16]byte{5, 6, 7, 8},
+		Label:                 "test-disc",
+		Now:                   fixedClock,
+		StageLog:              l,
 	}
 	if _, err := image.Pack(opts); err != nil {
 		t.Fatal(err)

@@ -19,8 +19,8 @@ func setGCStdin(t *testing.T, r io.Reader) {
 
 // TestGCForceAfterConfirmedDeletes runs gc --force-after with a fake
 // clock placing an object CLEAN for longer than the forced duration but
-// not the configured staging.retain_after_clean, and a stdin pipe
-// answering "y": the object must be deleted.
+// not the fixed 7-day retention, and a stdin pipe answering "y": the
+// object must be deleted.
 func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 	oldClock := gcClock
 	defer func() { gcClock = oldClock }()
@@ -32,12 +32,10 @@ func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
-
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	// 2 hours past CLEAN: nowhere near the 30-day config retention, but
+	// 2 hours past CLEAN: nowhere near the fixed 7-day retention, but
 	// past a 1-hour --force-after.
 	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
 
@@ -67,8 +65,6 @@ func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
-
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
@@ -109,8 +105,6 @@ func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
-
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
@@ -146,8 +140,6 @@ func TestGCForceAfterDryRunSkipsConfirmation(t *testing.T) {
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	appendConfigLine(t, repo, "staging.retain_after_clean = 30d")
-
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
