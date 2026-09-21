@@ -35,13 +35,13 @@ Use this table to find a topic, by document and heading, not by number
 | Overview, goals, and platform tiers | NOTES.md | "1. Purpose and goals" |
 | System structure and data flow | NOTES.md | "1.8 Architecture" |
 | Byte layout rules that every structure obeys | FORMAT.md | "2. Binary format rules" |
-| Hashing, multihash, and hash epochs | FORMAT.md | "3. Identity and hashing" |
-| Chunking algorithm and profiles | FORMAT.md | "4. Chunking" |
+| Hashing and multihash | FORMAT.md | "3. Identity and hashing" |
+| Chunking algorithm and parameters | FORMAT.md | "4. Chunking" |
 | Compression rules | FORMAT.md | "5. Compression" |
 | Chunk, blob, tree, snapshot, ref | FORMAT.md | "6. Objects" |
-| Disc, run, and append behaviour (on-disc) | FORMAT.md | "7. Disc and run model" |
-| Disc, run, and append behaviour (host-side) | OPERATIONS.md | "12. Disc lifecycle and closing" |
-| Disc filesystem profiles (on-disc layout) | FORMAT.md | "8. Filesystem profiles and the volume tree" |
+| Disc and run structures (on-disc) | FORMAT.md | "7. Disc and run model" |
+| Disc lifecycle (host-side) | OPERATIONS.md | "12. Disc lifecycle and closing" |
+| Disc filesystem and the volume tree (on-disc layout) | FORMAT.md | "8. Filesystem and the volume tree" |
 | The reference decoder | FORMAT.md | "8.6 Reference decoder" |
 | Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burning" |
 | Reed-Solomon parity (on-disc layout) | FORMAT.md | "10. Forward error correction" |
