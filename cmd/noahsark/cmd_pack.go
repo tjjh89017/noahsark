@@ -249,7 +249,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		return 1
 	}
 
-	if err := populateCache(cfg, repoUUID, absOut); err != nil {
+	if err := populateCache(repoDir, absOut); err != nil {
 		// The cache is only an accelerator: a failure to populate it
 		// never fails the pack, since every command must still work
 		// with the cache absent or stale.
@@ -571,12 +571,8 @@ func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image
 // populateCache copies the run just packed at runRoot, every known
 // snapshot, and every tree it reaches, into the local cache, so a
 // later ls or plan can run with no disc present.
-func populateCache(cfg repoConfig, repoUUID [16]byte, runRoot string) error {
-	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		return err
-	}
-	c, err := cache.Open(dir)
+func populateCache(repoDir, runRoot string) error {
+	c, err := cache.Open(cache.Dir(repoDir))
 	if err != nil {
 		return err
 	}

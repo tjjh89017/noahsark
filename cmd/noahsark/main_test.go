@@ -11,23 +11,6 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// TestMain puts the local cache of every test in this package under one
-// temporary directory. A test that does not set cache.dir would
-// otherwise write into the operator's own cache directory, and leave one
-// directory there for each repository uuid it made.
-func TestMain(m *testing.M) {
-	base, err := os.MkdirTemp("", "noahsark-test-cache")
-	if err != nil {
-		panic(err)
-	}
-	if err := os.Setenv("XDG_CACHE_HOME", base); err != nil {
-		panic(err)
-	}
-	code := m.Run()
-	_ = os.RemoveAll(base)
-	os.Exit(code)
-}
-
 // runCmd runs one command in process and returns its exit code and the
 // combined stdout and stderr text.
 func runCmd(t *testing.T, args ...string) (int, string) {

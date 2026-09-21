@@ -98,12 +98,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	warnIfTruncated("gc", stageLog, stderr)
-	cacheDir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 1
-	}
-	c, err := cache.Open(cacheDir)
+	c, err := cache.Open(cache.Dir(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1

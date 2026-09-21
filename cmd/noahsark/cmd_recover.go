@@ -107,7 +107,7 @@ func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	}
 	warnIfTruncated("recover", stageLog, stderr)
 
-	if err := recoverCacheFromRoots(cfg, repoUUID, readRoots); err != nil {
+	if err := recoverCacheFromRoots(repoDir, readRoots); err != nil {
 		// The cache is only an accelerator: a failure to populate it
 		// never fails recover itself.
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover: cache:", err)
@@ -217,15 +217,11 @@ func discsNotFed(rows []format.DiscsRow, l *stage.Log) []format.DiscsRow {
 // snapshots and trees into the local cache, so recover leaves ls
 // and plan able to run with no disc present, the same way pack does
 // right after building a run.
-func recoverCacheFromRoots(cfg repoConfig, repoUUID [16]byte, readRoots []string) error {
+func recoverCacheFromRoots(repoDir string, readRoots []string) error {
 	if len(readRoots) == 0 {
 		return nil
 	}
-	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		return err
-	}
-	c, err := cache.Open(dir)
+	c, err := cache.Open(cache.Dir(repoDir))
 	if err != nil {
 		return err
 	}

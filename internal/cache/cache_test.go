@@ -11,27 +11,13 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// TestResolveDirDefaultsToXDGCacheHome checks the default path and the
-// override, matching OPERATIONS.md's local cache layout rules.
-func TestResolveDirDefaultsToXDGCacheHome(t *testing.T) {
-	repoUUID := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
-
-	t.Setenv("XDG_CACHE_HOME", "/xdg-home")
-	dir, err := cache.ResolveDir(repoUUID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join("/xdg-home", "noahsark", "01020304-0506-0708-090a-0b0c0d0e0f10")
-	if dir != want {
-		t.Fatalf("ResolveDir = %q, want %q", dir, want)
-	}
-
-	dir, err = cache.ResolveDir(repoUUID, "/explicit/cache")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if dir != "/explicit/cache" {
-		t.Fatalf("ResolveDir override = %q, want /explicit/cache", dir)
+// TestDirIsCacheInsideTheRepository checks that the cache directory is
+// always "cache" inside the repository directory, matching OPERATIONS.md's
+// local cache layout rules.
+func TestDirIsCacheInsideTheRepository(t *testing.T) {
+	want := filepath.Join("/repo", "cache")
+	if got := cache.Dir("/repo"); got != want {
+		t.Fatalf("Dir(%q) = %q, want %q", "/repo", got, want)
 	}
 }
 

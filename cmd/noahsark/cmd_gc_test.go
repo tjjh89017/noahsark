@@ -195,14 +195,13 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	cacheDir := filepath.Join(work, "cache")
 	src := writeFixtureSource(t)
 
 	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "staging.retain_after_clean = 1h")
-	appendConfigLine(t, repo, "cache.dir = "+cacheDir)
+	cacheDir := cache.Dir(repo)
 
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)

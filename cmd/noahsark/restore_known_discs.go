@@ -33,11 +33,7 @@ func knownDiscsForRepo(repoFlag string) map[[16]byte]restore.DiscName {
 		return discNamesByUUID(ledger.Rows)
 	}
 
-	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		return nil
-	}
-	c, err := cache.Open(dir)
+	c, err := cache.Open(cache.Dir(repoDir))
 	if err != nil {
 		return nil
 	}

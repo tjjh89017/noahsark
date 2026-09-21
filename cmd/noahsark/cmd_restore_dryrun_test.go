@@ -54,7 +54,6 @@ func runRestoreDryRun(t *testing.T, repo, snapID string, extraFlags ...string) (
 // disc and checks restore --dry-run reports exactly that one disc, with
 // every object accounted for and no missing run.
 func TestRestoreDryRunSingleDisc(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	treeDir, snapID, _ := lsFixture(t)
 	repo := repoDirFromTreeDir(t, treeDir)
 
@@ -78,7 +77,6 @@ func TestRestoreDryRunSingleDisc(t *testing.T) {
 // one small subtree names no more objects or bytes than the
 // whole-snapshot dry run.
 func TestRestoreDryRunTwoDiscChainIncludeNarrows(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, includePath, _ := multiDiscPlanFixture(t)
 
 	code, fullOut := runRestoreDryRun(t, repo, snapID)
@@ -106,7 +104,6 @@ func TestRestoreDryRunTwoDiscChainIncludeNarrows(t *testing.T) {
 // with "matches no entry" because resolving the first corrupted the
 // shared root entries.
 func TestRestoreDryRunTwoIncludesBothResolve(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	treeDir, snapID, src := lsFixture(t)
 	repo := repoDirFromTreeDir(t, treeDir)
 
@@ -145,7 +142,6 @@ func dryRunTotalObjects(t *testing.T, out string) int {
 // unresolvable, and checks restore --dry-run reports them under
 // "missing:" and exits 1.
 func TestRestoreDryRunMissingDisc(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	repo, snapID, _, _ := multiDiscPlanFixture(t)
 
 	cacheDir := repoCacheDir(t, repo)

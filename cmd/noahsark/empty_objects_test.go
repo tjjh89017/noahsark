@@ -36,7 +36,6 @@ func writeEmptyObjectSource(t *testing.T) string {
 // the kind keeps them apart. A restore must give back both, through the
 // all-discs-at-once form and through the disc-swap form.
 func TestRestoreEmptyDirectoryAndEmptyFile(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeEmptyObjectSource(t)
@@ -92,7 +91,6 @@ func assertRestoredDirectory(t *testing.T, path string) {
 // ref moves to the newer snapshot. The older snapshot must stay
 // reachable: log still lists it.
 func TestTwoCommitsOneDayMoveOneRefAndKeepBoth(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)

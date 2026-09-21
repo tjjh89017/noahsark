@@ -16,13 +16,6 @@ HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 WORK="${NOAHSARK_E2E_WORKDIR:-$(mktemp -d)}"
 BIN="$WORK/noahsark"
 
-# The local cache goes under WORK. The suite runs under sudo with the
-# caller's environment, thus the default location would be the caller's
-# own cache directory, and each scenario would leave one directory of a
-# repository uuid there, owned by root.
-export XDG_CACHE_HOME="$WORK/cache"
-mkdir -p "$XDG_CACHE_HOME"
-
 log() { echo "[disc-e2e] $*"; }
 fail() { echo "[disc-e2e] FAIL: $*" >&2; exit 1; }
 

@@ -233,15 +233,7 @@ func openCacheSource(repoFlag string) (*cacheSource, *cache.Cache, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		return nil, nil, err
-	}
-	dir, err := cache.ResolveDir(repoUUID, cfg.CacheDir)
-	if err != nil {
-		return nil, nil, err
-	}
-	c, err := cache.Open(dir)
+	c, err := cache.Open(cache.Dir(repoDir))
 	if err != nil {
 		return nil, nil, err
 	}

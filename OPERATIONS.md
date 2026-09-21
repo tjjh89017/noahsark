@@ -54,10 +54,12 @@ A repository is one local directory.
 | `<repo>/lock` | The repository lock file. |
 | `<repo>/refs.txt` | The local refs. |
 | `<repo>/staging/` | The staging store, unless `staging.dir` moves it. |
+| `<repo>/cache/` | The local cache. See "Local cache layout". |
 
 `init` creates the directory, `config`, `lock`, and `staging/` with the empty
 directories `objects/` and `snapshots/`. The first `commit` creates `refs.txt`
-and the state log. A directory is a repository when it holds a `config` file.
+and the state log. `cache/` appears the first time a command populates it. A
+directory is a repository when it holds a `config` file.
 
 Every disc carries the `repo_uuid`. `recover` recreates a lost repository from
 its discs. The repository is the source of truth only for the objects that are
@@ -95,9 +97,8 @@ depends on a durable append.
 
 Everything in the cache comes from discs or from staging, and `recover` builds
 it again from the discs. The cache never holds anything whose loss loses
-archive data, and it holds no chunk data. It is never inside the repository.
-The default location is `$XDG_CACHE_HOME/noahsark/<repo-uuid>/`, which falls
-back to `~/.cache/noahsark/<repo-uuid>/`. `cache.dir` overrides it.
+archive data, and it holds no chunk data. The location is always
+`<repo>/cache/`, beside `staging/` and `config`. There is no override.
 
 | Item | Content |
 |---|---|
@@ -1019,7 +1020,6 @@ These are all the keys.
 | `pack.capacity` | preset or size | unset | The capacity that `pack` uses with no `--capacity`. A bare number is a config error. |
 | `staging.retain_after_clean` | duration | `7d` | The retention before `gc` may free a CLEAN object. It counts from the first successful verify. A whole number of days with `d`, or a Go duration. |
 | `gc.min_verified_copies` | integer | 2 | The successful verifies that an object needs before `gc` may free it. A value below 1 is a config error. |
-| `cache.dir` | path | see "Local cache layout" | The local cache location. |
 
 ## 19. Exit code registry
 
