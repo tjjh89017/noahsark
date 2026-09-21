@@ -1,6 +1,6 @@
 # NoahsArk design notes
 
-Document version 0.4.29.
+Document version 0.5.0.
 
 Sections other than the change log and Deferred designs still describe
 document version 3.2 and are updated later.
@@ -2129,6 +2129,11 @@ and about 107 MiB at 100,000 objects.
 
 ### 5.7 Seek tables
 
+Document version 0.5.0 removed the chunker profile registry: the format
+keeps one set of chunker parameters, not the P3/P4/P5 choice this table
+illustrates. The table stays as a worked example of the shape of the
+calculation, not as a description of a registry that still exists.
+
 Object counts and UDF overhead per chunker profile. The counts are
 `ceil(capacity_bytes / avg)` at the capacities of the media registry, which is
 the `objects_per_run` planning figure.
@@ -2191,11 +2196,12 @@ Snapshot replication, at 10,000 snapshots:
 
 Typical total per run: 3.20 + 20.48 + 1.36 = **25.04 MB**, which is 0.10
 percent of a 25 GB disc and 0.025 percent of a 100 GB disc. The filesystem
-overhead dominates the payload. The `snapobj.bin` container form removes the
-20.48 MB and leaves **4.56 MB** per run. At 10,000 snapshots and 2,000 runs,
-the replicated history costs about 9 GB across the whole archive in container
-form. That is under half of one disc for a complete, 2,000-fold redundant
-history.
+overhead dominates the payload. Document version 0.5.0 removed the
+`snapobj.bin` container and the snapshot table it depended on; a snapshot is
+now one ordinary object file under `snapshots/`, so this worked example's
+container-form saving and its "9 GB across the whole archive" total no
+longer describe the current format and are kept only as a worked example of
+the underlying arithmetic.
 
 ### 5.9 Burst tolerance tables
 
@@ -2495,7 +2501,7 @@ The section named against a term is its normative home.
 | **Run table** | The catalog table that maps every `run_seq` to its disc, its LBA range and its run header hash. |
 | **RS margin** | `m` minus the worst-stripe erasure count, as a percentage of `m`. The headline health metric. |
 | **Shard** | One 2048-byte sector, as seen by the FEC layer. |
-| **Snapshot** | An object that names a root tree, a parent and a generation. |
+| **Snapshot** | An object that names a root tree and a parent. |
 | **Spare area** | The reserved region that POW uses for logical overwrites. |
 | **Staging** | The local store that holds objects between commit and CLEAN. |
 | **Stripe** | The 255 shards, one per column, at the same offset inside their columns. |
@@ -2553,6 +2559,7 @@ of each entry is unchanged.
 
 | Document version | Change |
 |---|---|
+| 0.5.0 | **One format revision before the first tag (GitHub issue #30, all 24 cuts approved).** The user approved every cut on issue #30's decision list, made now because it is the last cheap moment to break the on-disc format: no tag has shipped yet, so no disc anywhere carries the old bytes. `version_minor` is reserved; a reader refuses only an unknown `version_major`. `header_len` has one definition for every structure, counted the same way everywhere, and a reader obeys it instead of assuming a compiled size. Every structure's reserved bytes are ignored, not checked, by a reader. The format keeps one hash algorithm, one set of chunker parameters, no crypto byte and no `lz4` compression code. A blob body is 8 bytes and a blob entry is 40 bytes, with the offset a running sum instead of a stored field. A tree entry's fixed header is 72 bytes, its variable areas sit at derived places, and it carries no hardlink group, no atime and no birth time. The root path is stored once, as the escaped root entry name; there is no `ROOT_PATH` TLV and no snapshot metadata tag 4. A snapshot drops `generation`, its source fields and the reachable object count, and keeps `parent`. INDEX has a 56-byte header; its Objects row is 40 bytes and pairs by position with the Files rows of the run's own objects, both in content id order; its Prereqs row is 48 bytes and names a disc by `disc_uuid`, never by `run_seq`. REFS and DISCS share a 56-byte header and carry no CRC; the newest ref wins by `time_sec`, then `time_nsec`, then snapshot id bytes. The DISCS row drops status, health, verify time and used sectors. DISC and RUN keep their on-disc sizes, with the cut fields turned to reserved space; the DISC superblock's `header_len` is 2048, and it records the one capacity that `pack` used, not a separate forced-capacity field. `RUN.bin` is 512 bytes. A parity file carries no header block of its own. `catalog/snapobj/` is gone: every snapshot is an ordinary object under `snapshots/`. Every mention of an appended run, a session or a close state is gone from the format; a disc holds one run. `FORMAT.txt` on the disc is a byte copy of `FORMAT.md` itself, not a generated excerpt. Host-side: `status` no longer shows used bytes, the local ledger no longer holds a verify timestamp, and `pack` reads each staged object exactly once. The disc-side media presets registry is gone; the capacity presets `pack` itself offers are unchanged. The reference decoder was rewritten from this document and holds no Reed-Solomon code; it says so and refuses to heal. No document version before this one is rewritten to match; the older change log rows describe the bytes their own version wrote. |
 | 0.4.29 | **Four branches reconciled: dead code, stale citations and one disc-number bug.** `--no-eject` and the manual eject/umount step are gone from `restore`'s disc-swap mode; OPERATIONS.md and `docs/decisions.md` now say plainly that `restore` waits and the operator swaps the disc in a second terminal. The dead config key `cache.format_version` is removed from the loader, the known-key list, the per-command key lists, the defaults and OPERATIONS.md's configuration reference. `disc label` and `disc mark-degraded` are no longer special-cased stubs; an unknown `disc` subcommand is refused the same way any other one is. `pack`'s default `--out` is built from `staging.dir`, not a hardcoded `<repo>/staging`, so a repository whose staging store was moved still packs into it. The one-drive restore's `--mount is required` message no longer names a document. A handful of Go comments that cited a section number, or a heading OPERATIONS.md's simplification passes removed, are reworded to describe the rule instead. **Bug fixed:** every disc's `README.txt` named disc 0, because `buildReadme` read a fixed constant instead of the run's real `disc_seq`; `buildReadme` now takes the disc number as a parameter, and every caller passes its own. The one-drive restore's mismatch report no longer complains "expected ... found ..." about a disc this run simply does not need; it says so calmly and asks for the disc it does need. No on-disc byte changed. |
 | 0.4.28 | **Ownership is recorded and restored in the right order (GitHub issue #57).** `commit` records the real uid and gid of each path, and the user name and the group name TLVs when the host names the ids; it caches one lookup for each distinct owner of the commit. A tree's bytes, and thus its content id, change with the new metadata. `restore` applies the owner first, then the mode, then the times, because a `chown` clears the setuid and the setgid bits. `restore` also translates the stored setuid, setgid and sticky bits into `os.FileMode` before the `chmod`; the direct conversion dropped all three, so a restored setuid file came back as 0755. A `restore` that does not run as root still applies no owner, reports no owner problem for any path, and exits 0. A snapshot from an older build holds 0:0 and, restored as root, still gives `root:root`: the snapshot is the truth. `ls` and `log` now both exit 1 on an empty cache; a bad SNAPSHOT argument still exits 2. The `image build` out-of-space message names the capacity in `DISC.bin` and says to pack again, in place of a `--capacity` flag that does not exist. State log reasons 3 and 4 (healed, duplicate locality) are deleted; nothing ever wrote them, reasons 0 to 2 keep their values, and the state golden file is regenerated. No on-disc byte changed. |
 | 0.4.27 | **OPERATIONS.md second simplification pass (GitHub issue #26): the document describes the build.** OPERATIONS.md is now document version 4.0 and about half its length. The rule of the pass: the code is the truth. Corrected: the local refs are `<repo>/refs.txt`, a text file, not a binary `refs.bin` log, and the log container header is gone; the ledgers `discs.bin` and `refslog.bin` are described; `commit` reads every file on every run, writes a root snapshot each time and finds a known object through the state log (the quick check, the parent chain, the pending snapshot chain and "commit is idempotent" were never built); `commit` records uid 0 and gid 0; the restore plan groups chunks by disc and sorts (no set cover); `restore` applies mode, mtime, then the owner as root, checks each path component with `lstat`, and does not read the `UNSTABLE` flag; `restore` runs `umount` and `eject` between discs; `verify` prints no `verify: ok` line and writes the cache entries of the disc; `image build` copies the tree in walk order and passes no `--label` to `mkudffs`; there is no `--progress` option; `init` does not refuse a nested repository; the state log is never compacted. The configuration reference is one table with exactly the 12 keys of `knownConfigKeys`; the CLI reference is one syntax block, one option table and one note for each command; the failure table quotes the real messages; the test list names the unit test packages and the 7 e2e cells. `docs/moved-from-format.md` is deleted: its exclude language, capacity invariants and settings index described keys that the build does not have. NOTES.md: the rows of the performance table and of "Open judgement calls" that cited deleted OPERATIONS.md sections or keys that no code reads are deleted or corrected, and the ideas that left OPERATIONS.md are one line each in "2.21 Later ideas". `docs/decisions.md` lost the entries for deleted features. |

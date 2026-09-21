@@ -310,8 +310,9 @@ The lock is advisory. It is not a security boundary.
 
 1. Resolve the source root: the `SOURCE` argument, else `sources.root`.
 2. Walk the source. Leave out each excluded path.
-3. For each regular file: chunk it with the P4 profile, hash each chunk with
-   SHA-256, and compress each chunk with zstd. Write a chunk into staging
+3. For each regular file: chunk it with FORMAT.md's one set of chunker
+   parameters, hash each chunk with SHA-256, and compress each chunk with
+   zstd. Write a chunk into staging
    only when the state log does not know its id. Write the blob object that
    lists the chunks of the file.
 4. For each directory, bottom-up: write the tree object.
@@ -483,18 +484,20 @@ disc byte.
 ### 9.4 Forced capacity
 
 A `--capacity` value below the capacity of the medium is a forced capacity.
-`pack --physical-capacity` gives the capacity of the medium; it defaults to the
-`--capacity` value. `pack` records both values in `DISC.bin` and in the DISCS
-row, as FORMAT.md's "Forced capacity" states. `pack` refuses a `--capacity`
-above `--physical-capacity`.
+`pack --physical-capacity` gives the capacity of the medium; it defaults to
+the `--capacity` value. `pack` records the value it used, `--capacity`, as
+`capacity_sectors` in `DISC.bin` and in the DISCS row, as FORMAT.md's "Disc
+superblock" states: the disc carries the one capacity that `pack` used, not
+the medium's own reported capacity. `pack` refuses a `--capacity` above
+`--physical-capacity`.
 
 Everything that consumes capacity uses the forced value: the packer, the image
 length, and the FEC layout when FEC is on.
 
 ## 10. Disc filesystems and image building
 
-The build writes filesystem profile 0 only: one run on one UDF disc.
-FORMAT.md's "Profiles a reader must know" is the home of the volume rules.
+The build writes one run on one UDF disc. FORMAT.md's "The UDF volume" is the
+home of the volume rules.
 
 ### 10.1 Profile 0 image build
 
