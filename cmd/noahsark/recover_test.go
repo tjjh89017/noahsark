@@ -550,7 +550,7 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+secondTree); code != 0 {
 		t.Fatalf("pack X: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "log", secondTree)
+	code, out := runCmd(t, "--repo="+repo, "log")
 	if code != 0 {
 		t.Fatalf("log: exit %d: %s", code, out)
 	}

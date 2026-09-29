@@ -53,28 +53,29 @@ scenario_rebuild() {
 	mount_populate "$image1" "$tree1" "$mnt1"
 	"$BIN" verify "$mnt1"
 
+	# log and ls read the catalog of the repository.
+	local log_out
+	log_out="$("$BIN" --repo="$repo" log)"
+	echo "$log_out"
+	if ! grep -qF "${snap1:4:12}" <<<"$log_out"; then
+		fail "rebuild: log did not list snapshot $snap1"
+	fi
+
+	local ls_out
+	ls_out="$("$BIN" --repo="$repo" ls --recursive "$snap1")"
+	if [ -z "$ls_out" ]; then
+		fail "rebuild: ls --recursive printed nothing"
+	fi
+	log "rebuild: ls --recursive listed $(echo "$ls_out" | wc -l) entries"
+
 	# Losing the whole repository directory: config, staging, catalog and
 	# the state log all go together, the same way the incremental
 	# scenario proves discs are the only source for restore.
 	rm -rf "$repo"
 	log "rebuild: deleted the whole repository directory"
 
-	# log, ls --recursive and restore must all work with no repository:
-	# they read the disc's own catalog, never --repo.
-	local log_out
-	log_out="$("$BIN" log "$mnt1")"
-	echo "$log_out"
-	if ! grep -qF "$snap1" <<<"$log_out"; then
-		fail "rebuild: log with no repository did not list snapshot $snap1"
-	fi
-
-	local ls_out
-	ls_out="$("$BIN" ls --recursive "$mnt1" "$snap1")"
-	if [ -z "$ls_out" ]; then
-		fail "rebuild: ls --recursive with no repository printed nothing"
-	fi
-	log "rebuild: ls --recursive with no repository listed $(echo "$ls_out" | wc -l) entries"
-
+	# restore must work with no repository: it reads the disc's own
+	# catalog, never --repo.
 	local restored_whole="$work/restored-whole"
 	"$BIN" restore "$mnt1" "$snap1" "$restored_whole"
 	assert_dirs_equal "$restored_whole$src" "$src"

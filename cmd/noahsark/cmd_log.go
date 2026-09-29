@@ -1,250 +1,192 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
-	"io"
-	"sort"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
 func init() {
 	register(&command{
-		name:    "log",
-		usage:   "log [DISC-ROOT...] [REF|SNAPSHOT]",
-		summary: "Print a snapshot's history. Resolves through the catalog with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead.",
-		flags:   func(*flag.FlagSet) runFunc { return cmdLog },
+		name:  "log",
+		usage: "log [REF | SNAPSHOT]",
+		summary: "List the snapshots of the catalog, newest first. One snapshot on each line: " +
+			"id, time, refs, source path and message, separated by a tab.",
+		flags: func(*flag.FlagSet) runFunc { return cmdLog },
 	})
 }
 
-// cmdLog implements "noahsark log". With no DISC-ROOT, it resolves
-// REF|SNAPSHOT, and lists every known snapshot with none given, through
-// the catalog, so log needs no disc present; give one or more
-// DISC-ROOT positionals to read straight from a disc instead, the same
-// way ls, restore and verify do.
+// cmdLog implements "noahsark log". It reads the catalog only, takes no
+// lock and changes no file.
 func cmdLog(e *env, args []string) int {
-	stdout, stderr := e.stdout, e.stderr
-
-	// Leading positional arguments that name an existing directory are
-	// DISC-ROOTs; REF|SNAPSHOT is never a path that already exists on
-	// this host, so every argument can be checked the same way, and all
-	// of them may be DISC-ROOTs, leaving REF|SNAPSHOT unset (list-all).
-	i := 0
-	for i < len(args) && looksLikeDiscRoot(args[i]) {
-		i++
-	}
-	discRootArgs := args[:i]
-	discRootGiven := len(discRootArgs) > 0
-	if !discRootGiven && len(args) > 0 && looksLikePathNotDisc(args[0]) {
-		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", args[0])
+	const cmd = "log"
+	if len(args) > 1 {
+		_, _ = fmt.Fprintln(e.stderr, "usage: noahsark log [REF | SNAPSHOT]")
 		return 2
 	}
-	catalogMode := !discRootGiven
+	rc, code := openRepoCatalog(e, cmd)
+	if rc == nil {
+		return code
+	}
 
-	var src snapshotSource
-	var catalogObj *catalog.Catalog
-	var positional []string
-	switch {
-	case catalogMode:
-		if len(args) > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [REF|SNAPSHOT]")
-			return 2
+	var ids []object.ID
+	if len(args) == 1 {
+		id, code, ok := rc.resolve(cmd, args[0])
+		if !ok {
+			return code
 		}
-		positional = args
-		cs, c, err := openCatalogSource(e)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
+		if !rc.known(id) {
+			if _, err := rc.src.Snapshot(id); err != nil {
+				_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, &refNotFoundError{arg: args[0]})
+				return 2
+			}
+		}
+		ids = []object.ID{id}
+	} else {
+		var err error
+		if ids, err = rc.logIDs(); err != nil {
+			_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
 			return 1
 		}
-		src, catalogObj = cs, c
-	default:
-		positional = args[len(discRootArgs):]
-		if len(positional) > 1 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark log DISC-ROOT... [REF|SNAPSHOT]")
-			return 2
-		}
-	}
-
-	if !catalogMode {
-		restoreSrc, err := restore.OpenSource(discRootArgs)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-			return 1
-		}
-		src = restoreSrc
-	}
-
-	if len(positional) == 1 {
-		return logOne(src, catalogObj, positional[0], stdout, stderr)
-	}
-	return logAll(src, stdout, stderr)
-}
-
-// logRecord is one snapshot's history line: its id, time, the ref names
-// pointing at it, the root paths it covers, and the counts the snapshot
-// itself stores.
-type logRecord struct {
-	ID        string
-	Parent    string
-	Time      string
-	Refs      []string
-	Roots     []string
-	TotalSize uint64
-
-	// timeNanos is the snapshot's own time, at the full precision the
-	// snapshot record carries: Time above is already the printed form,
-	// truncated to whole seconds. logAll's sort uses this so two
-	// snapshots committed in the same second, which tie on the printed
-	// Time, still order newest first when the record's own nanoseconds
-	// tell them apart.
-	timeNanos int64
-}
-
-// logAll lists every snapshot the provided discs know, newest first.
-func logAll(src snapshotSource, stdout, stderr io.Writer) int {
-	ids, err := src.SnapshotIDs()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-		return 1
-	}
-	refs, err := src.Refs()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-		return 1
 	}
 
 	records := make([]logRecord, 0, len(ids))
 	for _, id := range ids {
-		snap, err := src.Snapshot(id)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-			return 1
-		}
-		records = append(records, buildLogRecord(src, id, snap, refs))
+		records = append(records, rc.logRecord(id))
 	}
-	// The printed Time has only one-second resolution, so two snapshots
-	// committed in the same second tie on it; sort by the record's own
-	// full-precision time instead, so that tie is already broken by
-	// real recency rather than only by display rounding. A further tie
-	// there (the same nanosecond, or this build's constant generation 1)
-	// falls back to generation descending, then snapshot id ascending,
-	// the same order FORMAT.md uses for a run's snapshots, so the
-	// result is stable across runs of log instead of depending on
-	// sort.Slice's own unstable ordering of equal elements.
-	sort.Slice(records, func(i, j int) bool {
-		a, b := records[i], records[j]
-		if a.timeNanos != b.timeNanos {
-			return a.timeNanos > b.timeNanos
-		}
-		return a.ID < b.ID
-	})
+	sortLogRecords(records)
 
+	out := bufio.NewWriter(e.stdout)
 	for _, r := range records {
-		_, _ = fmt.Fprintf(stdout, "%s  %s  refs: %s  roots: %s  size: %d\n",
-			r.ID, r.Time, joinOrNone(r.Refs), joinOrNone(r.Roots), r.TotalSize)
+		_, _ = fmt.Fprintln(out, r.line())
 	}
-	printRefsOnAnotherDisc(stdout, ids, refs)
-	return 0
-}
+	_ = out.Flush()
 
-// printRefsOnAnotherDisc lists every ref whose own snapshot object is
-// not among ids: gc can free an old run's staged snapshot object once it
-// is no longer needed there, so a later pack stops carrying that
-// snapshot object forward, while REFS.bin still carries the ref itself
-// forward on every run. Such a ref must still appear in log, naming the
-// disc it needs instead of vanishing from the list.
-func printRefsOnAnotherDisc(stdout io.Writer, ids []object.ID, refs *format.RefsTable) {
-	known := make(map[object.ID]bool, len(ids))
-	for _, id := range ids {
-		known[id] = true
-	}
-	var elsewhere []format.RefRecord
-	for _, rec := range refs.Records {
-		if !known[object.ID(rec.SnapshotID)] {
-			elsewhere = append(elsewhere, rec)
+	code = 0
+	for _, r := range records {
+		if rc.c.Partial(r.id) {
+			printPartial(e.stderr, cmd, r.id)
+			code = 1
 		}
 	}
-	sort.Slice(elsewhere, func(i, j int) bool {
-		return string(elsewhere[i].Name[:elsewhere[i].NameLen]) < string(elsewhere[j].Name[:elsewhere[j].NameLen])
-	})
-	for _, rec := range elsewhere {
-		_, _ = fmt.Fprintf(stdout, "%s  refs: %s  on another disc\n",
-			object.ID(rec.SnapshotID).TextForm(), string(rec.Name[:rec.NameLen]))
-	}
+	return code
 }
 
-// logOne prints one snapshot's own details.
-func logOne(src snapshotSource, catalogObj *catalog.Catalog, arg string, stdout, stderr io.Writer) int {
-	id, err := src.ParseSnapshotArg(arg)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-		return exitForSnapshotArg(err)
-	}
-	snap, err := src.Snapshot(id)
-	if err != nil {
-		return reportSourceError("log", stderr, err, catalogObj, id)
-	}
-	refs, err := src.Refs()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
-		return 1
-	}
-	r := buildLogRecord(src, id, snap, refs)
-
-	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", r.ID)
-	parent := r.Parent
-	if parent == "" {
-		parent = "(none)"
-	}
-	_, _ = fmt.Fprintf(stdout, "parent: %s\n", parent)
-	_, _ = fmt.Fprintf(stdout, "time: %s\n", r.Time)
-	_, _ = fmt.Fprintf(stdout, "refs: %s\n", joinOrNone(r.Refs))
-	_, _ = fmt.Fprintf(stdout, "root paths: %s\n", joinOrNone(r.Roots))
-	_, _ = fmt.Fprintf(stdout, "total size: %d\n", r.TotalSize)
-	return 0
+// logRecord is the content of one log line. held is false when the
+// catalog does not hold the snapshot object: a ref names it, but the
+// line has no time, source path or message.
+type logRecord struct {
+	id      object.ID
+	held    bool
+	sec     int64
+	nsec    uint32
+	refs    []string
+	sources []string
+	message string
 }
 
-// buildLogRecord gathers one snapshot's log fields: the refs naming it
-// from refs, and the root paths from its own root tree. A root tree that
-// no provided disc holds leaves Roots empty rather than failing the whole
-// command; log has no exit code for a missing disc, unlike ls.
-func buildLogRecord(src snapshotSource, id object.ID, snap *format.Snapshot, refs *format.RefsTable) logRecord {
-	r := logRecord{
-		ID:        id.TextForm(),
-		Time:      time.Unix(snap.TimeSec, int64(snap.TimeNsec)).UTC().Format(time.RFC3339),
-		TotalSize: snap.TotalSize,
-		timeNanos: snap.TimeSec*int64(time.Second) + int64(snap.TimeNsec),
+// logIDs gives every snapshot of the catalog and every snapshot that a
+// ref names, once each.
+func (rc *repoCatalog) logIDs() ([]object.ID, error) {
+	ids, err := rc.c.ListSnapshots()
+	if err != nil {
+		return nil, err
 	}
-	if snap.Parent != ([32]byte{}) {
-		r.Parent = object.ID(snap.Parent).TextForm()
-	}
-	for _, rec := range refs.Records {
-		if object.ID(rec.SnapshotID) == id {
-			r.Refs = append(r.Refs, string(rec.Name[:rec.NameLen]))
+	for _, r := range rc.refs.Records {
+		if id := object.ID(r.SnapshotID); !slices.Contains(ids, id) {
+			ids = append(ids, id)
 		}
 	}
-	sort.Strings(r.Refs)
-	if tree, err := src.Tree(object.ID(snap.RootTree)); err == nil {
-		for _, e := range tree.Entries {
-			if segs := splitLsPath(rootPathOf(e)); len(segs) > 0 {
-				r.Roots = append(r.Roots, strings.Join(segs, "/"))
-			}
+	return ids, nil
+}
+
+// logRecord collects the fields of the line of id. A root tree that the
+// catalog does not hold gives no source path.
+func (rc *repoCatalog) logRecord(id object.ID) logRecord {
+	r := logRecord{id: id}
+	for _, ref := range rc.refs.Records {
+		if object.ID(ref.SnapshotID) == id {
+			r.refs = append(r.refs, catalog.RefName(ref))
+		}
+	}
+	slices.Sort(r.refs)
+	snap, err := rc.src.Snapshot(id)
+	if err != nil {
+		return r
+	}
+	r.held = true
+	r.sec, r.nsec = snap.TimeSec, snap.TimeNsec
+	for _, m := range snap.Meta {
+		if m.Tag == format.SnapshotMetaMessage {
+			r.message = string(m.Value)
+		}
+	}
+	if root, err := rc.src.Tree(object.ID(snap.RootTree)); err == nil {
+		for _, e := range root.Entries {
+			r.sources = append(r.sources, rootPathOf(e))
 		}
 	}
 	return r
 }
 
-// joinOrNone joins items with ", ", or reports "(none)" for an empty
-// list, so a text listing never prints a bare empty field.
-func joinOrNone(items []string) string {
-	if len(items) == 0 {
-		return "(none)"
+// sortLogRecords puts the records newest first, at the full precision of
+// the snapshot time. The records whose object the catalog does not hold
+// come last. The snapshot id breaks each tie.
+func sortLogRecords(records []logRecord) {
+	slices.SortFunc(records, func(a, b logRecord) int {
+		if a.held != b.held {
+			if a.held {
+				return -1
+			}
+			return 1
+		}
+		if a.sec != b.sec {
+			if a.sec > b.sec {
+				return -1
+			}
+			return 1
+		}
+		if a.nsec != b.nsec {
+			if a.nsec > b.nsec {
+				return -1
+			}
+			return 1
+		}
+		return bytes.Compare(a.id[:], b.id[:])
+	})
+}
+
+// line gives the log line: the 12-character id, the time, the refs, the
+// source path and the message, separated by a tab. A field with no value
+// is "-". More than one source root gives the paths separated by ",".
+func (r logRecord) line() string {
+	fields := []string{shortID(r.id), "-", "-", "-", "-"}
+	if len(r.refs) > 0 {
+		escaped := make([]string, len(r.refs))
+		for i, name := range r.refs {
+			escaped[i] = escapeField(name)
+		}
+		fields[2] = strings.Join(escaped, ",")
 	}
-	return strings.Join(items, ", ")
+	if r.held {
+		fields[1] = utcTime(r.sec)
+		if len(r.sources) > 0 {
+			escaped := make([]string, len(r.sources))
+			for i, p := range r.sources {
+				escaped[i] = escapeField(p)
+			}
+			fields[3] = strings.Join(escaped, ",")
+		}
+		if r.message != "" {
+			fields[4] = escapeField(r.message)
+		}
+	}
+	return strings.Join(fields, "\t")
 }

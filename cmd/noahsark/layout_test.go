@@ -297,7 +297,7 @@ func TestGCFreesChunksAndKeepsTheCatalog(t *testing.T) {
 		snapID = id
 	}
 	code, out := runCmd(t, "--repo="+repo, "log")
-	if code != 0 || !strings.Contains(out, snapID) {
+	if code != 0 || !strings.Contains(out, logID(t, snapID)) {
 		t.Fatalf("log after gc: exit %d: %s", code, out)
 	}
 	code, out = runCmd(t, "--repo="+repo, "ls", "--recursive", snapID)

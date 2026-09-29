@@ -807,7 +807,7 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "log", treeDir)
+	code, out := runCmd(t, "--repo="+repo, "log")
 	if code != 0 {
 		t.Fatalf("log: exit %d: %s", code, out)
 	}

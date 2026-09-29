@@ -91,21 +91,19 @@ func TestRestoreAcceptsARefName(t *testing.T) {
 }
 
 // TestRestoreUnknownRefReportsTheSameError checks that an unknown ref
-// name given to restore reports the same error ls reports for it.
+// name given to restore or to ls is a usage error.
 func TestRestoreUnknownRefReportsTheSameError(t *testing.T) {
 	treeDir, _, _ := lsFixture(t)
 	restoredDir := filepath.Join(t.TempDir(), "restored")
 
 	restoreCode, restoreOut := runCmd(t, "restore", treeDir, "NO-SUCH-REF", restoredDir)
-	lsCode, lsOut := runCmd(t, "ls", treeDir, "NO-SUCH-REF")
+	lsCode, lsOut := runCmd(t, "--repo="+repoDirFromTreeDir(t, treeDir), "ls", "NO-SUCH-REF")
 
 	if restoreCode != 2 {
 		t.Fatalf("restore: exit %d, want 2: %s", restoreCode, restoreOut)
 	}
-	restoreMsg := strings.TrimPrefix(strings.TrimSpace(restoreOut), "noahsark: restore: ")
-	lsMsg := strings.TrimPrefix(strings.TrimSpace(lsOut), "noahsark: ls: ")
-	if restoreMsg != lsMsg {
-		t.Fatalf("restore error %q, want same as ls error %q (ls exit %d)", restoreMsg, lsMsg, lsCode)
+	if want := "noahsark: ls: no snapshot matches NO-SUCH-REF\n"; lsCode != 2 || lsOut != want {
+		t.Fatalf("ls: exit %d, output %q; want 2 and %q", lsCode, lsOut, want)
 	}
 }
 
@@ -652,7 +650,6 @@ func TestSnapshotArgEmptyNamesItself(t *testing.T) {
 
 	cases := [][]string{
 		{"restore", treeDir, "", filepath.Join(t.TempDir(), "out")},
-		{"ls", treeDir, ""},
 		{"--repo=" + repo, "ls", ""},
 		{"--repo=" + repo, "restore", "--mount=" + t.TempDir(), "--dry-run", "", filepath.Join(t.TempDir(), "out")},
 		{"--repo=" + repo, "log", ""},
