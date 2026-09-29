@@ -359,17 +359,17 @@ func TestRecoverNoUsableDisc(t *testing.T) {
 	}
 }
 
-// newObjectsFromCommit parses a commit's "new objects: N, existing
-// objects: M" line and returns N.
+// newObjectsFromCommit parses a commit's "new items: N, existing
+// items: M" line and returns N.
 func newObjectsFromCommit(t *testing.T, output string) int {
 	t.Helper()
 	for line := range strings.SplitSeq(output, "\n") {
 		var newObjects, existingObjects int
-		if _, err := fmt.Sscanf(line, "new objects: %d, existing objects: %d", &newObjects, &existingObjects); err == nil {
+		if _, err := fmt.Sscanf(line, "new items: %d, existing items: %d", &newObjects, &existingObjects); err == nil {
 			return newObjects
 		}
 	}
-	t.Fatalf("no \"new objects\" line in commit output: %q", output)
+	t.Fatalf("no \"new items\" line in commit output: %q", output)
 	return -1
 }
 

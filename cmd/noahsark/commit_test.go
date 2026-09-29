@@ -219,8 +219,8 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	// The snapshot object is always new, since its timestamp makes every
 	// commit's snapshot id unique; every chunk, blob and tree beneath it
 	// must count existing instead.
-	if !strings.Contains(out, "new objects: 1, existing objects:") {
-		t.Fatalf("re-commit output %q, want new objects: 1 (the snapshot only)", out)
+	if !strings.Contains(out, "new items: 1, existing items:") {
+		t.Fatalf("re-commit output %q, want new items: 1 (the snapshot only)", out)
 	}
 
 	filesAfter, bytesAfter := stagingObjectsSnapshot(t, repo)
@@ -242,7 +242,7 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	}
 }
 
-var stagedLineRe = regexp.MustCompile(`staged: (\d+) objects, (\d+) bytes`)
+var stagedLineRe = regexp.MustCompile(`staged: (\d+) items, (\d+) bytes`)
 
 // TestCommitPrintsStagedTotals checks that commit prints the
 // repository-wide staged total after its own summary, and that the

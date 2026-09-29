@@ -18,10 +18,10 @@ INCREMENTAL_BASE_BYTES="${NOAHSARK_E2E_INCREMENTAL_BASE_BYTES:-1500000000}"
 INCREMENTAL_ADD_BYTES="${NOAHSARK_E2E_INCREMENTAL_ADD_BYTES:-300000000}"
 INCREMENTAL_SEED="${NOAHSARK_E2E_INCREMENTAL_SEED:-20260914}"
 
-# incremental_new_objects COMMIT_OUTPUT prints the "new objects" count
+# incremental_new_objects COMMIT_OUTPUT prints the "new items" count
 # from one commit's stdout.
 incremental_new_objects() {
-	awk '/^new objects:/{print $3}' <<<"$1" | tr -d ','
+	awk '/^new items:/{print $3}' <<<"$1" | tr -d ','
 }
 
 scenario_incremental() {
