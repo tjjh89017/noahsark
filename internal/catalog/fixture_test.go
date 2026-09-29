@@ -1,4 +1,4 @@
-package cache_test
+package catalog_test
 
 import (
 	"os"
@@ -17,7 +17,7 @@ func fixedClock() time.Time {
 
 // buildFixtureRun commits a small source tree, packs it into a fresh
 // run directory with plenty of capacity, and returns the run root
-// (ready for cache.WriteFromRoot or image.Read) and the snapshot id.
+// (ready for catalog.WriteFromRoot or image.Read) and the snapshot id.
 func buildFixtureRun(t *testing.T) (runRoot string, snapID object.ID) {
 	t.Helper()
 	srcDir := t.TempDir()

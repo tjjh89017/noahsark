@@ -1,4 +1,4 @@
-package cache
+package catalog
 
 import (
 	"bytes"
@@ -12,9 +12,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// ListSnapshots returns the id of every snapshot object the cache
+// ListSnapshots returns the id of every snapshot object the catalog
 // holds, sorted by text form.
-func (c *Cache) ListSnapshots() ([]object.ID, error) {
+func (c *Catalog) ListSnapshots() ([]object.ID, error) {
 	entries, err := os.ReadDir(c.snapshotsDir())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -37,12 +37,12 @@ func (c *Cache) ListSnapshots() ([]object.ID, error) {
 	return ids, nil
 }
 
-// cachedDiscs returns the uuid of every disc the cache holds a
+// cachedDiscs returns the uuid of every disc the catalog holds a
 // discs/<disc-uuid>/ directory for, in uuid text order. A directory
-// name that is not a uuid is not a cached disc; an older cache that
+// name that is not a uuid is not a catalog disc; an older catalog that
 // still holds runs/<seq>/ directories therefore reports no disc, and
 // the caller tells the operator to run pack or recover.
-func (c *Cache) cachedDiscs() ([][16]byte, error) {
+func (c *Catalog) cachedDiscs() ([][16]byte, error) {
 	entries, err := os.ReadDir(filepath.Join(c.dir, discsDirName))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -65,16 +65,16 @@ func (c *Cache) cachedDiscs() ([][16]byte, error) {
 	return uuids, nil
 }
 
-// newestCachedDisc returns the uuid of the cached disc with the highest
+// newestCachedDisc returns the uuid of the catalog disc with the highest
 // created_sec. It takes the time from the disc's own row in the disc's
-// own cached DISCS table, the only creation time the cache holds. A
+// own catalog DISCS table, the only creation time the catalog holds. A
 // disc whose table names no row for itself counts as created at 0.
 //
 // Two packs in one second give the same created_sec. The later pack
 // then carries the longer lineage, thus a tie takes the disc whose own
 // DISCS table has more rows. A tie on the row count too takes the
 // higher uuid, so the answer is always the same one.
-func (c *Cache) newestCachedDisc() ([16]byte, error) {
+func (c *Catalog) newestCachedDisc() ([16]byte, error) {
 	uuids, err := c.cachedDiscs()
 	if err != nil {
 		return [16]byte{}, err
@@ -103,7 +103,7 @@ func (c *Cache) newestCachedDisc() ([16]byte, error) {
 	return newest, nil
 }
 
-// newerCachedDisc compares two cached discs by created_sec, then by the
+// newerCachedDisc compares two catalog discs by created_sec, then by the
 // number of rows in the disc's own DISCS table, then by uuid.
 func newerCachedDisc(created int64, rows int, uuid [16]byte, bestCreated int64, bestRows int, best [16]byte) bool {
 	if created != bestCreated {
@@ -115,8 +115,8 @@ func newerCachedDisc(created int64, rows int, uuid [16]byte, bestCreated int64, 
 	return bytes.Compare(uuid[:], best[:]) > 0
 }
 
-// discsTableOf reads and decodes one cached disc's own DISCS.bin.
-func (c *Cache) discsTableOf(uuid [16]byte) (*format.DiscsTable, error) {
+// discsTableOf reads and decodes one catalog disc's own DISCS.bin.
+func (c *Catalog) discsTableOf(uuid [16]byte) (*format.DiscsTable, error) {
 	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), DiscsFileName))
 	if err != nil {
 		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
@@ -128,8 +128,8 @@ func (c *Cache) discsTableOf(uuid [16]byte) (*format.DiscsTable, error) {
 	return &discs, nil
 }
 
-// ownDiscRow returns uuid's own row from uuid's own cached DISCS table.
-func (c *Cache) ownDiscRow(uuid [16]byte) (format.DiscsRow, bool) {
+// ownDiscRow returns uuid's own row from uuid's own catalog DISCS table.
+func (c *Catalog) ownDiscRow(uuid [16]byte) (format.DiscsRow, bool) {
 	discs, err := c.discsTableOf(uuid)
 	if err != nil {
 		return format.DiscsRow{}, false
@@ -142,8 +142,8 @@ func (c *Cache) ownDiscRow(uuid [16]byte) (format.DiscsRow, bool) {
 	return format.DiscsRow{}, false
 }
 
-// IndexForDisc reads and decodes the cached INDEX.bin of one disc.
-func (c *Cache) IndexForDisc(uuid [16]byte) (*format.Index, error) {
+// IndexForDisc reads and decodes the catalog INDEX.bin of one disc.
+func (c *Catalog) IndexForDisc(uuid [16]byte) (*format.Index, error) {
 	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), IndexFileName))
 	if err != nil {
 		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
@@ -155,10 +155,10 @@ func (c *Cache) IndexForDisc(uuid [16]byte) (*format.Index, error) {
 	return &idx, nil
 }
 
-// Refs reads and decodes REFS.bin from the newest disc the cache holds.
-// REFS is replicated in full on every run, so the newest cached copy
-// names every ref the cache knows.
-func (c *Cache) Refs() (*format.RefsTable, error) {
+// Refs reads and decodes REFS.bin from the newest disc the catalog holds.
+// REFS is replicated in full on every run, so the newest catalog copy
+// names every ref the catalog knows.
+func (c *Catalog) Refs() (*format.RefsTable, error) {
 	uuid, err := c.newestCachedDisc()
 	if err != nil {
 		return nil, err
@@ -174,9 +174,9 @@ func (c *Cache) Refs() (*format.RefsTable, error) {
 	return &refs, nil
 }
 
-// Discs reads and decodes DISCS.bin from the newest disc the cache
+// Discs reads and decodes DISCS.bin from the newest disc the catalog
 // holds, the same way Refs resolves REFS.
-func (c *Cache) Discs() (*format.DiscsTable, error) {
+func (c *Catalog) Discs() (*format.DiscsTable, error) {
 	uuid, err := c.newestCachedDisc()
 	if err != nil {
 		return nil, err
@@ -184,8 +184,8 @@ func (c *Cache) Discs() (*format.DiscsTable, error) {
 	return c.discsTableOf(uuid)
 }
 
-// ReadTree reads and decodes one cached tree object.
-func (c *Cache) ReadTree(id object.ID) (*format.Tree, error) {
+// ReadTree reads and decodes one catalog tree object.
+func (c *Catalog) ReadTree(id object.ID) (*format.Tree, error) {
 	buf, err := os.ReadFile(filepath.Join(c.treesDir(), id.TextForm()))
 	if err != nil {
 		return nil, err
@@ -197,11 +197,11 @@ func (c *Cache) ReadTree(id object.ID) (*format.Tree, error) {
 	return &t, nil
 }
 
-// ReadBlob reads and decodes one cached blob object. A blob not yet in
-// the cache reports the plain os.ErrNotExist-wrapped error, since a
-// blob's absence does not by itself mean the cache is incomplete: only
+// ReadBlob reads and decodes one catalog blob object. A blob not yet in
+// the catalog reports the plain os.ErrNotExist-wrapped error, since a
+// blob's absence does not by itself mean the catalog is incomplete: only
 // tree reachability counts toward Complete and CheckComplete.
-func (c *Cache) ReadBlob(id object.ID) (*format.Blob, error) {
+func (c *Catalog) ReadBlob(id object.ID) (*format.Blob, error) {
 	buf, err := os.ReadFile(filepath.Join(c.blobsDir(), id.TextForm()))
 	if err != nil {
 		return nil, err
@@ -213,8 +213,8 @@ func (c *Cache) ReadBlob(id object.ID) (*format.Blob, error) {
 	return &b, nil
 }
 
-// ReadSnapshot reads and decodes one cached snapshot object.
-func (c *Cache) ReadSnapshot(id object.ID) (*format.Snapshot, error) {
+// ReadSnapshot reads and decodes one catalog snapshot object.
+func (c *Catalog) ReadSnapshot(id object.ID) (*format.Snapshot, error) {
 	buf, err := os.ReadFile(filepath.Join(c.snapshotsDir(), id.TextForm()))
 	if err != nil {
 		return nil, err

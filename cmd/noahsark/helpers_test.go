@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -105,11 +105,11 @@ func runCmd(t *testing.T, args ...string) (int, string) {
 	return newTestEnv(t.TempDir()).run(args...)
 }
 
-// repoCacheDir resolves the cache directory the same way pack and
+// repoCatalogDir resolves the catalog directory the same way pack and
 // recover do.
-func repoCacheDir(t *testing.T, repo string) string {
+func repoCatalogDir(t *testing.T, repo string) string {
 	t.Helper()
-	return cache.Dir(repo)
+	return catalog.Dir(repo)
 }
 
 // countByState opens repo's staging state log and counts every object
@@ -162,7 +162,7 @@ func appendConfigLine(t *testing.T, repo, line string) {
 // tree outside the repository's staging directory to stand in for a
 // mounted disc, marks it burned, and verifies it two times, so the run's
 // objects reach CLEAN with the verify count gc's default asks for, and
-// its catalog enters the local cache. The two verifies stand for the two
+// its catalog enters the catalog. The two verifies stand for the two
 // identical discs the operator burns from the same tree.
 func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	t.Helper()
@@ -247,16 +247,16 @@ func writeRefsCarryFixture(t *testing.T, tag string) string {
 	return src
 }
 
-// chunkDiscSeqs opens repo's cache directly and builds the same plan
+// chunkDiscSeqs opens repo's catalog directly and builds the same plan
 // restore --dry-run would, restricted to include, returning the
 // disc_seq of every disc that plan assigns at least one chunk object
 // to. A disc the plan names only for a tree or blob object never needs
-// a physical visit: the assembler resolves those from the cache, so
+// a physical visit: the assembler resolves those from the catalog, so
 // this is the set of discs a disc-swap restore of include would
 // actually prompt for.
 func chunkDiscSeqs(t *testing.T, repo, snapID, include string) []int {
 	t.Helper()
-	c, err := cache.Open(repoCacheDir(t, repo))
+	c, err := catalog.Open(repoCatalogDir(t, repo))
 	if err != nil {
 		t.Fatal(err)
 	}

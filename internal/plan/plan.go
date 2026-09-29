@@ -1,4 +1,4 @@
-// Package plan computes a restore plan from the local cache alone, the
+// Package plan computes a restore plan from the catalog alone, the
 // disc order OPERATIONS.md's restore section states. The
 // "restore" command's disc-swap mode reads objects in plan order as
 // each disc is inserted, and "restore --dry-run" prints the same plan
@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -36,8 +36,8 @@ type DiscEntry struct {
 }
 
 // MissingEntry is one group of objects a plan could not place: either a
-// resolved disc that no cached DISCS row describes, or an object no
-// cached INDEX names at all (HasDisc false).
+// resolved disc that no catalog DISCS row describes, or an object no
+// catalog INDEX names at all (HasDisc false).
 type MissingEntry struct {
 	DiscUUID [16]byte
 	HasDisc  bool
@@ -62,10 +62,10 @@ func (r *Result) MissingObjectCount() int {
 	return n
 }
 
-// Build resolves a restore plan for snap (already read from the cache
+// Build resolves a restore plan for snap (already read from the catalog
 // under id snapID), restricted to includes (the whole snapshot when
-// includes is empty). It reads only the cache, never a disc.
-func Build(c *cache.Cache, snap *format.Snapshot, snapID object.ID, includes []string) (*Result, error) {
+// includes is empty). It reads only the catalog, never a disc.
+func Build(c *catalog.Catalog, snap *format.Snapshot, snapID object.ID, includes []string) (*Result, error) {
 	return BuildForChunks(c, snap, snapID, includes, nil)
 }
 
@@ -74,7 +74,7 @@ func Build(c *cache.Cache, snap *format.Snapshot, snapID object.ID, includes []s
 // entirely, so a rerun lists only the discs it still needs. A nil keep
 // plans every chunk. Every tree, blob and snapshot object is resolved
 // whatever keep says, so a missing one is still reported.
-func BuildForChunks(c *cache.Cache, snap *format.Snapshot, snapID object.ID, includes []string, keep map[object.ID]bool) (*Result, error) {
+func BuildForChunks(c *catalog.Catalog, snap *format.Snapshot, snapID object.ID, includes []string, keep map[object.ID]bool) (*Result, error) {
 	w, err := collectObjects(c, snap, includes)
 	if err != nil {
 		return nil, err
@@ -83,12 +83,12 @@ func BuildForChunks(c *cache.Cache, snap *format.Snapshot, snapID object.ID, inc
 	return group(c, w.needed, w.order, keep), nil
 }
 
-// collectObjects walks the cached trees under includes (the whole
+// collectObjects walks the catalog trees under includes (the whole
 // snapshot when includes is empty), starting from snap's root tree, and
 // returns the walker holding every object id a restore of that scope
 // needs, tagged by kind and in discovery order. It never reads a
 // chunk's payload.
-func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (*walker, error) {
+func collectObjects(c *catalog.Catalog, snap *format.Snapshot, includes []string) (*walker, error) {
 	w := &walker{c: c, needed: make(map[object.ID]format.ObjectKind)}
 	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
 	if err != nil {
@@ -117,14 +117,14 @@ func collectObjects(c *cache.Cache, snap *format.Snapshot, includes []string) (*
 }
 
 // walker collects the object ids one Build call needs, reading trees
-// and blobs from the cache alone. order records the ids in the order
+// and blobs from the catalog alone. order records the ids in the order
 // they were first found, a depth-first, file-by-file tree walk: a
 // blob's own chunk ids always sit right after it. group() reads objects
 // off a disc in this order, so a blob's own chunks stay adjacent in the
 // disc's own object list, and a restore reads one file's chunks from
 // one part of the disc.
 type walker struct {
-	c      *cache.Cache
+	c      *catalog.Catalog
 	needed map[object.ID]format.ObjectKind
 	order  []object.ID
 }
@@ -156,7 +156,7 @@ func (w *walker) addEntry(e format.TreeEntry) error {
 
 // addTree adds treeID and recurses into every child a directory entry
 // names. Build's caller already proved every tree the whole snapshot
-// reaches is cached, so a read failure here is a hard error, not an
+// reaches is in the catalog, so a read failure here is a hard error, not an
 // incompleteness to degrade past.
 func (w *walker) addTree(treeID object.ID) error {
 	if !w.add(treeID, format.ObjectKindTree) {
@@ -174,11 +174,11 @@ func (w *walker) addTree(treeID object.ID) error {
 	return nil
 }
 
-// addBlob adds blobID and, when the cache also holds that blob object,
-// every chunk id it names. A blob the cache does not hold is still
-// added, at the object level only: the cache holds blobs only for the
+// addBlob adds blobID and, when the catalog also holds that blob object,
+// every chunk id it names. A blob the catalog does not hold is still
+// added, at the object level only: the catalog holds blobs only for the
 // snapshots pack or recover have processed since blob caching was
-// added, and its absence is not, by itself, an incomplete cache.
+// added, and its absence is not, by itself, an incomplete catalog.
 func (w *walker) addBlob(blobID object.ID) {
 	if !w.add(blobID, format.ObjectKindBlob) {
 		return
@@ -195,7 +195,7 @@ func (w *walker) addBlob(blobID object.ID) {
 // resolvePath walks rootEntries for pathArg, the same rule ls and
 // --include use: a path either names a root entry directly, or
 // descends from one root entry's own ROOT_PATH into its subtree.
-func resolvePath(c *cache.Cache, rootEntries []format.TreeEntry, pathArg string) (*format.TreeEntry, string, error) {
+func resolvePath(c *catalog.Catalog, rootEntries []format.TreeEntry, pathArg string) (*format.TreeEntry, string, error) {
 	segs := splitPathSegs(pathArg)
 	if len(segs) == 0 {
 		return nil, "", fmt.Errorf("empty path")
@@ -284,7 +284,7 @@ func rootPathOf(e format.TreeEntry) string {
 //
 // Only chunk objects count toward a disc's Objects and Bytes: a
 // disc-swap restore resolves every tree, blob and the snapshot itself
-// from the local cache alone, the same cache group reads from, and
+// from the catalog alone, the same catalog group reads from, and
 // never opens a disc for them. A disc that holds none of the needed
 // chunks is dropped from the result entirely, even when it happens to
 // hold a needed tree or blob, so the discs printed here are exactly
@@ -293,7 +293,7 @@ func rootPathOf(e format.TreeEntry) string {
 // Within one disc, objects keep order's relative order: the walk's
 // depth-first, file-by-file discovery order, so a blob's own chunks
 // stay adjacent in each DiscEntry.Objects.
-func group(c *cache.Cache, needed map[object.ID]format.ObjectKind, order []object.ID, keep map[object.ID]bool) *Result {
+func group(c *catalog.Catalog, needed map[object.ID]format.ObjectKind, order []object.ID, keep map[object.ID]bool) *Result {
 	byDisc := make(map[[16]byte]*DiscEntry)
 	missingByDisc := make(map[[16]byte]int)
 	missingDiscUnknown := 0

@@ -159,7 +159,7 @@ func TestDiscSwapRestoreMemoryBounded(t *testing.T) {
 		t.Skip("memory assertion test, skipped under -short")
 	}
 	treeDir, snapID := buildMemoryFixtureTree(t)
-	c := cacheOfTree(t, treeDir)
+	c := catalogOfTree(t, treeDir)
 	snap, err := c.ReadSnapshot(snapID)
 	if err != nil {
 		t.Fatal(err)

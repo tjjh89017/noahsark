@@ -12,7 +12,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -214,10 +214,10 @@ func (o *packOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	if err := populateCache(repoDir, absOut); err != nil {
-		// The cache is only an accelerator: a failure to populate it
+	if err := populateCatalog(repoDir, absOut); err != nil {
+		// The catalog is only an accelerator: a failure to populate it
 		// never fails the pack, since every command must still work
-		// with the cache absent or stale.
+		// with the catalog absent or stale.
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack: cache:", err)
 	}
 
@@ -248,7 +248,7 @@ func (o *packOptions) run(e *env, args []string) int {
 
 // runPackDryRun implements "pack --dry-run". It answers how many discs
 // the staged data needs at this capacity, and writes nothing: no output
-// tree, no state record, no cache entry, no ledger row, and no sequence
+// tree, no state record, no catalog entry, no ledger row, and no sequence
 // number is used. It takes no repository lock, since it only reads the
 // staging store and the ledgers.
 func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
@@ -525,15 +525,15 @@ func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image
 	return named, nil
 }
 
-// populateCache copies the run just packed at runRoot, every known
-// snapshot, and every tree it reaches, into the local cache, so a
+// populateCatalog copies the run just packed at runRoot, every known
+// snapshot, and every tree it reaches, into the catalog, so a
 // later ls or plan can run with no disc present.
-func populateCache(repoDir, runRoot string) error {
-	c, err := cache.Open(cache.Dir(repoDir))
+func populateCatalog(repoDir, runRoot string) error {
+	c, err := catalog.Open(catalog.Dir(repoDir))
 	if err != nil {
 		return err
 	}
-	_, err = cache.WriteFromRoot(c, runRoot)
+	_, err = catalog.WriteFromRoot(c, runRoot)
 	return err
 }
 

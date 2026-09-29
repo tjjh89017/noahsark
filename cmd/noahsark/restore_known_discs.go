@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/restore"
@@ -12,7 +12,7 @@ import (
 // disc packed after every provided disc, not only one an earlier disc's
 // own DISCS table happens to mention. It tries the local disc ledger
 // first, since that is the authoritative, always up to date copy, and
-// falls back to the cache when the repository carries no ledger yet. A
+// falls back to the catalog when the repository carries no ledger yet. A
 // repository that cannot be found or read at all yields no candidates,
 // never an error: the hint is best-effort.
 func knownDiscsForRepo(e *env) map[[16]byte]restore.DiscName {
@@ -33,7 +33,7 @@ func knownDiscsForRepo(e *env) map[[16]byte]restore.DiscName {
 		return discNamesByUUID(ledger.Rows)
 	}
 
-	c, err := cache.Open(cache.Dir(repoDir))
+	c, err := catalog.Open(catalog.Dir(repoDir))
 	if err != nil {
 		return nil
 	}

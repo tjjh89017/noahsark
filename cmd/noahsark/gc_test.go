@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/repolock"
@@ -302,7 +302,7 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	}
 }
 
-// TestGCRefusesAnUncachedRun runs gc with the local cache emptied: gc
+// TestGCRefusesAnUncachedRun runs gc with the catalog emptied: gc
 // must not delete any object whose run's INDEX it cannot confirm
 // against, even though the object is otherwise eligible.
 func TestGCRefusesAnUncachedRun(t *testing.T) {
@@ -314,13 +314,13 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	cacheDir := cache.Dir(repo)
+	catalogDir := catalog.Dir(repo)
 
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	// Empty the cache: gc can no longer confirm any object's run.
-	if err := os.RemoveAll(cacheDir); err != nil {
+	// Empty the catalog: gc can no longer confirm any object's run.
+	if err := os.RemoveAll(catalogDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -339,7 +339,7 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 
 // TestGCPlanTakesTheIndexOfTheObjectsOwnDisc caches two discs that
 // carry the same run_seq, as two discs do after a lost repository. gc
-// must confirm a staged object in the cached INDEX of the disc its own
+// must confirm a staged object in the catalog INDEX of the disc its own
 // state record names. The INDEX of the other disc must never stand in
 // for it.
 func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
@@ -375,7 +375,7 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		}
 	}
 
-	c, err := cache.Open(t.TempDir())
+	c, err := catalog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	objs, uncached := gcPlanStagingObjects(l, c, stagingDir, 0, 2, time.Now())
+	objs, uncataloged := gcPlanStagingObjects(l, c, stagingDir, 0, 2, time.Now())
 	if len(objs) != 1 {
 		t.Fatalf("gcPlanStagingObjects returned %d object(s), want 1", len(objs))
 	}
@@ -398,8 +398,8 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		t.Fatalf("candidate = %s on disc %v, want %s on disc %v",
 			objs[0].id.TextForm(), objs[0].discUUID, onDiscA.TextForm(), discA)
 	}
-	if uncached != 1 {
-		t.Fatalf("uncached = %d, want 1: disc B's own INDEX names no object", uncached)
+	if uncataloged != 1 {
+		t.Fatalf("uncataloged = %d, want 1: disc B's own INDEX names no object", uncataloged)
 	}
 }
 

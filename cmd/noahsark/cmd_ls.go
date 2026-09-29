@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/restore"
@@ -38,7 +38,7 @@ func lsFlags(fs *flag.FlagSet) runFunc {
 }
 
 // run implements "noahsark ls". With no DISC-ROOT, SNAPSHOT (an id or a
-// ref name) resolves through the local cache, so ls needs no disc
+// ref name) resolves through the catalog, so ls needs no disc
 // present; give one or more DISC-ROOT positionals to read straight from
 // a disc instead, the same way restore and verify do. ls reads tree
 // objects only; it never opens a chunk.
@@ -63,7 +63,7 @@ func (o *lsOptions) run(e *env, args []string) int {
 	cacheMode := !discRootGiven
 
 	var src snapshotSource
-	var cacheObj *cache.Cache
+	var cacheObj *catalog.Catalog
 	var positional []string
 	switch {
 	case cacheMode:
@@ -72,7 +72,7 @@ func (o *lsOptions) run(e *env, args []string) int {
 			return 2
 		}
 		positional = args
-		cs, c, err := openCacheSource(e)
+		cs, c, err := openCatalogSource(e)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
 			return 1

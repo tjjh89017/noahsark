@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -22,7 +22,7 @@ import (
 // The walk holds one file at a time: the blob entries of that file, one
 // chunk buffer, and the set of needed ids. It never maps a chunk back
 // to the files that hold it.
-func NeededChunks(c *cache.Cache, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (map[object.ID]bool, error) {
+func NeededChunks(c *catalog.Catalog, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (map[object.ID]bool, error) {
 	s := &pendingScan{c: c, outDir: outDir, overwrite: overwrite, needed: make(map[object.ID]bool)}
 	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
 	if err != nil {
@@ -57,7 +57,7 @@ func NeededChunks(c *cache.Cache, snap *format.Snapshot, outDir string, includes
 
 // pendingScan is one NeededChunks walk.
 type pendingScan struct {
-	c         *cache.Cache
+	c         *catalog.Catalog
 	outDir    string
 	overwrite bool
 	needed    map[object.ID]bool

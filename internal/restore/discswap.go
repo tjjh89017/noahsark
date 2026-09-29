@@ -10,7 +10,7 @@ import (
 	"sort"
 	"syscall"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -38,15 +38,15 @@ type FatalDiscError struct{ Err error }
 func (e *FatalDiscError) Error() string { return e.Err.Error() }
 func (e *FatalDiscError) Unwrap() error { return e.Err }
 
-// Assembler restores one snapshot from the local cache and one disc at
+// Assembler restores one snapshot from the catalog and one disc at
 // a time, with no spool: it walks the snapshot's tree one time for each
 // disc and writes each chunk of that disc straight into the part file
 // of the file that holds it.
 //
-// It reads every tree and blob from the cache. Only chunk payloads come
+// It reads every tree and blob from the catalog. Only chunk payloads come
 // from a disc.
 type Assembler struct {
-	c           *cache.Cache
+	c           *catalog.Catalog
 	snap        *format.Snapshot
 	outDir      string
 	includes    []string
@@ -90,7 +90,7 @@ var errIncomplete = errors.New("not every chunk of this file was read; the part 
 // NewAssembler prepares a disc-swap restore of snap into outDir,
 // restricted to includes (the whole snapshot when includes is empty).
 // It creates outDir and reads nothing else until the first Disc call.
-func NewAssembler(c *cache.Cache, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (*Assembler, error) {
+func NewAssembler(c *catalog.Catalog, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (*Assembler, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, err
 	}

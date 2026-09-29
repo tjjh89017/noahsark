@@ -12,7 +12,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -29,7 +29,7 @@ func init() {
 }
 
 // cmdRecover implements "noahsark recover". It rebuilds a repository's
-// state, not a cache: the repository directory holds the state log, the
+// state, not a catalog: the repository directory holds the state log, the
 // disc ledger and the refs, and every one of those is exactly what a
 // disc's own INDEX, DISCS and REFS tables already carry. recover is a
 // straight replay of every provided disc's tables into a fresh or
@@ -85,8 +85,8 @@ func cmdRecover(e *env, args []string) int {
 
 	// OPERATIONS.md's concurrency and locking rules list recover
 	// among the shared-lock, read-only commands on the repository lock,
-	// alongside its own exclusive lock on the cache directory. This
-	// build has no cache lock, and recover does write the state
+	// alongside its own exclusive lock on the catalog directory. This
+	// build has no catalog lock, and recover does write the state
 	// log (EnsurePacked) and the disc and ref ledgers, so
 	// it takes the repository's exclusive lock instead: the repository
 	// lock is the only lock this build has to keep those writes safe
@@ -105,7 +105,7 @@ func cmdRecover(e *env, args []string) int {
 	warnIfTruncated("recover", stageLog, stderr)
 
 	if err := recoverCacheFromRoots(repoDir, readRoots); err != nil {
-		// The cache is only an accelerator: a failure to populate it
+		// The catalog is only an accelerator: a failure to populate it
 		// never fails recover itself.
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover: cache:", err)
 	}
@@ -211,19 +211,19 @@ func discsNotFed(rows []format.DiscsRow, l *stage.Log) []format.DiscsRow {
 }
 
 // recoverCacheFromRoots copies every one of readRoots' run catalog,
-// snapshots and trees into the local cache, so recover leaves ls
+// snapshots and trees into the catalog, so recover leaves ls
 // and plan able to run with no disc present, the same way pack does
 // right after building a run.
 func recoverCacheFromRoots(repoDir string, readRoots []string) error {
 	if len(readRoots) == 0 {
 		return nil
 	}
-	c, err := cache.Open(cache.Dir(repoDir))
+	c, err := catalog.Open(catalog.Dir(repoDir))
 	if err != nil {
 		return err
 	}
 	for _, root := range readRoots {
-		if _, err := cache.WriteFromRoot(c, root); err != nil {
+		if _, err := catalog.WriteFromRoot(c, root); err != nil {
 			return fmt.Errorf("%s: %w", root, err)
 		}
 	}
