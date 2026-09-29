@@ -51,7 +51,7 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
@@ -136,7 +136,7 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 
 	mounted := filepath.Join(work, "mounted")
@@ -206,7 +206,7 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	treeFromB := packedTreeDir(t, packOut)
+	treeFromB := packedTreeDir(t, repoB, packOut)
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, treeFromB, mounted)
 
@@ -244,7 +244,7 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
@@ -310,7 +310,7 @@ func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	mounted := filepath.Join(work, "mounted")
-	copyTree(t, packedTreeDir(t, packOut), mounted)
+	copyTree(t, packedTreeDir(t, repo, packOut), mounted)
 	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", packedDiscUUID(t, packOut)); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}

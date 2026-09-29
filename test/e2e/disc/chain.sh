@@ -46,7 +46,7 @@ CHAIN_SMALL_HALF_BYTES="${NOAHSARK_E2E_CHAIN_SMALL_HALF_BYTES:-200000000}"
 CHAIN_SEED="${NOAHSARK_E2E_CHAIN_SEED:-20260914}"
 
 # CHAIN_REMAINING_BYTES is set by chain_pack_one as a side effect: the
-# "remaining staged" byte count from that pack's own output.
+# staged byte count from the "staged:" line of status after that pack.
 CHAIN_REMAINING_BYTES=""
 
 # CHAIN_SNAP, CHAIN_SRC, CHAIN_SAMPLE and CHAIN_FULL are set by
@@ -111,9 +111,10 @@ chain_small_order() {
 # verifies it, then
 # unmounts, keeping the image but deleting the packed tree. It also frees
 # the staged copy of each object on this disc. It fails unless pack exits
-# 0 with a remaining-staged report: every disc in this scenario is sized
-# so real objects remain after it, and leftover staged data is not a
-# pack failure. It sets CHAIN_REMAINING_BYTES.
+# 0 with a packed-disc line and status then reports staged data: every
+# disc in this scenario is sized so real objects remain after it, and
+# leftover staged data is not a pack failure. It sets
+# CHAIN_REMAINING_BYTES from the "staged:" line of status.
 chain_pack_one() {
 	local work="$1" repo="$2" n="$3" packflags="$4"
 	local ddir="$work/disc$n"
@@ -131,11 +132,14 @@ chain_pack_one() {
 	if [ "$code" -ne 0 ]; then
 		fail "chain: pack disc $n: exit $code, want 0 (objects should remain staged)"
 	fi
-	if ! grep -q "remaining staged:" "$logf"; then
-		fail "chain: pack disc $n: missing remaining-staged report"
+	if ! grep -q '^packed disc ' "$logf"; then
+		fail "chain: pack disc $n: missing the packed-disc line"
 	fi
-	CHAIN_REMAINING_BYTES="$(grep -oE 'remaining staged: [0-9]+ objects, [0-9]+ bytes' "$logf" | grep -oE '[0-9]+ bytes' | grep -oE '[0-9]+')"
-	log "chain: disc $n: $(grep 'remaining staged:' "$logf")"
+	local staged
+	staged="$("$BIN" --repo="$repo" status | grep -E '^staged: [0-9]+ [a-z()]+, [0-9]+ bytes$')" ||
+		fail "chain: status after pack disc $n: missing the staged line"
+	CHAIN_REMAINING_BYTES="$(echo "$staged" | grep -oE '[0-9]+ bytes$' | grep -oE '^[0-9]+')"
+	log "chain: disc $n: $staged"
 
 	sudo "$BIN" image build --out="$image" "$tree"
 	mount_populate "$image" "$tree" "$mnt"
@@ -237,7 +241,7 @@ chain_commit_fixture() {
 # chain_run LABEL WORK HALF_BYTES ENFORCE_BAND K1 F1 K2 F2 K3 F3 is the
 # flow every chain scenario shares: commit two independent fixtures (A
 # and B, each HALF_BYTES), delete both sources, pack three discs (K
-# name, F pack flags, one pair per disc), check the remaining-staged
+# name, F pack flags, one pair per disc), check the staged
 # bytes, delete the chunk files of staging, list
 # each disc's object ids, restore the winner (the fixture pack's
 # candidate order packs first, so the one the three discs fully hold)

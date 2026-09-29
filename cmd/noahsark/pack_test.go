@@ -13,8 +13,10 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/repolock"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // TestPackPopulatesCatalog runs init, commit and pack, then checks pack
@@ -87,7 +89,7 @@ func TestPackPopulatesCatalog(t *testing.T) {
 	}
 }
 
-var dryRunTotalRe = regexp.MustCompile(`total: (\d+) disc\(s\), (\d+) object\(s\) on the discs, (\d+) bytes`)
+var dryRunTotalRe = regexp.MustCompile(`(?m)^total: (\d+) discs, (\d+) items, (\d+) bytes$`)
 
 // TestPackDryRunWritesNothing checks that --dry-run leaves the repository
 // exactly as a plain "commit" left it: no packed tree, no state record,
@@ -119,8 +121,11 @@ func TestPackDryRunWritesNothing(t *testing.T) {
 	if m[1] != "1" {
 		t.Fatalf("total line = %q, want 1 disc for a small fixture at 64MiB", m[0])
 	}
-	if !strings.Contains(out, "next: run noahsark pack 1 time(s)") {
-		t.Fatalf("pack --dry-run output %q should end with the one action for the operator", out)
+	if strings.Contains(out, "next:") {
+		t.Fatalf("pack --dry-run output %q has a next: line", out)
+	}
+	if _, err := os.Stat(testLayout(t, repo).discLogFile()); !os.IsNotExist(err) {
+		t.Fatalf("pack --dry-run wrote the disc state log: %v", err)
 	}
 
 	// No ledger file, no run tree, and the same staged total.
@@ -195,7 +200,7 @@ func TestPackDryRunMultipleDiscs(t *testing.T) {
 			t.Fatalf("real pack: exit %d: %s", code, out)
 		}
 		realDiscs++
-		if strings.Contains(out, "remaining staged: 0 objects, 0 bytes") {
+		if countByState(t, repo, stage.Staged) == 0 {
 			break
 		}
 	}
@@ -261,20 +266,25 @@ func TestPackWithNothingStagedSucceeds(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("second pack: exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "nothing to pack") {
-		t.Fatalf("second pack: output %q missing \"nothing to pack\"", out)
+	if want := "pack: nothing staged\nnext: noahsark status\n"; out != want {
+		t.Fatalf("second pack: output %q, want %q", out, want)
 	}
 	if entries, err := os.ReadDir(secondTree); err == nil && len(entries) != 0 {
 		t.Fatalf("second pack: %s is not empty, a run was written despite the refusal", secondTree)
+	}
+	if n := len(readDiscLog(t, repo).Discs()); n != 1 {
+		t.Fatalf("disc state log holds %d disc(s) after a pack with nothing staged, want 1", n)
+	}
+	if entries, err := os.ReadDir(testLayout(t, repo).plansDir()); err != nil || len(entries) != 1 {
+		t.Fatalf("plan directories after a pack with nothing staged = %v, %v; want the one of the first disc", entries, err)
 	}
 }
 
 // TestPackAfterGCSaysNothingToPackNotNeverCommitted packs, burns and
 // verifies a disc, then runs gc with retention forced to zero so every
 // chunk file of staging is deleted. A pack run
-// after that still has a ref naming the old snapshot, so it must say
-// "nothing to pack", the same as an ordinary already-packed
-// repository, not "no snapshot has been committed".
+// after that still has a ref naming the old snapshot, and it must say
+// "pack: nothing staged".
 func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -298,11 +308,8 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack after gc: exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "nothing to pack") {
-		t.Fatalf("pack after gc: output %q missing \"nothing to pack\"", out)
-	}
-	if strings.Contains(out, "no snapshot has been committed") {
-		t.Fatalf("pack after gc: output %q wrongly claims no snapshot was ever committed", out)
+	if !strings.HasPrefix(out, packNothingStaged+"\n") {
+		t.Fatalf("pack after gc: output %q, want %q", out, packNothingStaged)
 	}
 }
 
@@ -383,7 +390,7 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("first pack: exit %d: %s", code, out1)
 	}
-	firstPath := packedIntoPath(t, out1)
+	firstPath := packedTreeDir(t, repo, out1)
 
 	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("more content"), 0o644); err != nil {
 		t.Fatal(err)
@@ -395,7 +402,7 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("second pack: exit %d: %s", code, out2)
 	}
-	secondPath := packedIntoPath(t, out2)
+	secondPath := packedTreeDir(t, repo, out2)
 
 	if firstPath == secondPath {
 		t.Fatalf("both packs used the same default --out: %s", firstPath)
@@ -442,22 +449,10 @@ func TestPackDefaultOutputFollowsStagingDir(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
-	path := packedIntoPath(t, out)
+	path := packedTreeDir(t, repo, out)
 	if !strings.HasPrefix(path, testLayout(t, repo).plansDir()) || testLayout(t, repo).stagingDir() != stagingDir {
 		t.Fatalf("default --out %q is not under the moved staging.dir %q", path, stagingDir)
 	}
-}
-
-// packedIntoPath picks the directory out of pack's "tree: PATH" line.
-func packedIntoPath(t *testing.T, output string) string {
-	t.Helper()
-	for line := range strings.SplitSeq(output, "\n") {
-		if after, found := strings.CutPrefix(line, "tree: "); found {
-			return after
-		}
-	}
-	t.Fatalf("no \"tree: PATH\" line in pack output: %q", output)
-	return ""
 }
 
 // TestPackCapacityTooSmallMessage packs with a capacity too small to
@@ -485,81 +480,10 @@ func TestPackCapacityTooSmallMessage(t *testing.T) {
 	if strings.Contains(out, "internal error") {
 		t.Fatalf("pack: output %q leaked the internal-error wording", out)
 	}
-	for _, want := range []string{"51200", "holds not one object", "the smallest staged object is", "or more"} {
+	for _, want := range []string{"51200", "holds not one item", "the smallest staged item is", "or more"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pack: output %q missing %q", out, want)
 		}
-	}
-}
-
-// TestPackNextStepsBlock checks that a successful pack prints the
-// image-build, burn and verify commands, and that the default burn line
-// carries no -dvd-compat and no spare:none, since the disc stays open
-// unless --close is given.
-func TestPackNextStepsBlock(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-
-	treeDir := filepath.Join(work, "tree")
-	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir)
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "next steps:") {
-		t.Fatalf("pack output %q missing the next-steps block", out)
-	}
-	if !strings.Contains(out, "sudo noahsark image build") || !strings.Contains(out, treeDir) {
-		t.Fatalf("pack output %q missing the image build command", out)
-	}
-	if !strings.Contains(out, "growisofs") {
-		t.Fatalf("pack output %q missing the growisofs burn line", out)
-	}
-	if strings.Contains(out, "-dvd-compat") {
-		t.Fatalf("pack output %q carries -dvd-compat without --close", out)
-	}
-	if strings.Contains(out, "spare:none") {
-		t.Fatalf("pack output %q carries spare:none without --close", out)
-	}
-	if !strings.Contains(out, "spare:min") {
-		t.Fatalf("pack output %q missing the default spare:min", out)
-	}
-	if !strings.Contains(out, " verify <MOUNT>") {
-		t.Fatalf("pack output %q missing the verify command", out)
-	}
-}
-
-// TestPackCloseFlagSealsBurnLine checks that --close switches the
-// printed burn line to -dvd-compat and spare:none, the closing variant.
-func TestPackCloseFlagSealsBurnLine(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-
-	treeDir := filepath.Join(work, "tree")
-	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir, "--close")
-	if code != 0 {
-		t.Fatalf("pack --close: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "-dvd-compat") {
-		t.Fatalf("pack --close output %q missing -dvd-compat", out)
-	}
-	if !strings.Contains(out, "spare:none") {
-		t.Fatalf("pack --close output %q missing spare:none", out)
 	}
 }
 
@@ -574,8 +498,286 @@ func TestPackOnANewRepositorySucceeds(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "nothing to pack") || !strings.Contains(out, "no snapshot has been committed") {
-		t.Fatalf("pack output %q, want the nothing-to-pack reason", out)
+	if want := "pack: nothing staged\nnext: noahsark status\n"; out != want {
+		t.Fatalf("pack output %q, want %q", out, want)
+	}
+	if _, err := os.Stat(testLayout(t, repo).discLogFile()); !os.IsNotExist(err) {
+		t.Fatalf("pack with nothing staged wrote the disc state log: %v", err)
+	}
+}
+
+// TestPackPrintsTheNewLines checks the exact lines of a pack: the
+// packed-disc line, the uuid line and the last line "next: noahsark
+// status".
+func TestPackPrintsTheNewLines(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("pack output %q, want 3 lines", out)
+	}
+	m := packedDiscRe.FindStringSubmatch(lines[0])
+	if m == nil || m[1] != "0" || m[2] != defaultRefName()+" disc 0" {
+		t.Fatalf("first line %q, want `packed disc 0 \"%s disc 0\": N item(s), B bytes`", lines[0], defaultRefName())
+	}
+	disc := onlyDisc(t, repo)
+	if want := "uuid: " + uuidText(disc.UUID); lines[1] != want {
+		t.Fatalf("second line %q, want %q", lines[1], want)
+	}
+	if lines[2] != "next: noahsark status" {
+		t.Fatalf("last line %q, want next: noahsark status", lines[2])
+	}
+}
+
+// onlyDisc returns the one disc of the disc state log of repo.
+func onlyDisc(t *testing.T, repo string) stage.DiscInfo {
+	t.Helper()
+	discs := readDiscLog(t, repo).Discs()
+	if len(discs) != 1 {
+		t.Fatalf("disc state log holds %d disc(s), want 1: %+v", len(discs), discs)
+	}
+	return discs[0]
+}
+
+// TestPackRecordsThePackedEvent checks the one Packed event of a pack:
+// the disc uuid of the output, disc_seq 0, run_seq 1, and the close and
+// fec flags of the options.
+func TestPackRecordsThePackedEvent(t *testing.T) {
+	cases := []struct {
+		name       string
+		flags      []string
+		close, fec bool
+	}{
+		{"no flag", nil, false, false},
+		{"close", []string{"--close"}, true, false},
+		{"fec", []string{"--fec"}, false, true},
+		{"close and fec", []string{"--close", "--fec"}, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, _ := initAndCommit(t)
+			args := append([]string{"--repo=" + repo, "pack", "--capacity=64MiB"}, c.flags...)
+			code, out := runCmd(t, args...)
+			if code != 0 {
+				t.Fatalf("pack: exit %d: %s", code, out)
+			}
+			disc := onlyDisc(t, repo)
+			if uuidText(disc.UUID) != packedDiscUUID(t, out) {
+				t.Fatalf("event uuid %s, pack printed %s", uuidText(disc.UUID), packedDiscUUID(t, out))
+			}
+			if disc.State != stage.DiscPacked || disc.DiscSeq != 0 || disc.RunSeq != 1 {
+				t.Fatalf("disc = %+v, want packed, disc_seq 0, run_seq 1", disc)
+			}
+			if disc.Close != c.close || disc.FEC != c.fec {
+				t.Fatalf("flags close=%v fec=%v, want close=%v fec=%v", disc.Close, disc.FEC, c.close, c.fec)
+			}
+		})
+	}
+}
+
+// TestPackSeqNumbersFollowTheDiscStateLog checks that the next numbers
+// come from the disc state log when it holds a higher number than the
+// disc ledger: the numbers of an undone pack are never used again.
+func TestPackSeqNumbersFollowTheDiscStateLog(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	discLog, err := stage.OpenDiscLog(testLayout(t, repo).stateDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	undone := [16]byte{0xaa, 1}
+	if err := discLog.Append(
+		stage.DiscRecord{TimeSec: 1, DiscUUID: undone, Event: stage.EventPacked, DiscSeq: 4, RunSeq: 6},
+		stage.DiscRecord{TimeSec: 2, DiscUUID: undone, Event: stage.EventPackUndone},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	if want := fmt.Sprintf("packed disc 5 %q: ", defaultRefName()+" disc 5"); !strings.HasPrefix(out, want) {
+		t.Fatalf("pack output %q, want the prefix %q", out, want)
+	}
+	var packed stage.DiscInfo
+	for _, d := range readDiscLog(t, repo).Discs() {
+		if d.UUID != undone {
+			packed = d
+		}
+	}
+	if packed.DiscSeq != 5 || packed.RunSeq != 7 {
+		t.Fatalf("Packed event disc_seq %d run_seq %d, want 5 and 7", packed.DiscSeq, packed.RunSeq)
+	}
+	ledger, err := image.LoadDiscsLedger(testLayout(t, repo).discsLedgerFile(), packedRepoUUID(t, repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Rows) != 1 || ledger.Rows[0].DiscSeq != 5 || ledger.Rows[0].RunSeq != 7 {
+		t.Fatalf("ledger rows = %+v, want one row with disc_seq 5 and run_seq 7", ledger.Rows)
+	}
+}
+
+// packedRepoUUID returns the repository uuid of the config of repo.
+func packedRepoUUID(t *testing.T, repo string) [16]byte {
+	t.Helper()
+	cfg, err := readConfig(configPath(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// TestPackOutMakesTheSymlink checks that --out=DIR receives the disc
+// root, and that the tree of the plan directory is a symlink to the
+// absolute path of DIR, not a directory.
+func TestPackOutMakesTheSymlink(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	work := t.TempDir()
+	te := newTestEnv(work)
+	code, out := te.run("--repo="+repo, "pack", "--capacity=64MiB", "--out=disc-root")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	want := filepath.Join(work, "disc-root")
+	if _, err := os.Stat(filepath.Join(want, "NOAHSARK", "DISC.bin")); err != nil {
+		t.Fatalf("--out directory holds no disc root: %v", err)
+	}
+	disc := onlyDisc(t, repo)
+	tree := testLayout(t, repo).planTree(disc.UUID)
+	fi, err := os.Lstat(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is %v, want a symlink", tree, fi.Mode())
+	}
+	if target, err := os.Readlink(tree); err != nil || target != want {
+		t.Fatalf("symlink target = %q, %v; want %q", target, err, want)
+	}
+}
+
+// TestPackOutRefusals checks the refusals of --out: a directory that
+// holds files and a path that is not a directory exit 2, and change
+// nothing.
+func TestPackOutRefusals(t *testing.T) {
+	cases := []struct {
+		name    string
+		prepare func(t *testing.T, path string)
+		want    string
+	}{
+		{"holds files", func(t *testing.T, path string) {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(path, "x"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "holds files"},
+		{"not a directory", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "is not a directory"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, _ := initAndCommit(t)
+			dir := filepath.Join(t.TempDir(), "out")
+			c.prepare(t, dir)
+			code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+dir)
+			if code != 2 {
+				t.Fatalf("pack: exit %d, want 2: %s", code, out)
+			}
+			if !strings.Contains(out, dir) || !strings.Contains(out, c.want) || strings.Contains(out, "next:") {
+				t.Fatalf("pack output %q, want the refusal %q for %s and no next: line", out, c.want, dir)
+			}
+			if _, err := os.Stat(testLayout(t, repo).discLogFile()); !os.IsNotExist(err) {
+				t.Fatalf("a refused pack wrote the disc state log: %v", err)
+			}
+			if entries, err := os.ReadDir(testLayout(t, repo).plansDir()); err == nil && len(entries) != 0 {
+				t.Fatalf("a refused pack left a plan directory: %v", entries)
+			}
+		})
+	}
+}
+
+// TestPackLabelIsUnknown checks that --label is an unknown option.
+func TestPackLabelIsUnknown(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=x")
+	if code != 2 {
+		t.Fatalf("pack --label: exit %d, want 2: %s", code, out)
+	}
+	if _, err := os.Stat(testLayout(t, repo).discLogFile()); !os.IsNotExist(err) {
+		t.Fatalf("pack --label wrote the disc state log: %v", err)
+	}
+}
+
+// TestPackDryRunPrintsTheNewLines checks the exact lines of a dry run:
+// one line for each disc, the total line, and no next: line. With
+// nothing staged, a dry run prints the nothing-staged line only.
+func TestPackDryRunPrintsTheNewLines(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--dry-run")
+	if code != 0 {
+		t.Fatalf("pack --dry-run: exit %d: %s", code, out)
+	}
+	re := regexp.MustCompile(`^disc 0: (\d+) items, (\d+) bytes\ntotal: 1 discs, (\d+) items, (\d+) bytes\n$`)
+	m := re.FindStringSubmatch(out)
+	if m == nil || m[1] != m[3] || m[2] != m[4] {
+		t.Fatalf("pack --dry-run output %q, want one disc line and a total line with the same numbers", out)
+	}
+
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	code, out = runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--dry-run")
+	if code != 0 {
+		t.Fatalf("pack --dry-run with nothing staged: exit %d: %s", code, out)
+	}
+	if out != "pack: nothing staged\n" {
+		t.Fatalf("pack --dry-run with nothing staged: output %q", out)
+	}
+}
+
+// TestPackFailureWritesNoEvent checks that a pack that fails on a
+// damaged staged chunk appends no Packed event and removes the plan
+// directory of the disc.
+func TestPackFailureWritesNoEvent(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	chunks := listFilesUnder(t, testLayout(t, repo).chunksDir())
+	if len(chunks) == 0 {
+		t.Fatal("the fixture staged no chunk")
+	}
+	chunk := filepath.Join(testLayout(t, repo).chunksDir(), chunks[0])
+	data, err := os.ReadFile(chunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[len(data)-1] ^= 0xff
+	if err := os.WriteFile(chunk, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
+	if code != 1 {
+		t.Fatalf("pack over a damaged chunk: exit %d, want 1: %s", code, out)
+	}
+	if strings.Contains(out, "next:") {
+		t.Fatalf("a failed pack printed a next: line: %q", out)
+	}
+	if _, err := os.Stat(testLayout(t, repo).discLogFile()); !os.IsNotExist(err) {
+		t.Fatalf("a failed pack wrote the disc state log: %v", err)
+	}
+	if entries, err := os.ReadDir(testLayout(t, repo).plansDir()); err == nil && len(entries) != 0 {
+		t.Fatalf("a failed pack left a plan directory: %v", entries)
 	}
 }
 
@@ -787,10 +989,10 @@ func TestPackWithNoRefCarriesEveryPendingDateRef(t *testing.T) {
 }
 
 // dryRunDiscRe matches one predicted disc line of pack --dry-run.
-var dryRunDiscRe = regexp.MustCompile(`^disc (\d+) "([^"]*)": (\d+) object\(s\) on the disc, (\d+) bytes$`)
+var dryRunDiscRe = regexp.MustCompile(`^disc (\d+): (\d+) items, (\d+) bytes$`)
 
 // packedDiscRe matches the first line of a real pack.
-var packedDiscRe = regexp.MustCompile(`^packed disc (\d+) "([^"]*)": (\d+) object\(s\) on the disc, (\d+) bytes$`)
+var packedDiscRe = regexp.MustCompile(`^packed disc (\d+) "([^"]*)": (\d+) item\(s\), (\d+) bytes$`)
 
 // TestPackDefaultLabelUsesTheNewestPendingRef checks that a pack with
 // two pending refs labels the disc with the newest one, and that a
@@ -836,10 +1038,6 @@ func TestPackDefaultLabelUsesTheNewestPendingRef(t *testing.T) {
 		t.Fatalf("pack again: exit %d: %s", code, out)
 	} else if !strings.Contains(out, `packed disc 1 "2026-09-21 disc 1"`) {
 		t.Fatalf("pack output %q, want a later disc to keep a ref name in its label", out)
-	}
-
-	if code, out := runCmd(t, "pack", "-h"); code != 0 && !strings.Contains(out, "newest ref name and the disc number") {
-		t.Fatalf("pack -h output %q, want the help to name the same rule", out)
 	}
 }
 
@@ -887,7 +1085,7 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 		if m == nil {
 			t.Fatalf("pack %d: first line of %q is not a packed-disc line", i, out)
 		}
-		got := fmt.Sprintf("disc %s %q: %s object(s) on the disc, %s bytes", m[1], m[2], m[3], m[4])
+		got := fmt.Sprintf("disc %s: %s items, %s bytes", m[1], m[3], m[4])
 		if got != predicted[i] {
 			t.Fatalf("real pack wrote %q, pack --dry-run predicted %q", got, predicted[i])
 		}
@@ -896,7 +1094,7 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack after the predicted discs: exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "nothing to pack") {
+	if !strings.HasPrefix(out, packNothingStaged+"\n") {
 		t.Fatalf("pack after the predicted discs: output %q, want the nothing-to-pack line", out)
 	}
 }
@@ -969,7 +1167,7 @@ func TestPackPartialPackLeavesTheRestStaged(t *testing.T) {
 	if !strings.Contains(out, "packed disc 0 ") {
 		t.Fatalf("partial pack: output %q has no packed-disc line", out)
 	}
-	if strings.Contains(out, "remaining staged: 0 objects") {
+	if countByState(t, repo, stage.Staged) == 0 {
 		t.Fatalf("partial pack: output %q packed everything; the fixture must not fit one disc", out)
 	}
 }
@@ -983,7 +1181,7 @@ func TestPackTooSmallNamesTheSmallestObject(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("pack: exit %d, want 2: %s", code, out)
 	}
-	if !strings.Contains(out, "the smallest staged object is") {
+	if !strings.Contains(out, "the smallest staged item is") {
 		t.Fatalf("pack: output %q does not name the smallest object", out)
 	}
 	if !strings.Contains(out, "or more") {
@@ -1037,7 +1235,7 @@ func truncateOneStagedTree(t *testing.T, repo string) string {
 }
 
 // TestPackDefaultLabelNamesTheRefAndTheDisc checks the default label: a
-// pack with no --label takes the newest ref name and the disc number.
+// pack takes the newest ref name and the disc number.
 func TestPackDefaultLabelNamesTheRefAndTheDisc(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)

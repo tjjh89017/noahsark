@@ -184,7 +184,7 @@ func TestRecoverWordingDoesNotClaimClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	treeDir := packedTreeDir(t, packOut)
+	treeDir := packedTreeDir(t, repo, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 
 	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
@@ -615,13 +615,13 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "--repo="+repo, "commit", src1)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=one", src1)
 	if code != 0 {
 		t.Fatalf("commit 1: exit %d: %s", code, out)
 	}
 	snap1 := snapshotIDFromCommit(t, out)
 	discOne := filepath.Join(work, "discs", "disc-one")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=one", "--out="+discOne); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discOne); code != 0 {
 		t.Fatalf("pack 1: exit %d: %s", code, out)
 	}
 
@@ -629,13 +629,13 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src2, "two.txt"), []byte("content of the second source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "--repo="+repo, "commit", src2)
+	code, out = runCmd(t, "--repo="+repo, "commit", "--ref=two", src2)
 	if code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
 	snap2 := snapshotIDFromCommit(t, out)
 	discTwoLost := filepath.Join(work, "discs", "disc-two-lost")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=two", "--out="+discTwoLost); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discTwoLost); code != 0 {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
 	}
 
@@ -651,13 +651,13 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src3, "three.txt"), []byte("content of the third source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "--repo="+repo, "commit", src3)
+	code, out = runCmd(t, "--repo="+repo, "commit", "--ref=three", src3)
 	if code != 0 {
 		t.Fatalf("commit 3: exit %d: %s", code, out)
 	}
 	snap3 := snapshotIDFromCommit(t, out)
 	discThree := filepath.Join(work, "discs", "disc-three")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=three", "--out="+discThree); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discThree); code != 0 {
 		t.Fatalf("pack 3: exit %d: %s", code, out)
 	}
 
@@ -672,8 +672,8 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		t.Fatalf("status reports %d disc(s), want 3: %v", len(discs), discs)
 	}
 
-	shared := discs[byLabel(t, discs, "two")].Seq
-	if other := discs[byLabel(t, discs, "three")].Seq; other != shared {
+	shared := discs[byLabel(t, discs, "two disc 1")].Seq
+	if other := discs[byLabel(t, discs, "three disc 1")].Seq; other != shared {
 		t.Fatalf("disc two seq %d and disc three seq %d differ; the test needs the shared number", shared, other)
 	}
 
@@ -695,15 +695,15 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	// no file for them, so they are on disc only and no verify can mark
 	// them CLEAN. Disc three was packed here, thus a verify of disc
 	// three, and only disc three, marks objects CLEAN.
-	roots := map[string]string{"one": discOne, "two": discTwoLost, "three": discThree}
-	for _, label := range []string{"one", "two"} {
+	roots := map[string]string{"one disc 0": discOne, "two disc 1": discTwoLost, "three disc 1": discThree}
+	for _, label := range []string{"one disc 0", "two disc 1"} {
 		d := discs[byLabel(t, discs, label)]
 		if d.OnDiscOnlyObjects == 0 || d.OnDiscOnlyObjects != d.OnDiscObjects {
 			t.Fatalf("disc %s (%s): %d of %d objects on disc only, want all of them", d.UUID, d.Label, d.OnDiscOnlyObjects, d.OnDiscObjects)
 		}
 	}
-	verified := discs[byLabel(t, discs, "three")]
-	if code, out := runCmd(t, "--repo="+repo, "verify", roots["three"]); code != 0 {
+	verified := discs[byLabel(t, discs, "three disc 1")]
+	if code, out := runCmd(t, "--repo="+repo, "verify", roots["three disc 1"]); code != 0 {
 		t.Fatalf("verify disc three: exit %d: %s", code, out)
 	}
 	for _, d := range discListRows(t, repo) {
