@@ -810,7 +810,9 @@ func repoWithMissingDisc(t *testing.T) *discFixture {
 	if err := os.RemoveAll(fx.repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := fx.run(t, "recover", second); code != 1 {
+	addFakeMount(t, fx.root, true)
+	addFakeMount(t, second, true)
+	if code, out := fx.run(t, "recover", "--source="+fx.src, "--disc="+second); code != 1 {
 		t.Fatalf("recover of the second disc: exit %d, want 1: %s", code, out)
 	}
 	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscMissing {
