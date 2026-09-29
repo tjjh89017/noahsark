@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v4"
+	"go.yaml.in/yaml/v3"
 )
 
 // configFileName is the config file name inside a repository directory.
@@ -103,7 +105,16 @@ func parseRetentionDuration(s string) (time.Duration, error) {
 // indent of two spaces, and no line wrap. The same f always gives the
 // same text, so a diff of the file shows only the changed keys.
 func encodeConfig(f configFile) ([]byte, error) {
-	return yaml.Dump(&f, yaml.WithIndent(2), yaml.WithLineWidth(-1))
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&f); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // writeConfig replaces the config file at path with f. It writes a
@@ -155,14 +166,27 @@ func writeConfig(path string, f configFile) error {
 // repo.uuid.
 func decodeConfig(data []byte) (configFile, error) {
 	var doc yaml.Node
-	if err := yaml.Load(data, &doc, yaml.WithUniqueKeys()); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return configFile{}, errors.New("the file is empty")
+		}
+		return configFile{}, err
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("the file holds more than one YAML document")
+		}
 		return configFile{}, err
 	}
 	if err := checkConfigKeys(&doc); err != nil {
 		return configFile{}, err
 	}
 	var f configFile
-	if err := doc.Load(&f, yaml.WithKnownFields(), yaml.WithUniqueKeys()); err != nil {
+	known := yaml.NewDecoder(bytes.NewReader(data))
+	known.KnownFields(true)
+	if err := known.Decode(&f); err != nil {
 		return configFile{}, err
 	}
 	if f.Staging.Dir == "" {

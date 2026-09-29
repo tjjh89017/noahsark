@@ -90,7 +90,7 @@ Follow these rules for every change, in addition to NOTES.md's "5.
 Implementation notes" section.
 
 - Write Go. Use the standard library where it covers the need. The YAML
-  config file uses `go.yaml.in/yaml/v4`.
+  config file uses `go.yaml.in/yaml/v3`.
 - Code must explain itself. Do not lean on comments to carry the design.
 - A comment carries only information related to the code beside it.
 - A comment or a commit message must never cite a section number.
@@ -101,7 +101,7 @@ Implementation notes" section.
   reflection-based marshalling for them. Do not use struct tags for their
   encoding.
 - The YAML config file `config.yaml` is the one exception. A Go struct holds
-  its keys, with struct tags for `go.yaml.in/yaml/v4`.
+  its keys, with struct tags for `go.yaml.in/yaml/v3`.
 - Write the byte layout by hand, field by field, matching the structure's
   offset table in FORMAT.md.
 - Write a golden-file test for every structure: encode known values, compare

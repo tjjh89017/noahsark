@@ -415,7 +415,7 @@ what binds every implementation.
 - **Language: Go.** The standard library covers SHA-256 and CRC-32C, and one
   static binary suits a recovery tool. The dependencies are
   `github.com/klauspost/compress` for zstd and
-  `github.com/klauspost/reedsolomon` for the parity, and `go.yaml.in/yaml/v4`
+  `github.com/klauspost/reedsolomon` for the parity, and `go.yaml.in/yaml/v3`
   for the config file `config.yaml`. A package is a convenience, never the
   definition.
 - **One Go definition for each on-disc structure**, with explicit encode and
@@ -423,7 +423,7 @@ what binds every implementation.
   structure and for a record of a local binary log. The byte layout is
   written by hand, field by field, in the order of the table in FORMAT.md.
 - **The config is a Go struct.** `config.yaml` maps onto one struct with
-  struct tags for `go.yaml.in/yaml/v4`. A new key is a new struct field.
+  struct tags for `go.yaml.in/yaml/v3`. A new key is a new struct field.
 - **The catalog is history, not a cache.** `commit` writes the snapshot, tree
   and blob objects into `catalog/`. `gc` frees only staged chunks, after one
   verified disc and 7 days. No code trims the catalog.
