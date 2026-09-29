@@ -830,9 +830,9 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 // TestPackObjectCountMatchesBurnedAndVerify packs two discs, the second
 // carrying run1's snapshot object forward for disc-b's own
 // self-description. pack's own object count for disc-b must equal the
-// count disc burned marks and the count verify reports for that same
-// disc: the carried snapshot object already belongs to disc-a, so it is
-// not disc-b's own object, in any of the three commands.
+// count disc burned marks: the carried snapshot object already belongs
+// to disc-a, so it is not disc-b's own item. verify counts every object
+// that it checks on the disc, thus its count adds the carried snapshot.
 func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -882,8 +882,8 @@ func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify disc-b: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, ": "+strconv.Itoa(packedCount)+" items, ok") {
-		t.Fatalf("verify output %q does not verify the %d object(s) pack reported", out, packedCount)
+	if want := packedCount + 1; !strings.Contains(out, ": "+strconv.Itoa(want)+" items, ok") {
+		t.Fatalf("verify output %q does not count the %d object(s) of the disc: the %d item(s) pack reported and the carried snapshot", out, want, packedCount)
 	}
 }
 

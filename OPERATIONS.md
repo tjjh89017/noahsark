@@ -287,6 +287,7 @@ write, a sync or a close stops the command.
    it unlinks a chunk file. A crash between the two leaves an orphan.
 6. `gc` removes `staging/plans/<disc-uuid>/` of a freed disc. For a `pack
    --out=DIR` disc, it removes the symlink `tree` and never touches `DIR`.
+   It also removes a plan directory that remains for an `on disc only` disc.
 7. `gc --dry-run` prints what `gc` would free, writes nothing and takes no
    lock ("Command notes" gives the lines).
 
@@ -326,11 +327,13 @@ One process at a time writes the local state of a repository.
    `catalog/`, the staging store or the config takes a non-blocking
    exclusive advisory lock (`flock`) on it, and holds it until it exits. The
    first such command creates the file. Those commands are `init`, `commit`,
-   `pack`, `gc`, `disc burned`, `disc verified`, `disc lost`, `recover`, and
-   `verify` with a repository, other than `verify --no-mark`.
+   `pack`, `gc`, `disc burned`, `disc verified`, `disc lost`, `recover`,
+   `verify --undo`, and a `verify` that records: a `verify` of a counted
+   mount with a repository, with no `--no-mark` and no `--heal`.
 2. A read-only command takes no lock: `ls`, `log`, `status`, `restore`,
-   `pack --dry-run`, `gc --dry-run`, `verify --no-mark`, and `verify` with no
-   repository.
+   `pack --dry-run`, `gc --dry-run`, and each `verify` that records nothing:
+   `verify --no-mark`, `verify --heal`, a `verify` of a root that is not a
+   counted mount, and `verify` with no repository.
 3. `image build` takes no lock and never creates the lock file. It runs as
    root, and a lock file that root creates would block the operator. It writes
    only the image file ("Disc filesystems and image building").
@@ -359,6 +362,10 @@ The lock is advisory. It is not a security boundary.
    blob, a tree or a snapshot object.
 7. Mark the snapshot `complete` in `catalog-state.txt`.
 8. Move the ref in `refs.txt`.
+
+A `Lost` item counts as new in step 6 only when this commit makes the same
+object again. Then `commit` records it as Staged. The snapshot object of an
+earlier commit is not made again, thus it stays `Lost`.
 
 `commit` refuses to run while a disc is `missing`, with exit code 1.
 
@@ -486,6 +493,21 @@ steps in this order:
 4. Remove `staging/plans/<disc-uuid>/`. For a `pack --out=DIR` disc, it
    removes the symlink and keeps `DIR`, and prints `disc root DIR kept; delete
    it yourself`.
+
+When a step after the `PackUndone` event fails, `pack --undo` prints
+`noahsark: pack: disc SEQ is undone, but its files stay: ERROR; the next pack
+removes them` to standard error and exits with code 1. The disc is undone all the same.
+
+A `pack` without `--dry-run` completes each `pack --undo` that stopped after
+the `PackUndone` event. It does this after the check for a `missing` disc and
+before it writes a disc root. For each undone disc, it records the items that
+are still Packed on the disc as Staged with reason 1. Then it removes the
+ledger row, the catalog tables and the plan directory that remain, in the
+order of the steps above. It prints one note on standard error: `noahsark:
+pack: disc SEQ: an earlier pack --undo stopped before it removed the records
+of the disc; they are now removed`. For a `pack --out=DIR` disc, it also
+prints `noahsark: pack: disc root DIR kept; delete it yourself`. Thus the
+DISCS table of a new disc never names an undone disc.
 
 `pack --undo` leaves `state/refslog.bin` as it is. The ref ledger is an
 append-only history, and the next `pack` writes each ref of it again.
@@ -663,9 +685,23 @@ object through the filesystem. It checks every file that INDEX lists against
 its recorded hash, and every object against its content id. When the run has
 FEC, it checks the checksum column and the parity too.
 
-With a repository, `verify`, also with `--heal`, refuses a disc whose uuid the
-disc state log does not hold, a `lost` disc and a `missing` disc, with exit
-code 1. When
+`verify` checks in this order, and stops at the first refusal:
+
+1. The options. `--heal` with no `--out`, `--out` with no `--heal`, and
+   `--undo` with another option are usage errors, with exit code 2.
+2. The repository and its config, as for every command.
+3. The `DISC.bin` of `DISC-ROOT`. When `verify` cannot read it, it prints
+   `noahsark: verify: DISC-ROOT: cannot read the disc: ERROR` and exits
+   with code 1.
+4. With a repository, and with no `--heal`: whether `DISC-ROOT` is a
+   counted mount. This check refuses nothing. It fails only when `verify`
+   cannot resolve the path or read the mount table, with exit code 1.
+5. With a repository: the state of the disc. `verify`, also with `--heal`,
+   refuses a disc whose uuid the disc state log does not hold, an undone
+   disc, a `lost` disc and a `missing` disc, with exit code 1.
+6. With `--heal`: the FEC of the disc, as the heal sources below give.
+
+Then `verify` reads every object. When
 `DISC-ROOT` is a counted mount ("Transition rules") and `--no-mark` is not
 given:
 
@@ -682,6 +718,31 @@ prints `not counted: no repository`. A failed check of such a root prints
 exits with code 1. It removes no record and logs nothing. `--no-mark` writes nothing: no record, no
 verify log event and no catalog entry.
 
+The first line of a check is `disc SEQ "LABEL": N items, ok` or `disc SEQ
+"LABEL": bad; REASON`. With no repository, `verify` names the disc by uuid.
+`N` is the number of objects that the check verified on the disc. It is the
+same number with a repository and with no repository. It counts the snapshot
+objects that the disc carries from earlier discs, thus it can be larger than
+the item count that `pack` printed for the disc.
+
+A failed check that records nothing has one of two fixed `REASON` texts:
+`the packed tree is damaged` when `DISC-ROOT` is the disc root that `pack`
+wrote for the disc (`staging/plans/<disc-uuid>/tree`, or the target of its
+symlink), else `the disc root is damaged`. A failed counted check uses the
+`REASON` of `docs/states.md`, rows 40 to 43. `verify` prints the detail of
+the failure to standard error, as `noahsark: verify: DETAIL`.
+
+One line follows the ok line or the bad line, except after a failed counted
+check:
+
+- a good counted check: the text of `docs/states.md`, rows 31 to 35;
+- a root that is not a counted mount, also with `--no-mark`, and the check
+  of the `--heal` output: `not counted: this is not a disc`;
+- no repository, with no `--heal`: `not counted: no repository`;
+- `--no-mark` of a counted mount: `not marked`. After a good check of a
+  `packed` disc, the line is `not marked; to record this burn, run: noahsark
+  disc burned SEQ`.
+
 `verify --undo DISC` removes the verified record of a `verified` disc. It asks
 an ordinary confirmation and reads no disc.
 
@@ -692,7 +753,10 @@ The operator tries the heal sources in this order.
    copy.
 2. **On-disc RS parity**, when the run has FEC. `verify --heal --out=DIR
    DISC-ROOT` writes the healed disc root into `DIR`, and then checks `DIR`.
-   `--heal` refuses a run that has no FEC, with exit code 1. A healed tree
+   `--heal` refuses a disc whose newest run has no FEC, with exit code 1.
+   It prints `noahsark: verify: disc SEQ has no FEC; --heal needs a disc
+   with FEC`, or `disc UUID` with no repository. When the `RUN.bin` of the
+   newest run cannot be read, `--heal` goes on. A healed tree
    lives on the hard disk, not on a disc, so it is never a counted mount:
    `--heal` records nothing, whatever `DIR` checks clean as. `image build`
    takes only a disc of the repository, not a directory. Thus the operator
@@ -1027,8 +1091,9 @@ items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped or
 special path, `staged: N items, B bytes`, and `next: noahsark status`. `B` is
 the sum of the stored file sizes of the Staged items: the chunk files in
 `staging/chunks/` and the metadata object files in `catalog/`. Exit: 1
-when a file was skipped or unstable; the snapshot is committed all the same. A
-special file never changes the exit code.
+when a file was skipped or unstable; the snapshot is committed all the same,
+and `commit` still prints the `next:` line. A special file never changes the
+exit code.
 
 **`pack`** prints `packed disc SEQ "LABEL": N item(s), B bytes`, then `uuid:
 UUID`, then `next: noahsark status`. The label is the newest ref of the
@@ -1049,7 +1114,13 @@ noahsark status` after it changed a record. `disc verified` and `disc
 lost` ask a critical confirmation. `disc burned --undo` and `disc lost
 --undo` ask an ordinary confirmation. `disc lost` removes
 `staging/plans/<disc-uuid>/` (for a `pack --out` disc, the symlink only), and
-keeps the catalog data of the disc.
+keeps the catalog data of the disc. It does these steps in this order: it
+appends the item records (Packed items to Staged, OnDisc items to Lost),
+then the `Lost` event, then it removes the plan directory. `disc lost
+--undo` of a disc that was `verified` finds the items of the disc in the
+catalog INDEX of the disc: a Staged record names no disc. It gives back
+each item that the INDEX lists and that is Staged. For a disc that was `on
+disc only`, it takes the Lost items whose record names the disc.
 
 **`verify`** prints `disc SEQ "LABEL": N items, ok` or `disc SEQ "LABEL":
 bad; REASON`, then one line that names what changed, as `docs/states.md`,
@@ -1060,7 +1131,9 @@ print no `next:` line. A failed check of a root that is not counted prints
 exits with code 1. With no repository, it names the disc by uuid. "Verify
 and heal" gives the lines of `--heal`. Exit: 1 when the check or the heal
 failed, or when the state refused the command. 2 for `--heal` with no
-`--out`.
+`--out`, `--out` with no `--heal`, and `--undo` with another option. "Verify
+and heal" gives the order of the checks, the `REASON` texts and the count
+`N`.
 
 **`status`** prints `staged: N items, B bytes`, then one line of this form
 for each disc that is not undone, then one `next:` block:
@@ -1089,19 +1162,33 @@ gc: N item(s) skipped: disc SEQ's table is not in the catalog
 gc: N item(s) skipped: disc SEQ's table does not list them
 ```
 
-`DATE` is a local date, as `YYYY-MM-DD`. The last skip line means that the
-INDEX of a `verified` disc in the catalog does not list N items of the disc.
-`gc` then frees no item of that disc and appends no `Freed` event for it.
+`DATE` is a local date, as `YYYY-MM-DD`: the verified time of the disc plus
+the wait of this run (7 days, or `--force-after`). The last skip line means
+that the INDEX of a `verified` disc in the catalog does not list N items of
+the disc. `gc` then frees no item of that disc and appends no `Freed` event
+for it.
+
+In the freed line, `N` counts every item that `gc` records OnDisc, also an
+item with no chunk file, and each orphan whose chunk file it unlinked. `B`
+counts the bytes of the chunk files that it unlinked and of the regular files
+in the plan directories that it removed. A symlink adds nothing. A held line
+appears only for a disc that still has a Packed item: a `packed` or a
+`burned` disc, or a `verified` disc whose wait is not over.
 
 The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`.
 The last line is `next: noahsark status`. `--dry-run` prints no `next:`
 line. A
-`missing` or `lost` disc gets no line. It asks no confirmation. Exit: 0 when
-nothing was eligible. 1 when a chunk file could not be unlinked, or when an
-item was skipped because its INDEX is not in the catalog or does not list it.
+`missing` or `lost` disc gets no line. It asks no confirmation. When `gc`
+cannot unlink a chunk file or remove a plan directory, it prints `noahsark:
+gc: PATH: ERROR` to standard error for each one. It still prints the freed
+line and the `next:` line, and the records stay written. Exit: 0 when
+nothing was eligible. 1 when a chunk file could not be unlinked or a plan
+directory could not be removed, or when an item was skipped because its
+INDEX is not in the catalog or does not list it.
 
 `gc --dry-run` prints the same lines, with `gc: would free N item(s), B
-bytes` in place of the freed line. It prints no `next:` line. It exits with code 1 when `gc` would skip
+bytes` in place of the freed line. It counts every orphan and every file
+that `gc` would remove. It prints no `next:` line. It exits with code 1 when `gc` would skip
 an item, else 0.
 
 **`restore`** takes a snapshot id prefix or a ref name. For a `partial`

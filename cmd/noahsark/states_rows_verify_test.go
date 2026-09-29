@@ -308,11 +308,7 @@ func runVerifyRowCase(t *testing.T, c verifyRowCase) {
 
 	first := name + ": bad; " + c.bad
 	if c.bad == "" {
-		items := len(readLogs(t, fx.repo).Items.ItemsOfDisc(fx.uuidBytes(t)))
-		if c.noRepo {
-			items = objectsOnDisc(t, root)
-		}
-		first = name + ": " + strconv.Itoa(items) + " items, ok"
+		first = name + ": " + strconv.Itoa(objectsOnDisc(t, root)) + " items, ok"
 	}
 	want := append([]string{first}, c.stdout...)
 	if c.next {
