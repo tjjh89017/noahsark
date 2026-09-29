@@ -184,7 +184,7 @@ func (o *commitOptions) run(e *env, args []string) int {
 	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
 	// The snapshot is committed also when a file was skipped or unstable,
 	// so the next line comes before the exit code is chosen.
-	_, _ = fmt.Fprintln(stdout, "next: noahsark status")
+	_, _ = fmt.Fprintln(stdout, nextStatusLine)
 
 	if len(sum.Unstable) > 0 || len(sum.Skipped) > 0 {
 		return 1
