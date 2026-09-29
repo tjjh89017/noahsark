@@ -65,9 +65,11 @@ func (c *Codec) Encode(data [][]byte) ([][]byte, error) {
 	return shards[c.k:], nil
 }
 
-// Decode reconstructs the k data shards and the m parity shards of a
-// stripe from any k of its k+m shards. shards keys are 0..k-1 for data
-// shards and k..k+m-1 for parity shards.
+// Decode reconstructs the k data shards of a stripe from the k lowest
+// indexed of the given shards, and then encodes all m parity shards again
+// from that data. A given parity shard is never returned as it is, thus a
+// wrong parity shard outside the k used ones comes back correct. shards
+// keys are 0..k-1 for data shards and k..k+m-1 for parity shards.
 func (c *Codec) Decode(shards map[int][]byte) (data [][]byte, parity [][]byte, err error) {
 	if len(shards) < c.k {
 		return nil, nil, ErrTooFewShards
@@ -88,11 +90,14 @@ func (c *Codec) Decode(shards map[int][]byte) (data [][]byte, parity [][]byte, e
 		all[idx] = s
 	}
 
-	if err := c.enc.Reconstruct(all); err != nil {
+	if err := c.enc.ReconstructData(all); err != nil {
 		return nil, nil, ErrTooFewShards
 	}
 
 	data = all[:c.k]
-	parity = all[c.k:]
+	parity, err = c.Encode(data)
+	if err != nil {
+		return nil, nil, err
+	}
 	return data, parity, nil
 }
