@@ -33,10 +33,12 @@ type StripeReport struct {
 // blocks to reach k, using the lowest-indexed surviving blocks first.
 // When the reconstructed data does not match the checksum column, it
 // retries holding out one more parity block at a time, one at a time
-// only, up to m minus the known erasure count attempts. A stripe that
-// still does not verify after every attempt is a hard error naming that
-// stripe, and Heal writes nothing for it; every other stripe's repair
-// already written stands.
+// only, up to m minus the known erasure count attempts. A parity block
+// has no digest: Heal encodes the parity again from the verified data and
+// rewrites each parity block that differs from it. A stripe that still
+// does not verify after every attempt is a hard error naming that stripe,
+// and Heal writes nothing for it; every other stripe's repair already
+// written stands.
 //
 // When outDir is empty, Heal repairs discRoot in place: discRoot must be
 // a writable unpacked tree of ordinary files. When outDir is set, Heal

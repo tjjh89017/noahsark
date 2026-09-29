@@ -133,7 +133,7 @@ func corruptParityBlock(t *testing.T, treeDir string, j int, stripe uint64) {
 		t.Fatal(err)
 	}
 	p := filepath.Join(runDir, "parity", parityFileName(j))
-	off := int64(1+stripe) * fec.BlockSize
+	off := int64(stripe) * fec.BlockSize
 	flipByte(t, p, off)
 }
 

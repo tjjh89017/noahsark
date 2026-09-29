@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -475,6 +476,74 @@ func TestVerifyHealRepairsADamagedDisc(t *testing.T) {
 	if code != 0 || !strings.HasPrefix(te.out.String(), `disc `+discUUID+` "`+label+`": healed 1 file(s) into `+healedNoRepo+"\n") {
 		t.Fatalf("verify --heal with no repository: exit %d: %s%s", code, te.out.String(), te.errOut.String())
 	}
+}
+
+// TestVerifyHealRepairsDamagedParity damages parity blocks of a disc with
+// FEC, alone and with one chunk, and heals it. The count of healed files
+// holds each repaired parity file, and the healed root checks ok.
+func TestVerifyHealRepairsDamagedParity(t *testing.T) {
+	cases := []struct {
+		name      string
+		chunk     bool
+		parity    []int
+		wantFiles int
+	}{
+		{"two parity files", false, []int{0, 1}, 2},
+		{"a chunk and three parity files", true, []int{1, 2, 22}, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			repo := filepath.Join(work, "repo")
+			src := writeFixtureSource(t)
+			if code, out := runIn(t, repo, "init"); code != 0 {
+				t.Fatalf("init: exit %d: %s", code, out)
+			}
+			if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
+				t.Fatalf("commit: exit %d: %s", code, out)
+			}
+			code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec")
+			if code != 0 {
+				t.Fatalf("pack: exit %d: %s", code, packOut)
+			}
+			mounted := filepath.Join(work, "mounted")
+			copyTree(t, packedTreeDir(t, repo, packOut), mounted)
+			if tc.chunk {
+				corruptDiscRoot(t, mounted)
+			}
+			for _, j := range tc.parity {
+				flipByte(t, parityFilePath(t, mounted, j), 0)
+			}
+			label := defaultRefName() + " disc 0"
+
+			healed := filepath.Join(work, "healed")
+			te := newTestEnv(work)
+			code, _ = te.run("--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
+			want := []string{
+				`disc 0 "` + label + `": healed ` + strconv.Itoa(tc.wantFiles) + ` file(s) into ` + healed,
+				`disc 0 "` + label + `": ` + strconv.Itoa(objectsOnDisc(t, healed)) + ` items, ok`,
+				notCountedDisc,
+			}
+			if got := strings.Split(strings.TrimRight(te.out.String(), "\n"), "\n"); code != 0 || !slices.Equal(got, want) {
+				t.Fatalf("verify --heal: exit %d, lines %q, want 0 and %q\nstderr: %s", code, got, want, te.errOut.String())
+			}
+		})
+	}
+}
+
+// parityFilePath gives the path of parity column j of the newest run of
+// the disc root root.
+func parityFilePath(t *testing.T, root string, j int) string {
+	t.Helper()
+	base, err := image.FindNoahsark(root, image.NewNameCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
 }
 
 // TestVerifyHealRefusesADiscWithNoFEC checks that --heal refuses a disc

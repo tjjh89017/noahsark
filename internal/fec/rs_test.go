@@ -70,6 +70,59 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecodeRecomputesEveryParityShard gives Decode parity shards that
+// are present but wrong, outside the k shards that the decode uses.
+// Decode must return the parity of the decoded data, not the wrong
+// shards it got.
+func TestDecodeRecomputesEveryParityShard(t *testing.T) {
+	codec, err := NewCodec(K, M)
+	if err != nil {
+		t.Fatalf("NewCodec: %v", err)
+	}
+	rng := rand.New(rand.NewSource(3))
+	data := randomStripe(rng, K, 64)
+	parity, err := codec.Encode(data)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		erase   []int
+		corrupt []int
+	}{
+		{"all data present, parity 0 and 1 wrong", nil, []int{0, 1}},
+		{"one data shard erased, parity 1, 5 and 22 wrong", []int{2}, []int{1, 5, 22}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			shards := allShards(data, parity)
+			for _, i := range tc.erase {
+				delete(shards, i)
+			}
+			for _, j := range tc.corrupt {
+				bad := append([]byte(nil), parity[j]...)
+				bad[0] ^= 0xFF
+				shards[K+j] = bad
+			}
+			gotData, gotParity, err := codec.Decode(shards)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			for i := range data {
+				if string(gotData[i]) != string(data[i]) {
+					t.Fatalf("data shard %d differs after decode", i)
+				}
+			}
+			for j := range parity {
+				if string(gotParity[j]) != string(parity[j]) {
+					t.Fatalf("parity shard %d is not the parity of the decoded data", j)
+				}
+			}
+		})
+	}
+}
+
 func TestDecodeTooManyErasures(t *testing.T) {
 	codec, err := NewCodec(K, M)
 	if err != nil {
