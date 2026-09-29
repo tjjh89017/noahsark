@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -73,7 +72,7 @@ type testEnv struct {
 // newTestEnv returns a fake env whose working directory is dir. It has
 // no environment variables, the clock fakeNow, the standard input
 // fakeStdin, a terminal on standard input when fakeStdinTTY is true, and
-// no mount table.
+// the fake mount table.
 func newTestEnv(dir string) *testEnv {
 	te := &testEnv{vars: map[string]string{}}
 	stdin := fakeStdin
@@ -89,7 +88,7 @@ func newTestEnv(dir string) *testEnv {
 		getenv:    func(k string) string { return te.vars[k] },
 		now:       func() time.Time { return fakeNow() },
 		euid:      os.Geteuid,
-		mountinfo: func() (io.ReadCloser, error) { return nil, errors.New("no mount table in a test") },
+		mountinfo: fakeMountinfo,
 	}
 	return te
 }
@@ -487,13 +486,14 @@ func packedDiscUUID(t *testing.T, output string) string {
 // copyTree copies src to dst, standing in for burning src's bytes to a
 // disc and mounting it back (or loop-mounting the image before it is
 // burned): a byte-identical tree outside the repository's staging
-// directory.
+// directory. The fake mount table lists dst as a read-only mount.
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
 	cmd := exec.Command("cp", "-a", src, dst)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cp -a %s %s: %v: %s", src, dst, err, out)
 	}
+	addFakeMount(t, dst, true)
 }
 
 // repoDirFromTreeDir recovers a fixture's repository directory from its

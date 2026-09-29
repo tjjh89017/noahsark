@@ -689,6 +689,9 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	// only, so disc burned refuses them. Disc three was packed here, and
 	// disc burned records its burn.
 	roots := map[string]string{"one disc 0": discOne, "two disc 1": discTwoLost, "three disc 1": discThree}
+	for _, root := range roots {
+		addFakeMount(t, root, true)
+	}
 	for _, d := range discs {
 		code, out := runCmd(t, "--repo="+repo, "disc", "burned", d.UUID[:8])
 		if d.Label == "three disc 1" {
