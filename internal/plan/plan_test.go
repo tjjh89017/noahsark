@@ -105,8 +105,8 @@ func TestPlanCountsEachItemOnce(t *testing.T) {
 		}
 		count := 0
 		for _, o := range d.Objects {
-			if o.Kind != format.ObjectKindChunk || !p.Holds(d.DiscUUID, o.ID) {
-				t.Fatalf("disc %d yields %s, which it does not hold", d.DiscSeq, o.ID.TextForm())
+			if o.Kind != format.ObjectKindChunk || !p.Owns(d.DiscUUID, o.ID) {
+				t.Fatalf("disc %d yields %s, which it does not own", d.DiscSeq, o.ID.TextForm())
 			}
 			count++
 		}
@@ -117,8 +117,16 @@ func TestPlanCountsEachItemOnce(t *testing.T) {
 	if p.NoDisc() != 100 {
 		t.Errorf("%d item(s) with no disc, want 100", p.NoDisc())
 	}
-	if p.Holds(a, testID(n-1)) || !p.Holds(b, testID(n-1)) {
-		t.Error("Holds does not follow the INDEX of each disc")
+	if p.Owns(a, testID(n-1)) || !p.Owns(b, testID(n-1)) {
+		t.Error("Owns does not follow the INDEX of each disc")
+	}
+	// Disc a and disc b both list the items n/4 to n/2. The plan gives
+	// them to disc a, the lower disc_seq, and to no other disc.
+	if !p.Owns(a, testID(n/4)) || p.Owns(b, testID(n/4)) {
+		t.Error("Owns gives an item that two discs list to both discs, or to the wrong one")
+	}
+	if p.Owns(lost, testID(n/2)) || !p.Owns(b, testID(n/2)) {
+		t.Error("Owns gives an item that a lost disc and another disc list to the lost disc")
 	}
 }
 

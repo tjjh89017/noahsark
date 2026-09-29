@@ -17,7 +17,10 @@ import (
 )
 
 // DiscChunks is one inserted disc, as the assembler reads it. Has
-// answers from the disc's own object list, with no disc access; Read
+// reports whether the restore takes the chunk from this disc, with no
+// disc access. One restore takes each chunk from one disc only, also
+// when several discs hold it: the assembler writes a chunk that Has
+// names at every position of every file that still needs it. Read
 // returns one verified chunk payload and may make the operator insert
 // the disc first.
 type DiscChunks interface {
@@ -54,12 +57,17 @@ type Assembler struct {
 	fileNo int64
 	// firstDisc is true until the first walk ends. The first walk
 	// creates the directories and the symlinks, and decides every
-	// existing destination; a later walk creates nothing.
+	// existing destination. A later walk creates no directory and no
+	// symlink.
 	firstDisc bool
 	// chunkBuf backs the content check of a resumed part file. It grows
 	// to the largest chunk the restore meets, never past the maximum
 	// chunk size.
 	chunkBuf []byte
+	// linkedDir is the directory that got a final name after its last
+	// flush, or "". The walk flushes it when a final name goes into
+	// another directory, and at its end.
+	linkedDir string
 }
 
 // errIncomplete names a file that needs a chunk that no disc of this
@@ -91,10 +99,10 @@ func NewAssembler(c *catalog.Catalog, sel *plan.Selection, outDir string, overwr
 // Close frees the temporary state file.
 func (a *Assembler) Close() { a.states.close() }
 
-// Disc walks the selection one time against d, and writes every chunk d
-// holds into the part file of the file that holds it. A file whose last
-// chunk lands here gets its final name before Disc moves to the next
-// file.
+// Disc walks the selection one time against d, and writes every chunk
+// that d.Has names into the part file of each file that holds it. A
+// file whose last chunk lands here gets its final name before Disc
+// moves to the next file.
 //
 // A read error on one chunk fails that file alone and the walk goes on.
 // Only a *FatalDiscError, and a failure that stops the walk itself, is
@@ -109,10 +117,13 @@ func (a *Assembler) Disc(d DiscChunks, prog *progress.Reporter) error {
 }
 
 // walk walks the selection with v and numbers its regular files. A walk
-// after the first must meet as many files as the first.
+// after the first must meet as many files as the first. Each final name
+// that the walk gives is on stable storage when walk returns.
 func (a *Assembler) walk(v plan.Visitor) error {
 	a.fileNo = 0
-	if err := a.sel.Walk(a.outDir, v); err != nil {
+	err := a.sel.Walk(a.outDir, v)
+	a.flushLinkedDir()
+	if err != nil {
 		return err
 	}
 	if a.firstDisc {
@@ -147,7 +158,7 @@ func (w *discWalk) Dir(parent string, names []string) (string, bool, error) {
 	if w.a.firstDisc {
 		return ensureDir(parent, names, w.a.wp)
 	}
-	return ensureDir(parent, names, nil)
+	return enterDir(parent, names)
 }
 
 func (w *discWalk) DirDone(string, format.TreeEntry) {}
@@ -201,6 +212,10 @@ func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d Disc
 		return a.states.clear(no, pending)
 	}
 	entries := placeChunks(blob.Entries)
+	if size := blobSize(entries); size != e.Size {
+		a.wp.failed(dest, fmt.Errorf("blob %s holds %d bytes, but the tree entry says %d; the catalog does not agree with itself", blobID.TextForm(), size, e.Size))
+		return a.states.clear(no, pending)
+	}
 
 	if a.firstDisc {
 		if !a.wp.overwrite {
@@ -235,7 +250,7 @@ func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d Disc
 		}
 	}
 	if st.remaining == 0 {
-		finishPart(dest, part, e, a.wp)
+		a.finishPart(dest, part, e, entries)
 		return a.states.clear(no, pending)
 	}
 	if pending && len(wanted) == 0 {
@@ -245,9 +260,10 @@ func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d Disc
 }
 
 // register counts how many blob entries of one file still owe their
-// bytes. A part file a killed run left behind is read one time here,
-// and every chunk it already holds is taken out of the count, whatever
-// disc that chunk came from. A later walk therefore finishes the file
+// bytes. It counts positions in the file, not distinct chunks: a chunk
+// that the file holds two times counts two times. A part file a killed
+// run left behind is read one time here, and every chunk it already
+// holds is taken out of the count, whatever disc that chunk came from. A later walk therefore finishes the file
 // even when the restore never asks for that disc again.
 func (a *Assembler) register(part string, entries []placedChunk) fileState {
 	f, err := os.Open(part)
@@ -282,6 +298,9 @@ func (a *Assembler) writePart(part string, st *fileState, e format.TreeEntry, wa
 		if st.resume && a.chunkInPlace(f, be) {
 			// register already took this chunk out of remaining.
 			continue
+		}
+		if st.remaining == 0 {
+			return fmt.Errorf("chunk %s at offset %d: the file needs no more chunks; restore counted a position two times", id.TextForm(), be.Offset)
 		}
 		payload, err := d.Read(id)
 		if err != nil {
@@ -318,11 +337,21 @@ func chunkAt(f *os.File, be placedChunk, buf []byte) bool {
 }
 
 // finishPart gives a complete part file its final name, then applies
-// the file's metadata. link fails when the final name exists, so the
-// no-overwrite rule holds with no race; with overwrite, the path in the
-// way is unlinked first, and a directory that holds entries is never
-// removed.
-func finishPart(dest, part string, e format.TreeEntry, wp *writePolicy) {
+// the file's metadata. Before the link, it checks the whole part file
+// against the blob and flushes it to stable storage. A part file that
+// does not match stays for the next run, which checks each chunk again.
+// link fails when the final name exists, so the no-overwrite rule holds
+// with no race; with overwrite, the path in the way is unlinked first,
+// and a directory that holds entries is never removed. Because the data
+// is on stable storage before the link, a power loss cannot leave the
+// final name with no data. The directory of the final name is flushed
+// later, by flushLinkedDir.
+func (a *Assembler) finishPart(dest, part string, e format.TreeEntry, entries []placedChunk) {
+	wp := a.wp
+	if err := sealPart(part, e, entries); err != nil {
+		wp.failed(dest, err)
+		return
+	}
 	if wp.overwrite {
 		if _, err := os.Lstat(dest); err == nil {
 			if err := unlinkExisting("file", dest); err != nil {
@@ -342,7 +371,79 @@ func finishPart(dest, part string, e format.TreeEntry, wp *writePolicy) {
 		return
 	}
 	removePart(part)
+	a.linked(filepath.Dir(dest))
 	applyMetadata(dest, e, wp)
+}
+
+// linked records that dir got a final name. It flushes the directory of
+// the final name before, when that is another directory, so that the
+// walk keeps one directory to flush at most.
+func (a *Assembler) linked(dir string) {
+	if a.linkedDir != dir {
+		a.flushLinkedDir()
+	}
+	a.linkedDir = dir
+}
+
+// flushLinkedDir flushes the directory that got a final name after its
+// last flush. A directory that does not flush is a problem of that
+// directory: its new names can be lost at a power loss.
+func (a *Assembler) flushLinkedDir() {
+	if a.linkedDir == "" {
+		return
+	}
+	if err := syncDir(a.linkedDir); err != nil {
+		a.wp.failed(a.linkedDir, err)
+	}
+	a.linkedDir = ""
+}
+
+// errPartMismatch names a part file that does not hold the content of
+// the snapshot after its last chunk is written.
+var errPartMismatch = errors.New("file not restored: the part file does not match the snapshot after the last chunk; the part file stays, and the next run checks it again")
+
+// sealPart checks that part holds the size of e and each chunk of
+// entries at its offset, then flushes part to stable storage.
+func sealPart(part string, e format.TreeEntry, entries []placedChunk) error {
+	f, err := os.OpenFile(part, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() || uint64(fi.Size()) != e.Size || !fileMatches(f, entries) {
+		return errPartMismatch
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("flush the part file: %w", err)
+	}
+	return nil
+}
+
+// syncDir flushes the directory dir to stable storage. A filesystem that
+// cannot flush a directory is not an error.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+		return fmt.Errorf("flush the directory %s: %w", dir, err)
+	}
+	return nil
+}
+
+// blobSize is the size of the file that entries describe.
+func blobSize(entries []placedChunk) uint64 {
+	if len(entries) == 0 {
+		return 0
+	}
+	last := entries[len(entries)-1]
+	return last.Offset + last.Length
 }
 
 // linkFile is os.Link, a seam a test drives the no-hard-link fallback
@@ -395,7 +496,7 @@ func (a *Assembler) Finish() error {
 type finishWalk struct{ a *Assembler }
 
 func (w finishWalk) Dir(parent string, names []string) (string, bool, error) {
-	return ensureDir(parent, names, nil)
+	return enterDir(parent, names)
 }
 
 // DirDone follows every entry below the directory, so the deepest
@@ -418,43 +519,27 @@ func (w finishWalk) Other(string, format.TreeEntry) error { return nil }
 func (a *Assembler) Report() Report { return a.wp.report }
 
 // fileAlreadyRestored reports whether dest, an existing regular file,
-// already holds e's data: either its size and mtime match e exactly, the
-// way applyMetadata leaves a file this restore wrote itself, or its
-// bytes hash to the same chunk ids entries names, checked straight from
-// dest with no disc access needed.
+// already holds e's data: its size matches e, and its bytes hash to the
+// chunk ids that entries names. It reads the whole file from dest, never
+// from a disc.
 func fileAlreadyRestored(dest string, fi os.FileInfo, e format.TreeEntry, entries []placedChunk) bool {
 	if uint64(fi.Size()) != e.Size {
 		return false
 	}
-	sec, nsec := statMtime(fi)
-	if sec == e.MtimeSec && uint32(nsec) == e.MtimeNsec {
-		return true
-	}
-	return contentMatches(dest, entries)
-}
-
-// statMtime returns fi's mtime as seconds and nanoseconds, using the raw
-// stat when available for the same precision applyMetadata restores.
-func statMtime(fi os.FileInfo) (sec, nsec int64) {
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		return st.Mtim.Sec, st.Mtim.Nsec
-	}
-	return fi.ModTime().Unix(), int64(fi.ModTime().Nanosecond())
-}
-
-// contentMatches reports whether dest's bytes, split at entries' own
-// offsets and lengths, hash to the content id each entry names. It reads
-// dest, never a disc, so a resumed check never needs the drive back.
-func contentMatches(dest string, entries []placedChunk) bool {
-	f, err := os.Open(dest)
+	f, err := os.OpenFile(dest, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return false
 	}
 	defer func() { _ = f.Close() }()
+	return fileMatches(f, entries)
+}
 
-	buf := make([]byte, 0, 1<<20)
+// fileMatches reports whether the bytes of f, split at the offsets and
+// lengths of entries, hash to the content id that each entry names.
+func fileMatches(f *os.File, entries []placedChunk) bool {
+	var buf []byte
 	for _, be := range entries {
-		if cap(buf) < int(be.Length) {
+		if uint64(cap(buf)) < be.Length {
 			buf = make([]byte, be.Length)
 		}
 		if !chunkAt(f, be, buf[:be.Length]) {
