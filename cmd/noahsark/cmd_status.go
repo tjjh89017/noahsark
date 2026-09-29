@@ -10,6 +10,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -38,7 +39,7 @@ func init() {
 }
 
 // cmdStatus implements "noahsark status": the staged total, one line
-// for each disc, and the one next block of the repository. status takes
+// for each snapshot that is packed in parts, one line for each disc, and the one next block of the repository. status takes
 // no lock and changes no file.
 func cmdStatus(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
@@ -90,7 +91,16 @@ func cmdStatus(e *env, args []string) int {
 		return 1
 	}
 
+	parts, err := snapshotsPackedInParts(layout, c, logs.Items)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+		return 1
+	}
+
 	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
+	for _, s := range parts {
+		_, _ = fmt.Fprintln(stdout, statusSnapshotLine(s))
+	}
 	for _, d := range discs {
 		_, _ = fmt.Fprintln(stdout, statusDiscLine(d))
 	}
@@ -106,6 +116,37 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
 	return 0
+}
+
+// snapshotsPackedInParts returns the snapshots whose snapshot object is
+// Staged and that reach one or more items that are not Staged, in the
+// order in which pack takes them.
+func snapshotsPackedInParts(layout repoLayout, c *catalog.Catalog, items *stage.Log) ([]image.StagedSnapshot, error) {
+	ids, err := packStore(layout, c, items).SnapshotIDs()
+	if err != nil {
+		return nil, err
+	}
+	onDisc := func(id object.ID) bool {
+		rec, ok := items.Get(id)
+		return ok && rec.State.OnDisc()
+	}
+	staged, err := image.StagedSnapshots(layout.objectPath(c), ids, onDisc)
+	if err != nil {
+		return nil, err
+	}
+	var parts []image.StagedSnapshot
+	for _, s := range staged {
+		if s.PackedInParts {
+			parts = append(parts, s)
+		}
+	}
+	return parts, nil
+}
+
+// statusSnapshotLine is the line of one snapshot that is packed in
+// parts. The plural form is fixed, so that a script can parse it.
+func statusSnapshotLine(s image.StagedSnapshot) string {
+	return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; recover cannot find it from the discs alone", shortID(s.ID), s.StagedItems)
 }
 
 // statusDiscLine is the line of one disc:

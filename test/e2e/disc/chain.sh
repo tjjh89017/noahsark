@@ -1,50 +1,56 @@
 #!/usr/bin/env bash
-# The chain e2e scenario: sourced by run.sh. Packs one large commit
-# across three discs of different media, in one of two orders, and
-# checks that restore needs all three and gives the same result either
-# way. scenario_chain is the real, full-size scenario the CI matrix
+# The chain e2e scenario: sourced by run.sh. Packs two large commits
+# across three discs of different media, in one of two orders, then
+# packs the rest on a fourth disc. It deletes the repository, recovers
+# it from the four discs alone, and restores both commits from the
+# discs. scenario_chain is the real, full-size scenario the CI matrix
 # runs; scenario_chain_small is the same flow at a fast local scale,
 # used by TestChainSmall. See run.sh for the shared scenario dispatch
-# and lib.sh for the pack, image, mount and restore helpers and the
-# media_* helpers.
+# and lib.sh for the pack, image, mount, recover and restore helpers and
+# the media_* helpers.
 set -euo pipefail
 
 # pack packs every staged object in the whole repository, from every
 # commit; it takes what is staged and names no snapshot of its own. So
-# this scenario commits two independent fixtures, A and B, each its own
-# snapshot, each sized to CHAIN_HALF_BYTES.
-# pack's internal candidate order walks every commit in ascending
-# snapshot-id order, one commit's whole tree before the next, so
-# whichever of A or B has the lexicographically smaller id is the one
-# packed first, and (being far under the three discs' combined
-# capacity on its own) the one the three discs fully hold; that one is
-# "the winner", and the only one this scenario restores and checks. The
-# other is left the partly-packed remainder the scenario asserts on:
-# real bytes staged for a real commit, just not this run's winner.
+# this scenario commits two independent fixtures, A and then B, each its
+# own snapshot, each sized to CHAIN_HALF_BYTES.
+# pack's candidate order takes a snapshot that is packed in parts first,
+# then the other snapshots, the oldest snapshot time first. A is older
+# than B, thus pack takes all of A first, then B. A is far under the
+# three discs' combined capacity, thus the three discs hold all of A and
+# a part of B. After the third pack, status names B as packed in parts,
+# and the rest of B stays staged. The fourth disc takes that rest.
 #
 # CHAIN_HALF_BYTES is scenario_chain's default size for each of A and B:
 # together big enough that three discs (dvd+r, bd25, bd25 forced to
 # 10GiB) cannot hold both. Data columns are 231 of every 255 FEC
 # columns, so a disc's usable payload is about 90% of its raw capacity;
 # at this size the three discs' usable capacity falls short of A+B by a
-# few GiB, landing the loser's leftover in the 1 to 10 GiB band the
-# scenario checks. Override with NOAHSARK_E2E_CHAIN_HALF_BYTES for a
-# different full-size run.
+# few GiB, landing the rest of B in the 1 to 10 GiB band the scenario
+# checks. Override with NOAHSARK_E2E_CHAIN_HALF_BYTES for a different
+# full-size run.
 #
 # The three discs' usable capacity, FEC off, is about
 # 4.68 + 24.97 + 10.70 = 40.35 GB. CI run 34786269740 packed two
-# 20,500,000,000-byte fixtures (41.0 GB total) and left the loser's
-# remaining bytes at 660,645,722 (dvd-bd25-bd10) and 655,469,257
+# 20,500,000,000-byte fixtures (41.0 GB total) and left the remaining
+# bytes at 660,645,722 (dvd-bd25-bd10) and 655,469,257
 # (bd25-bd10-dvd): both below the 1 GiB floor, only ~0.66 GB short of
-# it. The loser's leftover is 2*CHAIN_HALF_BYTES minus the usable
-# capacity, so each extra byte on both fixtures adds twice itself to
-# the leftover. Raising CHAIN_HALF_BYTES by 2,000,000,000, to
-# 22,500,000,000, adds about 4,000,000,000 bytes to that leftover,
-# for an expected ~4.66 GB (about 4.3 GiB): comfortably inside the
-# 1-10 GiB band and near its middle, in both orders.
+# it. The rest is 2*CHAIN_HALF_BYTES minus the usable capacity, so each
+# extra byte on both fixtures adds twice itself to the rest. Raising
+# CHAIN_HALF_BYTES by 2,000,000,000, to 22,500,000,000, adds about
+# 4,000,000,000 bytes to that rest, for an expected ~4.66 GB (about
+# 4.3 GiB): comfortably inside the 1-10 GiB band and near its middle,
+# in both orders.
 CHAIN_HALF_BYTES="${NOAHSARK_E2E_CHAIN_HALF_BYTES:-22500000000}"
 CHAIN_SMALL_HALF_BYTES="${NOAHSARK_E2E_CHAIN_SMALL_HALF_BYTES:-200000000}"
 CHAIN_SEED="${NOAHSARK_E2E_CHAIN_SEED:-20260914}"
+
+# CHAIN_REST_MEDIA is the medium of the fourth disc of scenario_chain.
+# Its usable payload, about 10.70 GB, holds a rest inside the band
+# above. CHAIN_SMALL_REST_KIND is the same for scenario_chain_small: a
+# local run left a rest of about 23 MB, and this kind holds about 40 MB.
+CHAIN_REST_MEDIA="bd25-forced-10g"
+CHAIN_SMALL_REST_KIND="bd10"
 
 # CHAIN_REMAINING_BYTES is set by chain_pack_one as a side effect: the
 # staged byte count from the "staged:" line of status after that pack.
@@ -116,10 +122,9 @@ CHAIN_UUIDS=()
 # read-only and verifies it, then unmounts, keeping the image but
 # deleting the packed tree. gc then frees the staged copy of each item
 # on this disc. It fails unless pack exits 0 with a packed-disc line and
-# status then reports staged data: every disc in this scenario is sized
-# so real objects remain after it, and leftover staged data is not a
-# pack failure. It sets CHAIN_REMAINING_BYTES from the "staged:" line
-# of status, and adds the disc uuid to CHAIN_UUIDS.
+# status then prints the staged line. Staged data that remains after a
+# pack is not a pack failure. It sets CHAIN_REMAINING_BYTES from the
+# "staged:" line of status, and adds the disc uuid to CHAIN_UUIDS.
 chain_pack_one() {
 	local work="$1" repo="$2" n="$3" packflags="$4"
 	local ddir="$work/disc$n"
@@ -157,8 +162,9 @@ chain_pack_one() {
 
 	# Free the chunk files in staging of each item on this disc. A later
 	# pack never reads the chunk file of a packed chunk. The full staging
-	# copy plus three disc images does not fit on a CI runner disk. The
-	# metadata objects stay in the catalog.
+	# copy plus four disc images does not fit on a CI runner disk. gc
+	# never frees the chunk file of a staged item, thus the rest of B
+	# stays for the next pack. The metadata objects stay in the catalog.
 	local gc_out
 	gc_out="$("$BIN" --repo="$repo" gc --force-after=0d)"
 	echo "$gc_out"
@@ -207,22 +213,45 @@ chain_commit_fixture() {
 	log "$label: fixture $name: sample manifest $(wc -l <"$sample") lines, full manifest $(wc -l <"$full") lines"
 }
 
-# chain_run LABEL WORK HALF_BYTES ENFORCE_BAND K1 F1 K2 F2 K3 F3 is the
-# flow every chain scenario shares: commit two independent fixtures (A
-# and B, each HALF_BYTES), delete both sources, pack three discs (K
-# name, F pack flags, one pair per disc), check the staged
-# bytes, delete the chunk files of staging, list
-# each disc's object ids, restore the winner (the fixture pack's
-# candidate order packs first, so the one the three discs fully hold)
-# from all three discs and check it against that fixture's manifests,
-# then check a two-disc restore fails naming the missing disc. When
-# ENFORCE_BAND is "yes" the remaining bytes after the third pack must
-# fall in the 1 to 10 GiB band a full-size chain targets.
+# chain_assert_parts LABEL REPO PARTS DONE... fails unless the status of
+# REPO names the snapshot PARTS as packed in parts, and names no snapshot
+# of DONE. An empty PARTS asks for no snapshot line at all. Each id is
+# the full text form; status names a snapshot by the 12 characters after
+# the multihash prefix 1220.
+chain_assert_parts() {
+	local label="$1" repo="$2" parts="$3" out id
+	shift 3
+	out="$("$BIN" --repo="$repo" status)"
+	echo "$out"
+	if [ -n "$parts" ]; then
+		grep -qxE "snapshot ${parts:4:12}: [0-9]+ items staged, not complete on discs; recover cannot find it from the discs alone" <<<"$out" ||
+			fail "$label: status does not name snapshot ${parts:4:12} as packed in parts"
+	elif grep -q '^snapshot ' <<<"$out"; then
+		fail "$label: status names a snapshot as packed in parts, want none"
+	fi
+	for id in "$@"; do
+		if grep -q "^snapshot ${id:4:12}: " <<<"$out"; then
+			fail "$label: status names snapshot ${id:4:12} as packed in parts, want it complete on discs"
+		fi
+	done
+}
+
+# chain_run LABEL WORK HALF_BYTES ENFORCE_BAND K1 F1 K2 F2 K3 F3 K4 F4 is
+# the flow every chain scenario shares: commit two independent fixtures
+# (A, then B, each HALF_BYTES), delete both sources, pack three discs (K
+# name, F pack flags, one pair per disc), and check the staged bytes and
+# that status names B as packed in parts. Then pack the rest of B on the
+# fourth disc, list each disc's object ids, delete the repository,
+# recover it from the four discs, restore A and B from the discs and
+# check each against its fixture's manifests, and check that a restore
+# of A without disc 1 stops and asks for disc 1. When ENFORCE_BAND is
+# "yes" the remaining bytes after the third pack must fall in the 1 to
+# 10 GiB band a full-size chain targets.
 chain_run() {
 	local label="$1" work="$2" half="$3" enforce_band="$4"
 	shift 4
-	local kinds=("$1" "$3" "$5") packflags=("$2" "$4" "$6")
-	log "$label: disc order: ${kinds[0]}, ${kinds[1]}, ${kinds[2]}; two $half byte fixtures"
+	local kinds=("$1" "$3" "$5" "$7") packflags=("$2" "$4" "$6" "$8")
+	log "$label: disc order: ${kinds[0]}, ${kinds[1]}, ${kinds[2]}, then ${kinds[3]} for the rest; two $half byte fixtures"
 
 	build_binary
 	local repo="$work/repo"
@@ -244,25 +273,6 @@ chain_run() {
 	sampleB="$CHAIN_SAMPLE"
 	fullB="$CHAIN_FULL"
 	df -h
-
-	# Whichever snapshot id sorts first packs first (see chain_run's own
-	# comment), so it is the one guaranteed to fit fully in the three
-	# discs; that is the winner this scenario restores and checks.
-	local snap src sample full sorted_snaps
-	sorted_snaps="$(printf '%s\n%s\n' "$snapA" "$snapB" | LC_ALL=C sort)"
-	if [ "$(head -1 <<<"$sorted_snaps")" = "$snapA" ]; then
-		snap="$snapA"
-		src="$srcA"
-		sample="$sampleA"
-		full="$fullA"
-		log "$label: winner is fixture A ($snapA)"
-	else
-		snap="$snapB"
-		src="$srcB"
-		sample="$sampleB"
-		full="$fullB"
-		log "$label: winner is fixture B ($snapB)"
-	fi
 
 	rm -rf "$srcA" "$srcB"
 	log "$label: disk after deleting both sources"
@@ -288,15 +298,32 @@ chain_run() {
 		fi
 	fi
 
-	rm -rf "$repo/staging/chunks"
-	log "$label: disk after deleting the chunk files of staging"
-	df -h
+	# A is the older snapshot, thus pack takes A first: the three discs
+	# hold all of A, and a part of B. status names B, and not A.
+	chain_assert_parts "$label" "$repo" "$snapB" "$snapA"
+
+	chain_pack_one "$work" "$repo" 4 "${packflags[3]}"
+	log "$label: remaining after fourth pack: $CHAIN_REMAINING_BYTES bytes"
+	[ "$CHAIN_REMAINING_BYTES" -eq 0 ] ||
+		fail "$label: $CHAIN_REMAINING_BYTES bytes remained after the fourth pack, want 0"
+	chain_assert_parts "$label" "$repo" "" "$snapA" "$snapB"
 
 	log "$label: object ids per disc:"
-	for i in 1 2 3; do
+	for i in 1 2 3 4; do
 		mount_ro "$work/disc$i/run.img" "$work/disc$i/mnt"
 		log "$label: disc $i objects:"
 		chain_object_ids "$work/disc$i/mnt"
+		umount_if_mounted "$work/disc$i/mnt"
+	done
+
+	# Lose the repository with its staging directory. recover builds it
+	# again from the four discs alone.
+	rm -rf "$repo"
+	log "$label: disk after deleting the repository"
+	df -h
+	for i in 1 2 3 4; do
+		mount_ro "$work/disc$i/run.img" "$work/disc$i/mnt"
+		recover_disc "$repo" "$srcA" "$work/disc$i/mnt" 0
 		umount_if_mounted "$work/disc$i/mnt"
 	done
 
@@ -304,20 +331,27 @@ chain_run() {
 	# one drive. restore_loop swaps the disc that restore asks for.
 	local rmnt="$work/rmnt"
 	local restored="$work/restored"
-	restore_loop "$repo" "$rmnt" "$snap" "$restored"
-	log "$label: restore asked for $RESTORE_SWAPS disc(s)"
-	run_tool ci-chain-fixture check "$restored" "$sample" "$full"
-	log "$label: restored sample and full manifest match"
+	restore_loop "$repo" "$rmnt" "$snapA" "$restored"
+	log "$label: restore of A asked for $RESTORE_SWAPS disc(s)"
+	run_tool ci-chain-fixture check "$restored" "$sampleA" "$fullA"
+	log "$label: A: restored sample and full manifest match"
+	rm -rf "$restored"
 
-	# The winner is whichever fixture's snapshot id sorts first, so pack's
-	# candidate order selects it first too: its objects start filling
-	# disc 1 from the very first pack call. Disc 1 is therefore always
-	# among the discs it needs, whatever ENFORCE_BAND or the media sizes
-	# do to how far past disc 1 it spreads; omitting disc 1 is the one
-	# choice guaranteed to break its restore. The restore starts with
-	# disc 2 at the mount point and must stop and ask for disc 1.
+	# pack takes A first, thus A's objects start filling disc 1 from the
+	# very first pack call. Disc 1 is therefore always among the discs it
+	# needs, whatever ENFORCE_BAND or the media sizes do to how far past
+	# disc 1 it spreads; omitting disc 1 is the one choice guaranteed to
+	# break its restore. The restore starts with disc 2 at the mount point
+	# and must stop and ask for disc 1.
 	disc_insert "${CHAIN_UUIDS[1]}" "$rmnt"
-	restore_expect_missing "$repo" "$rmnt" "${CHAIN_UUIDS[0]}" "$snap" "$work/restored-missing"
+	restore_expect_missing "$repo" "$rmnt" "${CHAIN_UUIDS[0]}" "$snapA" "$work/restored-missing"
+	rm -rf "$work/restored-missing"
+
+	restore_loop "$repo" "$rmnt" "$snapB" "$restored"
+	log "$label: restore of B asked for $RESTORE_SWAPS disc(s)"
+	run_tool ci-chain-fixture check "$restored" "$sampleB" "$fullB"
+	log "$label: B: restored sample and full manifest match"
+	rm -rf "$restored"
 
 	umount_if_mounted "$rmnt"
 	log "$label: disk after restore"
@@ -338,10 +372,14 @@ scenario_chain() {
 	flags2="$(chain_media_pack_flags "$media2")"
 	flags3="$(chain_media_pack_flags "$media3")"
 
+	local flags4
+	flags4="$(chain_media_pack_flags "$CHAIN_REST_MEDIA")"
+
 	chain_run "chain/$order" "$work" "$CHAIN_HALF_BYTES" "yes" \
 		"$media1" "$flags1" \
 		"$media2" "$flags2" \
-		"$media3" "$flags3"
+		"$media3" "$flags3" \
+		"$CHAIN_REST_MEDIA" "$flags4"
 }
 
 # scenario_chain_small ORDER runs the same flow at a fast local scale,
@@ -358,8 +396,12 @@ scenario_chain_small() {
 	flags2="$(chain_small_kind_flags "$k2")"
 	flags3="$(chain_small_kind_flags "$k3")"
 
+	local flags4
+	flags4="$(chain_small_kind_flags "$CHAIN_SMALL_REST_KIND")"
+
 	chain_run "chain-small/$order" "$work" "$CHAIN_SMALL_HALF_BYTES" "no" \
 		"$k1" "$flags1" \
 		"$k2" "$flags2" \
-		"$k3" "$flags3"
+		"$k3" "$flags3" \
+		"$CHAIN_SMALL_REST_KIND" "$flags4"
 }

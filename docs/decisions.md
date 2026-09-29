@@ -425,6 +425,25 @@ search. `pack` grows the prefix while the capacity check passes and stops at
 the first object that does not fit. Locality asks for "keep together", not for
 a bin-packing search.
 
+**`pack` finishes a snapshot that is packed in parts first, then goes by
+snapshot time.** The snapshot object comes after each object that it reaches,
+thus it goes on the disc that holds the last part. Until then `recover` from
+the discs alone cannot find the snapshot. An order by the bytes of the
+snapshot id put a new snapshot with a smaller id before the rest of an old
+snapshot, and that rest could wait for more than one pack. Time order gives
+the oldest data a disc first. The id order breaks a tie only, because two
+snapshots can have the same time. The rule is host-side and changes no disc
+byte. An item that a disc holds already makes a snapshot "packed in parts"
+also when an older snapshot put it there. The state log does not record
+which snapshot a pack took an item for, and such a snapshot is not complete
+on discs either.
+
+**`pack` has no minimum fill.** A pack with a small rest of a snapshot writes
+a disc that is mostly empty. The operator decides when to pack the rest.
+`status` names each snapshot that is packed in parts, thus the rest is not
+forgotten. A minimum fill would keep the snapshot out of `recover` for a time
+that the tool cannot know.
+
 **`--capacity` is required at each `pack`, and refuses a bare number.** Each
 blank disc can differ, so no config key stores a capacity. A bare number once
 meant sectors and reads as bytes, a factor of 2048 apart. A preset gives the

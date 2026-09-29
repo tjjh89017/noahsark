@@ -155,6 +155,19 @@ the state log, `state/state.db`. The state log stores four states:
 `status` never prints these words to the operator. It prints a disc's
 state (see "Disc states") and a staged total.
 
+A snapshot is packed in parts when its snapshot object is `staged` and
+one or more items that it reaches are not `staged`. `pack` puts the
+snapshot object on a disc only after each item that the snapshot
+reaches, thus `recover` from the discs alone cannot find such a
+snapshot. `status` prints one line for each snapshot that is packed in
+parts, after the `staged:` line and before the disc lines:
+`snapshot ID: N items staged, not complete on discs; recover cannot find
+it from the discs alone`. `ID` is the short snapshot id, and `N` counts
+the `staged` items that the snapshot reaches, its snapshot object
+included. A snapshot with no item on a disc, and a snapshot with no
+`staged` item, get no line. OPERATIONS.md, "Command notes", gives the
+order of the lines. These lines change no `next:` block.
+
 Transitions, with the `reason` of the new record in brackets:
 
 ```
@@ -538,6 +551,9 @@ in this order, and inside one step the lowest number:
 
 A repository with no commit and no disc matches step 7: `status` prints
 `next: nothing to do`.
+
+The rest of a snapshot that is packed in parts ("Item states") is staged
+data that no disc holds. It matches step 5, and gets no block of its own.
 
 | State | `next:` block |
 |---|---|

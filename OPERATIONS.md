@@ -446,7 +446,19 @@ A matched directory is not walked. `commit` prints `excluded: N path(s)`.
    longest prefix of that order that passes "The budget formula". Thus the
    chunks of a file and the files of a directory stay together. It reads
    chunks from `staging/chunks/`, and blobs, trees and snapshots from
-   `catalog/`.
+   `catalog/`. The snapshot object comes after each object that it reaches.
+   `pack` walks the snapshots whose snapshot object is Staged in this order:
+   1. First, each snapshot that is packed in parts: one or more items that
+      it reaches are not Staged (Packed, OnDisc or Lost). The oldest
+      snapshot time goes first.
+   2. Then each other snapshot, the oldest snapshot time first.
+   3. Snapshots with equal times go in the order of the bytes of their ids.
+
+   An item that two snapshots reach goes with the first of them in this
+   order. Thus a new snapshot never goes before the rest of an older
+   snapshot. `pack` has no minimum fill: the rest of a snapshot stays Staged
+   until the operator packs it. `status` names each snapshot that is packed
+   in parts ("Command notes").
 4. A prefix is dependency-closed: a child that the prefix does not hold is
    already on an earlier disc. `pack` records that disc in the Prereqs table
    of INDEX.
@@ -1306,12 +1318,29 @@ failed, or when the state refused the command. 2 for `--heal` with no
 and heal" gives the order of the checks, the `REASON` texts and the count
 `N`.
 
-**`status`** prints `staged: N items, B bytes`, then one line of this form
-for each disc that is not undone, then one `next:` block:
+**`status`** prints `staged: N items, B bytes`, then one snapshot line for
+each snapshot that is packed in parts, then one disc line for each disc that
+is not undone, then one `next:` block:
 
 ```
+snapshot ID: N items staged, not complete on discs; recover cannot find it from the discs alone
 disc SEQ "LABEL"  STATE  [fec  ]UUID
 ```
+
+A snapshot is packed in parts when its snapshot object is Staged and one or
+more items that it reaches are not Staged. `ID` is the short form of the
+snapshot id ("Refs"). `N` is the number of Staged items that the snapshot
+reaches, its snapshot object included. The plural form `items` is fixed, also
+for 1. The snapshot lines come in the order in which `pack` takes the
+snapshots ("Packing rules"). A snapshot that no disc holds a part of gets no
+line, and a snapshot whose snapshot object is not Staged gets no line. An
+item that an older snapshot put on a disc counts as a part too: a new
+snapshot that shares data with a disc gets a line until `pack` takes its
+snapshot object. The snapshot
+object of a snapshot that is packed in parts goes on a disc only with its
+last part. Until then `recover` from the discs alone cannot find the
+snapshot. The snapshot lines change no `next:` block: the staged items are
+staged data.
 
 Two spaces separate the fields. `STATE` is the state word, with the suffix
 `, last check DATE`, `, last check failed DATE` or `, not checked` where
@@ -1659,7 +1688,7 @@ mounts it again read-only before the tool reads it.
 |---|---|
 | `media/dvd+r` | The full cycle on a DVD+R size image, with the reference decoder. Then the command-line cycle, and a disc root burned as ISO 9660 with the folder burn options (`-R -iso-level 4 -V NOAHSARK`) that `verify` counts and `restore` reads. |
 | `media/bd25-forced-10g` | A 25 GB medium, packed at a 10 GB `--capacity`. |
-| `chain/dvd-bd25-bd10` | About 40 GB across three discs. Restore swaps all three at one mount point. A missing disc is named. Data that does not fit stays Staged. |
+| `chain/dvd-bd25-bd10` | Two snapshots of about 22.5 GB each across three discs. `pack` takes the older snapshot first. Data that does not fit stays Staged, and `status` names the snapshot that is packed in parts. A fourth disc takes the rest. The repository is deleted, and `recover` runs one time for each of the four discs. Both snapshots then restore; restore swaps the discs at one mount point. A missing disc is named. |
 | `lowmem` | The 25 GB flow under a memory limit: peak memory does not grow with the data size. |
 | `incremental` | A second commit packs only the change. Both snapshots restore. |
 | `rebuild` | The repository is deleted. `recover` runs one time for each disc. `log`, `ls` and `restore` then work, and a later `pack` deduplicates against the discs. This proves that the discs alone hold the backup. |

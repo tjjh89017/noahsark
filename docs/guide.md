@@ -164,8 +164,9 @@ because you answered no, prints no `next:` line. `restore`, `ls`, `log`,
 `image build`, `--dry-run`, `verify --no-mark`, and a `verify` that is not
 counted print none either.
 
-`status` prints the staged total, one line for each disc, and one `next:`
-block. The block holds the lines to run next, with real paths. The lines
+`status` prints the staged total, one line for each snapshot that is
+packed in parts ("A snapshot packed in parts"), one line for each disc,
+and one `next:` block. The block holds the lines to run next, with real paths. The lines
 of a block are joined with `&&`, so a failed line stops the lines after
 it. Paste the lines under `next:` as they are.
 
@@ -226,6 +227,31 @@ $ noahsark pack --capacity=bd25 --dry-run
 disc 0: 8 items, 3001350 bytes
 total: 1 discs, 8 items, 3001350 bytes
 ```
+
+### A snapshot packed in parts
+
+A snapshot that is larger than one disc goes on two or more discs. Each
+`pack` takes the next part. The snapshot object itself goes on the disc
+that holds the last part. Until that disc exists, `recover` from the discs
+alone cannot find the snapshot. `status` names such a snapshot on a line
+of its own:
+
+```
+$ noahsark status
+staged: 412 items, 1830221824 bytes
+snapshot 1b03c7e2a9f4: 412 items staged, not complete on discs; recover cannot find it from the discs alone
+disc 0 "2026-09-14 disc 0"  verified, last check 2026-09-14  4a060bd4-ca9f-2d06-263e-b907483b8230
+next: load a blank disc, then run:
+  dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
+then paste this line, type the capacity, and press Enter:
+  noahsark pack --capacity=
+```
+
+`pack` always takes the rest of such a snapshot first, before a newer
+snapshot. `pack` does not wait for a full disc. You decide when to pack a
+small rest: pack it now on a small disc, or commit more and pack later. The
+snapshot is safe on discs only after its rest is packed and the disc is
+verified.
 
 
 ### Build the image, burn, and verify
