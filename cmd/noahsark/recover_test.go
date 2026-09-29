@@ -8,10 +8,78 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/cache"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+// TestRebuildCacheRestoresCacheContent deletes the whole cache pack
+// left behind, along with the repository, and checks recover
+// from the packed tree alone puts back an equally complete cache.
+func TestRebuildCacheRestoresCacheContent(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=BASE", src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	snapIDText := snapshotIDFromCommit(t, out)
+	snapID, err := object.ParseID(snapIDText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	beforeTrees, err := os.ReadDir(filepath.Join(repoCacheDir(t, repo), "trees"))
+	if err != nil {
+		t.Fatalf("read trees before: %v", err)
+	}
+
+	// The cache lives inside the repository directory, so removing the
+	// repository removes the cache with it: this is the rebuild case
+	// recover must handle, the cache lost along with everything else.
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+		t.Fatalf("recover: exit %d: %s", code, out)
+	}
+
+	c, err := cache.Open(repoCacheDir(t, repo))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	ids, err := c.ListSnapshots()
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != snapID {
+		t.Fatalf("ListSnapshots = %v, want [%s]", ids, snapID.TextForm())
+	}
+	if !c.Complete(snapID) {
+		t.Fatalf("Complete(%s) = false, want true", snapID.TextForm())
+	}
+
+	afterTrees, err := os.ReadDir(filepath.Join(repoCacheDir(t, repo), "trees"))
+	if err != nil {
+		t.Fatalf("read trees after: %v", err)
+	}
+	if len(afterTrees) != len(beforeTrees) {
+		t.Fatalf("tree count after rebuild = %d, want %d", len(afterTrees), len(beforeTrees))
+	}
+}
 
 // TestRecoverFromDiscRestoresState packs one disc, deletes the
 // whole repository directory, then rebuilds it from that disc alone: the
@@ -780,5 +848,63 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 	}
 	if strings.Contains(out, "not fed yet") {
 		t.Fatalf("repeat 2-disc output %q wrongly reports a disc not fed", out)
+	}
+}
+
+// TestRebuildCacheFailsFastWhenRepoLockHeld checks that recover
+// takes the repository's exclusive lock: recover writes the state
+// log and the disc and ref ledgers, so it must not run alongside
+// another state-writing command, or another recover.
+func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	treeDir := filepath.Join(work, "tree")
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+
+	held, err := repolock.Acquire(repo)
+	if err != nil {
+		t.Fatalf("hold lock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	code, out := runCmd(t, "--repo="+repo, "recover", treeDir)
+	if code != 1 {
+		t.Fatalf("recover while locked: exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "repository lock") {
+		t.Fatalf("recover while locked output %q, want it to name the repository lock", out)
+	}
+}
+
+// TestRecoverUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
+// recover: each case exits 2, never 0 or 1.
+func TestRecoverUsageErrorsExitTwo(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"unknown flag", []string{"--repo=" + repo, "recover", "--no-such-flag"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, out := runCmd(t, c.args...)
+			if code != 2 {
+				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
+			}
+		})
 	}
 }

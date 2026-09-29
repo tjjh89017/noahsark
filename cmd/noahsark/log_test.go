@@ -35,8 +35,6 @@ func TestLogListsKnownSnapshots(t *testing.T) {
 // packing stops carrying the freed snapshot object itself, so it is no
 // longer physically on the newest disc.
 func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
-	oldClock := fakeNow
-	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -55,7 +53,7 @@ func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
 
 	// Past the fixed 7-day retention: gc frees disc A's run, including
 	// its own staged snapshot object.
-	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
 	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
@@ -173,5 +171,115 @@ func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
 	}
 	if i2 > i1 {
 		t.Fatalf("log output %q lists the older snapshot %s before the newer %s", out, snap1, snap2)
+	}
+}
+
+// TestLogFromCacheWithNoDisc checks log resolves the same way, both
+// listing every snapshot and printing one snapshot's own details.
+func TestLogFromCacheWithNoDisc(t *testing.T) {
+	treeDir, snapID, _ := lsFixture(t)
+	repo := repoDirFromTreeDir(t, treeDir)
+
+	discCode, discOut := runCmd(t, "log", treeDir, snapID)
+	if discCode != 0 {
+		t.Fatalf("log (disc): exit %d: %s", discCode, discOut)
+	}
+	cacheCode, cacheOut := runCmd(t, "--repo="+repo, "log", snapID)
+	if cacheCode != 0 {
+		t.Fatalf("log (cache): exit %d: %s", cacheCode, cacheOut)
+	}
+	if cacheOut != discOut {
+		t.Fatalf("log from cache = %q, want %q (same as disc)", cacheOut, discOut)
+	}
+
+	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 {
+		t.Fatalf("--repo log (list all): exit %d: %s", code, out)
+	} else if !strings.Contains(out, snapID) {
+		t.Fatalf("--repo log listing = %q, does not name %s", out, snapID)
+	}
+}
+
+// TestLogNonexistentPathReportsNoSuchDiscRoot is TestLsNonexistentPathReportsNoSuchDiscRoot for log.
+func TestLogNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-disc")
+	code, out := runCmd(t, "log", missing)
+	if code != 2 {
+		t.Fatalf("log: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "no such disc root: "+missing) {
+		t.Fatalf("log output %q does not name the missing disc root", out)
+	}
+}
+
+// firstColumn returns the first whitespace-separated field of the first
+// non-empty line of out.
+func firstColumn(t *testing.T, out string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(out, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			return fields[0]
+		}
+	}
+	t.Fatalf("no line in output: %q", out)
+	return ""
+}
+
+// TestSnapshotArgFormsFromLog covers the forms the operator guide shows
+// for a snapshot argument: a ref name, and the snapshot id that log
+// prints in its first column. restore, ls and restore --dry-run must
+// all accept both.
+func TestSnapshotArgFormsFromLog(t *testing.T) {
+	repo, treeDir, snapID := snapshotArgFixture(t)
+
+	code, out := runCmd(t, "--repo="+repo, "log")
+	if code != 0 {
+		t.Fatalf("log: exit %d: %s", code, out)
+	}
+	logged := firstColumn(t, out)
+	if logged != snapID {
+		t.Fatalf("log printed %q in its first column, commit printed %q", logged, snapID)
+	}
+
+	mountDir := filepath.Join(t.TempDir(), "mount")
+	mountDisc(t, mountDir, treeDir)
+
+	outRoot := t.TempDir()
+	for i, arg := range []string{logged, defaultRefName()} {
+		if code, out := runCmd(t, "restore", treeDir, arg, filepath.Join(outRoot, string(rune('a'+i)))); code != 0 {
+			t.Fatalf("restore %q: exit %d, want 0: %s", arg, code, out)
+		}
+		if code, out := runCmd(t, "ls", treeDir, arg); code != 0 {
+			t.Fatalf("ls %q: exit %d, want 0: %s", arg, code, out)
+		}
+		if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--dry-run", arg, filepath.Join(outRoot, "dry-run")); code != 0 {
+			t.Fatalf("restore --dry-run %q: exit %d, want 0: %s", arg, code, out)
+		}
+		if code, out := runCmd(t, "--repo="+repo, "log", arg); code != 0 {
+			t.Fatalf("log %q: exit %d, want 0: %s", arg, code, out)
+		}
+	}
+}
+
+// TestLogUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
+// log: each case exits 2, never 0 or 1.
+func TestLogUsageErrorsExitTwo(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"unknown flag", []string{"--repo=" + repo, "log", "--no-such-flag"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, out := runCmd(t, c.args...)
+			if code != 2 {
+				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
+			}
+		})
 	}
 }

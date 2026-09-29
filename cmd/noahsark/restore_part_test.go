@@ -192,25 +192,6 @@ func compareFiles(t *testing.T, got, want string) {
 	}
 }
 
-// partFilesUnder returns every part file below dir, by path.
-func partFilesUnder(t *testing.T, dir string) []string {
-	t.Helper()
-	var out []string
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && strings.Contains(d.Name(), ".noahsark-part") {
-			out = append(out, path)
-		}
-		return nil
-	})
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	return out
-}
-
 // foundDiscSeqs returns the disc_seq of every disc a restore reported as
 // found, in the order the restore detected them.
 func foundDiscSeqs(t *testing.T, out string) []int {
