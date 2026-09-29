@@ -328,7 +328,7 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	if strings.Contains(out, "  packed  ") {
 		t.Fatalf("status output %q calls an unfed disc packed", out)
 	}
-	if !strings.Contains(out, "next: mount disc") || !strings.Contains(out, "noahsark recover <MOUNT>") {
+	if !strings.Contains(out, "next: load disc ") || !strings.Contains(out, "noahsark recover --source=") {
 		t.Fatalf("status output %q does not send the operator to recover", out)
 	}
 

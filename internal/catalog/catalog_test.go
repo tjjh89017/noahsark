@@ -1,6 +1,7 @@
 package catalog_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -16,6 +17,25 @@ func TestDirIsCatalogInsideTheRepository(t *testing.T) {
 	want := filepath.Join("/repo", "catalog")
 	if got := catalog.Dir("/repo"); got != want {
 		t.Fatalf("Dir(%q) = %q, want %q", "/repo", got, want)
+	}
+}
+
+// TestOpenReadOnlyCreatesNothing checks that OpenReadOnly of a
+// repository with no catalog directory creates no directory, and that
+// Open creates it.
+func TestOpenReadOnlyCreatesNothing(t *testing.T) {
+	repo := t.TempDir()
+	if _, err := catalog.OpenReadOnly(repo); err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	if _, err := os.Stat(catalog.Dir(repo)); !os.IsNotExist(err) {
+		t.Fatalf("catalog directory after OpenReadOnly: %v, want none", err)
+	}
+	if _, err := catalog.Open(repo); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if fi, err := os.Stat(catalog.Dir(repo)); err != nil || !fi.IsDir() {
+		t.Fatalf("catalog directory after Open: %v", err)
 	}
 }
 

@@ -346,7 +346,7 @@ func TestRepoFromEnvironment(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status with no flag: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "next: burn disc 0") {
+	if !strings.Contains(out, "image build 0 &&") {
 		t.Fatalf("status output %q does not name the burn", out)
 	}
 	if code, out := te.run("disc", "burned", "0"); code != 0 {
