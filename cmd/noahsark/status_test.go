@@ -535,3 +535,67 @@ func TestStatusUsageErrorsExitTwo(t *testing.T) {
 		t.Fatalf("status extra: exit %d, want 2: %s", code, out)
 	}
 }
+
+// statusSnapshotLineRe matches one snapshot line of "status": the short
+// snapshot id and the count of its staged items.
+var statusSnapshotLineRe = regexp.MustCompile(`^snapshot ([0-9a-f]{12}): (\d+) items staged, not complete on discs; recover cannot find it from the discs alone$`)
+
+// TestStatusNamesASnapshotPackedInParts packs a part of a snapshot. status
+// prints its snapshot line after the staged line and before the disc
+// line, with the count of the staged items. After a pack of the rest,
+// status prints no snapshot line.
+func TestStatusNamesASnapshotPackedInParts(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", writeSeededSource(t, 42, 6))
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	snapID := snapshotIDFromCommit(t, out)
+	packPart(t, repo, filepath.Join(work, "disc0"))
+
+	lines := statusLines(t, repo)
+	if len(lines) < 5 {
+		t.Fatalf("status lines %q, want the staged, snapshot and disc lines, then a block", lines)
+	}
+	m := statusSnapshotLineRe.FindStringSubmatch(lines[1])
+	if !strings.HasPrefix(lines[0], "staged: ") || m == nil || !statusDiscLineRe.MatchString(lines[2]) {
+		t.Fatalf("status lines %q, want the staged line, one snapshot line, then the disc line", lines)
+	}
+	if m[1] != snapID[4:16] {
+		t.Fatalf("snapshot line names %s, want %s", m[1], snapID[4:16])
+	}
+	if want := fmt.Sprint(countByState(t, repo, stage.Staged)); m[2] != want {
+		t.Fatalf("snapshot line counts %s items, want %s", m[2], want)
+	}
+	if lines[3] != "next: load a blank disc, then run:" || !strings.HasPrefix(lines[4], "sudo noahsark ") {
+		t.Fatalf("status lines %q, want the block of the packed disc", lines)
+	}
+
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+filepath.Join(work, "disc1")); code != 0 {
+		t.Fatalf("pack of the rest: exit %d: %s", code, out)
+	}
+	for _, line := range statusLines(t, repo) {
+		if strings.HasPrefix(line, "snapshot ") {
+			t.Fatalf("status prints %q after the rest is packed", line)
+		}
+	}
+}
+
+// TestStatusNoSnapshotLineWithoutAPartOnADisc commits two snapshots and
+// packs nothing. status prints no snapshot line: no disc holds a part of
+// either snapshot.
+func TestStatusNoSnapshotLineWithoutAPartOnADisc(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	if code, out := runCmd(t, "--repo="+repo, "commit", writeSeededSource(t, 7, 1)); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	for _, line := range statusLines(t, repo) {
+		if strings.HasPrefix(line, "snapshot ") {
+			t.Fatalf("status prints %q with no part on a disc", line)
+		}
+	}
+}

@@ -207,7 +207,11 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		rec, ok := opts.StageLog.Get(id)
 		return ok && rec.State.OnDisc()
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
+	walkOrder, err := packWalkOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
+	if err != nil {
+		return nil, err
+	}
+	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, walkOrder, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -544,7 +548,11 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		rec, ok := opts.StageLog.Get(id)
 		return ok && rec.State.OnDisc()
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
+	walkOrder, err := packWalkOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
+	if err != nil {
+		return nil, err
+	}
+	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, walkOrder, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -874,8 +882,9 @@ func StagedTotals(objectPath ObjectPathFunc, stageLog *stage.Log) (objects int, 
 	return objects, bytes, nil
 }
 
-// buildPackOrder walks every snapshot in the repository, children before
-// parent (post-order), so that a straight prefix of the result always
+// buildPackOrder walks every snapshot in the order of snapshotIDs,
+// children before parent (post-order), so that a straight prefix of the
+// result always
 // has every selected metadata object's staged-but-not-yet-packed
 // children ahead of it. It returns that order and every snapshot's own
 // bytes, keyed by id.
