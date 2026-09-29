@@ -2,25 +2,24 @@ package main
 
 import (
 	"encoding/hex"
-	"fmt"
+	"errors"
 	"strconv"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
-// discArgCandidate is one disc a resolveDiscArg refusal lists: enough to
-// print "seq  label  uuid", and, on a match, the disc's own uuid.
+// discArgCandidate is one disc that a disc argument can name.
 type discArgCandidate struct {
 	Seq   uint64
 	Label string
 	UUID  [16]byte
 }
 
-// uniqueDiscCandidates folds ledger rows down to one entry per disc
-// uuid, since a disc with more than one run on it has one ledger row
-// per run.
-func uniqueDiscCandidates(rows []format.DiscsRow) []discArgCandidate {
+// uniqueDiscCandidates gives one candidate for each disc uuid. A disc
+// with more than one run has one ledger row for each run. The function
+// drops a disc when hidden reports true for its uuid.
+func uniqueDiscCandidates(rows []format.DiscsRow, hidden func(uuid [16]byte) bool) []discArgCandidate {
 	seen := make(map[[16]byte]bool)
 	var out []discArgCandidate
 	for _, r := range rows {
@@ -28,152 +27,85 @@ func uniqueDiscCandidates(rows []format.DiscsRow) []discArgCandidate {
 			continue
 		}
 		seen[r.DiscUUID] = true
+		if hidden != nil && hidden(r.DiscUUID) {
+			continue
+		}
 		out = append(out, discArgCandidate{Seq: r.DiscSeq, Label: labelText(r.Label[:r.LabelLen]), UUID: r.DiscUUID})
 	}
 	return out
 }
 
-// isDecimal reports whether s is a decimal integer of 1 to 7 digits.
-func isDecimal(s string) bool {
-	if len(s) == 0 || len(s) > 7 {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// asHexPrefix reports whether s, with any hyphens removed, is 8 or more
-// hexadecimal characters, and returns that cleaned form.
-func asHexPrefix(s string) (clean string, ok bool) {
-	clean = strings.ToLower(strings.ReplaceAll(s, "-", ""))
-	if len(clean) < 8 {
-		return clean, false
-	}
-	if _, err := hex.DecodeString(padHexEven(clean)); err != nil {
-		return clean, false
-	}
-	return clean, true
-}
-
-// padHexEven appends a "0" when s has an odd length, so hex.DecodeString
-// can validate an odd-length prefix's characters without rejecting it
-// only for its length.
-func padHexEven(s string) string {
-	if len(s)%2 != 0 {
-		return s + "0"
-	}
-	return s
-}
-
-// uuidHex is d's uuid as plain lowercase hex, no hyphens.
-func uuidHex(d [16]byte) string {
-	return hex.EncodeToString(d[:])
-}
-
-// resolveDiscArg resolves arg, a command-line disc argument, against
-// repo's disc list, in this order:
-//
-//  1. A decimal integer of 7 digits or fewer: match disc_seq, accepted
-//     only when exactly one disc matches. Two discs can carry the same
-//     disc_seq after a lost repository.
-//  2. A full uuid, 32 hex characters with or without hyphens: exact
-//     match.
-//  3. 8 or more hex characters: a uuid prefix, accepted only when
-//     exactly one disc matches.
-//  4. Any other text: an exact match against the on-disc label,
-//     accepted only when exactly one disc matches.
-//
-// It refuses with an error listing every candidate disc when arg
-// matches zero discs, or more than one.
+// resolveDiscArg resolves a disc argument against every disc of the
+// ledger rows. resolveDiscArgExcept holds the rules.
 func resolveDiscArg(rows []format.DiscsRow, arg string) ([16]byte, error) {
-	discs := uniqueDiscCandidates(rows)
+	return resolveDiscArgExcept(rows, arg, nil)
+}
 
-	if isDecimal(arg) {
-		seq, _ := strconv.ParseUint(arg, 10, 64)
-		var matches []discArgCandidate
-		for _, d := range discs {
-			if d.Seq == seq {
-				matches = append(matches, d)
-			}
-		}
-		if len(matches) == 1 {
-			return matches[0].UUID, nil
-		}
-		if len(matches) > 1 {
-			return [16]byte{}, refuseDiscArgAmbiguous(arg, matches)
-		}
-		return [16]byte{}, refuseDiscArgNoMatch(arg, discs)
-	}
+// discNumberMaxDigits is the length limit of a disc number argument. A
+// value of decimal digits only with more digits is a uuid prefix.
+const discNumberMaxDigits = 7
 
-	if clean, ok := asHexPrefix(arg); ok {
-		if len(clean) == 32 {
-			raw, err := hex.DecodeString(clean)
-			if err == nil {
-				var uuid [16]byte
-				copy(uuid[:], raw)
-				for _, d := range discs {
-					if d.UUID == uuid {
-						return d.UUID, nil
-					}
+// resolveDiscArgExcept resolves arg, a disc number, a full uuid or a
+// uuid prefix, to the uuid of one disc. A value of 1 to 7 decimal
+// digits is a disc number and nothing else. Every other value is a uuid
+// prefix. A uuid and a prefix can have hyphens and can use any letter
+// case. A disc for which hidden reports true matches no argument. A nil
+// hidden hides no disc. The error text is the refusal for no match or
+// for more than one match; the caller exits with the usage error code.
+func resolveDiscArgExcept(rows []format.DiscsRow, arg string, hidden func(uuid [16]byte) bool) ([16]byte, error) {
+	discs := uniqueDiscCandidates(rows, hidden)
+	var matches []discArgCandidate
+
+	if len(arg) <= discNumberMaxDigits {
+		if seq, err := strconv.ParseUint(arg, 10, 64); err == nil {
+			for _, d := range discs {
+				if d.Seq == seq {
+					matches = append(matches, d)
 				}
 			}
-			return [16]byte{}, refuseDiscArgNoMatch(arg, discs)
+			return oneDisc(arg, matches)
 		}
-		var matches []discArgCandidate
+	}
+
+	if prefix, ok := uuidPrefix(arg); ok {
 		for _, d := range discs {
-			if strings.HasPrefix(uuidHex(d.UUID), clean) {
+			if strings.HasPrefix(hex.EncodeToString(d.UUID[:]), prefix) {
 				matches = append(matches, d)
 			}
 		}
-		if len(matches) == 1 {
-			return matches[0].UUID, nil
-		}
-		if len(matches) > 1 {
-			return [16]byte{}, refuseDiscArgAmbiguous(arg, matches)
-		}
-		return [16]byte{}, refuseDiscArgNoMatch(arg, discs)
 	}
+	return oneDisc(arg, matches)
+}
 
-	var matches []discArgCandidate
-	for _, d := range discs {
-		if d.Label == arg {
-			matches = append(matches, d)
+// uuidPrefix removes the hyphens from s and makes it lower case. It
+// reports false when the result is empty, is longer than a uuid, or
+// holds a character that is not hexadecimal.
+func uuidPrefix(s string) (string, bool) {
+	p := strings.ToLower(strings.ReplaceAll(s, "-", ""))
+	if p == "" || len(p) > 32 {
+		return "", false
+	}
+	for _, c := range p {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return "", false
 		}
 	}
-	if len(matches) == 1 {
+	return p, true
+}
+
+// oneDisc gives the uuid of the only match, or the refusal for no match
+// or for more than one match.
+func oneDisc(arg string, matches []discArgCandidate) ([16]byte, error) {
+	switch len(matches) {
+	case 0:
+		return [16]byte{}, errors.New("no disc matches " + arg)
+	case 1:
 		return matches[0].UUID, nil
 	}
-	if len(matches) > 1 {
-		return [16]byte{}, refuseDiscArgAmbiguous(arg, matches)
-	}
-	return [16]byte{}, refuseDiscArgNoMatch(arg, discs)
-}
-
-// refuseDiscArgNoMatch builds the error resolveDiscArg returns when arg
-// matched no disc, listing every disc in the repository, one per line,
-// as "seq  label  uuid".
-func refuseDiscArgNoMatch(arg string, discs []discArgCandidate) error {
-	return fmt.Errorf("%q matches no disc in this repository's disc list; labels must match exactly%s", arg, candidateLines(discs))
-}
-
-// refuseDiscArgAmbiguous builds the error resolveDiscArg returns when
-// arg matched more than one disc, listing every match, one per line, as
-// "seq  label  uuid".
-func refuseDiscArgAmbiguous(arg string, matches []discArgCandidate) error {
-	return fmt.Errorf("%q matches more than one disc; use the uuid, or a uuid prefix:%s", arg, candidateLines(matches))
-}
-
-// candidateLines renders one "\n  seq  label  uuid" line per candidate.
-// The uuid is whole: two discs can share a seq, and the operator needs
-// the uuid, or a prefix of it, to name one of them.
-func candidateLines(candidates []discArgCandidate) string {
 	var b strings.Builder
-	for _, d := range candidates {
-		fmt.Fprintf(&b, "\n  %d  %s  %s", d.Seq, d.Label, uuidText(d.UUID))
+	b.WriteString(arg + " matches more than one disc:")
+	for _, d := range matches {
+		b.WriteString("\n" + discNameShort(d.Seq, d.Label) + "  " + uuidText(d.UUID))
 	}
-	return b.String()
+	return [16]byte{}, errors.New(b.String())
 }

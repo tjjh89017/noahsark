@@ -7,9 +7,8 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
-// discArgRow builds one synthetic DiscsRow for resolveDiscArg tests,
-// enough of it to resolve by seq, uuid or label: seq, label and a uuid
-// built from uuidByte repeated across all 16 bytes.
+// discArgRow builds one ledger row with seq, label and a uuid that
+// repeats uuidByte in all 16 bytes.
 func discArgRow(seq uint64, label string, uuidByte byte) format.DiscsRow {
 	var l [format.DiscsLabelLen]byte
 	n := copy(l[:], label)
@@ -20,132 +19,157 @@ func discArgRow(seq uint64, label string, uuidByte byte) format.DiscsRow {
 	return format.DiscsRow{DiscSeq: seq, DiscUUID: u, Label: l, LabelLen: uint16(n)}
 }
 
-func TestResolveDiscArgBySeq(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
-	uuid, err := resolveDiscArg(rows, "1")
+func twoDiscRows() []format.DiscsRow {
+	return []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
+}
+
+func TestResolveDiscArgMatchesOneDisc(t *testing.T) {
+	rows := twoDiscRows()
+	hyphenated := uuidText(rows[0].DiscUUID)
+	plain := strings.ReplaceAll(hyphenated, "-", "")
+	tests := []struct {
+		name, arg string
+		want      [16]byte
+	}{
+		{"number", "1", rows[1].DiscUUID},
+		{"full uuid with hyphens", hyphenated, rows[0].DiscUUID},
+		{"full uuid without hyphens", plain, rows[0].DiscUUID},
+		{"full uuid in upper case", strings.ToUpper(hyphenated), rows[0].DiscUUID},
+		{"prefix", "bbbb", rows[1].DiscUUID},
+		{"prefix in upper case with a hyphen", "AAAAAAAA-AA", rows[0].DiscUUID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveDiscArg(rows, tt.arg)
+			if err != nil {
+				t.Fatalf("resolveDiscArg(%q): %v", tt.arg, err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveDiscArg(%q) = %x, want %x", tt.arg, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResolveDiscArgNumberBeforePrefix gives a value that is the number
+// of one disc and a uuid prefix of another disc. The number wins.
+func TestResolveDiscArgNumberBeforePrefix(t *testing.T) {
+	rows := []format.DiscsRow{discArgRow(12, "disc-a", 0xaa), discArgRow(3, "disc-b", 0x12)}
+	got, err := resolveDiscArg(rows, "12")
 	if err != nil {
-		t.Fatalf("resolveDiscArg(1): %v", err)
+		t.Fatalf("resolveDiscArg(12): %v", err)
 	}
-	if uuid != rows[1].DiscUUID {
-		t.Fatalf("resolveDiscArg(1) = %x, want disc-b's uuid", uuid)
-	}
-}
-
-func TestResolveDiscArgByFullUUID(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
-	arg := uuidText(rows[0].DiscUUID)
-	uuid, err := resolveDiscArg(rows, arg)
-	if err != nil {
-		t.Fatalf("resolveDiscArg(%s): %v", arg, err)
-	}
-	if uuid != rows[0].DiscUUID {
-		t.Fatalf("resolveDiscArg(%s) = %x, want disc-a's uuid", arg, uuid)
+	if got != rows[0].DiscUUID {
+		t.Fatalf("resolveDiscArg(12) = %x, want the uuid of disc 12", got)
 	}
 }
 
-func TestResolveDiscArgByUniquePrefix(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
-	uuid, err := resolveDiscArg(rows, "aaaaaaaa")
-	if err != nil {
-		t.Fatalf("resolveDiscArg(aaaaaaaa): %v", err)
-	}
-	if uuid != rows[0].DiscUUID {
-		t.Fatalf("resolveDiscArg(aaaaaaaa) = %x, want disc-a's uuid", uuid)
-	}
-}
-
-func TestResolveDiscArgByLabel(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
-	uuid, err := resolveDiscArg(rows, "disc-b")
-	if err != nil {
-		t.Fatalf("resolveDiscArg(disc-b): %v", err)
-	}
-	if uuid != rows[1].DiscUUID {
-		t.Fatalf("resolveDiscArg(disc-b) = %x, want disc-b's uuid", uuid)
-	}
-}
-
-func TestResolveDiscArgAmbiguousPrefix(t *testing.T) {
-	// Two discs whose uuids share their first 8 hex characters.
-	rowA := discArgRow(0, "disc-a", 0xaa)
-	rowB := discArgRow(1, "disc-b", 0xaa)
-	rowB.DiscUUID[15] = 0xbb
-	rows := []format.DiscsRow{rowA, rowB}
-
-	_, err := resolveDiscArg(rows, "aaaaaaaa")
-	if err == nil {
-		t.Fatal("resolveDiscArg(aaaaaaaa): expected an ambiguous-match error")
-	}
-	if !strings.Contains(err.Error(), "more than one disc") {
-		t.Fatalf("error = %q, want the ambiguous-match wording", err)
-	}
-	if strings.Count(err.Error(), "\n") != 2 {
-		t.Fatalf("error = %q, want one candidate line per disc", err)
-	}
-}
-
-// TestResolveDiscArgAmbiguousSeq gives two discs the same disc_seq, as
-// a lost repository does. The decimal argument must be refused, and the
-// refusal must name each uuid in full, so the operator can give a uuid
-// or a uuid prefix instead.
-func TestResolveDiscArgAmbiguousSeq(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(1, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
-	_, err := resolveDiscArg(rows, "1")
-	if err == nil {
-		t.Fatal("resolveDiscArg(1): expected an ambiguous-match error")
-	}
-	if !strings.Contains(err.Error(), "more than one disc") {
-		t.Fatalf("error = %q, want the ambiguous-match wording", err)
-	}
-	for _, row := range rows {
-		if !strings.Contains(err.Error(), uuidText(row.DiscUUID)) {
-			t.Fatalf("error = %q, does not name uuid %s", err, uuidText(row.DiscUUID))
+// TestResolveDiscArgShortNumberIsNoPrefix gives decimal values of fewer
+// than 8 digits that no disc has as its number. A uuid of a disc starts
+// with each value, but no value names that disc.
+func TestResolveDiscArgShortNumberIsNoPrefix(t *testing.T) {
+	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0x12)}
+	for _, arg := range []string{"12", "1212121"} {
+		_, err := resolveDiscArg(rows, arg)
+		if err == nil || err.Error() != "no disc matches "+arg {
+			t.Fatalf("resolveDiscArg(%q) error = %v, want no match", arg, err)
 		}
 	}
 }
 
-func TestResolveDiscArgDuplicateLabel(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "spare", 0xaa), discArgRow(1, "spare", 0xbb)}
-	_, err := resolveDiscArg(rows, "spare")
-	if err == nil {
-		t.Fatal("resolveDiscArg(spare): expected an ambiguous-match error")
-	}
-	if !strings.Contains(err.Error(), "more than one disc") {
-		t.Fatalf("error = %q, want the ambiguous-match wording", err)
-	}
-	if strings.Count(err.Error(), "\n") != 2 {
-		t.Fatalf("error = %q, want one candidate line per disc", err)
-	}
-}
-
-func TestResolveDiscArgNoMatchListsCandidates(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
-	_, err := resolveDiscArg(rows, "no-such-disc")
-	if err == nil {
-		t.Fatal("resolveDiscArg(no-such-disc): expected a no-match error")
-	}
-	if !strings.Contains(err.Error(), "matches no disc") {
-		t.Fatalf("error = %q, want the no-match wording", err)
-	}
-	if !strings.Contains(err.Error(), "labels must match exactly") {
-		t.Fatalf("error = %q, want the labels-must-match-exactly hint", err)
-	}
-	if strings.Count(err.Error(), "\n") != 2 {
-		t.Fatalf("error = %q, want the full disc list as candidates", err)
+// TestResolveDiscArgEightDigitsArePrefix gives decimal values of 8
+// digits or more. Each value is a uuid prefix, not a disc number.
+func TestResolveDiscArgEightDigitsArePrefix(t *testing.T) {
+	rows := []format.DiscsRow{discArgRow(12121212, "disc-a", 0xaa), discArgRow(1, "disc-b", 0x12)}
+	for _, arg := range []string{"12121212", "121212121"} {
+		got, err := resolveDiscArg(rows, arg)
+		if err != nil {
+			t.Fatalf("resolveDiscArg(%q): %v", arg, err)
+		}
+		if got != rows[1].DiscUUID {
+			t.Fatalf("resolveDiscArg(%q) = %x, want the uuid of disc-b", arg, got)
+		}
 	}
 }
 
-// TestResolveDiscArgNoMatchOnAPartialLabel checks the exact scenario
-// the labels-must-match-exactly hint targets: a label argument that is
-// a true substring of the real label, such as pack's own --label text
-// minus its date prefix.
-func TestResolveDiscArgNoMatchOnAPartialLabel(t *testing.T) {
-	rows := []format.DiscsRow{discArgRow(0, "2026-09-21 run2", 0xaa)}
-	_, err := resolveDiscArg(rows, "run2")
-	if err == nil {
-		t.Fatal("resolveDiscArg(run2): expected a no-match error")
+// TestResolveDiscArgLeadingZeros gives a disc number with leading
+// zeros. The value is still the disc number.
+func TestResolveDiscArgLeadingZeros(t *testing.T) {
+	rows := twoDiscRows()
+	got, err := resolveDiscArg(rows, "01")
+	if err != nil {
+		t.Fatalf("resolveDiscArg(01): %v", err)
 	}
-	if !strings.Contains(err.Error(), "labels must match exactly") {
-		t.Fatalf("error = %q, want the labels-must-match-exactly hint", err)
+	if got != rows[1].DiscUUID {
+		t.Fatalf("resolveDiscArg(01) = %x, want the uuid of disc 1", got)
+	}
+}
+
+func TestResolveDiscArgMoreThanOneDisc(t *testing.T) {
+	prefixA := discArgRow(0, "disc-a", 0xaa)
+	prefixB := discArgRow(1, "disc-b", 0xaa)
+	prefixB.DiscUUID[15] = 0xbb
+	tests := []struct {
+		name, arg string
+		rows      []format.DiscsRow
+	}{
+		{"prefix", "aaaa", []format.DiscsRow{prefixA, prefixB}},
+		{"shared number", "1", []format.DiscsRow{discArgRow(1, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveDiscArg(tt.rows, tt.arg)
+			if err == nil {
+				t.Fatalf("resolveDiscArg(%q): no error, want a refusal", tt.arg)
+			}
+			lines := []string{tt.arg + " matches more than one disc:"}
+			for _, r := range tt.rows {
+				lines = append(lines, discNameShort(r.DiscSeq, labelText(r.Label[:r.LabelLen]))+"  "+uuidText(r.DiscUUID))
+			}
+			if want := strings.Join(lines, "\n"); err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestResolveDiscArgNoMatch(t *testing.T) {
+	for _, arg := range []string{"7", "cccc", "disc-b", "", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaaaa"} {
+		t.Run(arg, func(t *testing.T) {
+			_, err := resolveDiscArg(twoDiscRows(), arg)
+			if err == nil {
+				t.Fatalf("resolveDiscArg(%q): no error, want a refusal", arg)
+			}
+			if want := "no disc matches " + arg; err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+		})
+	}
+}
+
+// TestResolveDiscArgHiddenDisc hides one disc, as the rule for an
+// undone disc does. No form of argument names the hidden disc.
+func TestResolveDiscArgHiddenDisc(t *testing.T) {
+	rows := twoDiscRows()
+	hidden := func(uuid [16]byte) bool { return uuid == rows[0].DiscUUID }
+	for _, arg := range []string{"0", uuidText(rows[0].DiscUUID), "aaaa"} {
+		if _, err := resolveDiscArgExcept(rows, arg, hidden); err == nil || err.Error() != "no disc matches "+arg {
+			t.Fatalf("resolveDiscArgExcept(%q) error = %v, want no match", arg, err)
+		}
+	}
+	got, err := resolveDiscArgExcept(rows, "1", hidden)
+	if err != nil || got != rows[1].DiscUUID {
+		t.Fatalf("resolveDiscArgExcept(1) = %x, %v, want the uuid of disc 1", got, err)
+	}
+}
+
+// TestResolveDiscArgHiddenDiscSharesNumber hides one of two discs with
+// the same number. The number then names the other disc.
+func TestResolveDiscArgHiddenDiscSharesNumber(t *testing.T) {
+	rows := []format.DiscsRow{discArgRow(1, "disc-a", 0xaa), discArgRow(1, "disc-b", 0xbb)}
+	hidden := func(uuid [16]byte) bool { return uuid == rows[0].DiscUUID }
+	got, err := resolveDiscArgExcept(rows, "1", hidden)
+	if err != nil || got != rows[1].DiscUUID {
+		t.Fatalf("resolveDiscArgExcept(1) = %x, %v, want the uuid of disc-b", got, err)
 	}
 }
