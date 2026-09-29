@@ -357,11 +357,11 @@ func gcPlanDisc(discUUID [16]byte, items []object.ID, idx *format.Index, layout 
 }
 
 // recordGC writes the records of the discs of p before gc unlinks a
-// chunk file: the OnDisc records of the items of every disc as one
-// synced batch, then the Freed events as one synced batch. A crash
-// after the OnDisc records leaves a verified disc with no Packed item,
-// which the next gc frees with no INDEX check. A crash after the Freed
-// events leaves orphans, which the next gc frees.
+// chunk file: the Freed events as one synced batch, then the OnDisc
+// records of the items of every disc as one synced batch. The events are
+// the intent. A crash after the events leaves on disc only discs with
+// Packed items: the next command that holds the lock writes their OnDisc
+// records, and the next gc then frees their chunk files as orphans.
 func recordGC(logs *stage.Logs, p *gcPlan, now time.Time) error {
 	if len(p.discs) == 0 {
 		return nil
@@ -372,12 +372,13 @@ func recordGC(logs *stage.Logs, p *gcPlan, now time.Time) error {
 		items = append(items, d.items...)
 		events = append(events, discEvent(now, d.uuid, stage.EventFreed))
 	}
-	if len(items) > 0 {
-		if err := logs.Items.MarkOnDisc(items...); err != nil {
-			return err
-		}
+	if err := logs.Discs.Append(events...); err != nil {
+		return err
 	}
-	return logs.Discs.Append(events...)
+	if len(items) == 0 {
+		return nil
+	}
+	return logs.Items.MarkOnDisc(items...)
 }
 
 // applyGC unlinks the chunk files and removes the plan directories of p.

@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -81,6 +82,11 @@ func cmdStatus(e *env, args []string) int {
 	}
 
 	discs := summarizeDiscs(ledger.Rows, logs)
+	repairs, err := logRepairs(layout, logs)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+		return 1
+	}
 
 	c, err := catalog.OpenReadOnly(repoDir)
 	if err != nil {
@@ -117,6 +123,7 @@ func cmdStatus(e *env, args []string) int {
 		now:    e.now(),
 		discs:  nextDiscs(layout, discs),
 	}
+	r.repairs = nextRepairs(ledger.Rows, discs, repairs)
 	for _, line := range nextBlock(r) {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
@@ -228,6 +235,27 @@ func nextDiscs(layout repoLayout, discs []discSummary) []nextDisc {
 			treeExists:  treeErr == nil,
 			imageExists: imgErr == nil,
 		})
+	}
+	return out
+}
+
+// nextRepairs gives the next block the discs of repairs. It takes the
+// number of a disc from its newest row in rows (the DISCS ledger). It
+// names a disc by its number, or by its full uuid when another disc that
+// status shows has the same number, or when the ledger has no row of it.
+func nextRepairs(rows []format.DiscsRow, discs []discSummary, repairs []stage.Repair) []nextRepair {
+	out := make([]nextRepair, 0, len(repairs))
+	for _, rp := range repairs {
+		arg := uuidText(rp.Disc.UUID)
+		if row := newestDiscRow(rows, rp.Disc.UUID); row.DiscUUID == rp.Disc.UUID {
+			same := slices.ContainsFunc(discs, func(d discSummary) bool {
+				return d.Seq == row.DiscSeq && d.Info.UUID != rp.Disc.UUID
+			})
+			if !same {
+				arg = strconv.FormatUint(row.DiscSeq, 10)
+			}
+		}
+		out = append(out, nextRepair{arg: arg, command: rp.Command})
 	}
 	return out
 }

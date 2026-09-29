@@ -320,12 +320,14 @@ func openRepoCatalog(e *env, cmd string) (*repoCatalog, int) {
 		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
 		return nil, configExitCode(err)
 	}
+	layout := layoutOf(repoDir, cfg)
+	warnRollback(cmd, layout, e.stderr)
 	c, err := catalog.OpenReadOnly(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
 		return nil, 1
 	}
-	src := &catalogSource{c: c, refsPath: layoutOf(repoDir, cfg).refsFile(), stderr: e.stderr, cmd: cmd}
+	src := &catalogSource{c: c, refsPath: layout.refsFile(), stderr: e.stderr, cmd: cmd}
 	refs, err := src.Refs()
 	if errors.Is(err, catalog.ErrNoDisc) {
 		refs, err = &format.RefsTable{}, nil

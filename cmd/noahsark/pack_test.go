@@ -1320,6 +1320,19 @@ func truncateBy(t *testing.T, path string, n int64) {
 	}
 }
 
+// cutPackRecords removes the Packed item records of items items and the
+// Packed event at the end of the logs, as a pack that stopped after its
+// ledger row leaves them. A crash leaves no sequence mark above the logs:
+// the mark follows each durable append. Thus it removes the mark too.
+func cutPackRecords(t *testing.T, layout repoLayout, items int) {
+	t.Helper()
+	truncateBy(t, layout.stateLogFile(), int64(items)*70)
+	truncateBy(t, layout.discLogFile(), 54)
+	if err := os.Remove(filepath.Join(layout.stagingDir(), stage.MarkFileName)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestPackFinishesAnInterruptedPack makes the state of two packs that
 // stopped: one stopped after its ledger row, before its item records and
 // its Packed event. The other stopped before its ledger row, and left
@@ -1332,13 +1345,7 @@ func TestPackFinishesAnInterruptedPack(t *testing.T) {
 	if items == 0 {
 		t.Fatal("the packed disc holds no item")
 	}
-	truncateBy(t, layout.stateLogFile(), int64(items)*70)
-	truncateBy(t, layout.discLogFile(), 54)
-	// A crash leaves no sequence mark above the logs: the mark follows
-	// each durable append.
-	if err := os.Remove(filepath.Join(layout.stagingDir(), stage.MarkFileName)); err != nil {
-		t.Fatal(err)
-	}
+	cutPackRecords(t, layout, items)
 	if _, known := readDiscLog(t, fx.repo).Disc(fx.uuidBytes(t)); known {
 		t.Fatal("the disc state log still knows the disc after the cut")
 	}
@@ -1389,8 +1396,7 @@ func TestPackFinishesAnInterruptedCloseDisc(t *testing.T) {
 	}
 	layout := testLayout(t, repo)
 	items := itemWords(t, repo, uuid)[stage.WordPacked]
-	truncateBy(t, layout.stateLogFile(), int64(items)*70)
-	truncateBy(t, layout.discLogFile(), 54)
+	cutPackRecords(t, layout, items)
 
 	orphan := "0badc0de-0000-4000-8000-000000000002"
 	tables := filepath.Join(layout.catalogDir(), "discs", orphan)
