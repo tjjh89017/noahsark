@@ -2,10 +2,13 @@ package image
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -16,7 +19,7 @@ import (
 )
 
 // ReadResult holds every structure Read decoded from one disc tree, and
-// the checks it ran.
+// the checks it ran. It holds no object content.
 type ReadResult struct {
 	Disc  format.Disc
 	Run   format.Run
@@ -24,23 +27,128 @@ type ReadResult struct {
 	Refs  format.RefsTable
 	Discs format.DiscsTable
 
+	// RefsIntact and DiscsIntact are false only after a keep-going read
+	// found that table damaged. The table field is then empty.
+	RefsIntact  bool
+	DiscsIntact bool
+
+	// ObjectsVerified counts the objects that passed their check.
 	ObjectsVerified int
 	RunCopies       int
+
+	// Damaged lists each damaged or unreadable item that a keep-going
+	// read found, in the order of the read. It is empty after a read
+	// without the keep-going option.
+	Damaged []Damage
+
+	damagedIDs map[object.ID]struct{}
+}
+
+// ObjectIntact reports whether INDEX lists id and the object passed its
+// check.
+func (r *ReadResult) ObjectIntact(id object.ID) bool {
+	if _, bad := r.damagedIDs[id]; bad {
+		return false
+	}
+	_, found := slices.BinarySearchFunc(r.Index.Objects, id, func(row format.IndexObjectRecord, id object.ID) int {
+		return bytes.Compare(row.ContentID[:], id[:])
+	})
+	return found
+}
+
+// Damage is one damaged or unreadable item of a disc tree. An object has
+// ID, in the full text form, and Kind. A file that is not an object has
+// File and an empty ID.
+type Damage struct {
+	ID     string
+	Kind   format.ObjectKind
+	File   string
+	Reason string
+
+	objectID object.ID
+	err      error
+}
+
+// Error gives the damage as the error that a read without the keep-going
+// option returns.
+func (d Damage) Error() string {
+	if d.ID != "" {
+		return "object " + d.ID + ": " + d.Reason
+	}
+	return d.File + ": " + d.Reason
+}
+
+// Unwrap gives the cause of the damage.
+func (d Damage) Unwrap() error { return d.err }
+
+func objectDamage(row format.IndexObjectRecord, err error) Damage {
+	id := object.ID(row.ContentID)
+	return Damage{ID: id.TextForm(), Kind: row.Kind, Reason: err.Error(), objectID: id, err: err}
+}
+
+func fileDamage(file string, err error) Damage {
+	return Damage{File: file, Reason: err.Error(), err: err}
+}
+
+// errFileHash is the reason for a file whose bytes do not match the
+// length and the file_hash of its INDEX Files row.
+var errFileHash = errors.New("does not match its INDEX file_hash")
+
+// ReadOptions changes how ReadWithOptions reads a disc tree. The zero
+// value gives the behaviour of Read.
+type ReadOptions struct {
+	// Progress reports the bytes hashed. A nil Progress reports nothing.
+	Progress *progress.Reporter
+
+	// KeepGoing continues the read after damage to an object, REFS.bin,
+	// DISCS.bin, README.txt, FORMAT.txt, decoder.py, RUN2.bin or the FEC
+	// files, and lists each damaged item in ReadResult.Damaged. Damage
+	// to DISC.bin, RUN.bin or INDEX.bin stops the read with an error also
+	// with KeepGoing.
+	KeepGoing bool
+}
+
+// damageLog collects the damage of one read. Without keepGoing, add
+// gives the damage back as the error of the read.
+type damageLog struct {
+	keepGoing bool
+	list      []Damage
+	ids       map[object.ID]struct{}
+}
+
+func (l *damageLog) add(d Damage) error {
+	if !l.keepGoing {
+		return d
+	}
+	l.list = append(l.list, d)
+	if d.ID != "" {
+		l.ids[d.objectID] = struct{}{}
+	}
+	return nil
 }
 
 // Read reads a mounted disc, or an unpacked NOAHSARK tree, from root: root
 // itself, or root/NOAHSARK when root does not already end in NOAHSARK. It
-// decodes every structure, verifies every content id, verifies that every
-// run header copy is byte-identical, and recomputes the checksum column
-// and the parity to verify them against the run's actual FEC stream.
+// decodes every structure, checks every file that INDEX lists with a
+// file_hash, verifies every content id, verifies that every run header
+// copy is byte-identical, and recomputes the checksum column and the
+// parity to verify them against the run's actual FEC stream. The first
+// damage is an error.
 func Read(root string) (*ReadResult, error) {
-	return ReadWithProgress(root, nil)
+	return ReadWithOptions(root, ReadOptions{})
 }
 
 // ReadWithProgress is Read, reporting bytes hashed while it verifies
 // every object and, when the run carries FEC, the checksum column and
 // parity, through prog. A nil prog reports nothing.
 func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error) {
+	return ReadWithOptions(root, ReadOptions{Progress: prog})
+}
+
+// ReadWithOptions is Read, changed by opts.
+func ReadWithOptions(root string, opts ReadOptions) (*ReadResult, error) {
+	prog := opts.Progress
+	damage := &damageLog{keepGoing: opts.KeepGoing, ids: make(map[object.ID]struct{})}
 	cache := NewNameCache()
 	base, err := FindNoahsark(root, cache)
 	if err != nil {
@@ -74,15 +182,18 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 		return nil, fmt.Errorf("RUN.bin: %w", err)
 	}
 
-	run2Buf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
-	if err != nil {
-		return nil, fmt.Errorf("RUN2.bin: %w", err)
-	}
 	runCopies := 1
-	if !bytes.Equal(runBuf, run2Buf) {
-		return nil, fmt.Errorf("RUN2.bin does not match RUN.bin")
+	run2Buf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
+	if err == nil && !bytes.Equal(runBuf, run2Buf) {
+		err = errors.New("does not match RUN.bin")
 	}
-	runCopies++
+	if err != nil {
+		if err := damage.add(fileDamage("RUN2.bin", err)); err != nil {
+			return nil, err
+		}
+	} else {
+		runCopies++
+	}
 
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
 	if err != nil {
@@ -95,46 +206,114 @@ func ReadWithProgress(root string, prog *progress.Reporter) (*ReadResult, error)
 	if run.IndexBytes != uint64(len(indexBuf)) || run.IndexHash != sha256sum(indexBuf) {
 		return nil, fmt.Errorf("RUN.bin index_hash does not match INDEX.bin")
 	}
+	if err := checkFileHash(&idx, format.FileRoleDisc, discBuf, "DISC.bin"); err != nil {
+		return nil, err
+	}
 
 	catalogDir := cache.Join(runDir, "catalog")
-	refsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "REFS.bin")))
-	if err != nil {
-		return nil, fmt.Errorf("REFS.bin: %w", err)
-	}
 	var refs format.RefsTable
-	if _, err := refs.Decode(refsBuf); err != nil {
-		return nil, fmt.Errorf("REFS.bin: %w", err)
-	}
-	if err := checkFileHash(&idx, format.FileRoleRefs, refsBuf, "REFS.bin"); err != nil {
-		return nil, err
+	refsErr := readTable(filepath.Join(catalogDir, cache.Resolve(catalogDir, "REFS.bin")), &idx, format.FileRoleRefs, refs.Decode)
+	if refsErr != nil {
+		refs = format.RefsTable{}
+		if err := damage.add(fileDamage("REFS.bin", refsErr)); err != nil {
+			return nil, err
+		}
 	}
 
-	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, cache.Resolve(catalogDir, "DISCS.bin")))
-	if err != nil {
-		return nil, fmt.Errorf("DISCS.bin: %w", err)
-	}
 	var discs format.DiscsTable
-	if _, err := discs.Decode(discsBuf); err != nil {
-		return nil, fmt.Errorf("DISCS.bin: %w", err)
+	discsErr := readTable(filepath.Join(catalogDir, cache.Resolve(catalogDir, "DISCS.bin")), &idx, format.FileRoleDiscs, discs.Decode)
+	if discsErr != nil {
+		discs = format.DiscsTable{}
+		if err := damage.add(fileDamage("DISCS.bin", discsErr)); err != nil {
+			return nil, err
+		}
 	}
-	if err := checkFileHash(&idx, format.FileRoleDiscs, discsBuf, "DISCS.bin"); err != nil {
+
+	if err := verifyTextFiles(base, runDir, &idx, cache, damage); err != nil {
 		return nil, err
 	}
 
-	if err := verifyObjects(base, &idx, prog, cache); err != nil {
+	if err := verifyObjects(base, &idx, prog, cache, damage); err != nil {
 		return nil, err
 	}
 
 	if run.FECScheme == format.FECSchemeRS255GF8 {
 		if err := verifyFEC(base, runDir, prog, cache); err != nil {
-			return nil, err
+			if err := damage.add(fileDamage("FEC", err)); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	return &ReadResult{
 		Disc: disc, Run: run, Index: idx, Refs: refs, Discs: discs,
-		ObjectsVerified: len(idx.Objects), RunCopies: runCopies,
+		RefsIntact: refsErr == nil, DiscsIntact: discsErr == nil,
+		ObjectsVerified: len(idx.Objects) - len(damage.ids), RunCopies: runCopies,
+		Damaged: damage.list, damagedIDs: damage.ids,
 	}, nil
+}
+
+// readTable reads the catalog table at path, decodes it with decode, and
+// checks it against the file_hash of the INDEX Files row of role.
+func readTable(path string, idx *format.Index, role uint8, decode func([]byte) (int, error)) error {
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if _, err := decode(buf); err != nil {
+		return err
+	}
+	row, ok := filesRow(idx, role)
+	if !ok {
+		return errors.New("INDEX has no Files row for it")
+	}
+	if row.ByteLen != uint64(len(buf)) || row.FileHash != sha256sum(buf) {
+		return errFileHash
+	}
+	return nil
+}
+
+// verifyTextFiles checks README.txt, FORMAT.txt and decoder.py against
+// the file_hash of their INDEX Files rows. It gives each damaged or
+// unreadable file to damage.
+func verifyTextFiles(base, runDir string, idx *format.Index, cache *NameCache, damage *damageLog) error {
+	names := map[uint8]string{
+		format.FileRoleReadme:    "README.txt",
+		format.FileRoleFormat:    "FORMAT.txt",
+		format.FileRoleReference: "REFERENCE/decoder.py",
+	}
+	for _, row := range idx.Files {
+		name, ok := names[row.Role]
+		if !ok {
+			continue
+		}
+		path, _ := filesRowPath(base, runDir, row.Role, cache)
+		if err := checkFileHashAt(path, row); err != nil {
+			if err := damage.add(fileDamage(name, err)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkFileHashAt checks the file at path against the length and the
+// file_hash of row. It reads the file in pieces.
+func checkFileHashAt(path string, row format.IndexFileRecord) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	n, err := io.Copy(h, f)
+	if err != nil {
+		return err
+	}
+	if uint64(n) != row.ByteLen || [32]byte(h.Sum(nil)) != row.FileHash {
+		return errFileHash
+	}
+	return nil
 }
 
 // FindNoahsark returns root if it already holds DISC.bin, or
@@ -182,10 +361,11 @@ func NewestRunDir(runsDir string) (string, error) {
 // verifyObjects checks every Objects row's header_crc32c and content id
 // against the stored bytes read from disc, the same check
 // object.ReadVerified runs for restore, so verify and restore cannot
-// silently drift apart on what "a good object" means. An object file is
-// at most the maximum chunk size, so the memory this holds is bounded by
-// chunk size, never by how much data the disc carries.
-func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cache *NameCache) error {
+// silently drift apart on what "a good object" means. It gives each
+// damaged or unreadable object to damage. An object file is at most the
+// maximum chunk size, so the memory this holds is bounded by chunk size,
+// never by how much data the disc carries.
+func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cache *NameCache, damage *damageLog) error {
 	paths, err := ObjectPaths(base, idx, cache)
 	if err != nil {
 		return err
@@ -196,10 +376,12 @@ func verifyObjects(base string, idx *format.Index, prog *progress.Reporter, cach
 	}
 	prog.Start("verify: objects hashed", total)
 	for i, row := range idx.Objects {
-		id := object.ID(row.ContentID)
-		n, err := verifyOneObject(paths[i], id)
+		n, err := verifyOneObject(paths[i], object.ID(row.ContentID))
 		if err != nil {
-			return err
+			if err := damage.add(objectDamage(row, err)); err != nil {
+				return err
+			}
+			continue
 		}
 		prog.Add(n)
 	}
@@ -245,16 +427,23 @@ func ObjectPaths(base string, idx *format.Index, cache *NameCache) ([]string, er
 // structure, such as REFS or DISCS, that carries no CRC of its own. name
 // names the file in an error.
 func checkFileHash(idx *format.Index, role uint8, buf []byte, name string) error {
-	for _, row := range idx.Files {
-		if row.Role != role {
-			continue
-		}
-		if row.ByteLen != uint64(len(buf)) || row.FileHash != sha256sum(buf) {
-			return fmt.Errorf("%s does not match its INDEX file_hash", name)
-		}
-		return nil
+	row, ok := filesRow(idx, role)
+	if !ok {
+		return fmt.Errorf("INDEX: no Files row for %s", name)
 	}
-	return fmt.Errorf("INDEX: no Files row for %s", name)
+	if row.ByteLen != uint64(len(buf)) || row.FileHash != sha256sum(buf) {
+		return fmt.Errorf("%s does not match its INDEX file_hash", name)
+	}
+	return nil
+}
+
+// filesRow returns the first INDEX Files row of role.
+func filesRow(idx *format.Index, role uint8) (format.IndexFileRecord, bool) {
+	i := slices.IndexFunc(idx.Files, func(row format.IndexFileRecord) bool { return row.Role == role })
+	if i < 0 {
+		return format.IndexFileRecord{}, false
+	}
+	return idx.Files[i], true
 }
 
 // verifyOneObject reads the object file at path through
@@ -264,7 +453,7 @@ func checkFileHash(idx *format.Index, role uint8, buf []byte, name string) error
 func verifyOneObject(path string, id object.ID) (int64, error) {
 	raw, _, err := object.ReadVerified(path, id)
 	if err != nil {
-		return 0, fmt.Errorf("object %s: %w", id.TextForm(), err)
+		return 0, err
 	}
 	return int64(len(raw)) - int64(format.CommonHeaderLen+format.ObjectHeaderLen), nil
 }

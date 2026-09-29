@@ -129,6 +129,143 @@ func TestVerifyRefusesAHeaderCRCMismatch(t *testing.T) {
 	}
 }
 
+// flipLastByte flips one bit of the last byte of the file at path.
+func flipLastByte(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("%s is empty", path)
+	}
+	data[len(data)-1] ^= 0x01
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// objectPathOf returns the path of the object file of row.
+func objectPathOf(t *testing.T, base string, idx *format.Index, row format.IndexObjectRecord) string {
+	t.Helper()
+	paths, err := ObjectPaths(base, idx, NewNameCache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range idx.Objects {
+		if r.ContentID == row.ContentID {
+			return paths[i]
+		}
+	}
+	t.Fatal("could not resolve the object's path")
+	return ""
+}
+
+// TestReadRefusesADamagedReadme damages README.txt, a file that INDEX
+// lists with a file_hash. Read must refuse the disc and name the file.
+func TestReadRefusesADamagedReadme(t *testing.T) {
+	discRoot, _ := packOneOfEachKind(t)
+	flipLastByte(t, filepath.Join(discRoot, "NOAHSARK", "README.txt"))
+
+	_, err := Read(discRoot)
+	if err == nil {
+		t.Fatal("Read after damaging README.txt: want an error, got none")
+	}
+	if !strings.Contains(err.Error(), "README.txt") {
+		t.Fatalf("Read error = %q, want it to name README.txt", err)
+	}
+}
+
+// TestReadKeepGoingListsEachDamagedObject damages a chunk and a tree. A
+// keep-going read must list both, with id and kind, and keep every other
+// object and every table.
+func TestReadKeepGoingListsEachDamagedObject(t *testing.T) {
+	discRoot, idx := packOneOfEachKind(t)
+	base := filepath.Join(discRoot, "NOAHSARK")
+	chunk := objectRowOfKind(t, idx, format.ObjectKindChunk)
+	tree := objectRowOfKind(t, idx, format.ObjectKindTree)
+	damageHeaderByte(t, objectPathOf(t, base, idx, chunk))
+	damageHeaderByte(t, objectPathOf(t, base, idx, tree))
+
+	rr, err := ReadWithOptions(discRoot, ReadOptions{KeepGoing: true})
+	if err != nil {
+		t.Fatalf("keep-going Read: %v", err)
+	}
+
+	want := map[string]format.ObjectKind{
+		object.ID(chunk.ContentID).TextForm(): format.ObjectKindChunk,
+		object.ID(tree.ContentID).TextForm():  format.ObjectKindTree,
+	}
+	got := map[string]format.ObjectKind{}
+	for _, d := range rr.Damaged {
+		if d.ID == "" {
+			continue
+		}
+		if d.Reason == "" {
+			t.Errorf("damage of %s has no reason", d.ID)
+		}
+		got[d.ID] = d.Kind
+	}
+	if len(got) != len(want) {
+		t.Fatalf("damaged objects = %v, want %v", got, want)
+	}
+	for id, kind := range want {
+		if got[id] != kind {
+			t.Errorf("damaged object %s: kind %d, want %d", id, got[id], kind)
+		}
+	}
+
+	if rr.ObjectsVerified != len(idx.Objects)-2 {
+		t.Errorf("ObjectsVerified = %d, want %d", rr.ObjectsVerified, len(idx.Objects)-2)
+	}
+	for _, row := range idx.Objects {
+		id := object.ID(row.ContentID)
+		_, bad := want[id.TextForm()]
+		if rr.ObjectIntact(id) == bad {
+			t.Errorf("ObjectIntact(%s) = %v, want %v", id.TextForm(), !bad, bad)
+		}
+	}
+	if !rr.RefsIntact || !rr.DiscsIntact {
+		t.Errorf("RefsIntact = %v, DiscsIntact = %v, want both true", rr.RefsIntact, rr.DiscsIntact)
+	}
+	if len(rr.Index.Objects) != len(idx.Objects) || len(rr.Refs.Records) == 0 || len(rr.Discs.Rows) == 0 {
+		t.Error("keep-going Read dropped a table of the disc")
+	}
+}
+
+// TestReadKeepGoingOfAGoodTree checks that a keep-going read of a good
+// tree finds no damage.
+func TestReadKeepGoingOfAGoodTree(t *testing.T) {
+	discRoot, idx := packOneOfEachKind(t)
+
+	rr, err := ReadWithOptions(discRoot, ReadOptions{KeepGoing: true})
+	if err != nil {
+		t.Fatalf("keep-going Read: %v", err)
+	}
+	if len(rr.Damaged) != 0 {
+		t.Fatalf("Damaged = %v, want none", rr.Damaged)
+	}
+	if rr.ObjectsVerified != len(idx.Objects) {
+		t.Errorf("ObjectsVerified = %d, want %d", rr.ObjectsVerified, len(idx.Objects))
+	}
+}
+
+// TestReadKeepGoingRefusesADamagedIndex checks that damage to INDEX.bin
+// stops also a keep-going read: without INDEX, the reader cannot find the
+// other files.
+func TestReadKeepGoingRefusesADamagedIndex(t *testing.T) {
+	discRoot, _ := packOneOfEachKind(t)
+	runDir, err := NewestRunDir(filepath.Join(discRoot, "NOAHSARK", "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipLastByte(t, filepath.Join(runDir, "INDEX.bin"))
+
+	if _, err := ReadWithOptions(discRoot, ReadOptions{KeepGoing: true}); err == nil {
+		t.Fatal("keep-going Read after damaging INDEX.bin: want an error, got none")
+	}
+}
+
 // The matching restore-side check, that Restore also refuses the same
 // damage, lives in internal/restore (TestVerifyAndRestoreAgreeOnAHeaderCRCMismatch),
 // since restore imports image and a test here cannot import restore back
