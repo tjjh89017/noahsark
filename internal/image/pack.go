@@ -52,6 +52,12 @@ type PackOptions struct {
 	// StagingDir is the staging directory objects, snapshots and the
 	// state log live under.
 	StagingDir string
+	// ObjectPath gives the file path of an object from its kind and id.
+	// When nil, objects come from StagingDir.
+	ObjectPath ObjectPathFunc
+	// SnapshotIDs lists the snapshot ids to pack. When nil, the snapshot
+	// files in StagingDir give the list.
+	SnapshotIDs SnapshotIDsFunc
 	// Snapshots names the refs this run's REFS table carries.
 	Snapshots []SnapshotRef
 	// TargetCapacitySectors is the pack limit. Pack refuses to run
@@ -142,6 +148,29 @@ type packUnit struct {
 	ByteLen  uint64 // set once selectRun has sized the candidate.
 }
 
+// objectPath returns opts.ObjectPath, or the staging directory's own
+// layout when it is nil.
+func (opts PackOptions) objectPath() ObjectPathFunc {
+	if opts.ObjectPath != nil {
+		return opts.ObjectPath
+	}
+	return StagedPathFunc(opts.StagingDir)
+}
+
+// snapshotIDs lists the snapshots to pack, through opts.SnapshotIDs
+// when set, or from the staging directory otherwise.
+func (opts PackOptions) snapshotIDs() ([]object.ID, error) {
+	if opts.SnapshotIDs != nil {
+		ids, err := opts.SnapshotIDs()
+		if err != nil {
+			return nil, err
+		}
+		sort.Slice(ids, func(i, j int) bool { return lessBytes(ids[i][:], ids[j][:]) })
+		return ids, nil
+	}
+	return listSnapshots(opts.StagingDir)
+}
+
 // Pack selects the STAGED objects for exactly one run within
 // opts.TargetCapacitySectors, in this build's locality order (a snapshot's
 // tree and blob objects with their chunks, where the budget allows),
@@ -165,7 +194,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 	packTime := now()
 
-	allSnapshotIDs, err := listSnapshots(opts.StagingDir)
+	allSnapshotIDs, err := opts.snapshotIDs()
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +213,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		rec, ok := opts.StageLog.Get(id)
 		return ok && rec.State.OnDisc()
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.StagingDir, allSnapshotIDs, onDisc)
+	order, snapshotBytes, err := buildPackOrder(opts.objectPath(), allSnapshotIDs, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +301,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		if needErr != nil {
 			return nil, needErr
 		}
-		smallest, err := smallestCandidate(opts.StagingDir, candidates)
+		smallest, err := smallestCandidate(opts.objectPath(), candidates)
 		if err != nil {
 			return nil, err
 		}
@@ -321,7 +350,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		if h.Bytes != nil {
 			row.data = h.Bytes
 		} else {
-			row.srcPath = StagedPath(opts.StagingDir, h.ID, h.Kind)
+			row.srcPath = opts.objectPath()(h.Kind, h.ID)
 			row.srcID = h.ID
 		}
 		rows = append(rows, row)
@@ -427,7 +456,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 			continue
 		}
 		remainingObjects++
-		n, err := objectByteLen(opts.StagingDir, u)
+		n, err := objectByteLen(opts.objectPath(), u)
 		if err != nil {
 			return nil, err
 		}
@@ -498,7 +527,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 	}
 	packTime := now()
 
-	allSnapshotIDs, err := listSnapshots(opts.StagingDir)
+	allSnapshotIDs, err := opts.snapshotIDs()
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +539,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		rec, ok := opts.StageLog.Get(id)
 		return ok && rec.State.OnDisc()
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.StagingDir, allSnapshotIDs, onDisc)
+	order, snapshotBytes, err := buildPackOrder(opts.objectPath(), allSnapshotIDs, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -589,7 +618,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 			if needErr != nil {
 				return discs, needErr
 			}
-			smallest, err := smallestCandidate(discOpts.StagingDir, candidates)
+			smallest, err := smallestCandidate(discOpts.objectPath(), candidates)
 			if err != nil {
 				return discs, err
 			}
@@ -626,7 +655,8 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 // buildRefs, buildDiscs and buildReadme read from BuildOptions.
 func (opts PackOptions) asBuildOptions() BuildOptions {
 	return BuildOptions{
-		StagingDir: opts.StagingDir, Snapshots: opts.Snapshots,
+		StagingDir: opts.StagingDir, ObjectPath: opts.ObjectPath,
+		Snapshots:             opts.Snapshots,
 		TargetCapacitySectors: opts.TargetCapacitySectors,
 		OutputDir:             opts.OutputDir, RepoUUID: opts.RepoUUID, DiscUUID: opts.DiscUUID,
 		Label: opts.Label,
@@ -681,7 +711,7 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 
 		for i, cand := range candidates {
 			if !sizeKnown[i] {
-				size, err := objectByteLen(opts.StagingDir, cand)
+				size, err := objectByteLen(opts.objectPath(), cand)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -778,10 +808,10 @@ func minimumSectorsToPlaceOne(opts PackOptions, candidates []packUnit, fixedBloc
 // smallestCandidate returns the candidate with the fewest bytes, the
 // object a refused capacity must first grow to hold. A tie goes to the
 // first in dependency order, so the answer never depends on map order.
-func smallestCandidate(stagingDir string, candidates []packUnit) (packUnit, error) {
+func smallestCandidate(objectPath ObjectPathFunc, candidates []packUnit) (packUnit, error) {
 	var best packUnit
 	for i, u := range candidates {
-		n, err := objectByteLen(stagingDir, u)
+		n, err := objectByteLen(objectPath, u)
 		if err != nil {
 			return packUnit{}, err
 		}
@@ -796,11 +826,11 @@ func smallestCandidate(stagingDir string, candidates []packUnit) (packUnit, erro
 // objectByteLen returns the encoded byte length of unit's own staged
 // file: the cached bytes for a tree, blob or snapshot, or a stat of the
 // chunk file otherwise.
-func objectByteLen(stagingDir string, u packUnit) (uint64, error) {
+func objectByteLen(objectPath ObjectPathFunc, u packUnit) (uint64, error) {
 	if u.Bytes != nil {
 		return uint64(len(u.Bytes)), nil
 	}
-	fi, err := os.Stat(stagedObjectPath(filepath.Join(stagingDir, "objects"), u.ID))
+	fi, err := os.Stat(objectPath(u.Kind, u.ID))
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", u.ID.TextForm(), err)
 	}
@@ -865,10 +895,7 @@ func listSnapshots(stagingDir string) ([]object.ID, error) {
 // object's own children are on the same disc that already holds it, so
 // the walk stops there instead of descending; its id still reaches its
 // parent's Children list for prereq detection.
-func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(object.ID) bool) ([]packUnit, map[object.ID][]byte, error) {
-	objectsRoot := filepath.Join(stagingDir, "objects")
-	snapshotsRoot := filepath.Join(stagingDir, "snapshots")
-
+func buildPackOrder(objectPath ObjectPathFunc, snapshotIDs []object.ID, onDisc func(object.ID) bool) ([]packUnit, map[object.ID][]byte, error) {
 	seen := make(map[object.ID]bool)
 	var order []packUnit
 	snapshotBytes := make(map[object.ID][]byte, len(snapshotIDs))
@@ -882,7 +909,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 			seen[id] = true
 			return nil
 		}
-		data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
+		data, err := readObjectFile(objectPath(format.ObjectKindTree, id))
 		if err != nil {
 			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
@@ -903,7 +930,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 				}
 			case format.EntryTypeRegular:
 				children = append(children, object.ID(entry.ContentID))
-				if err := visitBlob(objectsRoot, object.ID(entry.ContentID), seen, &order, onDisc); err != nil {
+				if err := visitBlob(objectPath, object.ID(entry.ContentID), seen, &order, onDisc); err != nil {
 					return err
 				}
 			}
@@ -914,7 +941,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 	}
 
 	for _, snapID := range snapshotIDs {
-		data, err := readObjectFile(filepath.Join(snapshotsRoot, snapID.TextForm()))
+		data, err := readObjectFile(objectPath(format.ObjectKindSnapshot, snapID))
 		if err != nil {
 			return nil, nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
@@ -945,7 +972,7 @@ func buildPackOrder(stagingDir string, snapshotIDs []object.ID, onDisc func(obje
 // child, so the walk needs nothing out of it, and reading it here would
 // read every chunk a second time. Its content id is checked instead
 // while the run copies it, the one pass that must read it anyway.
-func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order *[]packUnit, onDisc func(object.ID) bool) error {
+func visitBlob(objectPath ObjectPathFunc, id object.ID, seen map[object.ID]bool, order *[]packUnit, onDisc func(object.ID) bool) error {
 	if seen[id] {
 		return nil
 	}
@@ -953,7 +980,7 @@ func visitBlob(objectsRoot string, id object.ID, seen map[object.ID]bool, order 
 		seen[id] = true
 		return nil
 	}
-	data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
+	data, err := readObjectFile(objectPath(format.ObjectKindBlob, id))
 	if err != nil {
 		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}

@@ -29,6 +29,9 @@ type BuildOptions struct {
 	// from, in the layout internal/object writes: objects/<ab>/<name>
 	// and snapshots/<name>.
 	StagingDir string
+	// ObjectPath gives the file path of an object from its kind and id.
+	// When nil, objects come from StagingDir.
+	ObjectPath ObjectPathFunc
 	// Snapshots names every snapshot this run stores, and the REFS
 	// records that point at them. This build writes one run per disc, so
 	// this run stores every object every listed snapshot reaches.
@@ -91,6 +94,24 @@ type fileRow struct {
 	inStream bool
 }
 
+// objectPath returns opts.ObjectPath, or the staging directory's own
+// layout when it is nil.
+func (opts BuildOptions) objectPath() ObjectPathFunc {
+	if opts.ObjectPath != nil {
+		return opts.ObjectPath
+	}
+	return StagedPathFunc(opts.StagingDir)
+}
+
+// collectReachable walks the snapshots through opts.ObjectPath when
+// set, or through the staging directory otherwise.
+func (opts BuildOptions) collectReachable(snapIDs []object.ID) ([]ReachableObject, error) {
+	if opts.ObjectPath != nil {
+		return CollectReachableFrom(opts.ObjectPath, snapIDs)
+	}
+	return CollectReachable(opts.StagingDir, snapIDs)
+}
+
 // Build lays out one run over the snapshots opts names and writes the
 // full NOAHSARK tree under opts.OutputDir as ordinary files.
 func Build(opts BuildOptions) (*Result, error) {
@@ -113,7 +134,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	for i, s := range opts.Snapshots {
 		snapIDs[i] = s.ID
 	}
-	reachable, err := CollectReachable(opts.StagingDir, snapIDs)
+	reachable, err := opts.collectReachable(snapIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +181,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		if h.Bytes != nil {
 			row.data = h.Bytes
 		} else {
-			row.srcPath = StagedPath(opts.StagingDir, h.ID, h.Kind)
+			row.srcPath = opts.objectPath()(h.Kind, h.ID)
 			row.srcID = h.ID
 		}
 		rows = append(rows, row)
