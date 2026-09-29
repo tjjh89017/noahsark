@@ -206,7 +206,7 @@ func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d Disc
 		}
 	}
 	blobID := object.ID(e.ContentID)
-	blob, err := a.c.ReadBlob(blobID)
+	blob, err := a.c.ReadFileBlob(e)
 	if err != nil {
 		a.wp.failed(dest, blobError(blobID, err))
 		return a.states.clear(no, pending)

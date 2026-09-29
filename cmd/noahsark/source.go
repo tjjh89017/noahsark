@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -21,24 +23,35 @@ import (
 type catalogSource struct {
 	c        *catalog.Catalog
 	refsPath string
+	// stderr and cmd give the warning of a damaged REFS table of the
+	// catalog. A nil stderr prints no warning.
+	stderr io.Writer
+	cmd    string
+	// refsDamaged is set when Refs skipped a REFS table that does not
+	// decode. warned is set when the warning is printed.
+	refsDamaged bool
+	warned      bool
 }
 
-// Tree reads one tree object from the catalog.
+// Tree reads one tree object from the catalog. A tree that the catalog
+// does not hold is a *notHeldError. A damaged tree gives the error of
+// the catalog, which names the repair.
 func (s *catalogSource) Tree(id object.ID) (*format.Tree, error) {
 	t, err := s.c.ReadTree(id)
-	if err != nil {
+	if os.IsNotExist(err) {
 		return nil, &notHeldError{kind: "tree", id: id}
 	}
-	return t, nil
+	return t, err
 }
 
-// Snapshot reads one snapshot object from the catalog.
+// Snapshot reads one snapshot object from the catalog, with the errors
+// of Tree.
 func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 	snap, err := s.c.ReadSnapshot(id)
-	if err != nil {
+	if os.IsNotExist(err) {
 		return nil, &notHeldError{kind: "snapshot", id: id}
 	}
-	return snap, nil
+	return snap, err
 }
 
 // Refs merges the local ref file over the REFS tables of every disc in
@@ -46,9 +59,14 @@ func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 // local ref file has no time of its own: it takes the time of its
 // snapshot, or no time when the catalog does not hold that snapshot.
 // With no disc in the catalog and no local ref, it returns
-// catalog.ErrNoDisc.
+// catalog.ErrNoDisc. A REFS table that does not decode is left out: Refs
+// prints one warning that names it and goes on.
 func (s *catalogSource) Refs() (*format.RefsTable, error) {
 	newest, err := s.c.MergedRefs()
+	if damaged, ok := errors.AsType[*catalog.DamagedRefsError](err); ok {
+		s.warnRefs(damaged)
+		err = nil
+	}
 	if err != nil && !errors.Is(err, catalog.ErrNoDisc) {
 		return nil, err
 	}
@@ -75,6 +93,18 @@ func (s *catalogSource) Refs() (*format.RefsTable, error) {
 		merged.Records = append(merged.Records, newest[name])
 	}
 	return merged, nil
+}
+
+// warnRefs records a damaged REFS table, and prints its warning one
+// time.
+func (s *catalogSource) warnRefs(damaged *catalog.DamagedRefsError) {
+	s.refsDamaged = true
+	if s.warned || s.stderr == nil {
+		return
+	}
+	s.warned = true
+	_, _ = fmt.Fprintf(s.stderr, "noahsark: %s: warning: the catalog REFS table of disc %s does not decode; the refs of the other tables are used; run recover, or verify, with that disc: %v\n",
+		s.cmd, damaged.DiscText(), damaged)
 }
 
 // SnapshotIDs lists every snapshot of the catalog.

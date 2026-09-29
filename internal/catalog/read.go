@@ -183,42 +183,45 @@ func (c *Catalog) Discs() (*format.DiscsTable, error) {
 	return c.discsTableOf(uuid)
 }
 
-// ReadTree reads and decodes one catalog tree object.
+// ReadTree reads one catalog tree object, checks it against id, and
+// decodes it. A missing object gives an error for which os.IsNotExist
+// holds. An object that does not give id is a *DamagedObjectError.
 func (c *Catalog) ReadTree(id object.ID) (*format.Tree, error) {
-	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindTree, id))
+	buf, err := c.readObject(format.ObjectKindTree, id)
 	if err != nil {
 		return nil, err
 	}
 	var t format.Tree
 	if _, err := t.Decode(buf); err != nil {
-		return nil, fmt.Errorf("catalog: tree %s: %w", id.TextForm(), err)
+		return nil, c.damaged(format.ObjectKindTree, id, err)
 	}
 	return &t, nil
 }
 
-// ReadBlob reads and decodes one catalog blob object. A blob not yet in
-// the catalog reports the plain os.ErrNotExist-wrapped error.
+// ReadBlob reads one catalog blob object, checks it against id, and
+// decodes it. The errors are those of ReadTree.
 func (c *Catalog) ReadBlob(id object.ID) (*format.Blob, error) {
-	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindBlob, id))
+	buf, err := c.readObject(format.ObjectKindBlob, id)
 	if err != nil {
 		return nil, err
 	}
 	var b format.Blob
 	if _, err := b.Decode(buf); err != nil {
-		return nil, fmt.Errorf("catalog: blob %s: %w", id.TextForm(), err)
+		return nil, c.damaged(format.ObjectKindBlob, id, err)
 	}
 	return &b, nil
 }
 
-// ReadSnapshot reads and decodes one catalog snapshot object.
+// ReadSnapshot reads one catalog snapshot object, checks it against id,
+// and decodes it. The errors are those of ReadTree.
 func (c *Catalog) ReadSnapshot(id object.ID) (*format.Snapshot, error) {
-	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindSnapshot, id))
+	buf, err := c.readObject(format.ObjectKindSnapshot, id)
 	if err != nil {
 		return nil, err
 	}
 	var s format.Snapshot
 	if _, err := s.Decode(buf); err != nil {
-		return nil, fmt.Errorf("catalog: snapshot %s: %w", id.TextForm(), err)
+		return nil, c.damaged(format.ObjectKindSnapshot, id, err)
 	}
 	return &s, nil
 }

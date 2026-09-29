@@ -1,9 +1,12 @@
 package catalog
 
 import (
+	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -35,17 +38,26 @@ func (c *Catalog) RemoveDisc(uuid [16]byte) error {
 	return nil
 }
 
-// WriteObject writes the encoded bytes of one snapshot, tree or blob
-// object to its path in the catalog, with an atomic replace. It does not
-// write when the file exists with the same size: the id names the
-// content.
+// WriteObject writes raw, the object file of one snapshot, tree or blob
+// object, to its path in the catalog, with an atomic replace. raw must
+// give id, else WriteObject writes nothing and returns an error. A file
+// that already holds exactly raw stays. A file that holds other bytes is
+// replaced, thus a good copy repairs a damaged catalog object. The cost
+// is one hash of raw and one read of the file that exists.
 func (c *Catalog) WriteObject(kind format.ObjectKind, id object.ID, raw []byte) error {
 	path := c.MetaPath(kind, id)
 	if path == "" {
 		return fmt.Errorf("catalog: object %s: kind %d is not a metadata object", id.TextForm(), kind)
 	}
-	if info, err := os.Stat(path); err == nil && info.Size() == int64(len(raw)) {
+	if err := checkObject(kind, id, raw); err != nil {
+		return fmt.Errorf("catalog: %s %s: the copy to write is damaged: %w", kindWord(kind), id.TextForm(), err)
+	}
+	existing, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(existing, raw) {
 		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
 	}
 	if err := replaceFile(path, raw); err != nil {
 		return fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
@@ -59,97 +71,113 @@ func (c *Catalog) WriteObject(kind format.ObjectKind, id object.ID, raw []byte) 
 // model"). pack calls it: commit already wrote every snapshot, tree and
 // blob object of the run into the catalog. It returns the read result.
 func WriteTablesFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
-	rr, _, _, err := writeTables(c, root)
-	return rr, err
-}
-
-// writeTables does the work of WriteTablesFromRoot. It also returns the
-// NOAHSARK directory of root and its name cache.
-func writeTables(c *Catalog, root string) (*image.ReadResult, string, *image.NameCache, error) {
 	rr, err := image.Read(root)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("catalog: %s: %w", root, err)
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
-
 	names := image.NewNameCache()
 	base, err := image.FindNoahsark(root, names)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("catalog: %s: %w", root, err)
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
-	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("catalog: %s: %w", root, err)
-	}
-	catalogDir := names.Join(runDir, "catalog")
-
-	indexBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "INDEX.bin")))
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("catalog: %w", err)
-	}
-	refsBuf, err := os.ReadFile(filepath.Join(catalogDir, names.Resolve(catalogDir, "REFS.bin")))
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("catalog: %w", err)
-	}
-	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, names.Resolve(catalogDir, "DISCS.bin")))
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("catalog: %w", err)
-	}
-	if err := c.WriteDisc(rr.Disc.DiscUUID, indexBuf, refsBuf, discsBuf); err != nil {
-		return nil, "", nil, err
-	}
-	return rr, base, names, nil
-}
-
-// WriteFromRoot copies the tables of the run at root, every snapshot
-// object under snapshots/, and every tree and blob object that its own
-// INDEX lists, into the catalog. A counted verify and recover call it
-// for each disc that they read. It computes again and saves the
-// completeness of every snapshot that it copied, and returns the read
-// result so the caller can report what it found.
-func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
-	rr, base, names, err := writeTables(c, root)
-	if err != nil {
+	if err := c.writeTablesOf(base, names, rr.Disc.DiscUUID); err != nil {
 		return nil, err
 	}
+	return rr, nil
+}
 
-	snapshotsDir := names.Join(base, "snapshots")
-	var snapIDs []object.ID
-	for _, row := range rr.Index.Objects {
-		if row.Kind != format.ObjectKindSnapshot {
-			continue
-		}
-		id := object.ID(row.ContentID)
-		raw, err := os.ReadFile(filepath.Join(snapshotsDir, names.Resolve(snapshotsDir, id.TextForm())))
-		if err != nil {
-			return nil, fmt.Errorf("catalog: snapshot %s: %w", id.TextForm(), err)
-		}
-		if err := c.WriteObject(format.ObjectKindSnapshot, id, raw); err != nil {
-			return nil, err
-		}
-		snapIDs = append(snapIDs, id)
+// WriteFromRoot reads and checks the run at root, then copies it into
+// the catalog as WriteFromRead does. The read is a full check of the
+// run: a caller that already holds the result of that check calls
+// WriteFromRead instead.
+func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
+	rr, err := image.Read(root)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
+	}
+	if _, err := WriteFromRead(c, root, rr); err != nil {
+		return nil, err
+	}
+	return rr, nil
+}
+
+// WriteFromRead copies the run at root into the catalog. rr is the
+// result of a check of that run. It copies each snapshot, tree and blob
+// object that passed the check, then the INDEX, REFS and DISCS tables
+// when REFS and DISCS passed the check. It reads again only these object
+// files and the three tables, not the chunks. Then it computes again
+// the completeness of each snapshot that the INDEX or the REFS table of
+// the run names, and returns these snapshot ids. A counted verify and
+// recover call it after their check of a disc.
+func WriteFromRead(c *Catalog, root string, rr *image.ReadResult) ([]object.ID, error) {
+	names := image.NewNameCache()
+	base, err := image.FindNoahsark(root, names)
+	if err != nil {
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 
-	objectsDir := names.Join(base, "objects")
+	snapshots := map[object.ID]bool{}
 	for _, row := range rr.Index.Objects {
-		if row.Kind != format.ObjectKindTree && row.Kind != format.ObjectKindBlob {
+		id := object.ID(row.ContentID)
+		if row.Kind == format.ObjectKindSnapshot {
+			snapshots[id] = true
+		}
+		if !rr.ObjectIntact(id) {
 			continue
 		}
-		id := object.ID(row.ContentID)
-		objDir := names.Join(objectsDir, id.FanoutByte())
-		raw, err := os.ReadFile(filepath.Join(objDir, names.Resolve(objDir, id.TextForm())))
+		var dir string
+		switch row.Kind {
+		case format.ObjectKindSnapshot:
+			dir = names.Join(base, "snapshots")
+		case format.ObjectKindTree, format.ObjectKindBlob:
+			dir = names.Join(names.Join(base, "objects"), id.FanoutByte())
+		default:
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, names.Resolve(dir, id.TextForm())))
 		if err != nil {
-			return nil, fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
+			return nil, fmt.Errorf("catalog: %s %s: %w", kindWord(row.Kind), id.TextForm(), err)
 		}
 		if err := c.WriteObject(row.Kind, id, raw); err != nil {
 			return nil, err
 		}
 	}
 
-	for _, id := range snapIDs {
-		if err := c.RefreshComplete(id); err != nil {
+	if rr.RefsIntact && rr.DiscsIntact {
+		if err := c.writeTablesOf(base, names, rr.Disc.DiscUUID); err != nil {
 			return nil, err
 		}
 	}
 
-	return rr, nil
+	for _, rec := range rr.Refs.Records {
+		snapshots[object.ID(rec.SnapshotID)] = true
+	}
+	ids := slices.SortedFunc(maps.Keys(snapshots), func(a, b object.ID) int { return bytes.Compare(a[:], b[:]) })
+	for _, id := range ids {
+		if err := c.RefreshComplete(id); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+// writeTablesOf copies the INDEX, REFS and DISCS files of the newest run
+// under base into the catalog, as the tables of disc discUUID.
+func (c *Catalog) writeTablesOf(base string, names *image.NameCache, discUUID [16]byte) error {
+	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
+	if err != nil {
+		return fmt.Errorf("catalog: %w", err)
+	}
+	catalogDir := names.Join(runDir, "catalog")
+	var bufs [3][]byte
+	for i, p := range []string{
+		filepath.Join(runDir, names.Resolve(runDir, IndexFileName)),
+		filepath.Join(catalogDir, names.Resolve(catalogDir, RefsFileName)),
+		filepath.Join(catalogDir, names.Resolve(catalogDir, DiscsFileName)),
+	} {
+		if bufs[i], err = os.ReadFile(p); err != nil {
+			return fmt.Errorf("catalog: %w", err)
+		}
+	}
+	return c.WriteDisc(discUUID, bufs[0], bufs[1], bufs[2])
 }

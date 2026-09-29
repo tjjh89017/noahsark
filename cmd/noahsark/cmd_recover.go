@@ -59,7 +59,7 @@ func (v *onceValue) Set(s string) error {
 	return nil
 }
 
-// run implements "noahsark recover". docs/states.md, rows 67 to 70d,
+// run implements "noahsark recover". docs/states.md, rows 67 to 70e,
 // gives the lines.
 func (o *recoverOptions) run(e *env, args []string) int {
 	stderr := e.stderr
@@ -216,6 +216,14 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 		_, _ = fmt.Fprintln(stdout, nextStatusLine)
 		return 1
 	}
+	if repairsFailedCheck(disc, known) {
+		if err := recordGoodCopy(e, logs, rr); err != nil {
+			return fail(err)
+		}
+		_, _ = fmt.Fprintf(stdout, "recover: ok; %s already known; check logged\n", name)
+		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		return 0
+	}
 	if !isNew {
 		_, _ = fmt.Fprintf(stdout, "recover: ok; %s already known\n", name)
 		_, _ = fmt.Fprintln(stdout, nextStatusLine)
@@ -320,6 +328,30 @@ func recordRecoveredDisc(e *env, layout repoLayout, logs *stage.Logs, rr *image.
 	return rows, nil
 }
 
+// repairsFailedCheck reports whether a recover of a copy with no damage
+// records a good check of disc: an on disc only disc whose last check
+// failed. A recover of a damaged copy of an unknown disc leaves that
+// state, and its damaged items have no record.
+func repairsFailedCheck(disc stage.DiscInfo, known bool) bool {
+	return known && disc.State == stage.DiscOnDiscOnly && disc.LastCheck == stage.CheckResultFailed
+}
+
+// recordGoodCopy records each item of the disc of rr that the item log
+// does not know, or that is Lost, as OnDisc, then appends CheckOK, the
+// event of a good check of an on disc only disc. The caller calls it
+// only for a read with no damage.
+func recordGoodCopy(e *env, logs *stage.Logs, rr *image.ReadResult) error {
+	discUUID := rr.Disc.DiscUUID
+	ids := make([]object.ID, 0, len(rr.Index.Objects))
+	for _, row := range rr.Index.Objects {
+		ids = append(ids, object.ID(row.ContentID))
+	}
+	if err := logs.Items.EnsureOnDisc(rr.Run.RunSeq, discUUID, ids...); err != nil {
+		return err
+	}
+	return logs.Discs.Append(discEvent(e.now(), discUUID, stage.EventCheckOK))
+}
+
 // recoverRefs writes the ref records of a disc into the ref ledger and
 // refs.txt. In refs.txt, only a name that the disc carries changes: it
 // takes the snapshot of the newest record of the disc for the name. A
@@ -398,90 +430,32 @@ func storeSourceRoot(repoDir, source string) error {
 
 // catalogFromDisc writes into the catalog each snapshot, tree and blob
 // object of the disc that passed its check, and the INDEX, REFS and
-// DISCS tables of the disc when REFS and DISCS passed their check. Then
-// it computes again the completeness of each snapshot that the disc
-// names or that the catalog holds.
+// DISCS tables of the disc when REFS and DISCS passed their check. It
+// uses the check that rr holds and reads no chunk again. Then it
+// computes again the completeness of each snapshot that the disc names
+// or that the catalog holds.
 func catalogFromDisc(repoDir, root string, rr *image.ReadResult) error {
 	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return err
 	}
-	names := image.NewNameCache()
-	base, err := image.FindNoahsark(root, names)
+	named, err := catalog.WriteFromRead(c, root, rr)
 	if err != nil {
 		return err
-	}
-
-	snapshots := map[object.ID]bool{}
-	for _, row := range rr.Index.Objects {
-		id := object.ID(row.ContentID)
-		if row.Kind == format.ObjectKindSnapshot {
-			snapshots[id] = true
-		}
-		if !rr.ObjectIntact(id) {
-			continue
-		}
-		var dir string
-		switch row.Kind {
-		case format.ObjectKindSnapshot:
-			dir = names.Join(base, "snapshots")
-		case format.ObjectKindTree, format.ObjectKindBlob:
-			dir = names.Join(names.Join(base, "objects"), id.FanoutByte())
-		default:
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(dir, names.Resolve(dir, id.TextForm())))
-		if err != nil {
-			return fmt.Errorf("object %s: %w", id.TextForm(), err)
-		}
-		if err := c.WriteObject(row.Kind, id, raw); err != nil {
-			return err
-		}
-	}
-
-	if rr.RefsIntact && rr.DiscsIntact {
-		if err := writeDiscTables(c, base, names, rr.Disc.DiscUUID); err != nil {
-			return err
-		}
-	}
-
-	for _, rec := range rr.Refs.Records {
-		snapshots[object.ID(rec.SnapshotID)] = true
 	}
 	held, err := c.ListSnapshots()
 	if err != nil {
 		return err
 	}
 	for _, id := range held {
-		snapshots[id] = true
-	}
-	for id := range snapshots {
+		if slices.Contains(named, id) {
+			continue
+		}
 		if err := c.RefreshComplete(id); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// writeDiscTables copies the INDEX, REFS and DISCS files of the newest
-// run under base into the catalog.
-func writeDiscTables(c *catalog.Catalog, base string, names *image.NameCache, discUUID [16]byte) error {
-	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
-	if err != nil {
-		return err
-	}
-	catalogDir := names.Join(runDir, "catalog")
-	var bufs [3][]byte
-	for i, p := range []string{
-		filepath.Join(runDir, names.Resolve(runDir, "INDEX.bin")),
-		filepath.Join(catalogDir, names.Resolve(catalogDir, "REFS.bin")),
-		filepath.Join(catalogDir, names.Resolve(catalogDir, "DISCS.bin")),
-	} {
-		if bufs[i], err = os.ReadFile(p); err != nil {
-			return err
-		}
-	}
-	return c.WriteDisc(discUUID, bufs[0], bufs[1], bufs[2])
 }
 
 // mergeDiscsRows unions existing, the rows of the disc ledger, with

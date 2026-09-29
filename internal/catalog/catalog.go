@@ -151,7 +151,9 @@ func atomicWriteFile(path string, data []byte) error {
 }
 
 // replaceFile writes data to path through a temporary file in the same
-// directory and a rename. It creates the directory when it is absent.
+// directory and a rename. It creates the directory when it is absent. It
+// syncs the file before the rename and the directory after it, thus a
+// crash leaves the old file or the new file, never an empty one.
 func replaceFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -162,18 +164,32 @@ func replaceFile(path string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
+	_, err = tmp.Write(data)
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmpName, path)
+	}
+	if err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
+	return syncDir(dir)
+}
+
+// syncDir syncs the directory dir, so that a rename in it is durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
+	err = d.Sync()
+	if closeErr := d.Close(); err == nil {
+		err = closeErr
 	}
-	return nil
+	return err
 }

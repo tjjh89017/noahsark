@@ -70,6 +70,9 @@ func cmdLog(e *env, args []string) int {
 	_ = out.Flush()
 
 	code = 0
+	if rc.src.refsDamaged {
+		code = 1
+	}
 	for _, r := range records {
 		if rc.c.Partial(r.id) {
 			printPartial(e.stderr, cmd, r.id)

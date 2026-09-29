@@ -208,9 +208,10 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 
 	// The catalog takes the tables and objects of the disc that it does
 	// not hold yet, so that gc can confirm the items of the disc against
-	// its INDEX without the disc.
-	if err := catalogRunFromDisc(repoDir, root); err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+	// its INDEX without the disc. The disc passed its check: a failure
+	// here is a failure of the host, and the check is not recorded.
+	if err := catalogRunFromDisc(repoDir, root, rr); err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: the disc passed its check, but the catalog write failed: %v; the check is not recorded; correct the cause and run verify again\n", cmd, err)
 		return 1
 	}
 	var events []stage.DiscRecord
@@ -537,12 +538,13 @@ func readDiscIdentity(root string) (discIdentity, error) {
 }
 
 // catalogRunFromDisc copies the tables and objects of root that the
-// catalog does not hold into the catalog, the same way recover does.
-func catalogRunFromDisc(repoDir, root string) error {
+// catalog does not hold into the catalog, the same way recover does. rr
+// is the check of root; it reads no chunk again.
+func catalogRunFromDisc(repoDir, root string, rr *image.ReadResult) error {
 	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return err
 	}
-	_, err = catalog.WriteFromRoot(c, root)
+	_, err = catalog.WriteFromRead(c, root, rr)
 	return err
 }

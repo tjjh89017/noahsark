@@ -134,11 +134,26 @@ Writers of the catalog:
 - `commit` writes the snapshot, tree and blob objects directly.
 - `pack` writes the tables of the disc that it packs.
 - A counted `verify` and `recover` write the tables and the objects that they
-  read from a disc, when the catalog does not hold them.
+  read from a disc, when the catalog does not hold them, or holds a copy with
+  other bytes. They use the check of the disc that they already made: they
+  read the object files and the tables of the disc again, not the chunks.
 - `pack --undo` removes `discs/<disc-uuid>/` of its disc.
 
 No other command writes the catalog. `disc lost` keeps the catalog data of the
 disc. `status`, `ls`, `log` and `restore` read the catalog.
+
+Each write of a catalog file goes to a temporary file, which is synced, then
+renamed; the directory is synced after the rename. An object that the tool
+writes must give its content id. A file of the same name with other bytes is
+replaced, thus `recover` or a counted `verify` of a good disc repairs a
+damaged catalog object.
+
+Each read of a snapshot, tree or blob object of the catalog checks the object
+against its content id. An object that does not verify is an error that names
+the object and the disc whose INDEX lists it: run `recover` with that disc.
+The completeness value of `catalog-state.txt` reads each tree. For a blob it
+reads only the headers: a blob file that is empty, short, or whose headers do
+not pass their CRC counts as missing.
 
 ## 3. Local file formats
 
@@ -780,9 +795,15 @@ recorded`, records nothing, and exits with code 1. When
 `DISC-ROOT` is a counted mount ("Transition rules") and `--no-mark` is not
 given:
 
-- A good check appends `BurnRecorded` when the disc is `packed`, then
-  `CheckOK`. It writes the catalog tables and objects of the disc that the
-  catalog does not hold.
+- A good check writes the catalog tables and objects of the disc that the
+  catalog does not hold, then appends `BurnRecorded` when the disc is
+  `packed`, then `CheckOK`. The catalog write uses the result of the check:
+  it reads again only the snapshot, tree and blob files and the tables, not
+  the chunks and not the FEC files. When the catalog write fails, the
+  disc is not at fault: `verify` appends no event, prints no ok line and no
+  bad line, prints `noahsark: verify: the disc passed its check, but the
+  catalog write failed: ERROR; the check is not recorded; correct the cause
+  and run verify again` to standard error, and exits with code 1.
 - A failed check appends `CheckFailed`. The event removes one record, as
   `docs/states.md`, "Disc records", states.
 
@@ -1248,7 +1269,13 @@ digest part of a snapshot id. The tool resolves it in this order:
    match one snapshot.
 
 The refs come from `state/refs.txt` and from the REFS table of every disc in
-the catalog. For each name, the newest record wins. A value that matches no
+the catalog. For each name, the newest record wins. A REFS table of the
+catalog that does not decode does not stop the command: it uses the other
+tables, and prints one line `noahsark: COMMAND: warning: the catalog REFS
+table of disc UUID does not decode; the refs of the other tables are used;
+run recover, or verify, with that disc: ERROR` to standard error. A full id
+and a prefix still match. `ls` and `restore` then go on with their own exit
+code. `log` lists what it can and exits with code 1. A value that matches no
 snapshot is a usage error: the tool prints `no snapshot matches ARG` and
 exits with code 2. A prefix that matches more than one snapshot is a usage
 error: the tool prints the line `ARG matches more than one snapshot:`, then
@@ -1474,7 +1501,12 @@ choice. The flag changes only the burn line of `status`, and `status` never
 prints a burn line for an `on disc only` disc. For a disc that
 the repository already knows and that is not `missing`, it writes only the
 catalog entries, and prints `recover: ok; disc SEQ "LABEL" already known`.
-It still checks every object of that disc. It writes no event. When an object
+It still checks every object of that disc. It writes no event. The one
+exception is an `on disc only` disc whose last check failed, as after a
+recover of a damaged copy: a copy with no damaged object records each item
+of the disc that has no record, or that is `Lost`, as OnDisc, appends
+`CheckOK`, and prints `recover: ok; disc SEQ "LABEL" already known; check
+logged` (`docs/states.md`, row 70e). When an object
 is damaged, it prints the `damaged:` lines below instead of `ok`, and exits
 with code 1. It treats an item that is `Lost` in the log as not known, and
 records it as OnDisc. After each call it computes the value of

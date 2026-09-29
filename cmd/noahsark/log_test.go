@@ -10,7 +10,31 @@ import (
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+// TestLsAndLogWithADamagedRefsTable damages the catalog REFS table of
+// the one disc of a repository. ls of the ref name still lists the
+// snapshot, with one warning. log lists the snapshot, warns, and exits
+// with code 1.
+func TestLsAndLogWithADamagedRefsTable(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscPacked)
+	path := filepath.Join(fx.repo, "catalog", "discs", fx.uuid, catalog.RefsFileName)
+	if err := os.WriteFile(path, []byte("not a REFS table"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const warning = "warning: the catalog REFS table of disc "
+
+	code, out, errOut := runLs(t, fx.repo, "ls", defaultRefName())
+	if code != 0 || out == "" || strings.Count(errOut, warning) != 1 {
+		t.Fatalf("ls: exit %d, output %q, stderr %q; want 0, the lines and one warning", code, out, errOut)
+	}
+
+	code, out, errOut = runLs(t, fx.repo, "log")
+	if code != 1 || strings.Count(out, "\n") != 1 || strings.Count(errOut, warning) != 1 || !strings.Contains(errOut, fx.uuid) {
+		t.Fatalf("log: exit %d, output %q, stderr %q; want 1, one line and one warning", code, out, errOut)
+	}
+}
 
 // firstLogID gives the id field of the first log line of repo.
 func firstLogID(t *testing.T, repo string) string {
