@@ -129,7 +129,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 	for _, f := range failures {
 		_, _ = fmt.Fprintf(stderr, "noahsark: gc: %s: %v\n", f.path, f.err)
 	}
-	_, _ = fmt.Fprintln(stdout, "next: noahsark status")
+	_, _ = fmt.Fprintln(stdout, nextStatusLine)
 	if len(failures) > 0 || len(plan.skipped) > 0 {
 		return 1
 	}

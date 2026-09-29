@@ -116,7 +116,7 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 	if keptRoot != "" {
 		_, _ = fmt.Fprintf(stdout, "disc root %s kept; delete it yourself\n", keptRoot)
 	}
-	_, _ = fmt.Fprintln(stdout, "next: noahsark status")
+	_, _ = fmt.Fprintln(stdout, nextStatusLine)
 	return 0
 }
 

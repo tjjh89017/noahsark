@@ -150,7 +150,7 @@ func (r *discLostRun) markLost() int {
 	default:
 		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) returned to staged\n", disc.name(), len(staged))
 	}
-	_, _ = fmt.Fprintln(e.stdout, "next: noahsark status")
+	_, _ = fmt.Fprintln(e.stdout, nextStatusLine)
 	return 0
 }
 
@@ -205,7 +205,7 @@ func (r *discLostRun) undo() int {
 	} else {
 		_, _ = fmt.Fprintf(e.stdout, "%s: lost mark removed; %d item(s) back on this disc; verify it now\n", disc.name(), back)
 	}
-	_, _ = fmt.Fprintln(e.stdout, "next: noahsark status")
+	_, _ = fmt.Fprintln(e.stdout, nextStatusLine)
 	return 0
 }
 
