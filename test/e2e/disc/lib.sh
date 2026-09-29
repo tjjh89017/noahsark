@@ -2,10 +2,11 @@
 # Shared setup for the disc e2e suite (test/e2e/disc). Sourced by run.sh.
 #
 # Every scenario builds the noahsark binary once, works in a per-run
-# WORK directory, and uses the same mount, populate and unmount helpers
-# a UDF image needs everywhere in this suite. Mounting and corrupting a
-# loop-mounted image both need root, so run.sh itself runs under sudo;
-# functions here assume that.
+# WORK directory, and uses the same pack, image, mount, verify, recover
+# and restore helpers. image build fills the image. The tool reads only
+# a read-only mount. Mounting and corrupting a loop-mounted image both
+# need root, so run.sh itself runs under sudo; functions here assume
+# that.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd "$(dirname "$0")/../../.." && pwd)"
@@ -155,30 +156,192 @@ gen_small_tree() {
 	head -c 8 /dev/zero >"$dir/zeros8.bin"
 }
 
-# image_build REPO TREE_DIR IMAGE builds the image of the disc whose
-# pack --out directory is TREE_DIR, and moves the image to IMAGE.
-image_build() {
-	local repo="$1" tree_dir="$2" image="$3" plan
-	for plan in "$repo"/staging/plans/*/; do
-		if [ "$(readlink -f "${plan}tree")" = "$(readlink -f "$tree_dir")" ]; then
-			sudo "$BIN" --repo="$repo" image build "$(basename "$plan")"
-			mv "${plan}tree.img" "$image"
-			return
-		fi
-	done
-	fail "image_build: no disc of $repo has the disc root $tree_dir"
+# DISC_IMAGE maps the uuid of a disc to the path of its image file.
+# image_build adds an entry. disc_insert reads it when restore asks for
+# a disc.
+declare -A DISC_IMAGE=()
+
+# PACKED_UUID and PACKED_SEQ are set by pack_disc: the uuid and the
+# number of the disc that the last pack made.
+PACKED_UUID=""
+PACKED_SEQ=""
+
+# RESTORE_SWAPS is set by restore_loop: the number of discs that it
+# mounted before restore exited 0.
+RESTORE_SWAPS=0
+
+# pack_disc REPO PACK-OPTION... runs pack and prints its output. It
+# fails when pack exits nonzero or packs no disc. It sets PACKED_UUID
+# and PACKED_SEQ.
+pack_disc() {
+	local repo="$1" out
+	shift
+	out="$("$BIN" --repo="$repo" pack "$@")"
+	echo "$out"
+	grep -q '^packed disc ' <<<"$out" || fail "pack: no packed-disc line"
+	PACKED_SEQ="$(awk '/^packed disc /{print $3}' <<<"$out")"
+	PACKED_UUID="$(awk '/^uuid: /{print $2}' <<<"$out")"
+	[ -n "$PACKED_UUID" ] || fail "pack: no uuid line"
 }
 
-# mount_populate IMAGE TREE_DIR MOUNTPOINT loop-mounts a UDF image mkudffs
-# built empty, copies a packed NOAHSARK tree into it, and hands ownership
-# to the calling user.
-mount_populate() {
-	local image="$1" tree_dir="$2" mnt="$3"
+# image_build REPO UUID IMAGE builds the image of the disc UUID with
+# image build, moves the image to IMAGE, and adds IMAGE to DISC_IMAGE.
+image_build() {
+	local repo="$1" uuid="$2" image="$3"
+	sudo "$BIN" --repo="$repo" image build "$uuid"
+	mv "$repo/staging/plans/$uuid/tree.img" "$image"
+	DISC_IMAGE[$uuid]="$image"
+}
+
+# mount_ro IMAGE MOUNTPOINT loop-mounts a UDF image read-only. The tool
+# counts a read-only mount point outside the repository as a disc.
+mount_ro() {
+	local image="$1" mnt="$2"
+	mkdir -p "$mnt"
+	sudo mount -o ro,loop -t udf "$image" "$mnt"
+}
+
+# mount_rw IMAGE MOUNTPOINT loop-mounts a UDF image read-write. Use it
+# only to write damage into the image. Unmount it and mount it again
+# with mount_ro before the tool reads it.
+mount_rw() {
+	local image="$1" mnt="$2"
 	mkdir -p "$mnt"
 	sudo mount -o loop -t udf "$image" "$mnt"
-	sudo cp -a "$tree_dir"/NOAHSARK "$mnt"/
-	sudo chown -R "$(id -u):$(id -g)" "$mnt"/NOAHSARK
-	sync
+}
+
+# disc_insert UUID MOUNTPOINT mounts the image of the disc UUID
+# read-only at MOUNTPOINT, in place of the disc that is there.
+disc_insert() {
+	local uuid="$1" mnt="$2"
+	[ -n "${DISC_IMAGE[$uuid]:-}" ] || fail "disc_insert: no image of disc $uuid is known"
+	umount_if_mounted "$mnt"
+	mount_ro "${DISC_IMAGE[$uuid]}" "$mnt"
+	log "disc $uuid inserted at $mnt"
+}
+
+# restore_asked_uuid OUTPUT prints the uuid of the disc that a restore
+# output asks to insert, or nothing.
+restore_asked_uuid() {
+	sed -n 's/^restore: insert disc .*(\([0-9a-f-]*\)) into .* and run restore again$/\1/p' <<<"$1"
+}
+
+# restore_loop REPO DIR SNAPSHOT [PATH...] DEST runs restore with the
+# disc at DIR. When restore asks for another disc, it mounts the image of
+# that disc at DIR and runs the same restore again, until restore exits
+# 0. It sets RESTORE_SWAPS.
+restore_loop() {
+	local repo="$1" dir="$2" out code uuid
+	shift 2
+	RESTORE_SWAPS=0
+	while true; do
+		set +e
+		out="$("$BIN" --repo="$repo" restore --disc="$dir" "$@" 2>&1 </dev/null)"
+		code=$?
+		set -e
+		echo "$out"
+		if [ "$code" -eq 0 ]; then
+			return 0
+		fi
+		uuid="$(restore_asked_uuid "$out")"
+		[ -n "$uuid" ] || fail "restore: exit $code, and it asks for no disc"
+		RESTORE_SWAPS=$((RESTORE_SWAPS + 1))
+		[ "$RESTORE_SWAPS" -le 10 ] || fail "restore: asked for a disc more than 10 times"
+		disc_insert "$uuid" "$dir"
+	done
+}
+
+# restore_expect_missing REPO DIR MISSING_UUID SNAPSHOT [PATH...] DEST
+# runs restore as restore_loop does, but it never mounts the disc
+# MISSING_UUID. It fails unless restore stops and asks for that disc.
+restore_expect_missing() {
+	local repo="$1" dir="$2" missing="$3" out code uuid rounds=0
+	shift 3
+	while true; do
+		set +e
+		out="$("$BIN" --repo="$repo" restore --disc="$dir" "$@" 2>&1 </dev/null)"
+		code=$?
+		set -e
+		echo "$out"
+		if [ "$code" -eq 0 ]; then
+			fail "restore without disc $missing exited 0, want 1"
+		fi
+		uuid="$(restore_asked_uuid "$out")"
+		[ -n "$uuid" ] || fail "restore without disc $missing: exit $code, and it asks for no disc"
+		if [ "$uuid" = "$missing" ]; then
+			log "restore without disc $missing stopped and asked for it, as expected"
+			return 0
+		fi
+		rounds=$((rounds + 1))
+		[ "$rounds" -le 10 ] || fail "restore: asked for a disc more than 10 times"
+		disc_insert "$uuid" "$dir"
+	done
+}
+
+# disc_state REPO UUID prints the state field of the status line of the
+# disc UUID, or nothing when status shows no such disc.
+disc_state() {
+	local repo="$1" uuid="$2" out
+	out="$("$BIN" --repo="$repo" status)"
+	awk -F'  ' -v u="$uuid" '/^disc / && $NF == u { print $2 }' <<<"$out"
+}
+
+# assert_disc_state REPO UUID PATTERN fails unless status shows the disc
+# UUID in a state that matches the shell pattern PATTERN.
+assert_disc_state() {
+	local repo="$1" uuid="$2" pattern="$3" state
+	state="$(disc_state "$repo" "$uuid")"
+	# shellcheck disable=SC2254 # PATTERN is a shell pattern on purpose
+	case "$state" in
+	$pattern) log "status: disc $uuid: $state" ;;
+	*)
+		"$BIN" --repo="$repo" status >&2 || true
+		fail "status: disc $uuid: state [$state], want [$pattern]"
+		;;
+	esac
+}
+
+# VERIFY_OUT is set by verify_counted: the output of its verify.
+VERIFY_OUT=""
+
+# verify_counted REPO MOUNTPOINT UUID [ITEMS] verifies the read-only
+# mount MOUNTPOINT with the repository REPO. It fails unless verify
+# exits 0, counts the check, and status then shows the disc UUID as
+# verified. With ITEMS, the ok line must give ITEMS items. It sets
+# VERIFY_OUT.
+verify_counted() {
+	local repo="$1" mnt="$2" uuid="$3" items="${4:-}" code
+	set +e
+	VERIFY_OUT="$("$BIN" --repo="$repo" verify "$mnt" 2>&1)"
+	code=$?
+	set -e
+	echo "$VERIFY_OUT"
+	[ "$code" -eq 0 ] || fail "verify $mnt: exit $code, want 0"
+	grep -qE '^disc [0-9]+ ".*": [0-9]+ items, ok$' <<<"$VERIFY_OUT" ||
+		fail "verify $mnt: no ok line"
+	if [ -n "$items" ]; then
+		grep -qE "^disc [0-9]+ \".*\": $items items, ok\$" <<<"$VERIFY_OUT" ||
+			fail "verify $mnt: the ok line does not give $items items"
+	fi
+	grep -qxE 'burn recorded; verified|verified|already verified; check logged' <<<"$VERIFY_OUT" ||
+		fail "verify $mnt: the check is not counted"
+	assert_disc_state "$repo" "$uuid" "verified, last check *"
+}
+
+# RECOVER_OUT is set by recover_disc: the output of its recover.
+RECOVER_OUT=""
+
+# recover_disc REPO SOURCE MOUNTPOINT WANT_EXIT runs recover of the disc
+# at the read-only mount MOUNTPOINT into REPO. It fails unless recover
+# exits WANT_EXIT. It sets RECOVER_OUT.
+recover_disc() {
+	local repo="$1" source="$2" mnt="$3" want="$4" code
+	set +e
+	RECOVER_OUT="$("$BIN" --repo="$repo" recover --source="$source" --disc="$mnt" 2>&1)"
+	code=$?
+	set -e
+	echo "$RECOVER_OUT"
+	[ "$code" -eq "$want" ] || fail "recover of $mnt: exit $code, want $want"
 }
 
 # umount_if_mounted MOUNTPOINT unmounts it when it is a mountpoint,

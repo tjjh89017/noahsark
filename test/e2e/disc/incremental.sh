@@ -2,11 +2,11 @@
 # The incremental e2e scenario: sourced by run.sh. Commits a fixture as
 # ref BASE, packs it to a dvd+r disc, mutates the source the way a real
 # second commit would, commits it again as ref NEXT, packs the change
-# alone to a second dvd+r disc, then restores both snapshots from the
-# discs alone. Proves dedup across runs and that a later disc records an
-# earlier one as a prerequisite. See run.sh for the shared scenario
-# dispatch and lib.sh for build_binary, mount_populate and the media_*
-# helpers, and chain.sh for chain_assert_missing_disc.
+# alone to a second dvd+r disc, deletes the repository, recovers it from
+# the two discs, then restores both snapshots. Proves dedup across runs
+# and that a later disc records an earlier one as a prerequisite. See
+# run.sh for the shared scenario dispatch and lib.sh for the pack,
+# image, mount, recover and restore helpers.
 set -euo pipefail
 
 # INCREMENTAL_BASE_BYTES and INCREMENTAL_ADD_BYTES size the base fixture
@@ -47,20 +47,21 @@ scenario_incremental() {
 	new1="$(incremental_new_objects "$commit_out1")"
 	log "incremental: commit BASE took $((t1 - t0))s, new objects: $new1"
 
-	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1"
+	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1" uuid1
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
+	pack_disc "$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
 	t1=$(date +%s)
+	uuid1="$PACKED_UUID"
 	pack_rate_line "incremental: pack disc 1" "$INCREMENTAL_BASE_BYTES" "$t0" "$t1"
 	local size1
 	size1="$(du -sb "$tree1" | cut -f1)"
 	log "incremental: disc 1 packed tree size: $size1 bytes"
 
-	image_build "$repo" "$tree1" "$image1"
-	mount_populate "$image1" "$tree1" "$mnt1"
-	"$BIN" verify "$mnt1"
-	# verify's own output no longer carries the DISCS row count; read it
+	image_build "$repo" "$uuid1" "$image1"
+	mount_ro "$image1" "$mnt1"
+	verify_counted "$repo" "$mnt1" "$uuid1"
+	# verify's own output does not carry the DISCS row count; read it
 	# straight from DISCS.bin with the same Go reader verify uses.
 	local field_out1
 	field_out1="$(run_tool ci-disc-field "$mnt1")"
@@ -91,11 +92,12 @@ scenario_incremental() {
 		fail "incremental: NEXT commit ($new2 new objects) is not under 40% of BASE's ($new1); dedup looks too weak"
 	fi
 
-	local tree2="$work/tree2" image2="$work/disc2.img" mnt2="$work/mnt2"
+	local tree2="$work/tree2" image2="$work/disc2.img" mnt2="$work/mnt2" uuid2
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
+	pack_disc "$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
 	t1=$(date +%s)
+	uuid2="$PACKED_UUID"
 	pack_rate_line "incremental: pack disc 2" "$INCREMENTAL_ADD_BYTES" "$t0" "$t1"
 	local size2
 	size2="$(du -sb "$tree2" | cut -f1)"
@@ -106,9 +108,9 @@ scenario_incremental() {
 		fail "incremental: disc 2 size $size2 is not under 40% of disc 1's $size1"
 	fi
 
-	image_build "$repo" "$tree2" "$image2"
-	mount_populate "$image2" "$tree2" "$mnt2"
-	"$BIN" verify "$mnt2"
+	image_build "$repo" "$uuid2" "$image2"
+	mount_ro "$image2" "$mnt2"
+	verify_counted "$repo" "$mnt2" "$uuid2"
 	local field_out2
 	field_out2="$(run_tool ci-disc-field "$mnt2")"
 	echo "$field_out2"
@@ -116,25 +118,38 @@ scenario_incremental() {
 		fail "incremental: disc 2's DISCS table does not record 2 discs (expected disc 1 as a prerequisite)"
 	fi
 
-	# Proves the discs are the only source: restore never reads --repo,
-	# but deleting it here matches how the other cells prove the local
-	# catalog and staging are only an accelerator.
+	# Proves the discs are the only source: the repository goes, and
+	# recover builds it again from the two discs, one call for each disc.
+	# The chunk files of staging are not on the discs, thus restore reads
+	# every chunk from a disc.
 	rm -rf "$repo"
 	log "incremental: deleted repo (catalog and staging) before restore"
+	recover_disc "$repo" "$src" "$mnt1" 0
+	recover_disc "$repo" "$src" "$mnt2" 0
+	umount_if_mounted "$mnt1"
+	umount_if_mounted "$mnt2"
 
+	# restore reads each disc at rmnt, one mount at a time.
+	local rmnt="$work/rmnt"
 	local restored_base="$work/restored-base"
-	"$BIN" restore "$mnt1" "$snap1" "$restored_base"
-	run_tool ci-incremental-fixture check "$restored_base$src" "$hashes_base"
+	disc_insert "$uuid1" "$rmnt"
+	restore_loop "$repo" "$rmnt" "$snap1" "$restored_base"
+	if [ "$RESTORE_SWAPS" -ne 0 ]; then
+		fail "incremental: BASE restore asked for $RESTORE_SWAPS more disc(s), want disc 1 alone"
+	fi
+	run_tool ci-incremental-fixture check "$restored_base" "$hashes_base"
 	log "incremental: BASE restored from disc 1 alone matches"
 
 	local restored_next="$work/restored-next"
-	"$BIN" restore "$mnt1" "$mnt2" "$snap2" "$restored_next"
-	run_tool ci-incremental-fixture check "$restored_next$src" "$hashes_next"
+	restore_loop "$repo" "$rmnt" "$snap2" "$restored_next"
+	run_tool ci-incremental-fixture check "$restored_next" "$hashes_next"
 	log "incremental: NEXT restored from both discs matches"
 
-	chain_assert_missing_disc "$snap2" "$work/restored-next-missing" "$mnt1" "$mnt2"
+	# NEXT needs disc 1: a restore that never gets disc 1 must stop and
+	# ask for it, after it read disc 2.
+	disc_insert "$uuid2" "$rmnt"
+	restore_expect_missing "$repo" "$rmnt" "$uuid1" "$snap2" "$work/restored-next-missing"
 
-	umount_if_mounted "$mnt1"
-	umount_if_mounted "$mnt2"
+	umount_if_mounted "$rmnt"
 	log "incremental PASS"
 }

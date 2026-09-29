@@ -108,14 +108,15 @@ iso_assert_fixed_files() {
 	log "iso: README.txt, FORMAT.txt and REFERENCE/decoder.py match the packed tree"
 }
 
-# iso_plain_level4_check TOOL FLAVOR WORK TREE SRC SNAP builds a third
-# image with plain ISO 9660 level 4 and no Rock Ridge: the exact
+# iso_plain_level4_check TOOL FLAVOR WORK TREE SRC SNAP REPO UUID builds
+# a third image with plain ISO 9660 level 4 and no Rock Ridge: the exact
 # genisoimage invocation that folds every fixed name to lowercase (see
-# the file header). It mounts that image and checks that verify, the
-# decoder listing diff and restore all still succeed against it, and
-# prints the folded root directory name it found.
+# the file header). It mounts that image and checks that a counted
+# verify with the repository REPO, the decoder listing diff and restore
+# all still succeed against it, and prints the folded root directory
+# name it found.
 iso_plain_level4_check() {
-	local tool="$1" flavor="$2" work="$3" tree="$4" src="$5" snap="$6"
+	local tool="$1" flavor="$2" work="$3" tree="$4" src="$5" snap="$6" repo="$7" uuid="$8"
 	local plain_iso="$work/plain.iso" plain_mnt="$work/plain-mnt" plain_restored="$work/plain-restored"
 	local root_name
 
@@ -131,22 +132,23 @@ iso_plain_level4_check() {
 	fi
 	log "iso: plain level 4 image folded the root to: $root_name"
 
-	"$BIN" verify "$plain_mnt"
+	verify_counted "$repo" "$plain_mnt" "$uuid"
 	assert_listing_matches "$plain_mnt" "$work"
 
-	"$BIN" restore "$plain_mnt" "$snap" "$plain_restored"
-	assert_dirs_equal "$plain_restored$src" "$src"
+	restore_loop "$repo" "$plain_mnt" "$snap" "$plain_restored"
+	assert_dirs_equal "$plain_restored" "$src"
 
 	umount_if_mounted "$plain_mnt"
 	log "iso: plain level 4 (case-folded) image PASS"
 }
 
-# iso_joliet_negative_check TOOL FLAVOR WORK TREE builds a second,
+# iso_joliet_negative_check TOOL FLAVOR WORK TREE REPO builds a second,
 # Joliet-only ISO (no Rock Ridge, no -iso-level 4), mounts it, and
 # checks that the documented Joliet pitfall is real: an object name is
-# truncated, or verify fails against that mount.
+# truncated, or verify fails against that mount. verify runs with
+# --no-mark, so a failed check does not change the state of the disc.
 iso_joliet_negative_check() {
-	local tool="$1" flavor="$2" work="$3" tree="$4"
+	local tool="$1" flavor="$2" work="$3" tree="$4" repo="$5"
 	local joliet_iso="$work/joliet.iso" joliet_mnt="$work/joliet-mnt"
 	iso_build_image "$tool" "$flavor" "$joliet_iso" "$tree" -J -V NOAHSARK-JOLIET
 	mkdir -p "$joliet_mnt"
@@ -164,7 +166,7 @@ iso_joliet_negative_check() {
 	truncated="$(awk 'length($0) != 68 { print; exit }' <<<"$listing")"
 
 	local verify_code=0
-	"$BIN" verify "$joliet_mnt" >"$work/joliet-verify.log" 2>&1
+	"$BIN" --repo="$repo" verify --no-mark "$joliet_mnt" >"$work/joliet-verify.log" 2>&1
 	verify_code=$?
 	set -e
 
@@ -182,7 +184,7 @@ iso_joliet_negative_check() {
 
 scenario_iso() {
 	local work="$WORK/iso"
-	local repo src tree image mnt commit_out snap restored
+	local repo src tree image mnt commit_out snap restored uuid
 	local tool flavor
 	repo="$work/repo"
 	src="$work/src"
@@ -209,8 +211,9 @@ scenario_iso() {
 
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
+	pack_disc "$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
 	t1=$(date +%s)
+	uuid="$PACKED_UUID"
 	log "iso: pack took $((t1 - t0))s"
 	df -h
 
@@ -227,20 +230,21 @@ scenario_iso() {
 	iso_assert_object_names "$mnt" "$tree"
 	iso_assert_fixed_files "$mnt" "$tree"
 
-	"$BIN" verify "$mnt"
+	verify_counted "$repo" "$mnt" "$uuid"
 	assert_listing_matches "$mnt" "$work"
 
 	t0=$(date +%s)
-	"$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$restored"
+	restore_loop "$repo" "$mnt" "$snap" "$restored"
 	t1=$(date +%s)
 	log "iso: restore took $((t1 - t0))s"
 	assert_dirs_equal "$restored" "$src"
 
 	umount_if_mounted "$mnt"
 
-	iso_joliet_negative_check "$tool" "$flavor" "$work" "$tree"
+	iso_joliet_negative_check "$tool" "$flavor" "$work" "$tree" "$repo"
+	assert_disc_state "$repo" "$uuid" "verified, last check *"
 
-	iso_plain_level4_check "$tool" "$flavor" "$work" "$tree" "$src" "$snap"
+	iso_plain_level4_check "$tool" "$flavor" "$work" "$tree" "$src" "$snap" "$repo" "$uuid"
 
 	df -h
 	log "iso PASS"

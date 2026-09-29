@@ -108,7 +108,9 @@ jobs:
       - name: Unit
         uses: ./.github/actions/unit
 
-  # One matrix cell per scenario. Seven cells cover what 14 used to:
+  # One matrix cell per scenario. lifecycle walks discs through the
+  # disc states with the real commands. The other seven cells cover
+  # what 14 used to:
   # media/dvd+r also runs cli and iso in sequence (extras), and fec runs
   # the four corrupt-* checks in sequence, since FEC is optional and off
   # by default and does not need a cell of its own for each corruption
@@ -138,6 +140,7 @@ jobs:
           - { scenario: incremental, media: '', extras: '', name: incremental, slug: incremental }
           - { scenario: rebuild, media: '', extras: '', name: rebuild, slug: rebuild }
           - { scenario: fec, media: '', extras: '', name: fec, slug: fec }
+          - { scenario: lifecycle, media: '', extras: '', name: lifecycle, slug: lifecycle }
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
