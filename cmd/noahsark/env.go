@@ -28,6 +28,8 @@ type env struct {
 
 	// mountinfo opens the mount table of the process.
 	mountinfo func() (io.ReadCloser, error)
+	// deviceOf returns the device of the file at path, after symlinks.
+	deviceOf func(path string) (devNum, error)
 
 	global globalOptions
 }
@@ -53,6 +55,7 @@ func realEnv() *env {
 		now:       time.Now,
 		euid:      os.Geteuid,
 		mountinfo: func() (io.ReadCloser, error) { return os.Open("/proc/self/mountinfo") },
+		deviceOf:  statDevice,
 	}
 }
 

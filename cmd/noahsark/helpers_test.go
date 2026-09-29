@@ -89,6 +89,7 @@ func newTestEnv(dir string) *testEnv {
 		now:       func() time.Time { return fakeNow() },
 		euid:      os.Geteuid,
 		mountinfo: fakeMountinfo,
+		deviceOf:  fakeDeviceOf,
 	}
 	return te
 }

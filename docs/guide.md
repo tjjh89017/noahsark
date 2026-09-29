@@ -346,6 +346,7 @@ nothing:
 
 ```
 $ noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
+noahsark: verify: /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree is not counted: inside the repository
 disc 0 "2026-09-14 disc 0": 8 items, ok
 not counted: this is not a disc
 ```
