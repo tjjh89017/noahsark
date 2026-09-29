@@ -31,58 +31,51 @@ func sameNumberSetup(t *testing.T, fx *discFixture) {
 }
 
 // usageError is a case of a usage error. It changes no state of the
-// packed disc of the fixture and writes nothing.
-func usageError(row, name string, noRepo bool, args []string, stderr ...string) stateCase {
+// packed disc of the fixture, writes nothing, and prints only the lines
+// of the cell.
+func usageError(row, name string, noRepo bool, args []string, cells map[string]string) stateCase {
 	return stateCase{
 		row: row, name: name,
-		start: stage.DiscPacked, noRepo: noRepo, args: args,
-		exit: 2, stderr: stderr, exact: true, noEvent: true, sameCatalog: true,
+		start: stage.DiscPacked, noRepo: noRepo, args: args, cells: cells,
+		exact: true, exactStderr: true, noEvent: true, sameCatalog: true,
 		end: stage.DiscPacked, word: stage.WordPacked,
 	}
 }
 
 func init() {
+	global := usageError("72", "a global option after the command name", true, []string{"status", "--repo={REPO}"}, nil)
+	global.setup = func(t *testing.T, fx *discFixture) { fx.cell("PATH", fx.repo) }
 	registerStateCases(
-		usageError("71a", "status with no repository", true, []string{"status"},
-			"no repository; run noahsark init, or give --repo\n"),
-		usageError("71a", "disc burned with no repository", true, []string{"disc", "burned", "0"},
-			"no repository; run noahsark init, or give --repo\n"),
-		usageError("72", "a global option after the command name", true, []string{"status", "--repo={REPO}"},
-			"--repo is a global option; give it before the command name: noahsark --repo={REPO} status\n"),
-		usageError("73", "a command option before the command name", true, []string{"--undo", "disc", "burned", "0"},
-			"--undo is an option of disc burned; give it after the last subcommand word: noahsark disc burned --undo 0; see: noahsark disc burned -h\n"),
-		usageError("73", "a command option between a group and its subcommand", true, []string{"disc", "--undo", "burned", "0"},
-			"--undo is an option of disc burned; give it after the last subcommand word: noahsark disc burned --undo 0; see: noahsark disc burned -h\n"),
-		usageError("74", "a group with no subcommand", false, []string{"disc"},
-			"disc needs a subcommand:\n", "  burned", "  lost", "  verified"),
-		usageError("75", "an unknown subcommand", false, []string{"disc", "burnt", "0"},
-			"unknown subcommand of disc: burnt; the subcommands are:\n", "  burned", "  lost", "  verified"),
+		usageError("71a", "status with no repository", true, []string{"status"}, nil),
+		usageError("71a", "disc burned with no repository", true, []string{"disc", "burned", "0"}, nil),
+		global,
+		usageError("73", "a command option before the command name", true, []string{"--undo", "disc", "burned", "0"}, nil),
+		usageError("73", "a command option between a group and its subcommand", true, []string{"disc", "--undo", "burned", "0"}, nil),
+		usageError("74", "a group with no subcommand", false, []string{"disc"}, nil),
+		usageError("75", "an unknown subcommand", false, []string{"disc", "burnt", "0"}, nil),
+		// The Message cell of row 76 gives no line.
 		stateCase{
 			row: "76", name: "-h after a group",
 			start: stage.DiscPacked, args: []string{"disc", "-h"},
-			stdout: []string{"  burned", "  lost", "  verified"}, noEvent: true, sameCatalog: true,
+			also: []string{"  burned", "  lost", "  verified"}, noEvent: true, sameCatalog: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
 		stateCase{
 			row: "76", name: "-h before a group",
 			start: stage.DiscPacked, args: []string{"-h", "disc"},
-			stdout: []string{"  burned", "  lost", "  verified"}, noEvent: true, sameCatalog: true,
+			also: []string{"  burned", "  lost", "  verified"}, noEvent: true, sameCatalog: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
-		usageError("77", "init with --repo", true, []string{"--repo={REPO}", "init"},
-			"init makes the current directory the repository; it does not take --repo\n"),
-		usageError("78", "a disc argument that matches no disc", false, []string{"disc", "burned", "7"},
-			"no disc matches 7\n"),
+		usageError("77", "init with --repo", true, []string{"--repo={REPO}", "init"}, nil),
+		usageError("78", "a disc argument that matches no disc", false, []string{"disc", "burned", "7"}, map[string]string{"ARG": "7"}),
+		// The cell gives the form of a candidate line. also names the
+		// line of the second candidate.
 		stateCase{
 			row: "79", name: "a disc number of two discs",
 			start: stage.DiscPacked, setup: sameNumberSetup,
-			args: []string{"disc", "burned", "{SEQ}"},
-			exit: 2,
-			stderr: []string{
-				"{SEQ} matches more than one disc:\n",
-				`{DISC}  {UUID}` + "\n",
-				`disc {SEQ} "other"  {UUID2}` + "\n",
-			},
+			args:  []string{"disc", "burned", "{SEQ}"},
+			cells: map[string]string{"ARG": "0"},
+			also:  []string{`disc {SEQ} "other"  {UUID2}` + "\n"},
 			exact: true, noEvent: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},

@@ -18,7 +18,7 @@ func init() {
 		stateCase{
 			row: "71", name: "status of a packed disc",
 			start: stage.DiscPacked, args: []string{"status"},
-			stdout: append(append([]string{
+			also: append(append([]string{
 				"staged: 0 items, 0 bytes\n",
 				`{DISC}  packed  {UUID}` + "\n",
 				"next: load a blank disc, then run:\n",
@@ -30,7 +30,7 @@ func init() {
 		stateCase{
 			row: "71", name: "status of a burned disc",
 			start: stage.DiscBurned, args: []string{"status"},
-			stdout: append([]string{
+			also: append([]string{
 				"staged: 0 items, 0 bytes\n",
 				`{DISC}  burned  {UUID}` + "\n",
 				"next: load disc {SEQ}, then run:\n",
@@ -41,7 +41,7 @@ func init() {
 		stateCase{
 			row: "71", name: "status of a verified disc",
 			start: stage.DiscVerified, args: []string{"status"},
-			stdout: []string{
+			also: []string{
 				"staged: 0 items, 0 bytes\n",
 				`{DISC}  verified, last check `, `  {UUID}` + "\n",
 				"next: nothing to do; gc can free disc {SEQ} after ",
@@ -52,7 +52,7 @@ func init() {
 		stateCase{
 			row: "71", name: "status of an on disc only disc",
 			start: stage.DiscOnDiscOnly, args: []string{"status"},
-			stdout: []string{
+			also: []string{
 				"staged: 0 items, 0 bytes\n",
 				`{DISC}  on disc only, last check `, `  {UUID}` + "\n",
 				"next: nothing to do\n",
@@ -63,7 +63,7 @@ func init() {
 		stateCase{
 			row: "71", name: "status of a lost disc",
 			start: stage.DiscLost, args: []string{"status"},
-			stdout: []string{
+			also: []string{
 				"staged: ",
 				`{DISC}  lost  {UUID}` + "\n",
 				"next: load a blank disc, then run:\n",
@@ -77,7 +77,7 @@ func init() {
 		stateCase{
 			row: "71", name: "status of a missing disc",
 			start: stage.DiscMissing, args: []string{"status"},
-			stdout: []string{
+			also: []string{
 				`{DISC}  missing  {UUID}` + "\n",
 				`next: load disc {SEQ} "{LABEL}", then run:` + "\n",
 				"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&\n",

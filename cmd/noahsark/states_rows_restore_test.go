@@ -22,9 +22,7 @@ func init() {
 	registerStateCases(stateCase{
 		row: "85", name: "the plan names a lost disc",
 		start: stage.DiscLost, args: restoreArgs("r85", "--disc={ROOT}"),
-		exit:   1,
-		stdout: []string{`{DISC} ({UUID}): `, ` bytes (lost)`, "totals: 1 discs, ", "restored snapshot "},
-		stderr: []string{"noahsark: restore: warning: ", "on a lost disc"},
+		also:   []string{"noahsark: restore: warning: ", "on a lost disc"},
 		absent: []string{": found", "insert disc"},
 		end:    stage.DiscLost,
 	})
@@ -33,7 +31,6 @@ func init() {
 		registerStateCases(stateCase{
 			row: "86", name: "restore from a " + s.String() + " disc",
 			start: s, args: restoreArgs("r86", "--disc={ROOT}"),
-			stdout: []string{`{DISC} ({UUID}): `, "totals: 1 discs, ", "{DISC}: found", "restored snapshot "},
 			absent: []string{"warning:", "insert disc", "(lost)"},
 			end:    s,
 		})
@@ -42,17 +39,18 @@ func init() {
 		// Row 87: no terminal, and no disc at --disc.
 		stateCase{
 			row: "87", name: "no terminal and not the expected disc",
-			start: stage.DiscVerified, args: restoreArgs("r87", "--disc={ROOT}-none"),
-			exit:   1,
-			stderr: []string{`restore: insert {DISC} ({UUID}) into {ROOT}-none and run restore again`},
+			start:  stage.DiscVerified,
+			setup:  func(_ *testing.T, fx *discFixture) { fx.cell("DIR", fx.root+"-none") },
+			args:   restoreArgs("r87", "--disc={ROOT}-none"),
 			absent: []string{"restored snapshot", "press Enter"},
 			end:    stage.DiscVerified,
 		},
-		// Row 88: the dry run prints the plan and changes nothing.
+		// Row 88: the dry run prints the plan and changes nothing. The
+		// Message cell of row 88 is irregular, thus also names the lines.
 		stateCase{
 			row: "88", name: "dry run with a lost disc",
 			start: stage.DiscLost, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
-			stdout: []string{`{DISC} ({UUID}): `, ` bytes (lost)`, "totals: 1 discs, "},
+			also:   []string{`{DISC} ({UUID}): `, ` bytes (lost)`, "totals: 1 discs, "},
 			absent: []string{"restored snapshot", "found"},
 			end:    stage.DiscLost,
 		},
@@ -61,8 +59,6 @@ func init() {
 		stateCase{
 			row: "89a", name: "restore of a partial snapshot",
 			start: stage.DiscMissing, args: restoreArgs("r89a", "--disc={ROOT}"),
-			exit:   1,
-			stderr: []string{" is partial; run recover with more discs"},
 			absent: []string{"totals:", "restored snapshot"},
 			end:    stage.DiscMissing,
 		},
@@ -80,13 +76,9 @@ func init() {
 					t.Fatal(err)
 				}
 			},
-			args: restoreArgs("r85a", "--disc={ROOT}"),
-			exit: 1,
-			stdout: []string{
-				"restore: 2 item(s) have no disc known to the catalog; run recover with more discs\n",
-				"totals: 0 discs, 0 items, 0 bytes\n",
-				"restored snapshot ",
-			},
+			args:   restoreArgs("r85a", "--disc={ROOT}"),
+			cells:  map[string]string{"N": "2"},
+			also:   []string{"totals: 0 discs, 0 items, 0 bytes\n"},
 			absent: []string{"found"},
 			end:    stage.DiscVerified, word: stage.WordClean,
 			check: func(t *testing.T, fx *discFixture, stdout, stderr string) {
@@ -104,25 +96,21 @@ func init() {
 		stateCase{
 			row: "89", name: "restore with no repository",
 			start: stage.DiscVerified, noRepo: true,
-			args:   restoreArgs("r89", "--disc={ROOT}"),
-			exit:   2,
-			stdout: nil, exact: true,
+			args:  restoreArgs("r89", "--disc={ROOT}"),
+			exact: true, exactStderr: true,
 			end: stage.DiscVerified, word: stage.WordClean,
-			check: allChecks(
-				stderrIs("noahsark: restore: no repository; run recover first, one time for each disc\n"),
-				func(t *testing.T, fx *discFixture, _, _ string) {
-					if _, err := os.Lstat(fx.root + "-r89"); !os.IsNotExist(err) {
-						t.Fatalf("restore with no repository created DEST: %v", err)
-					}
-				},
-			),
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if _, err := os.Lstat(fx.root + "-r89"); !os.IsNotExist(err) {
+					t.Fatalf("restore with no repository created DEST: %v", err)
+				}
+			},
 		},
 	)
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscVerified, stage.DiscOnDiscOnly} {
 		registerStateCases(stateCase{
 			row: "88", name: "dry run with a " + s.String() + " disc",
 			start: s, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
-			stdout: []string{`{DISC} ({UUID}): `, " items, ", "totals: 1 discs, "},
+			also:   []string{`{DISC} ({UUID}): `, " items, ", "totals: 1 discs, "},
 			absent: []string{"restored snapshot", "(lost)", "found"},
 			end:    s,
 		})

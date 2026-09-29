@@ -13,8 +13,8 @@ import (
 )
 
 // partialSetup marks the one snapshot of the repository of fx partial
-// in catalog-state.txt. {SHORT} is the 12-character id that ls and log
-// print.
+// in catalog-state.txt. {SHORT} and the placeholder ID of the cells are
+// the 12-character id that ls and log print.
 func partialSetup(t *testing.T, fx *discFixture) {
 	t.Helper()
 	full := fullSnapshotID(t, fx.repo)
@@ -22,12 +22,13 @@ func partialSetup(t *testing.T, fx *discFixture) {
 		t.Fatal(err)
 	}
 	fx.set("{SHORT}", logID(t, full))
+	fx.cell("ID", logID(t, full))
 }
 
 // twoSnapshotsSetup commits the source of fx again, with a new file each
 // time, until two snapshots share the first digit of their digest. The
 // digest has 16 digits, thus at most 17 snapshots are needed. {PREFIX}
-// is that digit, and {SNAP1} and {SNAP2} are the full text ids of the
+// and the placeholder ARG of the cells are that digit, and {SNAP1} and {SNAP2} are the full text ids of the
 // two snapshots, in the order of the digest.
 func twoSnapshotsSetup(t *testing.T, fx *discFixture) {
 	t.Helper()
@@ -42,6 +43,7 @@ func twoSnapshotsSetup(t *testing.T, fx *discFixture) {
 		pair := []string{first, full}
 		sort.Strings(pair)
 		fx.set("{PREFIX}", digit)
+		fx.cell("ARG", digit)
 		fx.set("{SNAP1}", pair[0])
 		fx.set("{SNAP2}", pair[1])
 		return true
@@ -65,10 +67,6 @@ func twoSnapshotsSetup(t *testing.T, fx *discFixture) {
 	t.Fatal("no two snapshots share the first digit of their digest")
 }
 
-// logPartialLine is a check: standard error is the partial line of log
-// for the snapshot {SHORT}.
-var logPartialLine = stderrIs("noahsark: log: snapshot {SHORT} is partial; run recover with more discs\n")
-
 // logLineFirst is a check: the first line of log is the line of the
 // snapshot {SHORT}.
 func logLineFirst(t *testing.T, fx *discFixture, stdout, _ string) {
@@ -85,27 +83,25 @@ func init() {
 		stateCase{
 			row: "79a", name: "ls of a snapshot that nothing matches",
 			start: stage.DiscVerified, args: []string{"ls", "no-such-ref"},
-			exit: 2, stderr: []string{"no snapshot matches no-such-ref\n"},
+			cells: map[string]string{"ARG": "no-such-ref"},
+			exact: true, exactStderr: true,
 			end: stage.DiscVerified, word: stage.WordClean,
 		},
 		stateCase{
 			row: "79a", name: "log of a snapshot that nothing matches",
 			start: stage.DiscPacked, args: []string{"log", "no-such-ref"},
-			exit: 2, stderr: []string{"no snapshot matches no-such-ref\n"},
+			cells: map[string]string{"ARG": "no-such-ref"},
+			exact: true, exactStderr: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
 		// Row 79b: a prefix of two snapshots lists both, in the order of
-		// the digest.
+		// the digest. The cell gives the form of a candidate line. also
+		// names both lines.
 		stateCase{
 			row: "79b", name: "ls of a prefix of two snapshots",
 			start: stage.DiscPacked, setup: twoSnapshotsSetup,
-			args: []string{"ls", "{PREFIX}"},
-			exit: 2,
-			stderr: []string{
-				"{PREFIX} matches more than one snapshot:\n",
-				"snapshot {SNAP1}\n",
-				"snapshot {SNAP2}\n",
-			},
+			args:  []string{"ls", "{PREFIX}"},
+			also:  []string{"snapshot {SNAP1}\n", "snapshot {SNAP2}\n"},
 			exact: true,
 			end:   stage.DiscPacked, word: stage.WordPacked,
 		},
@@ -113,43 +109,40 @@ func init() {
 		stateCase{
 			row: "89", name: "ls with no repository",
 			start: stage.DiscPacked, noRepo: true, args: []string{"ls", "latest"},
-			exit: 2, exact: true,
+			exact: true, exactStderr: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
-			check: stderrIs("noahsark: ls: no repository; run recover first, one time for each disc\n"),
 		},
 		stateCase{
 			row: "89", name: "log with no repository",
 			start: stage.DiscPacked, noRepo: true, args: []string{"log"},
-			exit: 2, exact: true,
+			exact: true, exactStderr: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
-			check: stderrIs("noahsark: log: no repository; run recover first, one time for each disc\n"),
 		},
 		// Row 89a: ls of a partial snapshot reads no disc and exits 1.
 		stateCase{
 			row: "89a", name: "ls of a partial snapshot",
 			start: stage.DiscPacked, setup: partialSetup,
-			args: []string{"ls", "{REF}"},
-			exit: 1, exact: true,
+			args:  []string{"ls", "{REF}"},
+			exact: true, exactStderr: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
-			check: stderrIs("noahsark: ls: snapshot {SHORT} is partial; run recover with more discs\n"),
 		},
 		// Row 89b: log prints its lines, then names each partial snapshot
 		// on standard error, and exits 1.
 		stateCase{
 			row: "89b", name: "log with a partial snapshot",
 			start: stage.DiscPacked, setup: partialSetup,
-			args: []string{"log"},
-			exit: 1, stdout: []string{"{SHORT}\t"},
-			end: stage.DiscPacked, word: stage.WordPacked,
-			check: allChecks(logPartialLine, logLineFirst),
+			args:        []string{"log"},
+			exactStderr: true,
+			end:         stage.DiscPacked, word: stage.WordPacked,
+			check: logLineFirst,
 		},
 		stateCase{
 			row: "89b", name: "log of a partial snapshot by its ref",
 			start: stage.DiscPacked, setup: partialSetup,
-			args: []string{"log", "{REF}"},
-			exit: 1, stdout: []string{"{SHORT}\t"},
-			end: stage.DiscPacked, word: stage.WordPacked,
-			check: allChecks(logPartialLine, logLineFirst),
+			args:        []string{"log", "{REF}"},
+			exactStderr: true,
+			end:         stage.DiscPacked, word: stage.WordPacked,
+			check: logLineFirst,
 		},
 	)
 }

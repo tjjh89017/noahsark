@@ -16,19 +16,19 @@ func init() {
 		stateCase{
 			row: "1", name: "commit, the one new item is the snapshot",
 			start: stage.DiscPacked, args: []string{"commit", "{SRC}"},
-			stdout: []string{"new items: 1, existing items: ", "staged: 1 items, "}, next: true,
-			end: stage.DiscPacked, word: stage.WordPacked,
+			cells: map[string]string{"N": "1"},
+			also:  []string{"new items: 1, existing items: "},
+			end:   stage.DiscPacked, word: stage.WordPacked,
 		},
 		stateCase{
 			row: "1", name: "commit, the items are staged",
 			start: stage.DiscUndone, args: []string{"commit", "{SRC}"},
-			stdout: []string{"new items: 1, existing items: ", "staged: "}, next: true,
-			end: stage.DiscUndone,
+			also: []string{"new items: 1, existing items: "},
+			end:  stage.DiscUndone,
 		},
 		stateCase{
 			row: "3", name: "commit after the disc is marked lost",
 			start: stage.DiscLost, args: []string{"commit", "{SRC}"},
-			stdout: []string{"new items: ", "staged: "}, next: true,
 			end: stage.DiscLost,
 		},
 		// Row 3: the source still has the data. Each lost item is staged
@@ -38,9 +38,8 @@ func init() {
 		stateCase{
 			row: "3", name: "commit stages each lost item again",
 			start: stage.DiscOnDiscOnly, setup: lostItemsSetup,
-			args:   []string{"commit", "{SRC}"},
-			stdout: []string{"staged: {LOST} items, "}, next: true,
-			end: stage.DiscLost,
+			args: []string{"commit", "{SRC}"},
+			end:  stage.DiscLost,
 			check: func(t *testing.T, fx *discFixture, _, _ string) {
 				if n := countByState(t, fx.repo, stage.Lost); n != 1 {
 					t.Fatalf("%d items stay lost, want 1 (the old snapshot)", n)
@@ -66,7 +65,6 @@ func init() {
 				fx.set("{OTHER}", other)
 			},
 			args: []string{"commit", "{OTHER}"},
-			next: true,
 			end:  stage.DiscLost,
 			check: func(t *testing.T, fx *discFixture, stdout, stderr string) {
 				if out := stdout + stderr; !commitLinesRe.MatchString(out) {
@@ -139,7 +137,7 @@ func TestStatesRow1CommitSkippedPrintsNext(t *testing.T) {
 
 // lostItemsSetup marks the on disc only disc of fx lost, as disc lost
 // does. Each item of the disc is then Lost. {LOST} is the number of lost
-// items.
+// items. The count of the staged line of a commit is that number.
 func lostItemsSetup(t *testing.T, fx *discFixture) {
 	t.Helper()
 	markDiscLostInLog(t, fx)
@@ -151,6 +149,7 @@ func lostItemsSetup(t *testing.T, fx *discFixture) {
 		t.Fatalf("the fixture has %d staged items, want 0", n)
 	}
 	fx.set("{LOST}", strconv.Itoa(lost))
+	fx.cell("N", strconv.Itoa(lost))
 }
 
 // lostCount is the {LOST} number of lostItemsSetup.
