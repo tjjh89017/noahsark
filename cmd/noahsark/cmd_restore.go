@@ -85,7 +85,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 2
+		return configExitCode(err)
 	}
 	layout := layoutOf(repoDir, cfg)
 	c, err := catalog.OpenReadOnly(repoDir)
@@ -137,7 +137,12 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
+	defer p.Close()
 	if err := restore.Scan(c, sel, dest, o.overwrite, p.Add); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	if err := p.Count(); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}

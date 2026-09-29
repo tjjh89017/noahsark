@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"syscall"
 
@@ -83,7 +82,7 @@ type dirMeta struct {
 // errIncomplete names a file that needs a chunk that no disc of this
 // restore gave: a chunk on a lost disc, or a chunk that no catalog INDEX
 // lists.
-var errIncomplete = errors.New("a chunk of this file is on a lost disc or on no disc known to the catalog; the part file stays")
+var errIncomplete = errors.New("file not restored: a chunk of this file is on a lost disc or on no disc known to the catalog; the part file stays")
 
 // NewAssembler prepares a disc-swap restore of sel into outDir. It
 // creates outDir and reads nothing else until the first Disc call.
@@ -371,7 +370,8 @@ func removePart(part string) {
 // directory first, and names every file no disc could complete. Its
 // part file stays for a later run.
 func (a *Assembler) Finish() {
-	for _, d := range slices.Backward(a.dirsForMeta) {
+	// The walk records a directory after every directory below it.
+	for _, d := range a.dirsForMeta {
 		applyMetadata(d.path, d.e, a.wp)
 	}
 	paths := make([]string, 0, len(a.pending))

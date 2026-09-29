@@ -92,7 +92,7 @@ func init() {
 			check: func(t *testing.T, fx *discFixture, stdout, stderr string) {
 				dest := fx.root + "-r85a"
 				for _, name := range []string{"a.txt", filepath.Join("sub", "b.txt")} {
-					if !strings.Contains(stderr, "noahsark: restore: warning: "+filepath.Join(dest, name)+": ") {
+					if !strings.Contains(stderr, "noahsark: restore: warning: "+filepath.Join(dest, name)+": file not restored: ") {
 						t.Errorf("stderr %q does not name %s as not restored", stderr, name)
 					}
 				}
