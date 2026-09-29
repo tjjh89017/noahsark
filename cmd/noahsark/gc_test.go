@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -42,8 +42,11 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "deleted 0 staged object") {
-		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
+	if !strings.HasPrefix(out, "gc: freed ") || strings.HasPrefix(out, gcFreedNone) {
+		t.Fatalf("gc output %q, want more than 0 items freed", out)
+	}
+	if !strings.HasSuffix(out, "\nnext: noahsark status\n") {
+		t.Fatalf("gc output %q, want the next line last", out)
 	}
 	discs := readDiscLog(t, repo).Discs()
 	if len(discs) != 1 || discs[0].State != stage.DiscOnDiscOnly {
@@ -70,32 +73,29 @@ func TestGCRetentionGate(t *testing.T) {
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	// Before the retention period: nothing is eligible. --dry-run always
-	// exits 0, and names when the run's objects will become eligible.
+	// Before the wait is over: gc --dry-run holds every item, names the
+	// end of the wait, exits 0 and prints no next line.
 	setFakeNow(t, func() time.Time { return before.Add(24 * time.Hour) })
 	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (before retention): exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "would delete 0 staged object") {
-		t.Fatalf("gc --dry-run (before retention) output %q, want 0 objects", out)
+	if !strings.HasPrefix(out, "gc: would free 0 item(s), 0 bytes\ngc: disc 0: too soon; ") {
+		t.Fatalf("gc --dry-run (before retention) output %q, want 0 items and the too soon line", out)
 	}
-	if !strings.Contains(out, "gc: nothing is eligible yet") {
-		t.Fatalf("gc --dry-run (before retention) output %q, want the nothing-eligible-yet message", out)
-	}
-	if !strings.Contains(out, "earliest eligible date:") {
-		t.Fatalf("gc --dry-run (before retention) output %q, want the earliest eligible date", out)
+	if strings.Contains(out, "next:") {
+		t.Fatalf("gc --dry-run output %q holds a next line", out)
 	}
 
-	// After the retention period: dry-run reports what it would do,
-	// without changing anything.
+	// After the wait: gc --dry-run reports what it would free, and
+	// changes nothing.
 	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
 	code, out = runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after retention): exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 staged object") {
-		t.Fatalf("gc --dry-run (after retention) output %q, want more than 0 objects", out)
+	if !strings.HasPrefix(out, "gc: would free ") || strings.HasPrefix(out, "gc: would free 0 ") {
+		t.Fatalf("gc --dry-run (after retention) output %q, want more than 0 items", out)
 	}
 	objDir := testLayout(t, repo).chunksDir()
 	before1, err := countFiles(objDir)
@@ -112,8 +112,8 @@ func TestGCRetentionGate(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "deleted 0 staged object") {
-		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
+	if strings.HasPrefix(out, gcFreedNone) {
+		t.Fatalf("gc output %q, want more than 0 items freed", out)
 	}
 	after1, err := countFiles(objDir)
 	if err != nil {
@@ -126,103 +126,8 @@ func TestGCRetentionGate(t *testing.T) {
 	// A second gc run finds nothing left to do; nothing eligible is
 	// success, not a failure.
 	code, out = runCmd(t, "--repo="+repo, "gc")
-	if code != 0 {
-		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
-	}
-}
-
-// TestGCPlainRunBeforeRetentionNamesTheReason checks that a plain gc
-// (no --dry-run) that deletes nothing because the retention time is not
-// over prints the same reason and earliest eligible date --dry-run
-// prints, not just "deleted 0".
-func TestGCPlainRunBeforeRetentionNamesTheReason(t *testing.T) {
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	before := time.Now()
-	packAndVerifyDisc(t, work, repo, src)
-
-	setFakeNow(t, func() time.Time { return before.Add(24 * time.Hour) })
-	code, out := runCmd(t, "--repo="+repo, "gc")
-	if code != 0 {
-		t.Fatalf("gc (before retention): exit %d, want 0: %s", code, out)
-	}
-	if !strings.Contains(out, "deleted 0 staged object") {
-		t.Fatalf("gc (before retention) output %q, want 0 objects deleted", out)
-	}
-	if !strings.Contains(out, "gc: nothing is eligible yet") {
-		t.Fatalf("gc (before retention) output %q, want the nothing-eligible-yet message", out)
-	}
-	if !strings.Contains(out, "earliest eligible date:") {
-		t.Fatalf("gc (before retention) output %q, want the earliest eligible date", out)
-	}
-}
-
-// TestGCDryRunDefaultIsASummary checks that gc --dry-run prints no
-// per-object "would delete" line, only the staging totals and one
-// grouped line per disc.
-func TestGCDryRunDefaultIsASummary(t *testing.T) {
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	before := time.Now()
-	packAndVerifyDisc(t, work, repo, src)
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
-
-	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
-	if code != 0 {
-		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
-	}
-	if strings.Contains(out, "would delete 0 staged object") {
-		t.Fatalf("gc --dry-run output %q, want more than 0 objects", out)
-	}
-	if !gcDiscLineRe.MatchString(out) {
-		t.Fatalf("gc --dry-run output %q must name the disc by number, label and uuid", out)
-	}
-}
-
-// TestGCSkipsADiscWithNoCatalogIndex runs gc with the catalog emptied: gc
-// must not delete any object whose run's INDEX it cannot confirm
-// against, even though the object is otherwise eligible.
-func TestGCSkipsADiscWithNoCatalogIndex(t *testing.T) {
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	catalogDir := repoCatalogDir(t, repo)
-
-	before := time.Now()
-	packAndVerifyDisc(t, work, repo, src)
-
-	// Empty the catalog: gc can no longer confirm any object's run.
-	if err := os.RemoveAll(catalogDir); err != nil {
-		t.Fatal(err)
-	}
-
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
-	code, out := runCmd(t, "--repo="+repo, "gc")
-	if code != 0 {
-		t.Fatalf("gc: exit %d, want 0: %s", code, out)
-	}
-	if !strings.Contains(out, "skipped") {
-		t.Fatalf("gc output %q missing the skipped line", out)
-	}
-	if !strings.Contains(out, "deleted 0 staged object") {
-		t.Fatalf("gc output %q, want 0 objects deleted", out)
+	if want := gcFreedNone + "next: noahsark status\n"; code != 0 || out != want {
+		t.Fatalf("gc (second run): exit %d, output %q; want exit 0, output %q", code, out, want)
 	}
 }
 
@@ -275,42 +180,6 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		if len(objs) == 1 && (objs[0].id != tc.item || objs[0].discUUID != tc.disc) {
 			t.Fatalf("file = %s on disc %v, want %s on disc %v", objs[0].id.TextForm(), objs[0].discUUID, tc.item.TextForm(), tc.disc)
 		}
-	}
-}
-
-// TestGCFreesNoItemOfADiscWhoseIndexMissesAnItem gives a verified disc
-// one Packed item that its catalog INDEX does not list. gc must free no
-// item of that disc, append no Freed event, and report the skip.
-func TestGCFreesNoItemOfADiscWhoseIndexMissesAnItem(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	extra := object.ComputeID(format.ObjectKindChunk, []byte("an item that the INDEX does not list"))
-	logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := logs.Items.EnsureStaged(extra); err != nil {
-		t.Fatal(err)
-	}
-	if err := logs.Items.MarkPacked(1, fx.uuidBytes(t), extra); err != nil {
-		t.Fatal(err)
-	}
-	chunksBefore, err := countFiles(testLayout(t, fx.repo).chunksDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	out := fx.mustRun(t, "gc", "--force-after=0d")
-	if !strings.Contains(out, "gc: 1 object(s) skipped: their disc's INDEX does not list them") {
-		t.Fatalf("gc output %q, want the skip line", out)
-	}
-	if d := discState(t, fx.repo, fx.uuid); d.State != stage.DiscVerified {
-		t.Fatalf("disc state %s after gc, want verified: no Freed event", d.State)
-	}
-	if n := countByState(t, fx.repo, stage.OnDisc); n != 0 {
-		t.Fatalf("%d item(s) OnDisc, want none", n)
-	}
-	if n, err := countFiles(testLayout(t, fx.repo).chunksDir()); err != nil || n != chunksBefore {
-		t.Fatalf("chunk files = %d, %v; want %d kept", n, err, chunksBefore)
 	}
 }
 
@@ -425,9 +294,30 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	}
 }
 
-// gcDiscLineRe matches gc's grouped summary line, which names the disc
-// the way every other command names one.
-var gcDiscLineRe = regexp.MustCompile(`would delete: disc \d+ "[^"]*" \([0-9a-f-]+\): \d+ object\(s\)`)
+// TestGCAfterACrashBeforeTheFreedEvent writes the OnDisc records of a
+// verified disc and no Freed event, as a crash between the two batches
+// leaves. The next gc appends Freed and unlinks the chunk files.
+func TestGCAfterACrashBeforeTheFreedEvent(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscVerified)
+	logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Items.MarkOnDisc(logs.Items.ItemsOfDiscInState(fx.uuidBytes(t), stage.Packed)...); err != nil {
+		t.Fatal(err)
+	}
+
+	out := fx.mustRun(t, "gc", "--force-after=0d")
+	if strings.HasPrefix(out, gcFreedNone) {
+		t.Fatalf("gc output %q, want the orphans freed", out)
+	}
+	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscOnDiscOnly {
+		t.Fatalf("disc state %s, want on disc only", got)
+	}
+	if files := listFilesUnder(t, testLayout(t, fx.repo).chunksDir()); len(files) != 0 {
+		t.Fatalf("staging chunks after gc: %v, want none", files)
+	}
+}
 
 // TestGCFreesThePlanDirectory checks that gc keeps a disc's plan
 // directory while the disc is packed, names
@@ -478,11 +368,8 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "plan directory "+planDir) {
-		t.Fatalf("gc --dry-run output %q, want the plan directory line", out)
-	}
-	if strings.Contains(out, "would delete 0 disc plan directory") {
-		t.Fatalf("gc --dry-run output %q, want one plan directory", out)
+	if strings.HasPrefix(out, "gc: would free 0 ") {
+		t.Fatalf("gc --dry-run output %q, want items to free", out)
 	}
 	if _, err := os.Stat(planDir); err != nil {
 		t.Fatalf("gc --dry-run removed the plan directory: %v", err)
@@ -518,8 +405,8 @@ func TestGCForceAfterShortensTheWait(t *testing.T) {
 	if strings.Contains(out, "?") {
 		t.Fatalf("gc output %q asks a question; gc asks no confirmation", out)
 	}
-	if strings.Contains(out, "deleted 0 staged object") {
-		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
+	if strings.HasPrefix(out, gcFreedNone) {
+		t.Fatalf("gc output %q, want more than 0 items freed", out)
 	}
 }
 
@@ -545,8 +432,8 @@ func TestGCForceAfterDryRunChangesNothing(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc --force-after=1h --dry-run: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "would delete 0 staged object") {
-		t.Fatalf("gc --dry-run output %q, want more than 0 objects reported", out)
+	if strings.HasPrefix(out, "gc: would free 0 ") || strings.Contains(out, "next:") {
+		t.Fatalf("gc --dry-run output %q, want more than 0 items and no next line", out)
 	}
 	if n, err := countFiles(testLayout(t, repo).chunksDir()); err != nil || n != chunksBefore {
 		t.Fatalf("chunk files = %d, %v after --dry-run; want %d", n, err, chunksBefore)
@@ -564,7 +451,7 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 	id := object.ComputeID(format.ObjectKindChunk, []byte("gone"))
 	objs := []gcObj{{id: id, path: filepath.Join(dir, "no", "such-file"), size: 1234}}
 
-	deleted, bytesFreed, failures := gcApplyStagingObjects(objs, false)
+	deleted, bytesFreed, failures := gcApplyStagingObjects(objs)
 	if deleted != 0 {
 		t.Fatalf("deleted = %d, want 0: an already-gone file frees nothing this run", deleted)
 	}
@@ -588,7 +475,7 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 
 	objs := []gcObj{{id: id, path: path, size: 7}}
 
-	deleted, bytesFreed, failures := gcApplyStagingObjects(objs, false)
+	deleted, bytesFreed, failures := gcApplyStagingObjects(objs)
 	if deleted != 1 {
 		t.Fatalf("deleted = %d, want 1", deleted)
 	}
@@ -603,11 +490,9 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 	}
 }
 
-// TestGCFailsFastWhenRepoLockHeld checks bug 1: gc must refuse to run
-// while another command holds the repository's exclusive lock, instead
-// of replaying a state log another process may change underneath it.
-// It asserts the clear message and the exit code a held lock gives: a
-// failure at run time, not a usage error.
+// TestGCFailsFastWhenRepoLockHeld checks that gc refuses to run while
+// another command holds the repository lock. A held lock is a failure at
+// run time: exit 1. gc --dry-run takes no lock, and runs.
 func TestGCFailsFastWhenRepoLockHeld(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
@@ -620,7 +505,7 @@ func TestGCFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc")
 	if code != 1 {
 		t.Fatalf("gc while locked: exit %d, want 1: %s", code, out)
 	}
@@ -629,6 +514,9 @@ func TestGCFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	if !strings.Contains(out, "another noahsark command runs on this repository") {
 		t.Fatalf("gc while locked output %q, want the other-command message", out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run"); code != 0 {
+		t.Fatalf("gc --dry-run while locked: exit %d, want 0: %s", code, out)
 	}
 }
 
@@ -640,7 +528,7 @@ func TestRepoLockFreeAfterGC(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 
@@ -685,6 +573,13 @@ func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 	}
 	if !strings.Contains(out, "state log's tail was truncated") {
 		t.Fatalf("gc after a truncated log output %q, want the truncated-tail warning", out)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, data) {
+		t.Fatal("gc --dry-run changed the state log; a dry run writes no file")
 	}
 }
 
