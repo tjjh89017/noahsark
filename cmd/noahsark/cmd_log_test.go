@@ -35,17 +35,17 @@ func TestLogListsKnownSnapshots(t *testing.T) {
 // packing stops carrying the freed snapshot object itself, so it is no
 // longer physically on the newest disc.
 func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	srcA := writeRefsCarryFixture(t, "A")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, "--ref=A", srcA)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=A", srcA)
 	if code != 0 {
 		t.Fatalf("commit A: exit %d: %s", code, out)
 	}
@@ -55,16 +55,16 @@ func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
 
 	// Past the fixed 7-day retention: gc frees disc A's run, including
 	// its own staged snapshot object.
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
-	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 
 	srcB := writeRefsCarryFixture(t, "B")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=B", srcB); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=B", srcB); code != 0 {
 		t.Fatalf("commit B: exit %d: %s", code, out)
 	}
-	code, out = runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+filepath.Join(work, "disc-b"))
+	code, out = runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+filepath.Join(work, "disc-b"))
 	if code != 0 {
 		t.Fatalf("pack B: exit %d: %s", code, out)
 	}
@@ -135,11 +135,11 @@ func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	next = base.Add(1 * time.Millisecond)
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit 1: exit %d: %s", code, out)
 	}
@@ -149,7 +149,7 @@ func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	next = base.Add(2 * time.Millisecond)
-	code, out = runCmd(t, "commit", "--repo="+repo, src)
+	code, out = runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
@@ -159,7 +159,7 @@ func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -38,10 +37,10 @@ func appendConfigLine(t *testing.T, repo, line string) {
 // identical discs the operator burns from the same tree.
 func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	t.Helper()
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -49,11 +48,11 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	discUUID := packedDiscUUID(t, packOut)
 	mounted := filepath.Join(work, filepath.Base(t.TempDir()))
 	copyTree(t, stagedTree, mounted)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 	for copyNumber := 1; copyNumber <= 2; copyNumber++ {
-		if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 			t.Fatalf("verify copy %d: exit %d: %s", copyNumber, code, out)
 		}
 	}
@@ -64,14 +63,14 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 // delete the CLEAN run's objects after, in both --dry-run and a real
 // run.
 func TestGCRetentionGate(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
@@ -79,8 +78,8 @@ func TestGCRetentionGate(t *testing.T) {
 
 	// Before the retention period: nothing is eligible. --dry-run always
 	// exits 0, and names when the run's objects will become eligible.
-	gcClock = func() time.Time { return before.Add(24 * time.Hour) }
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	fakeNow = func() time.Time { return before.Add(24 * time.Hour) }
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (before retention): exit %d, want 0: %s", code, out)
 	}
@@ -96,8 +95,8 @@ func TestGCRetentionGate(t *testing.T) {
 
 	// After the retention period: dry-run reports what it would do,
 	// without changing anything.
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
-	code, out = runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	code, out = runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after retention): exit %d: %s", code, out)
 	}
@@ -115,7 +114,7 @@ func TestGCRetentionGate(t *testing.T) {
 
 	// A real run actually deletes, and is reflected in the object count
 	// on disk.
-	code, out = runCmd(t, "gc", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
@@ -132,7 +131,7 @@ func TestGCRetentionGate(t *testing.T) {
 
 	// A second gc run finds nothing left to do; nothing eligible is
 	// success, not a failure.
-	code, out = runCmd(t, "gc", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
 	}
@@ -143,21 +142,21 @@ func TestGCRetentionGate(t *testing.T) {
 // over prints the same reason and earliest eligible date --dry-run
 // prints, not just "deleted 0".
 func TestGCPlainRunBeforeRetentionNamesTheReason(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	gcClock = func() time.Time { return before.Add(24 * time.Hour) }
-	code, out := runCmd(t, "gc", "--repo="+repo)
+	fakeNow = func() time.Time { return before.Add(24 * time.Hour) }
+	code, out := runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc (before retention): exit %d, want 0: %s", code, out)
 	}
@@ -176,21 +175,21 @@ func TestGCPlainRunBeforeRetentionNamesTheReason(t *testing.T) {
 // per-object "would delete" line, only the staging totals and one
 // grouped line per disc.
 func TestGCDryRunDefaultIsASummary(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
 	}
@@ -221,14 +220,14 @@ func countFiles(dir string) (int, error) {
 // must not delete any object whose run's INDEX it cannot confirm
 // against, even though the object is otherwise eligible.
 func TestGCRefusesAnUncachedRun(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	cacheDir := cache.Dir(repo)
@@ -241,8 +240,8 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
-	code, out := runCmd(t, "gc", "--repo="+repo)
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	code, out := runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc: exit %d, want 0: %s", code, out)
 	}
@@ -377,19 +376,19 @@ func encodeGCRefs(t *testing.T) []byte {
 // orphans and free them. The record always comes first: the other order
 // would leave an object the log calls CLEAN with no bytes behind it.
 func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
-	oldClock, oldRemove := gcClock, gcRemove
-	defer func() { gcClock, gcRemove = oldClock, oldRemove }()
+	oldClock, oldRemove := fakeNow, gcRemove
+	defer func() { fakeNow, gcRemove = oldClock, oldRemove }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 
 	objDir := filepath.Join(repo, "staging", "objects")
 	staged, err := countFiles(objDir)
@@ -401,7 +400,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	}
 
 	gcRemove = func(string) error { return errors.New("injected unlink failure") }
-	code, out := runCmd(t, "gc", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "gc")
 	if code != 1 {
 		t.Fatalf("gc with a failing unlink: exit %d, want 1: %s", code, out)
 	}
@@ -419,7 +418,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	}
 
 	gcRemove = oldRemove
-	code, out = runCmd(t, "gc", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
 	}
@@ -437,21 +436,21 @@ var gcDiscLineRe = regexp.MustCompile(`would delete: disc \d+ "[^"]*" \([0-9a-f-
 // it with its bytes in --dry-run, and removes it once every object of
 // the disc is ON-DISC.
 func TestGCFreesThePlanDirectory(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -461,8 +460,8 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 
 	// A packed disc keeps its plan directory: the operator has not
 	// burned it yet.
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
-	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc (packed): exit %d: %s", code, out)
 	}
 	if _, err := os.Stat(planDir); err != nil {
@@ -471,26 +470,26 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify copy 1: exit %d: %s", code, out)
 	}
 
 	// One verify of two: the plan directory stays.
-	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc (one verify): exit %d: %s", code, out)
 	}
 	if _, err := os.Stat(planDir); err != nil {
 		t.Fatalf("gc removed the plan directory after one verify: %v", err)
 	}
 
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify copy 2: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
 	}
@@ -504,7 +503,7 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 		t.Fatalf("gc --dry-run removed the plan directory: %v", err)
 	}
 
-	if code, out := runCmd(t, "gc", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 	if _, err := os.Stat(planDir); !os.IsNotExist(err) {
@@ -512,28 +511,19 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	}
 }
 
-// setGCStdin installs r as gc's confirmation reader for the duration of
-// the test.
-func setGCStdin(t *testing.T, r io.Reader) {
-	t.Helper()
-	old := gcStdin
-	gcStdin = r
-	t.Cleanup(func() { gcStdin = old })
-}
-
 // TestGCForceAfterConfirmedDeletes runs gc --force-after with a fake
 // clock placing an object CLEAN for longer than the forced duration but
 // not the fixed 7-day retention, and a stdin pipe answering "y": the
 // object must be deleted.
 func TestGCForceAfterConfirmedDeletes(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
@@ -541,10 +531,10 @@ func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 
 	// 2 hours past CLEAN: nowhere near the fixed 7-day retention, but
 	// past a 1-hour --force-after.
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(2 * time.Hour) }
 
-	setGCStdin(t, strings.NewReader("y\n"))
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h")
+	setFakeStdin(t, strings.NewReader("y\n"))
+	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
 	if code != 0 {
 		t.Fatalf("gc --force-after=1h (confirmed): exit %d: %s", code, out)
 	}
@@ -559,23 +549,23 @@ func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 // TestGCForceAfterDeclinedDeletesNothing checks answering "n" to the
 // confirmation leaves every object in place.
 func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(2 * time.Hour) }
 
-	setGCStdin(t, strings.NewReader("n\n"))
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h")
+	setFakeStdin(t, strings.NewReader("n\n"))
+	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
 	if code == 0 {
 		t.Fatalf("gc --force-after=1h (declined): exit 0, want non-zero: %s", out)
 	}
@@ -585,7 +575,7 @@ func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
 
 	// A follow-up dry-run still finds the object eligible: nothing was
 	// deleted.
-	code, out = runCmd(t, "gc", "--repo="+repo, "--force-after=1h", "--dry-run")
+	code, out = runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after decline): exit %d: %s", code, out)
 	}
@@ -599,22 +589,22 @@ func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
 // silence as consent to delete under a shortened retention. A script
 // that means yes pipes a "y" in.
 func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(2 * time.Hour) }
 
-	setGCStdin(t, strings.NewReader(""))
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h")
+	setFakeStdin(t, strings.NewReader(""))
+	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
 	if code != 1 {
 		t.Fatalf("gc --force-after=1h (empty stdin): exit %d, want 1: %s", code, out)
 	}
@@ -622,7 +612,7 @@ func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
 		t.Fatalf("gc output %q missing the not-confirmed message", out)
 	}
 
-	code, out = runCmd(t, "gc", "--repo="+repo, "--force-after=1h", "--dry-run")
+	code, out = runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run (after empty stdin): exit %d: %s", code, out)
 	}
@@ -634,22 +624,22 @@ func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
 // TestGCForceAfterDryRunSkipsConfirmation checks --dry-run with
 // --force-after never prompts: it changes nothing either way.
 func TestGCForceAfterDryRunSkipsConfirmation(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	gcClock = func() time.Time { return before.Add(2 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(2 * time.Hour) }
 
-	setGCStdin(t, strings.NewReader(""))
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=1h", "--dry-run")
+	setFakeStdin(t, strings.NewReader(""))
+	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --force-after=1h --dry-run: exit %d: %s", code, out)
 	}

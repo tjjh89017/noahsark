@@ -11,15 +11,6 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// runCmd runs one command in process and returns its exit code and the
-// combined stdout and stderr text.
-func runCmd(t *testing.T, args ...string) (int, string) {
-	t.Helper()
-	var out, errOut bytes.Buffer
-	code := run(args, &out, &errOut)
-	return code, out.String() + errOut.String()
-}
-
 // snapshotIDFromCommit picks the "snapshot <id>" line out of commit's
 // output.
 func snapshotIDFromCommit(t *testing.T, output string) string {
@@ -57,18 +48,18 @@ func TestFullSequence(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -169,7 +160,7 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -192,7 +183,7 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 		return w
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 1 {
 		t.Fatalf("commit: exit %d, want 1; output: %s", code, out)
 	}
@@ -217,7 +208,7 @@ func TestCommitRecordsStagedBeforeMovingRef(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -227,7 +218,7 @@ func TestCommitRecordsStagedBeforeMovingRef(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 1 {
 		t.Fatalf("commit: exit %d, want 1 (the ref move must fail); output: %s", code, out)
 	}
@@ -266,14 +257,14 @@ func TestPackWithoutCapacityRefused(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--out="+filepath.Join(work, "tree"))
+	code, out := runCmd(t, "--repo="+repo, "pack", "--out="+filepath.Join(work, "tree"))
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
 	}
@@ -293,26 +284,33 @@ func TestNoArgsPrintsUsage(t *testing.T) {
 	}
 }
 
-// TestProgressFlags checks commit's progress line is off by default in a
-// test process (stderr is not a terminal), and forced off by
-// --no-progress and --quiet.
+// TestProgressFlags checks that commit writes its progress line only
+// when standard error is a terminal, and that -q and --quiet turn it
+// off. --no-progress is not an option.
 func TestProgressFlags(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 || strings.Contains(out, "commit:") {
-		t.Fatalf("default (non-terminal stderr): exit %d, expected no commit progress line, got %q", code, out)
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 || strings.Contains(out, "\r") {
+		t.Fatalf("no terminal: exit %d, expected no commit progress line, got %q", code, out)
 	}
 
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--no-progress", src); code != 0 || strings.Contains(out, "commit:") {
-		t.Fatalf("--no-progress: exit %d, expected no commit progress line, got %q", code, out)
+	te := newTestEnv(work)
+	te.stderrTTY = true
+	if code, _ := te.run("--repo="+repo, "commit", src); code != 0 || !strings.Contains(te.errOut.String(), "commit") {
+		t.Fatalf("terminal: exit %d, expected a commit progress line, got %q", code, te.errOut.String())
+	}
+	for _, q := range []string{"-q", "--quiet"} {
+		if code, _ := te.run(q, "--repo="+repo, "commit", src); code != 0 || te.errOut.Len() != 0 {
+			t.Fatalf("%s on a terminal: exit %d, expected no progress line, got %q", q, code, te.errOut.String())
+		}
 	}
 
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--quiet", src); code != 0 || strings.Contains(out, "commit:") {
-		t.Fatalf("--quiet: exit %d, expected no commit progress line, got %q", code, out)
+	if code, out := runCmd(t, "--no-progress", "--repo="+repo, "commit", src); code != 2 {
+		t.Fatalf("--no-progress: exit %d, want 2: %s", code, out)
 	}
 }

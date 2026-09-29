@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"sort"
@@ -13,34 +14,35 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
+func init() {
+	register(&command{
+		name:    "log",
+		usage:   "log [DISC-ROOT...] [REF|SNAPSHOT]",
+		summary: "Print a snapshot's history. Resolves through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead.",
+		flags:   func(*flag.FlagSet) runFunc { return cmdLog },
+	})
+}
+
 // cmdLog implements "noahsark log". With no DISC-ROOT, it resolves
 // REF|SNAPSHOT, and lists every known snapshot with none given, through
 // the local cache, so log needs no disc present; give one or more
 // DISC-ROOT positionals to read straight from a disc instead, the same
 // way ls, restore and verify do.
-func cmdLog(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark log [DISC-ROOT...] [REF|SNAPSHOT]",
-		"Print a snapshot's history. Resolves through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead.", stderr)
-	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("log", fs, stderr) {
-		return 2
-	}
+func cmdLog(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
 
 	// Leading positional arguments that name an existing directory are
 	// DISC-ROOTs; REF|SNAPSHOT is never a path that already exists on
 	// this host, so every argument can be checked the same way, and all
 	// of them may be DISC-ROOTs, leaving REF|SNAPSHOT unset (list-all).
 	i := 0
-	for i < fs.NArg() && looksLikeDiscRoot(fs.Arg(i)) {
+	for i < len(args) && looksLikeDiscRoot(args[i]) {
 		i++
 	}
-	discRootArgs := fs.Args()[:i]
+	discRootArgs := args[:i]
 	discRootGiven := len(discRootArgs) > 0
-	if !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
-		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", fs.Arg(0))
+	if !discRootGiven && len(args) > 0 && looksLikePathNotDisc(args[0]) {
+		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", args[0])
 		return 2
 	}
 	cacheMode := !discRootGiven
@@ -50,19 +52,19 @@ func cmdLog(args []string, stdout, stderr io.Writer) int {
 	var positional []string
 	switch {
 	case cacheMode:
-		if fs.NArg() > 1 {
+		if len(args) > 1 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [REF|SNAPSHOT]")
 			return 2
 		}
-		positional = fs.Args()
-		cs, c, err := openCacheSource(*repoFlag)
+		positional = args
+		cs, c, err := openCacheSource(e)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
 			return 1
 		}
 		src, cacheObj = cs, c
 	default:
-		positional = fs.Args()[len(discRootArgs):]
+		positional = args[len(discRootArgs):]
 		if len(positional) > 1 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark log DISC-ROOT... [REF|SNAPSHOT]")
 			return 2

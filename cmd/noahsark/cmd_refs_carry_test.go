@@ -30,7 +30,7 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -38,13 +38,13 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 	for _, name := range []string{"A", "B", "C"} {
 		src := writeRefsCarryFixture(t, name)
 		srcByRef[name] = src
-		if code, out := runCmd(t, "commit", "--repo="+repo, "--ref="+name, src); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "commit", "--ref="+name, src); code != 0 {
 			t.Fatalf("commit %s: exit %d: %s", name, code, out)
 		}
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -79,7 +79,7 @@ func TestRestoreDiscRootWrongOrderFindsEveryRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -90,21 +90,21 @@ func TestRestoreDiscRootWrongOrderFindsEveryRef(t *testing.T) {
 
 	// disc-a sorts before disc-b, and holds only the first ref.
 	src1 := writeRefsCarryFixture(t, "run1")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=run1", src1); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=run1", src1); code != 0 {
 		t.Fatalf("commit run1: exit %d: %s", code, out)
 	}
 	discA := filepath.Join(discsDir, "disc-a")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discA); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discA); code != 0 {
 		t.Fatalf("pack run1: exit %d: %s", code, out)
 	}
 
 	// disc-b is packed after disc-a, and names the second ref.
 	src2 := writeRefsCarryFixture(t, "run2")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=run2", src2); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=run2", src2); code != 0 {
 		t.Fatalf("commit run2: exit %d: %s", code, out)
 	}
 	discB := filepath.Join(discsDir, "disc-b")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discB); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discB); code != 0 {
 		t.Fatalf("pack run2: exit %d: %s", code, out)
 	}
 
@@ -142,25 +142,25 @@ func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
 	src1 := writeRefsCarryFixture(t, "run1")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=run1", src1); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=run1", src1); code != 0 {
 		t.Fatalf("commit run1: exit %d: %s", code, out)
 	}
 	discA := filepath.Join(work, "disc-a")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discA); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discA); code != 0 {
 		t.Fatalf("pack run1: exit %d: %s", code, out)
 	}
 
 	src2 := writeRefsCarryFixture(t, "run2")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=run2", src2); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=run2", src2); code != 0 {
 		t.Fatalf("commit run2: exit %d: %s", code, out)
 	}
 	discB := filepath.Join(work, "disc-b")
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discB)
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discB)
 	if code != 0 {
 		t.Fatalf("pack run2: exit %d: %s", code, out)
 	}
@@ -175,7 +175,7 @@ func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 
 	// disc-b is the second, and only the second, disc this repository has
 	// ever packed, so its disc_seq is 1.
-	code, out = runCmd(t, "disc", "burned", "--repo="+repo, "1")
+	code, out = runCmd(t, "--repo="+repo, "disc", "burned", "1")
 	if code != 0 {
 		t.Fatalf("disc burned disc-b: exit %d: %s", code, out)
 	}
@@ -183,7 +183,7 @@ func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 		t.Fatalf("disc burned output %q does not mark the %d object(s) pack reported", out, packedCount)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, discB)
+	code, out = runCmd(t, "--repo="+repo, "verify", discB)
 	if code != 0 {
 		t.Fatalf("verify disc-b: exit %d: %s", code, out)
 	}

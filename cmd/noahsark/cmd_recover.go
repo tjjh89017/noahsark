@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
 	"maps"
@@ -15,9 +16,17 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+func init() {
+	register(&command{
+		name:    "recover",
+		usage:   "recover DISC-ROOT...",
+		summary: "Rebuild the repository state from one or more discs.",
+		flags:   func(*flag.FlagSet) runFunc { return cmdRecover },
+	})
+}
 
 // cmdRecover implements "noahsark recover". It rebuilds a repository's
 // state, not a cache: the repository directory holds the state log, the
@@ -25,23 +34,16 @@ import (
 // disc's own INDEX, DISCS and REFS tables already carry. recover is a
 // straight replay of every provided disc's tables into a fresh or
 // existing repository directory.
-func cmdRecover(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark recover DISC-ROOT...",
-		"Rebuild the repository state from one or more discs.", stderr)
-	repoFlag := fs.String("repo", "", "repository directory to create or use")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("recover", fs, stderr) {
-		return 2
-	}
-	discRoots := fs.Args()
+func cmdRecover(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	prog := e.progress()
+	discRoots := args
 	if len(discRoots) == 0 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover: no disc root given")
 		return 2
 	}
 
-	repoDir, err := recoverTargetRepoDir(*repoFlag)
+	repoDir, err := e.recoverRepoDir()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 2
@@ -226,24 +228,6 @@ func recoverCacheFromRoots(repoDir string, readRoots []string) error {
 		}
 	}
 	return nil
-}
-
-// recoverTargetRepoDir resolves the repository directory recover
-// should use, whether or not it exists yet: explicitRepo when set, else
-// NOAHSARK_REPO, else whatever discoverRepo's ancestor search finds. A
-// missing repository is not an error here; ensureRecoverRepo creates it.
-func recoverTargetRepoDir(explicitRepo string) (string, error) {
-	if explicitRepo != "" {
-		return filepath.Abs(explicitRepo)
-	}
-	if env := os.Getenv("NOAHSARK_REPO"); env != "" {
-		return filepath.Abs(env)
-	}
-	dir, err := discoverRepo("")
-	if err == nil {
-		return dir, nil
-	}
-	return "", fmt.Errorf("no repository directory given: pass --repo, or set NOAHSARK_REPO, to say where to rebuild one")
 }
 
 // ensureRecoverRepo loads repoDir's config when it is already a

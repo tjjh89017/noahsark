@@ -215,13 +215,13 @@ scenario_cli() {
 	build_binary
 	gen_small_tree "$src"
 
-	"$BIN" init --repo="$repo"
-	commit_out="$("$BIN" commit --repo="$repo" "$src")"
+	(mkdir -p "$repo" && cd "$repo" && "$BIN" init)
+	commit_out="$("$BIN" --repo="$repo" commit "$src")"
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
 
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
+	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
 	sudo "$BIN" image build --out="$image" "$tree"
 
 	mount_populate "$image" "$tree" "$mnt"
@@ -271,10 +271,10 @@ scenario_media() {
 		;;
 	esac
 
-	"$BIN" init --repo="$repo"
+	(mkdir -p "$repo" && cd "$repo" && "$BIN" init)
 
 	local commit_out snap
-	commit_out="$("$BIN" commit --repo="$repo" --ref=SMALL "$small_src")"
+	commit_out="$("$BIN" --repo="$repo" commit --ref=SMALL "$small_src")"
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
 
@@ -282,7 +282,7 @@ scenario_media() {
 	bytes=$((small_mb * 1024 * 1024))
 
 	t0=$(date +%s.%N)
-	"$BIN" pack --repo="$repo" "$capflag" $packfec --out="$tree"
+	"$BIN" --repo="$repo" pack "$capflag" $packfec --out="$tree"
 	t1=$(date +%s.%N)
 	if [ -n "$fec" ]; then
 		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
@@ -300,11 +300,11 @@ scenario_media() {
 		local tree_fec parity_dir checksum_file commit_out2
 		tree_fec="$work/tree-fec"
 		gen_fixture2 "$small_src2/data.bin" "$bytes"
-		commit_out2="$("$BIN" commit --repo="$repo" --ref=SMALL2 "$small_src2")"
+		commit_out2="$("$BIN" --repo="$repo" commit --ref=SMALL2 "$small_src2")"
 		echo "$commit_out2"
 
 		t0=$(date +%s.%N)
-		"$BIN" pack --repo="$repo" "$capflag" --fec --out="$tree_fec"
+		"$BIN" --repo="$repo" pack "$capflag" --fec --out="$tree_fec"
 		t1=$(date +%s.%N)
 		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
 

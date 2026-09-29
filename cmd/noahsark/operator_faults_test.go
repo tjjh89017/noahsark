@@ -26,22 +26,22 @@ func TestPackDefaultLabelUsesTheNewestPendingRef(t *testing.T) {
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
 	// Two commits in the same second: the tie must go to the later
 	// date, not to the name that sorts first.
 	writeSized(t, filepath.Join(src, "one.bin"), 400_000, 1)
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-14"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-14"); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	writeSized(t, filepath.Join(src, "two.bin"), 400_000, 2)
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-21"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-21"); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=6MB", "--out="+filepath.Join(work, "d0"))
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=6MB", "--out="+filepath.Join(work, "d0"))
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
@@ -52,10 +52,10 @@ func TestPackDefaultLabelUsesTheNewestPendingRef(t *testing.T) {
 	// A second disc: both refs are carried already, so nothing is
 	// pending. The label still names the newest ref of the repository.
 	writeSized(t, filepath.Join(src, "three.bin"), 400_000, 3)
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-21"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-21"); code != 0 {
 		t.Fatalf("commit again: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=6MB", "--out="+filepath.Join(work, "d1")); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=6MB", "--out="+filepath.Join(work, "d1")); code != 0 {
 		t.Fatalf("pack again: exit %d: %s", code, out)
 	} else if !strings.Contains(out, `packed disc 1 "2026-09-21 disc 1"`) {
 		t.Fatalf("pack output %q, want a later disc to keep a ref name in its label", out)
@@ -80,14 +80,14 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 	for i := range 6 {
 		writeSized(t, filepath.Join(src, fmt.Sprintf("f%d.bin", i)), 900_000, byte(i+1))
 	}
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=r1"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=r1"); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=7MB", "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=7MB", "--dry-run")
 	if code != 0 {
 		t.Fatalf("pack --dry-run: exit %d: %s", code, out)
 	}
@@ -102,7 +102,7 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 	}
 
 	for i := range predicted {
-		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=7MB", "--out="+filepath.Join(work, fmt.Sprintf("tree%d", i)))
+		code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=7MB", "--out="+filepath.Join(work, fmt.Sprintf("tree%d", i)))
 		if code != 0 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
@@ -115,7 +115,7 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 			t.Fatalf("real pack wrote %q, pack --dry-run predicted %q", got, predicted[i])
 		}
 	}
-	code, out = runCmd(t, "pack", "--repo="+repo, "--capacity=7MB", "--out="+filepath.Join(work, "extra"))
+	code, out = runCmd(t, "--repo="+repo, "pack", "--capacity=7MB", "--out="+filepath.Join(work, "extra"))
 	if code != 0 {
 		t.Fatalf("pack after the predicted discs: exit %d, want 0: %s", code, out)
 	}
@@ -130,17 +130,17 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 func TestBadPackCapacityStopsPackOnly(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit"); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	appendConfig(t, repo, "pack.capacity = 7500000\n")
 
 	for _, args := range [][]string{
-		{"pack", "--repo=" + repo},
-		{"pack", "--repo=" + repo, "--dry-run"},
+		{"--repo=" + repo, "pack"},
+		{"--repo=" + repo, "pack", "--dry-run"},
 	} {
 		code, out := runCmd(t, args...)
 		if code != 2 || !strings.Contains(out, "pack.capacity") {
@@ -148,8 +148,8 @@ func TestBadPackCapacityStopsPackOnly(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"status", "--repo=" + repo},
-		{"gc", "--repo=" + repo, "--dry-run"},
+		{"--repo=" + repo, "status"},
+		{"--repo=" + repo, "gc", "--dry-run"},
 	} {
 		if code, out := runCmd(t, args...); code != 0 {
 			t.Fatalf("%v: exit %d: %s, want a command that never reads pack.capacity to run", args, code, out)
@@ -161,11 +161,11 @@ func TestBadPackCapacityStopsPackOnly(t *testing.T) {
 // refuses a key it does not know, whichever command reads the config.
 func TestUnknownConfigKeyStopsEveryCommand(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfig(t, repo, "nonsense.key = 1\n")
-	if code, out := runCmd(t, "status", "--repo="+repo); code != 2 || !strings.Contains(out, "unknown key") {
+	if code, out := runCmd(t, "--repo="+repo, "status"); code != 2 || !strings.Contains(out, "unknown key") {
 		t.Fatalf("status: exit %d: %s, want exit 2 for an unknown key", code, out)
 	}
 }
@@ -175,10 +175,10 @@ func TestUnknownConfigKeyStopsEveryCommand(t *testing.T) {
 func TestCommitPrintsExcludedOnlyWhenSomethingWasExcluded(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "commit")
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -186,7 +186,7 @@ func TestCommitPrintsExcludedOnlyWhenSomethingWasExcluded(t *testing.T) {
 		t.Fatalf("commit output %q prints an excluded line with nothing excluded", out)
 	}
 
-	code, out = runCmd(t, "commit", "--repo="+repo, "--exclude=*.txt", src)
+	code, out = runCmd(t, "--repo="+repo, "commit", "--exclude=*.txt", src)
 	if code != 0 {
 		t.Fatalf("commit with an exclude: exit %d: %s", code, out)
 	}
@@ -231,18 +231,18 @@ func TestVerifyHealReportsBlocks(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit"); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	tree := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	healed := filepath.Join(work, "healed")
-	code, out := runCmd(t, "verify", "--repo="+repo, "--heal", "--out="+healed, tree)
+	code, out := runCmd(t, "--repo="+repo, "verify", "--heal", "--out="+healed, tree)
 	if code != 0 {
 		t.Fatalf("verify --heal: exit %d: %s", code, out)
 	}
@@ -265,23 +265,23 @@ func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--fec")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, packedTreeDir(t, packOut), mounted)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, packedDiscUUID(t, packOut)); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", packedDiscUUID(t, packOut)); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify copy 1: exit %d: %s", code, out)
 	}
@@ -291,7 +291,7 @@ func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
 	cleanAfterVerify, verifiedAfterVerify := discListCounts(t, repo)
 
 	healed := filepath.Join(work, "healed")
-	code, out = runCmd(t, "verify", "--repo="+repo, "--heal", "--out="+healed, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
 	if code != 0 {
 		t.Fatalf("verify --heal: exit %d: %s", code, out)
 	}
@@ -323,17 +323,17 @@ func TestVerifyHealRefusesWithNoOut(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit"); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	tree := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "verify", "--repo="+repo, "--heal", tree)
+	code, out := runCmd(t, "--repo="+repo, "verify", "--heal", tree)
 	if code != 2 {
 		t.Fatalf("verify --heal (no --out): exit %d, want 2: %s", code, out)
 	}

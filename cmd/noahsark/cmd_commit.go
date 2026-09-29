@@ -1,59 +1,66 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// commitClock gives the local time commit takes the default ref name
-// from. A test replaces it to fix the date.
-var commitClock = time.Now
-
-// defaultRefName is the ref a commit moves with no --ref: the local
-// date of today, as YYYY-MM-DD. A second commit on the same day moves
-// the same name to the newer snapshot; log still reaches the older one.
-func defaultRefName() string {
-	return commitClock().Format("2006-01-02")
+func init() {
+	register(&command{
+		name:    "commit",
+		usage:   "commit [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]",
+		summary: "Commit a source directory tree as a new snapshot.",
+		flags:   commitFlags,
+	})
 }
 
-// newWriter builds the Writer cmdCommit commits through. A test replaces
+// commitOptions holds the command options of commit.
+type commitOptions struct {
+	ref           string
+	message       string
+	excludes      stringList
+	oneFileSystem bool
+}
+
+func commitFlags(fs *flag.FlagSet) runFunc {
+	o := &commitOptions{}
+	fs.StringVar(&o.ref, "ref", "", "ref to move; the default is the local date of today, YYYY-MM-DD")
+	fs.StringVar(&o.message, "m", "", "commit message, stored on the snapshot")
+	fs.Var(&o.excludes, "exclude", "exclude pattern, gitignore-style; repeatable")
+	fs.BoolVar(&o.oneFileSystem, "one-file-system", false, "do not cross a mount point; the mount point directory is recorded as empty")
+	return o.run
+}
+
+// newWriter builds the Writer commit commits through. A test replaces
 // it to reach the Writer's Stat seam before Commit runs.
 var newWriter = object.NewWriter
 
-// cmdCommit implements "noahsark commit". See docs/decisions.md,
-// "Commit".
-func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]",
-		"Commit a source directory tree as a new snapshot.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	ref := fs.String("ref", defaultRefName(), "ref to move; the default is the local date of today, YYYY-MM-DD")
-	message := fs.String("m", "", "commit message, stored on the snapshot")
-	var excludeFlags stringList
-	fs.Var(&excludeFlags, "exclude", "exclude pattern, gitignore-style; repeatable")
-	oneFileSystem := fs.Bool("one-file-system", false, "do not cross a mount point; the mount point directory is recorded as empty")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("commit", fs, stderr) {
+// run implements "noahsark commit". See docs/decisions.md, "Commit".
+func (o *commitOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	if len(args) > 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]")
 		return 2
 	}
-	if fs.NArg() > 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark commit [--repo=PATH] [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]... [--one-file-system] [SOURCE]")
-		return 2
+	// With no --ref, commit moves the ref named by the local date of
+	// today, as YYYY-MM-DD. A second commit on the same day moves the
+	// same name to the newer snapshot; log still reaches the older one.
+	ref := o.ref
+	if ref == "" {
+		ref = e.now().Format("2006-01-02")
 	}
-	flagExcludes, err := parseExcludeFlags(excludeFlags)
+	flagExcludes, err := parseExcludeFlags(o.excludes)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
 	}
 
-	repoDir, err := discoverRepo(*repoFlag)
+	repoDir, err := e.findRepo()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
@@ -76,8 +83,8 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	// With no SOURCE on the command line, fall back to the source root
 	// init --source stored; a SOURCE given here overrides it.
 	source := cfg.SourceRoot
-	if fs.NArg() == 1 {
-		source = fs.Arg(0)
+	if len(args) == 1 {
+		source = args[0]
 	}
 	if source == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit: no SOURCE given and no source root in the config; pass a path on the command line, or set sources.root in the config")
@@ -98,9 +105,9 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 	warnIfTruncated("commit", commitStageLog, stderr)
 
 	w := newWriter(cfg.StagingDir)
-	w.Progress = prog
-	w.Message = *message
-	w.OneFileSystem = *oneFileSystem
+	w.Progress = e.progress()
+	w.Message = o.message
+	w.OneFileSystem = o.oneFileSystem
 	allExcludes := append(append([]object.Pattern(nil), ignoreExcludes...), flagExcludes...)
 	if len(allExcludes) > 0 {
 		w.Exclude = object.NewMatcher(allExcludes)
@@ -129,13 +136,13 @@ func cmdCommit(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 		return 1
 	}
 
-	if err := updateRef(repoDir, *ref, snapID); err != nil {
+	if err := updateRef(repoDir, ref, snapID); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
-	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", *ref, snapID.TextForm())
+	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", ref, snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
 	for _, u := range sum.Unstable {
 		_, _ = fmt.Fprintf(stdout, "unstable %s branch=%s\n", u.Path, u.Branch)

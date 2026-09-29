@@ -23,7 +23,7 @@ scenario_rebuild() {
 	local hashes_base="$work/base.hashes" plan="$work/plan.txt" hashes_next="$work/next.hashes"
 	build_binary
 
-	"$BIN" init --repo="$repo"
+	(mkdir -p "$repo" && cd "$repo" && "$BIN" init)
 
 	local t0 t1
 	t0=$(date +%s)
@@ -33,7 +33,7 @@ scenario_rebuild() {
 
 	local commit_out1 snap1
 	t0=$(date +%s)
-	commit_out1="$("$BIN" commit --repo="$repo" --ref=BASE "$src")"
+	commit_out1="$("$BIN" --repo="$repo" commit --ref=BASE "$src")"
 	t1=$(date +%s)
 	echo "$commit_out1"
 	snap1="$(awk '/^snapshot /{print $2}' <<<"$commit_out1")"
@@ -42,7 +42,7 @@ scenario_rebuild() {
 	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
+	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
 	t1=$(date +%s)
 	pack_rate_line "rebuild: pack disc 1" "$REBUILD_BASE_BYTES" "$t0" "$t1"
 	local size1
@@ -99,7 +99,7 @@ scenario_rebuild() {
 
 	# recover with disc 1 alone: exit 0, and the state
 	# log's on-disc count must equal disc 1's own INDEX object count.
-	"$BIN" recover --repo="$repo" "$mnt1"
+	"$BIN" --repo="$repo" recover "$mnt1"
 	local index_count1 ondisc_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
 	ondisc_count1="$(run_tool ci-state-count "$repo/staging")"
@@ -117,14 +117,14 @@ scenario_rebuild() {
 	log "rebuild: mutate took $((t1 - t0))s, $(du -sh "$src" | cut -f1)"
 
 	local commit_out2 snap2
-	commit_out2="$("$BIN" commit --repo="$repo" --ref=NEXT "$src")"
+	commit_out2="$("$BIN" --repo="$repo" commit --ref=NEXT "$src")"
 	echo "$commit_out2"
 	snap2="$(awk '/^snapshot /{print $2}' <<<"$commit_out2")"
 
 	local tree2="$work/tree2" image2="$work/disc2.img" mnt2="$work/mnt2"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
+	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
 	t1=$(date +%s)
 	pack_rate_line "rebuild: pack disc 2" "$REBUILD_ADD_BYTES" "$t0" "$t1"
 	local size2
@@ -159,7 +159,7 @@ scenario_rebuild() {
 
 	# recover again, with both discs: exit 0, same on-disc count as
 	# after the first rebuild plus disc 2's own new objects.
-	"$BIN" recover --repo="$repo" "$mnt1" "$mnt2"
+	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
 	local index_count2 ondisc_count2 want_count2
 	index_count2="$(run_tool ci-index-count "$mnt2")"
 	ondisc_count2="$(run_tool ci-state-count "$repo/staging")"
@@ -169,7 +169,7 @@ scenario_rebuild() {
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
-	"$BIN" recover --repo="$repo" "$mnt1" "$mnt2"
+	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
 	local ondisc_count3
 	ondisc_count3="$(run_tool ci-state-count "$repo/staging")"
 	if [ "$ondisc_count3" != "$ondisc_count2" ]; then
@@ -183,7 +183,7 @@ scenario_rebuild() {
 	uuid1="$(run_tool ci-disc-uuid "$mnt1")"
 	local rebuild_out rebuild_code
 	set +e
-	rebuild_out="$("$BIN" recover --repo="$repo" "$mnt2" 2>&1)"
+	rebuild_out="$("$BIN" --repo="$repo" recover "$mnt2" 2>&1)"
 	rebuild_code=$?
 	set -e
 	echo "$rebuild_out"

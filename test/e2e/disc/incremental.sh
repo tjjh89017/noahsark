@@ -30,7 +30,7 @@ scenario_incremental() {
 	local hashes_base="$work/base.hashes" plan="$work/plan.txt" hashes_next="$work/next.hashes"
 	build_binary
 
-	"$BIN" init --repo="$repo"
+	(mkdir -p "$repo" && cd "$repo" && "$BIN" init)
 
 	local t0 t1
 	t0=$(date +%s)
@@ -40,7 +40,7 @@ scenario_incremental() {
 
 	local commit_out1 snap1 new1
 	t0=$(date +%s)
-	commit_out1="$("$BIN" commit --repo="$repo" --ref=BASE "$src")"
+	commit_out1="$("$BIN" --repo="$repo" commit --ref=BASE "$src")"
 	t1=$(date +%s)
 	echo "$commit_out1"
 	snap1="$(awk '/^snapshot /{print $2}' <<<"$commit_out1")"
@@ -50,7 +50,7 @@ scenario_incremental() {
 	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
+	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree1"
 	t1=$(date +%s)
 	pack_rate_line "incremental: pack disc 1" "$INCREMENTAL_BASE_BYTES" "$t0" "$t1"
 	local size1
@@ -76,7 +76,7 @@ scenario_incremental() {
 
 	local commit_out2 snap2 new2
 	t0=$(date +%s)
-	commit_out2="$("$BIN" commit --repo="$repo" --ref=NEXT "$src")"
+	commit_out2="$("$BIN" --repo="$repo" commit --ref=NEXT "$src")"
 	t1=$(date +%s)
 	echo "$commit_out2"
 	snap2="$(awk '/^snapshot /{print $2}' <<<"$commit_out2")"
@@ -94,7 +94,7 @@ scenario_incremental() {
 	local tree2="$work/tree2" image2="$work/disc2.img" mnt2="$work/mnt2"
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
+	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree2"
 	t1=$(date +%s)
 	pack_rate_line "incremental: pack disc 2" "$INCREMENTAL_ADD_BYTES" "$t0" "$t1"
 	local size2

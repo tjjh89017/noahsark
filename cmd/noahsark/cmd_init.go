@@ -3,39 +3,59 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 )
 
-// cmdInit implements "noahsark init". It takes no --capacity: the
-// operator gives the capacity to pack, or puts pack.capacity in the
-// config. --source stores sources.root, so a later commit with no SOURCE
-// on its own command line can read it. It holds one path, since
-// Writer.Commit takes one source directory. See docs/decisions.md,
-// "Commit".
-func cmdInit(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark init [--repo=PATH] [--source=PATH]",
-		"Create a new, empty repository directory.", stderr)
-	repoPath := fs.String("repo", ".", "repository directory to create")
-	sourcePath := fs.String("source", "", "source root to store in the config; commit uses it when SOURCE is omitted")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
+func init() {
+	register(&command{
+		name:    "init",
+		usage:   "init [--source=PATH]",
+		summary: "Make the current directory a new, empty repository.",
+		flags:   initFlags,
+	})
+}
+
+// initOptions holds the command options of init.
+type initOptions struct {
+	source string
+}
+
+func initFlags(fs *flag.FlagSet) runFunc {
+	o := &initOptions{}
+	fs.StringVar(&o.source, "source", "", "source root to store in the config; commit uses it when SOURCE is omitted")
+	return o.run
+}
+
+// run implements "noahsark init". It makes the current directory the
+// repository, and it does not use repository discovery. It takes no
+// --capacity: the operator gives the capacity to pack, or puts
+// pack.capacity in the config. --source stores sources.root, so a later
+// commit with no SOURCE on its own command line can read it. It holds
+// one path, since Writer.Commit takes one source directory. See
+// docs/decisions.md, "Commit".
+func (o *initOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	if e.global.repo != "" {
+		_, _ = fmt.Fprintln(stderr, "noahsark: init makes the current directory the repository; it does not take --repo")
+		return 2
 	}
-	if checkPositionalsForFlags("init", fs, stderr) {
+	if len(args) != 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark init [--source=PATH]")
 		return 2
 	}
 
-	absRepoPath, err := filepath.Abs(*repoPath)
+	absRepoPath, err := e.getwd()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
-		return 2
+		return 1
 	}
 
 	var absSourcePath string
-	if *sourcePath != "" {
-		absSourcePath, err = filepath.Abs(*sourcePath)
+	if o.source != "" {
+		absSourcePath, err = e.abs(o.source)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 			return 2
@@ -45,11 +65,6 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	if isRepoDir(absRepoPath) {
 		_, _ = fmt.Fprintf(stderr, "noahsark: init: %s is already a noahsark repository\n", absRepoPath)
 		return 2
-	}
-
-	if err := os.MkdirAll(absRepoPath, 0o755); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
-		return 1
 	}
 
 	lk, code, ok := lockRepo("init", absRepoPath, stderr)

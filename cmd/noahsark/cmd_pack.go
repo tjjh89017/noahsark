@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -15,32 +16,47 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdPack implements "noahsark pack". pack takes every pending ref;
-// there is no way to name a snapshot explicitly. See docs/decisions.md,
-// "Pack".
-func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark pack [--capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
-		"Pack staged objects onto the next disc.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	capacityStr := fs.String("capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
-	label := fs.String("label", "", "human label for the disc; defaults to the newest ref name and the disc number")
-	outDir := fs.String("out", "", "output directory for the packed tree; must not already exist or must be empty; default <staging.dir>/plans/<disc uuid>/tree")
-	fecOn := fs.Bool("fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
-	closeDisc := fs.Bool("close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
-	dryRun := fs.Bool("dry-run", false, "print the discs the staged data needs at this capacity, and stop; writes nothing")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("pack", fs, stderr) {
-		return 2
-	}
+func init() {
+	register(&command{
+		name:    "pack",
+		usage:   "pack [--capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
+		summary: "Pack staged objects onto the next disc.",
+		flags:   packFlags,
+	})
+}
 
-	repoDir, err := discoverRepo(*repoFlag)
+// packOptions holds the command options of pack.
+type packOptions struct {
+	capacity  string
+	label     string
+	outDir    string
+	fec       bool
+	closeDisc bool
+	dryRun    bool
+}
+
+func packFlags(fs *flag.FlagSet) runFunc {
+	o := &packOptions{}
+	fs.StringVar(&o.capacity, "capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
+	fs.StringVar(&o.label, "label", "", "human label for the disc; defaults to the newest ref name and the disc number")
+	fs.StringVar(&o.outDir, "out", "", "output directory for the packed tree; must not already exist or must be empty; default <staging.dir>/plans/<disc uuid>/tree")
+	fs.BoolVar(&o.fec, "fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
+	fs.BoolVar(&o.closeDisc, "close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "print the discs the staged data needs at this capacity, and stop; writes nothing")
+	return o.run
+}
+
+// run implements "noahsark pack". pack takes every pending ref; there
+// is no way to name a snapshot explicitly. See docs/decisions.md, "Pack".
+func (o *packOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	outDir := o.outDir
+
+	repoDir, err := e.findRepo()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
@@ -59,7 +75,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	// takes none. Every other pack path writes the state log, the
 	// staging store or the ledgers, so it takes the lock as usual.
 	var lk *repolock.Lock
-	if !*dryRun {
+	if !o.dryRun {
 		var code int
 		var ok bool
 		lk, code, ok = lockRepo("pack", repoDir, stderr)
@@ -69,7 +85,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		defer releaseLock(lk)
 	}
 
-	capacityArg := *capacityStr
+	capacityArg := o.capacity
 	if capacityArg == "" {
 		capacityArg = cfg.PackCapacity
 	}
@@ -84,7 +100,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 
 	var snapshots []image.SnapshotRef
-	now := time.Now()
+	now := e.now()
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
@@ -111,7 +127,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 
 	fecEnabled := cfg.FECEnabled
-	if *fecOn {
+	if o.fec {
 		fecEnabled = true
 	}
 
@@ -119,13 +135,13 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	// dry run predicts the same label, and so the same README bytes,
 	// that the real pack of that disc writes.
 	labelFor := func(discSeq uint64) string {
-		if *label != "" {
-			return *label
+		if o.label != "" {
+			return o.label
 		}
 		return defaultLabel(repoDir, cfg, snapshots, discSeq)
 	}
 
-	if *dryRun {
+	if o.dryRun {
 		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, fecEnabled, labelFor)
 	}
 
@@ -145,10 +161,10 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	var discUUID [16]byte
 	copy(discUUID[:], discUUIDBytes)
 
-	if *outDir == "" {
-		*outDir = filepath.Join(cfg.StagingDir, "plans", hex.EncodeToString(discUUIDBytes), "tree")
+	if outDir == "" {
+		outDir = filepath.Join(cfg.StagingDir, "plans", hex.EncodeToString(discUUIDBytes), "tree")
 	}
-	absOut, err := filepath.Abs(*outDir)
+	absOut, err := filepath.Abs(outDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -178,7 +194,7 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 		Label:                 discLabel,
 		FECEnabled:            fecEnabled,
 		StageLog:              stageLog,
-		Progress:              prog,
+		Progress:              e.progress(),
 	}
 	result, err := image.Pack(opts)
 	if err != nil {
@@ -214,10 +230,10 @@ func cmdPack(args []string, stdout, stderr io.Writer, prog *progress.Reporter) i
 	}
 
 	repoArg := ""
-	if *repoFlag != "" {
+	if e.global.repo != "" {
 		repoArg = " --repo=" + repoDir
 	}
-	printNextSteps(stdout, repoArg, absOut, result.DiscSeq, *closeDisc)
+	printNextSteps(stdout, repoArg, absOut, result.DiscSeq, o.closeDisc)
 
 	// Objects left STAGED after a successful pack are not a failure: the
 	// disc was packed correctly, and the leftover simply waits for the
@@ -442,8 +458,8 @@ func printNextSteps(stdout io.Writer, repoArg, treeDir string, discSeq uint64, s
 	_, _ = fmt.Fprintf(stdout, "  sudo noahsark image build --out=%s %s\n", imagePath, treeDir)
 	_, _ = fmt.Fprintf(stdout, "  growisofs -speed=%d -use-the-force-luke=%s,tty %s-Z %s=%s\n",
 		burnerDefaultSpeed, spareMode, dvdCompat, burnerDefaultDevice, imagePath)
-	_, _ = fmt.Fprintf(stdout, "  noahsark disc burned%s %d\n", repoArg, discSeq)
-	_, _ = fmt.Fprintf(stdout, "  noahsark verify%s <MOUNT>\n", repoArg)
+	_, _ = fmt.Fprintf(stdout, "  noahsark%s disc burned %d\n", repoArg, discSeq)
+	_, _ = fmt.Fprintf(stdout, "  noahsark%s verify <MOUNT>\n", repoArg)
 }
 
 // dirIsEmptyOrMissing reports whether path does not exist yet, or exists

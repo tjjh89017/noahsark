@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"strconv"
@@ -13,38 +14,50 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// cmdLs implements "noahsark ls". With no DISC-ROOT, SNAPSHOT (an id or
-// a ref name) resolves through the local cache, so ls needs no disc
+func init() {
+	register(&command{
+		name:  "ls",
+		usage: "ls [--long] [--recursive] [DISC-ROOT...] SNAPSHOT [PATH]",
+		summary: "List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead. " +
+			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.",
+		flags: lsFlags,
+	})
+}
+
+// lsOptions holds the command options of ls.
+type lsOptions struct {
+	long      bool
+	recursive bool
+}
+
+func lsFlags(fs *flag.FlagSet) runFunc {
+	o := &lsOptions{}
+	fs.BoolVar(&o.long, "long", false, "print mode, owner, size and mtime")
+	fs.BoolVar(&o.recursive, "recursive", false, "descend into subdirectories")
+	return o.run
+}
+
+// run implements "noahsark ls". With no DISC-ROOT, SNAPSHOT (an id or a
+// ref name) resolves through the local cache, so ls needs no disc
 // present; give one or more DISC-ROOT positionals to read straight from
 // a disc instead, the same way restore and verify do. ls reads tree
 // objects only; it never opens a chunk.
-func cmdLs(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark ls [--long] [--recursive] [DISC-ROOT...] SNAPSHOT [PATH]",
-		"List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead. "+
-			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.", stderr)
-	repoFlag := fs.String("repo", "", "repository root, for the cache; used only with no disc given")
-	long := fs.Bool("long", false, "print mode, owner, size and mtime")
-	recursive := fs.Bool("recursive", false, "descend into subdirectories")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("ls", fs, stderr) {
-		return 2
-	}
+func (o *lsOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
 
 	// Leading positional arguments that name an existing directory are
 	// DISC-ROOTs; at least one argument stays unconsumed for SNAPSHOT.
 	// This needs no guess: SNAPSHOT and PATH are never paths that already
 	// exist on this host.
-	end := max(fs.NArg()-1, 0)
+	end := max(len(args)-1, 0)
 	i := 0
-	for i < end && looksLikeDiscRoot(fs.Arg(i)) {
+	for i < end && looksLikeDiscRoot(args[i]) {
 		i++
 	}
-	discRootArgs := fs.Args()[:i]
+	discRootArgs := args[:i]
 	discRootGiven := len(discRootArgs) > 0
-	if !discRootGiven && fs.NArg() > 0 && looksLikePathNotDisc(fs.Arg(0)) {
-		_, _ = fmt.Fprintf(stderr, "noahsark: ls: no such disc root: %s\n", fs.Arg(0))
+	if !discRootGiven && len(args) > 0 && looksLikePathNotDisc(args[0]) {
+		_, _ = fmt.Fprintf(stderr, "noahsark: ls: no such disc root: %s\n", args[0])
 		return 2
 	}
 	cacheMode := !discRootGiven
@@ -54,19 +67,19 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 	var positional []string
 	switch {
 	case cacheMode:
-		if fs.NArg() < 1 || fs.NArg() > 2 {
+		if len(args) < 1 || len(args) > 2 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] SNAPSHOT [PATH]")
 			return 2
 		}
-		positional = fs.Args()
-		cs, c, err := openCacheSource(*repoFlag)
+		positional = args
+		cs, c, err := openCacheSource(e)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
 			return 1
 		}
 		src, cacheObj = cs, c
 	default:
-		positional = fs.Args()[len(discRootArgs):]
+		positional = args[len(discRootArgs):]
 		if len(positional) < 1 || len(positional) > 2 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] DISC-ROOT... SNAPSHOT [PATH]")
 			return 2
@@ -97,8 +110,8 @@ func cmdLs(args []string, stdout, stderr io.Writer) int {
 		return reportSourceError("ls", stderr, err, cacheObj, snapID)
 	}
 
-	lister := &lsLister{src: src, stdout: stdout, long: *long}
-	if err := lister.run(object.ID(snap.RootTree), pathArg, *recursive); err != nil {
+	lister := &lsLister{src: src, stdout: stdout, long: o.long}
+	if err := lister.run(object.ID(snap.RootTree), pathArg, o.recursive); err != nil {
 		return reportSourceError("ls", stderr, err, cacheObj, snapID)
 	}
 	return 0

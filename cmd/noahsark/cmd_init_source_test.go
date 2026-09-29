@@ -14,7 +14,7 @@ func TestInitWritesSourceRoot(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -34,7 +34,7 @@ func TestInitWritesSourceRoot(t *testing.T) {
 // with no --source, writes no sources.root line at all.
 func TestInitWithNoSourceLeavesConfigWithoutKey(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -61,11 +61,11 @@ func TestCommitWithNoArgUsesConfiguredSource(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+src); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "commit")
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -81,11 +81,11 @@ func TestCommitArgOverridesConfiguredSource(t *testing.T) {
 	configured := writeFixtureSource(t)
 	override := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+configured); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+configured); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, override)
+	code, out := runCmd(t, "--repo="+repo, "commit", override)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -99,11 +99,11 @@ func TestCommitArgOverridesConfiguredSource(t *testing.T) {
 // holds no source root.
 func TestCommitWithNeitherArgNorConfigFails(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "commit")
 	if code != 2 {
 		t.Fatalf("commit: exit %d, want 2: %s", code, out)
 	}
@@ -118,7 +118,7 @@ func TestCommitWithNeitherArgNorConfigFails(t *testing.T) {
 // status, which does not, working.
 func TestReadConfigRefusesSecondSourceRoot(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo, "--source="+writeFixtureSource(t)); code != 0 {
+	if code, out := runIn(t, repo, "init", "--source="+writeFixtureSource(t)); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -132,11 +132,11 @@ func TestReadConfigRefusesSecondSourceRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "commit")
 	if code != 2 || !strings.Contains(out, "only one source root") {
 		t.Fatalf("commit: exit %d: %s, want exit 2 and the repeated sources.root fault", code, out)
 	}
-	if code, out := runCmd(t, "status", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "status"); code != 0 {
 		t.Fatalf("status: exit %d: %s, want status to run with a key it never reads", code, out)
 	}
 }
@@ -146,7 +146,7 @@ func TestReadConfigRefusesSecondSourceRoot(t *testing.T) {
 // unrelated unknown key.
 func TestReadConfigStillRefusesUnknownKey(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 

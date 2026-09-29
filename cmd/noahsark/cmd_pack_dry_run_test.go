@@ -20,18 +20,18 @@ func TestPackDryRunWritesNothing(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	beforeCode, beforeOut := runCmd(t, "status", "--repo="+repo)
+	beforeCode, beforeOut := runCmd(t, "--repo="+repo, "status")
 	if beforeCode != 0 {
 		t.Fatalf("status: exit %d: %s", beforeCode, beforeOut)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--dry-run")
 	if code != 0 {
 		t.Fatalf("pack --dry-run: exit %d: %s", code, out)
 	}
@@ -55,7 +55,7 @@ func TestPackDryRunWritesNothing(t *testing.T) {
 		t.Fatalf("pack --dry-run wrote a plan tree under staging/plans: %v", entries)
 	}
 
-	afterCode, afterOut := runCmd(t, "status", "--repo="+repo)
+	afterCode, afterOut := runCmd(t, "--repo="+repo, "status")
 	if afterCode != 0 {
 		t.Fatalf("status: exit %d: %s", afterCode, afterOut)
 	}
@@ -88,14 +88,14 @@ func TestPackDryRunMultipleDiscs(t *testing.T) {
 		}
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=6MiB", "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=6MiB", "--dry-run")
 	if code != 0 {
 		t.Fatalf("pack --dry-run: exit %d: %s", code, out)
 	}
@@ -112,7 +112,7 @@ func TestPackDryRunMultipleDiscs(t *testing.T) {
 	realDiscs := 0
 	for {
 		treeDir := filepath.Join(work, "tree", strconv.Itoa(realDiscs))
-		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=6MiB", "--out="+treeDir)
+		code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=6MiB", "--out="+treeDir)
 		if code != 0 {
 			t.Fatalf("real pack: exit %d: %s", code, out)
 		}
@@ -134,10 +134,10 @@ func TestPackDryRunTakesNoLock(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
@@ -147,13 +147,13 @@ func TestPackDryRunTakesNoLock(t *testing.T) {
 	}
 	defer releaseLock(lk)
 
-	dryCode, dryOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--dry-run")
+	dryCode, dryOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--dry-run")
 	if dryCode != 0 {
 		t.Fatalf("pack --dry-run under a held lock: exit %d: %s", dryCode, dryOut)
 	}
 
 	// A real pack, in contrast, must fail fast while the lock is held.
-	realCode, realOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	realCode, realOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if realCode == 0 {
 		t.Fatalf("real pack under a held lock unexpectedly succeeded: %s", realOut)
 	}

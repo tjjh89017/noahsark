@@ -26,10 +26,10 @@ func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string
 	repo = filepath.Join(work, "repo")
 	src = writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -38,7 +38,7 @@ func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -51,7 +51,7 @@ func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string
 // returns the disc_seq values it names, in plan order. --mount and
 // OUT-DIR are filled with throwaway paths: --dry-run never reads or
 // writes either.
-func restoreDryRunDiscSeqs(t *testing.T, flagsAndSnapshot ...string) []int {
+func restoreDryRunDiscSeqs(t *testing.T, repo string, flagsAndSnapshot ...string) []int {
 	t.Helper()
 	if len(flagsAndSnapshot) == 0 {
 		t.Fatal("restoreDryRunDiscSeqs: no SNAPSHOT given")
@@ -59,7 +59,7 @@ func restoreDryRunDiscSeqs(t *testing.T, flagsAndSnapshot ...string) []int {
 	flags := flagsAndSnapshot[:len(flagsAndSnapshot)-1]
 	snapID := flagsAndSnapshot[len(flagsAndSnapshot)-1]
 
-	full := append([]string{"restore"}, flags...)
+	full := append([]string{"--repo=" + repo, "restore"}, flags...)
 	full = append(full, "--mount="+t.TempDir(), "--dry-run", snapID, filepath.Join(t.TempDir(), "out"))
 	code, out := runCmd(t, full...)
 	if code != 0 {
@@ -153,33 +153,25 @@ func (s *scriptedStdin) Read(p []byte) (int, error) {
 	return 1, nil
 }
 
-// setRestoreStdin installs r as the disc-swap loop's stdin for the
-// duration of the test.
-func setRestoreStdin(t *testing.T, r io.Reader) {
-	t.Helper()
-	restoreStdin = r
-	t.Cleanup(func() { restoreStdin = os.Stdin })
-}
-
 // TestRestoreDiscSwapTwoDiscChain drives the disc-swap loop through a
 // two-disc plan with the first disc already correctly mounted and the
 // second requiring a swap, and checks the result matches the source
 // tree exactly.
 func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) },
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -201,7 +193,7 @@ func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 // in the drive.
 func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -210,14 +202,14 @@ func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
 	// The disc the plan wants second is in the drive for the first
 	// disc: an immediate mismatch.
 	mountDisc(t, mountDir, discRoots[seqs[1]])
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() {}, // operator presses Enter without swapping yet
 		func() { mountDisc(t, mountDir, discRoots[seqs[0]]) }, // now inserts the right one
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) }, // and the second plan disc
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -233,7 +225,7 @@ func TestRestoreDiscSwapWrongDiscThenRight(t *testing.T) {
 // and checks the whole tree matches.
 func TestRestoreDiscSwapResume(t *testing.T) {
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -260,19 +252,19 @@ func TestRestoreDiscSwapResume(t *testing.T) {
 
 	// stdin closes with no lines at all, standing in for a session
 	// killed while waiting for the operator to insert the second disc.
-	setRestoreStdin(t, &scriptedStdin{})
-	if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir); code == 0 {
+	setFakeStdin(t, &scriptedStdin{})
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir); code == 0 {
 		t.Fatalf("restore (interrupted): exit 0, want non-zero: %s", out)
 	}
 	compareTrees(t, filepath.Join(outDir, src, doneSub), filepath.Join(src, doneSub))
 
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) },
 	}})
 	// No --overwrite: the interrupted run already wrote doneSub's files
 	// with the right size and mtime, so this rerun must count them
 	// resumed, not skipped, and still exit 0.
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore (resumed): exit %d, want 0: %s", code, out)
 	}
@@ -306,10 +298,10 @@ func TestRestoreDiscSwapIncludeNarrowsToOneDisc(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{})
+	setFakeStdin(t, &scriptedStdin{})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--include="+include, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--include="+include, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -325,16 +317,16 @@ func TestRestoreDiscSwapIncludeNarrowsToOneDisc(t *testing.T) {
 // complaint before the first prompt.
 func TestRestoreDiscSwapNeverEjects(t *testing.T) {
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) },
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -360,16 +352,16 @@ func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	firstSnap := snapshotIDFromCommit(t, out)
 	firstDisc := filepath.Join(work, "disc0")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+firstDisc); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+firstDisc); code != 0 {
 		t.Fatalf("pack 0: exit %d: %s", code, out)
 	}
 
@@ -380,22 +372,22 @@ func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("more content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("second commit: exit %d: %s", code, out)
 	}
 	secondDisc := filepath.Join(work, "disc1")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondDisc); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+secondDisc); code != 0 {
 		t.Fatalf("pack 1: exit %d: %s", code, out)
 	}
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, secondDisc) // in the drive, not needed for firstSnap
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, firstDisc) },
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out = runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, firstSnap, outDir)
+	code, out = runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, firstSnap, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -413,7 +405,7 @@ func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
 // the disc by its number, its label and its uuid.
 func TestRestoreDiscSwapStillReportsAGenuineMismatch(t *testing.T) {
 	repo, snapID, _, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -421,27 +413,27 @@ func TestRestoreDiscSwapStillReportsAGenuineMismatch(t *testing.T) {
 	// A disc from an unrelated repository: neither disc the plan wants.
 	bogusWork := t.TempDir()
 	bogusRepo := filepath.Join(bogusWork, "repo")
-	if code, out := runCmd(t, "init", "--repo="+bogusRepo); code != 0 {
+	if code, out := runIn(t, bogusRepo, "init"); code != 0 {
 		t.Fatalf("init bogus repo: exit %d: %s", code, out)
 	}
 	bogusSrc := writeFixtureSource(t)
-	if code, out := runCmd(t, "commit", "--repo="+bogusRepo, bogusSrc); code != 0 {
+	if code, out := runCmd(t, "--repo="+bogusRepo, "commit", bogusSrc); code != 0 {
 		t.Fatalf("commit bogus repo: exit %d: %s", code, out)
 	}
 	bogusDisc := filepath.Join(bogusWork, "disc")
-	if code, out := runCmd(t, "pack", "--repo="+bogusRepo, "--capacity=64MiB", "--out="+bogusDisc); code != 0 {
+	if code, out := runCmd(t, "--repo="+bogusRepo, "pack", "--capacity=64MiB", "--out="+bogusDisc); code != 0 {
 		t.Fatalf("pack bogus repo: exit %d: %s", code, out)
 	}
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, bogusDisc) },          // wrong disc, not the previous one
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) }, // now the right one
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -469,7 +461,7 @@ func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "no-such-ref", outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "no-such-ref", outDir)
 	if code != 2 {
 		t.Fatalf("restore --mount unknown ref: exit %d, want 2: %s", code, out)
 	}
@@ -489,7 +481,7 @@ func TestRestoreSnapshotIDPrefixNamesItself(t *testing.T) {
 	repo, _, _, discRoots := discSwapFixture(t)
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, discRoots[0], "1220a053", outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", discRoots[0], "1220a053", outDir)
 	if code != 2 {
 		t.Fatalf("restore with a snapshot id prefix: exit %d, want 2: %s", code, out)
 	}
@@ -514,7 +506,7 @@ func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 	for i := range 6 {
 		sub := fmt.Sprintf("sub%d", i)
 		include := strings.TrimPrefix(filepath.Join(src, sub), "/")
-		planned := restoreDryRunDiscSeqs(t, "--repo="+repo, "--include="+include, snapID)
+		planned := restoreDryRunDiscSeqs(t, repo, "--include="+include, snapID)
 		want := chunkDiscSeqs(t, repo, snapID, include)
 		if !slices.Equal(planned, want) {
 			t.Fatalf("--include=%s: plan named disc_seq %v, want exactly the chunk-holding discs %v", include, planned, want)
@@ -528,19 +520,19 @@ func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 // one.
 func TestRestoreDiscSwapReadsTheDiscInTheDriveFirst(t *testing.T) {
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[1]])
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, discRoots[seqs[0]]) },
 	}})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -558,7 +550,7 @@ func TestRestoreDiscSwapReadsTheDiscInTheDriveFirst(t *testing.T) {
 // rerun list only the disc that is still needed.
 func TestRestoreDiscSwapRerunListsOnlyTheDiscsStillNeeded(t *testing.T) {
 	repo, snapID, src, discRoots := discSwapFixture(t)
-	seqs := restoreDryRunDiscSeqs(t, "--repo="+repo, snapID)
+	seqs := restoreDryRunDiscSeqs(t, repo, snapID)
 	if len(seqs) != 2 {
 		t.Fatalf("plan named %d disc(s), want 2", len(seqs))
 	}
@@ -567,12 +559,12 @@ func TestRestoreDiscSwapRerunListsOnlyTheDiscsStillNeeded(t *testing.T) {
 	mountDisc(t, mountDir, discRoots[seqs[0]])
 	outDir := filepath.Join(t.TempDir(), "out")
 
-	setRestoreStdin(t, &scriptedStdin{})
-	if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir); code == 0 {
+	setFakeStdin(t, &scriptedStdin{})
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir); code == 0 {
 		t.Fatalf("restore (interrupted): exit 0, want non-zero: %s", out)
 	}
 
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--dry-run", snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--dry-run", snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore --dry-run: exit %d: %s", code, out)
 	}
@@ -583,10 +575,10 @@ func TestRestoreDiscSwapRerunListsOnlyTheDiscsStillNeeded(t *testing.T) {
 		t.Fatalf("restore --dry-run output %q still lists the disc it already read", out)
 	}
 
-	setRestoreStdin(t, &scriptedStdin{steps: []func(){
+	setFakeStdin(t, &scriptedStdin{steps: []func(){
 		func() { mountDisc(t, mountDir, discRoots[seqs[1]]) },
 	}})
-	code, out = runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out = runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore (resumed): exit %d: %s", code, out)
 	}

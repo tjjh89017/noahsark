@@ -16,7 +16,7 @@ import (
 // failure at run time, not a usage error.
 func TestGCFailsFastWhenRepoLockHeld(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -26,7 +26,7 @@ func TestGCFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 1 {
 		t.Fatalf("gc while locked: exit %d, want 1: %s", code, out)
 	}
@@ -45,10 +45,10 @@ func TestPackFailsFastWhenRepoLockHeld(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
@@ -58,7 +58,7 @@ func TestPackFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 1 {
 		t.Fatalf("pack while locked: exit %d, want 1: %s", code, out)
 	}
@@ -72,10 +72,10 @@ func TestPackFailsFastWhenRepoLockHeld(t *testing.T) {
 // process left behind.
 func TestRepoLockFreeAfterGC(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 
@@ -91,7 +91,7 @@ func TestRepoLockFreeAfterGC(t *testing.T) {
 // held exclusive lock, while a writer holds it.
 func TestStatusRunsWhileRepoLockHeld(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -101,7 +101,7 @@ func TestStatusRunsWhileRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "status", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "status")
 	if code != 0 {
 		t.Fatalf("status while a writer holds the lock: exit %d, want 0: %s", code, out)
 	}
@@ -115,10 +115,10 @@ func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
@@ -135,7 +135,7 @@ func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc after a truncated log: exit %d, want 0: %s", code, out)
 	}
@@ -152,14 +152,14 @@ func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -169,7 +169,7 @@ func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "recover", "--repo="+repo, treeDir)
+	code, out := runCmd(t, "--repo="+repo, "recover", treeDir)
 	if code != 1 {
 		t.Fatalf("recover while locked: exit %d, want 1: %s", code, out)
 	}

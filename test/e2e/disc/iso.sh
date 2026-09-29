@@ -202,14 +202,14 @@ scenario_iso() {
 	log "iso: fixture generation took $((t1 - t0))s"
 	df -h
 
-	"$BIN" init --repo="$repo"
-	commit_out="$("$BIN" commit --repo="$repo" "$src")"
+	(mkdir -p "$repo" && cd "$repo" && "$BIN" init)
+	commit_out="$("$BIN" --repo="$repo" commit "$src")"
 	echo "$commit_out"
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
 
 	t0=$(date +%s)
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" pack --repo="$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
+	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
 	t1=$(date +%s)
 	log "iso: pack took $((t1 - t0))s"
 	df -h

@@ -2,9 +2,9 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"time"
 
@@ -15,11 +15,34 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// restoreStdin is where the disc-swap restore mode reads the operator's
-// Enter key from. Tests replace it with a pipe.
-var restoreStdin io.Reader = os.Stdin
+func init() {
+	register(&command{
+		name: "restore",
+		usage: "restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR\n" +
+			"restore [--include=PATH]... [--overwrite] --mount=DIR [--dry-run] SNAPSHOT OUT-DIR",
+		summary: "Restore a snapshot to a directory. Accepts one or more DISC-ROOT positionals for the all-discs-at-once mode.",
+		flags:   restoreFlags,
+	})
+}
 
-// cmdRestore implements "noahsark restore". Two modes share this
+// restoreOptions holds the command options of restore.
+type restoreOptions struct {
+	includes  stringList
+	overwrite bool
+	mount     string
+	dryRun    bool
+}
+
+func restoreFlags(fs *flag.FlagSet) runFunc {
+	o := &restoreOptions{}
+	fs.Var(&o.includes, "include", "restore only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
+	fs.BoolVar(&o.overwrite, "overwrite", false, "unlink an existing path first and then create it; without this, an existing path is left alone")
+	fs.StringVar(&o.mount, "mount", "", "the directory where the drive is mounted; required for the disc-swap mode")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "print the disc list the restore needs and stop; reads no disc and writes nothing; needs --mount")
+	return o.run
+}
+
+// run implements "noahsark restore". Two modes share this
 // entry point.
 //
 // With one or more DISC-ROOT positionals, restore reads every disc at
@@ -31,24 +54,12 @@ var restoreStdin io.Reader = os.Stdin
 // loop one disc at a time, by disc number, prompting the operator to
 // insert the next one. This is the single-drive path; see
 // docs/decisions.md, "Restore".
-func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR\n"+
-		"       noahsark restore [--include=PATH]... [--overwrite] --mount=DIR [--dry-run] SNAPSHOT OUT-DIR",
-		"Restore a snapshot to a directory. Accepts one or more DISC-ROOT positionals for the all-discs-at-once mode.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	var includeFlags stringList
-	fs.Var(&includeFlags, "include", "restore only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
-	overwrite := fs.Bool("overwrite", false, "unlink an existing path first and then create it; without this, an existing path is left alone")
-	mountFlag := fs.String("mount", "", "the directory where the drive is mounted; required for the disc-swap mode")
-	dryRun := fs.Bool("dry-run", false, "print the disc list the restore needs and stop; reads no disc and writes nothing; needs --mount")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("restore", fs, stderr) {
-		return 2
-	}
+func (o *restoreOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	prog := e.progress()
+	includeFlags, overwrite, mountFlag, dryRun := o.includes, o.overwrite, o.mount, o.dryRun
 
-	if *dryRun && *mountFlag == "" {
+	if dryRun && mountFlag == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --dry-run needs --mount; the disc list comes from the local cache, and the all-discs-at-once mode reads every disc together with no such list to preview")
 		return 2
 	}
@@ -58,23 +69,23 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	// off when the first one names an existing directory, and a
 	// SNAPSHOT OUT-DIR with no disc given otherwise. Both mistakes get
 	// their own line, naming what the operator typed.
-	if fs.NArg() == 2 {
-		if *mountFlag == "" {
-			if looksLikeDiscRoot(fs.Arg(0)) {
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s is a disc root, so OUT-DIR is missing\n", fs.Arg(0))
+	if len(args) == 2 {
+		if mountFlag == "" {
+			if looksLikeDiscRoot(args[0]) {
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s is a disc root, so OUT-DIR is missing\n", args[0])
 			} else {
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no disc given for snapshot %q; pass a DISC-ROOT or --mount\n", fs.Arg(0))
+				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no disc given for snapshot %q; pass a DISC-ROOT or --mount\n", args[0])
 			}
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] SNAPSHOT OUT-DIR")
 			return 2
 		}
-		return cmdRestoreDiscSwap(*repoFlag, includeFlags, *overwrite, *mountFlag, *dryRun, fs.Arg(0), fs.Arg(1), stdout, stderr, prog)
+		return cmdRestoreDiscSwap(e, includeFlags, overwrite, mountFlag, dryRun, args[0], args[1], stdout, stderr, prog)
 	}
 	// --mount is disc-swap mode, which never takes a DISC-ROOT: three or
 	// more positional arguments with --mount given carry a leftover
 	// DISC-ROOT from the all-discs-at-once form, not that mode's own
 	// SNAPSHOT OUT-DIR pair.
-	if *mountFlag != "" && fs.NArg() >= 3 {
+	if mountFlag != "" && len(args) >= 3 {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount takes no DISC-ROOT")
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] SNAPSHOT OUT-DIR")
 		return 2
@@ -83,12 +94,12 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 	// The trailing two positional arguments are always SNAPSHOT and
 	// OUT-DIR; everything before them is one or more DISC-ROOTs, so
 	// this needs no guess about where the roots end.
-	if fs.NArg() < 3 {
+	if len(args) < 3 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR")
 		return 2
 	}
-	discRoots := fs.Args()[:fs.NArg()-2]
-	positional := fs.Args()[fs.NArg()-2:]
+	discRoots := args[:len(args)-2]
+	positional := args[len(args)-2:]
 	for _, root := range discRoots {
 		if !looksLikeDiscRoot(root) {
 			// Every argument in this position is always a mounted
@@ -114,9 +125,9 @@ func cmdRestore(args []string, stdout, stderr io.Writer, prog *progress.Reporter
 
 	opts := []restore.Option{
 		restore.WithInclude(includeFlags),
-		restore.WithOverwrite(*overwrite),
+		restore.WithOverwrite(overwrite),
 	}
-	if known := knownDiscsForRepo(*repoFlag); len(known) > 0 {
+	if known := knownDiscsForRepo(e); len(known) > 0 {
 		opts = append(opts, restore.WithKnownDiscs(known))
 	}
 	rep, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
@@ -172,13 +183,13 @@ var errStdinClosed = fmt.Errorf("stdin closed while waiting for the next disc")
 // operator between discs.
 // dryRun prints the disc list and stops there, before any disc is read.
 // The mode writes only below OUT-DIR, so it takes no repository lock.
-func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mountDir string, dryRun bool, snapshotArg, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+func cmdRestoreDiscSwap(e *env, includes stringList, overwrite bool, mountDir string, dryRun bool, snapshotArg, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if mountDir == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount is required; there is no config key for it")
 		return 2
 	}
 
-	src, c, err := openCacheSource(repoFlag)
+	src, c, err := openCacheSource(e)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
@@ -197,12 +208,12 @@ func cmdRestoreDiscSwap(repoFlag string, includes stringList, overwrite bool, mo
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 2
 	}
-	return cmdRestoreDiscSwapRun(c, snapID, includes, overwrite, mountDir, dryRun, outDir, stdout, stderr, prog)
+	return cmdRestoreDiscSwapRun(e.stdin, c, snapID, includes, overwrite, mountDir, dryRun, outDir, stdout, stderr, prog)
 }
 
 // cmdRestoreDiscSwapRun is cmdRestoreDiscSwap's body once snapID and
 // includes are known.
-func cmdRestoreDiscSwapRun(c *cache.Cache, snapID object.ID, includes []string, overwrite bool, mountDir string, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+func cmdRestoreDiscSwapRun(stdin io.Reader, c *cache.Cache, snapID object.ID, includes []string, overwrite bool, mountDir string, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if err := c.CheckComplete(snapID); err != nil {
 		if ie, ok := err.(*cache.IncompleteError); ok {
 			_, _ = fmt.Fprintln(stderr, formatIncompleteError("restore", ie))
@@ -249,7 +260,7 @@ func cmdRestoreDiscSwapRun(c *cache.Cache, snapID object.ID, includes []string, 
 		return 1
 	}
 
-	scanner := bufio.NewScanner(restoreStdin)
+	scanner := bufio.NewScanner(stdin)
 	done := make(map[[16]byte]bool, len(discs))
 	for len(discs) > 0 {
 		// The disc already in the drive is read first when the restore

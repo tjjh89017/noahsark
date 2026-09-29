@@ -40,17 +40,17 @@ func TestRestoreEmptyDirectoryAndEmptyFile(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeEmptyObjectSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "verify", treeDir); code != 0 {
@@ -67,7 +67,7 @@ func TestRestoreEmptyDirectoryAndEmptyFile(t *testing.T) {
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, treeDir)
 	mounted := filepath.Join(work, "restored-mount")
-	if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, mounted); code != 0 {
 		t.Fatalf("restore --mount: exit %d: %s", code, out)
 	}
 	compareTrees(t, filepath.Join(mounted, src), src)
@@ -95,10 +95,10 @@ func TestTwoCommitsOneDayMoveOneRefAndKeepBoth(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("first commit: exit %d: %s", code, out)
 	}
@@ -106,7 +106,7 @@ func TestTwoCommitsOneDayMoveOneRefAndKeepBoth(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "second.txt"), []byte("content of the second commit"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "commit", "--repo="+repo, src)
+	code, out = runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("second commit: exit %d: %s", code, out)
 	}
@@ -118,7 +118,7 @@ func TestTwoCommitsOneDayMoveOneRefAndKeepBoth(t *testing.T) {
 		t.Fatalf("second commit output %q does not move the date ref to the newer snapshot", out)
 	}
 
-	code, logOut := runCmd(t, "log", "--repo="+repo)
+	code, logOut := runCmd(t, "--repo="+repo, "log")
 	if code != 0 {
 		t.Fatalf("log: exit %d: %s", code, logOut)
 	}

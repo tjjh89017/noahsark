@@ -89,10 +89,10 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 	repo = filepath.Join(work, "repo")
 	src = writeCrossDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -101,7 +101,7 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 	capacity := packSectors(largestStagedObject(t, repo) + (2 << 20))
 	for i := range 8 {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+capacity, "--out="+treeDir)
+		code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+capacity, "--out="+treeDir)
 		if code != 0 {
 			// A run's own catalog and its prerequisite rows grow with each
 			// disc. pack names the capacity that holds them; take it and
@@ -114,7 +114,7 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 			if err := os.RemoveAll(treeDir); err != nil {
 				t.Fatal(err)
 			}
-			code, out = runCmd(t, "pack", "--repo="+repo, "--capacity="+capacity, "--out="+treeDir)
+			code, out = runCmd(t, "--repo="+repo, "pack", "--capacity="+capacity, "--out="+treeDir)
 		}
 		if code != 0 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
@@ -250,10 +250,10 @@ func TestRestoreDiscSwapCrossDiscFile(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -283,8 +283,8 @@ func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
 
 	// stdin closes with no line at all: the session is killed while it
 	// waits for the second disc.
-	setRestoreStdin(t, &scriptedStdin{})
-	if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir); code == 0 {
+	setFakeStdin(t, &scriptedStdin{})
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir); code == 0 {
 		t.Fatalf("restore (interrupted): exit 0, want non-zero: %s", out)
 	}
 	cross := filepath.Join(outDir, src, crossRel)
@@ -295,8 +295,8 @@ func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
 		t.Fatal("the interrupted restore left no part file to continue from")
 	}
 
-	setRestoreStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore (resumed): exit %d, want 0: %s", code, out)
 	}
@@ -330,9 +330,9 @@ func TestRestoreDiscSwapNoOverwriteAtTheLinkStep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	setRestoreStdin(t, &scriptedStdin{steps: steps})
+	setFakeStdin(t, &scriptedStdin{steps: steps})
 
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 1 {
 		t.Fatalf("restore: exit %d, want 1: %s", code, out)
 	}
@@ -373,9 +373,9 @@ func TestRestoreDiscSwapOverwriteReplacesAFileAndRefusesADirectory(t *testing.T)
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
 
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--overwrite", snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--overwrite", snapID, outDir)
 	if code != 1 {
 		t.Fatalf("restore --overwrite: exit %d, want 1: %s", code, out)
 	}
@@ -411,9 +411,9 @@ func TestRestoreDiscSwapPartPathSymlinkIsNotFollowed(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setRestoreStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
 
-	code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 1 {
 		t.Fatalf("restore: exit %d, want 1: %s", code, out)
 	}
@@ -446,25 +446,25 @@ func TestRestoreDiscSwapPartNameCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID := snapshotIDFromCommit(t, out)
 	discRoot := filepath.Join(work, "disc0")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+discRoot); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discRoot); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoot)
-	setRestoreStdin(t, &scriptedStdin{})
+	setFakeStdin(t, &scriptedStdin{})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out = runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, snapID, outDir)
+	code, out = runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}

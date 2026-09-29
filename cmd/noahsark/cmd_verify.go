@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,12 +12,33 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/restore"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdVerify implements "noahsark verify DISC-ROOT". A drive mount needs
+func init() {
+	register(&command{
+		name:    "verify",
+		usage:   "verify [--heal --out=DIR] DISC-ROOT",
+		summary: "Read a disc tree back and check it, optionally healing it first.",
+		flags:   verifyFlags,
+	})
+}
+
+// verifyOptions holds the command options of verify.
+type verifyOptions struct {
+	heal bool
+	out  string
+}
+
+func verifyFlags(fs *flag.FlagSet) runFunc {
+	o := &verifyOptions{}
+	fs.BoolVar(&o.heal, "heal", false, "repair the disc with Reed-Solomon parity before reporting; requires --out")
+	fs.StringVar(&o.out, "out", "", "heal into this directory; required with --heal")
+	return o.run
+}
+
+// run implements "noahsark verify DISC-ROOT". A drive mount needs
 // root, which this build never assumes, so DISC-ROOT names a mounted
 // disc path or an unpacked NOAHSARK tree, the same root image.Read and
 // restore.Heal accept. See docs/decisions.md, "Burning and disc
@@ -28,8 +50,8 @@ import (
 // writes the ledger, not a burn step), so treating a ledger match alone
 // as proof of burning would let verify, and then gc, act on a disc that
 // does not exist yet. `noahsark disc burned UUID` is the explicit step
-// that records a burn; verify only ever reads that state. When --repo
-// resolves to a repository, and DISC.bin's uuid matches a row in that
+// that records a burn; verify only ever reads that state. When discovery
+// finds a repository, and the uuid in DISC.bin matches a row in that
 // repository's disc ledger, a successful verify moves every BURNED
 // object of that disc to CLEAN, adds 1 to the verify count of every
 // CLEAN object of that disc, and warns when a PACKED object of that disc
@@ -37,31 +59,23 @@ import (
 // disc raises that count, and gc waits for it. A failed verify moves any
 // object still at BURNED back to PACKED, with the verify-failed reason,
 // and leaves the CLEAN objects alone.
-func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	fs := newFlagSet("noahsark verify [--repo=DIR] [--heal --out=DIR] DISC-ROOT",
-		"Read a disc tree back and check it, optionally healing it first.", stderr)
-	repoFlag := fs.String("repo", "", "repository directory, to update its staging state on a burned disc")
-	heal := fs.Bool("heal", false, "repair the disc with Reed-Solomon parity before reporting; requires --out")
-	healOut := fs.String("out", "", "heal into this directory; required with --heal")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("verify", fs, stderr) {
+func (o *verifyOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	prog := e.progress()
+	heal, healOut := o.heal, o.out
+	if len(args) != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--heal --out=DIR] DISC-ROOT")
 		return 2
 	}
-	if fs.NArg() != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--repo=DIR] [--heal --out=DIR] DISC-ROOT")
-		return 2
-	}
-	if *heal && *healOut == "" {
+	if heal && healOut == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify: --heal needs --out; healing in place is no longer supported")
 		return 2
 	}
-	imagePath := fs.Arg(0)
+	imagePath := args[0]
 
 	target := imagePath
-	if *heal {
-		reports, err := restore.HealWithProgress(imagePath, *healOut, prog)
+	if heal {
+		reports, err := restore.HealWithProgress(imagePath, healOut, prog)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: heal:", err)
 			return 1
@@ -71,30 +85,30 @@ func cmdVerify(args []string, stdout, stderr io.Writer, prog *progress.Reporter)
 			blocks += len(r.DataColumns) + len(r.ParityColumns)
 		}
 		_, _ = fmt.Fprintf(stdout, "heal: repaired %d block(s)\n", blocks)
-		target = *healOut
+		target = healOut
 	}
 
 	ident, identOK := identifyDiscAndRun(target)
 
 	rr, verifyErr := image.ReadWithProgress(target, prog)
 
-	// verify takes the repository lock only when --repo resolves: with no
-	// --repo, verify never touches any repository's state, so there is
-	// nothing to lock, the same way "image build" and a --repo-less "ls"
-	// or "log" touch no repository.
+	// verify takes the repository lock only when discovery finds a
+	// repository. With none, verify never touches any state, so there is
+	// nothing to lock, the same way "image build" and an "ls" or "log"
+	// of a disc root touch no repository.
 	// The state lines applyVerifyOutcome writes belong after the disc
 	// line, not before it, so the report reads as one result. They are
 	// collected here and written once the disc line is out.
 	var outcome bytes.Buffer
 	var trailingHint string
-	if *heal {
+	if heal {
 		// A healed tree lives on the hard disk, not on a disc. It is not
 		// a copy the retention count can rely on: only a verify of an
 		// actual disc, burned from this healed tree, moves its objects
 		// on or raises their verify count. Skip the whole repository
 		// state update, whatever --repo names.
 		trailingHint = "heal: burn the healed tree to a new disc, then verify that disc; healing alone does not verify or count as a copy"
-	} else if repoDir, err := discoverRepo(*repoFlag); err == nil {
+	} else if repoDir, err := e.findRepo(); err == nil {
 		if cfg, cfgErr := readConfig(configPath(repoDir)); cfgErr == nil {
 			if refuseBadConfig("verify", cfg, stderr, configKeysForVerify...) {
 				return 2
