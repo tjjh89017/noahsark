@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -53,9 +54,9 @@ func TestImageBuildWritesOnlyTheImage(t *testing.T) {
 	var gotTree string
 	var gotSectors uint64
 	old := imageHost.makeImage
-	imageHost.makeImage = func(treeDir, imagePath string, sectors uint64, prog *progress.Reporter) error {
-		gotTree, gotSectors = treeDir, sectors
-		return fakeMakeImage(treeDir, imagePath, sectors, prog)
+	imageHost.makeImage = func(plan *image.Plan, sectors uint64, prog *progress.Reporter) error {
+		gotTree, gotSectors = plan.TreePath, sectors
+		return fakeMakeImage(plan, sectors, prog)
 	}
 	t.Cleanup(func() { imageHost.makeImage = old })
 
@@ -177,5 +178,80 @@ func TestImageBuildSudoLineKeepsForce(t *testing.T) {
 	want := "noahsark: image build needs root for the loop mount; run: sudo noahsark --repo=" + fx.repo + " image build --force 0\n"
 	if code != 1 || stderr != want {
 		t.Errorf("exit %d, stderr %q, want %q", code, stderr, want)
+	}
+}
+
+// replaceWithSymlink moves path to a directory outside the repository
+// and puts a symlink to it at path.
+func replaceWithSymlink(t *testing.T, path string) string {
+	t.Helper()
+	moved := filepath.Join(t.TempDir(), filepath.Base(path))
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, path); err != nil {
+		t.Fatal(err)
+	}
+	return moved
+}
+
+// TestImageBuildRefusesASymlinkedPlanDirectory checks that image build
+// refuses a plan directory that is a symlink, and writes no image.
+func TestImageBuildRefusesASymlinkedPlanDirectory(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscPacked)
+	moved := replaceWithSymlink(t, testLayout(t, fx.repo).planDir(fx.uuidBytes(t)))
+
+	code, stdout, stderr := runImageBuildAs(t, 0, "--repo="+fx.repo, "image", "build", "0")
+	if code != 1 || !strings.Contains(stderr, "is a symbolic link") || stdout != "" {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if _, err := os.Lstat(filepath.Join(moved, planImageName)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("image build wrote an image through the symlink: %v", err)
+	}
+}
+
+// TestImageBuildRefusesSymlinkedRepositoryFiles checks that image build
+// reads no file of the repository through a symlink: config.yaml, the
+// disc ledger and the disc state log.
+func TestImageBuildRefusesSymlinkedRepositoryFiles(t *testing.T) {
+	for _, file := range []func(repoLayout) string{
+		repoLayout.configFile, repoLayout.discsLedgerFile, repoLayout.discLogFile,
+	} {
+		fx := repoWithDisc(t, stage.DiscPacked)
+		layout := testLayout(t, fx.repo)
+		path := file(layout)
+		replaceWithSymlink(t, path)
+
+		code, stdout, stderr := runImageBuildAs(t, 0, "--repo="+fx.repo, "image", "build", "0")
+		if code != 1 || !strings.Contains(stderr, path+" is a symbolic link") || stdout != "" {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", path, code, stdout, stderr)
+		}
+		if _, err := os.Lstat(layout.planImage(fx.uuidBytes(t))); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: image build wrote an image: %v", path, err)
+		}
+	}
+}
+
+// TestImageBuildForceRemovesASymlinkNotItsTarget checks that --force
+// removes a symlink at the name of the image, and never the file that
+// the symlink names.
+func TestImageBuildForceRemovesASymlinkNotItsTarget(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscPacked)
+	img := testLayout(t, fx.repo).planImage(fx.uuidBytes(t))
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, img); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runImageBuildAs(t, 0, "--repo="+fx.repo, "image", "build", "--force", "0"); code != 0 {
+		t.Fatalf("image build --force: exit %d: %s", code, stderr)
+	}
+	if data, err := os.ReadFile(victim); err != nil || string(data) != "secret" {
+		t.Errorf("the file behind the symlink changed: %q, %v", data, err)
+	}
+	if info, err := os.Lstat(img); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o644 {
+		t.Errorf("image %v, %v; want a regular file with mode 0644", info, err)
 	}
 }

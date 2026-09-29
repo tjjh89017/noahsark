@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -33,11 +34,11 @@ var imageHost = struct {
 	// mkudffsVersion returns the udftools version, or an error when
 	// mkudffs is missing or too old.
 	mkudffsVersion func() (string, error)
-	// makeImage builds and populates the image file.
-	makeImage func(treeDir, imagePath string, sectors uint64, prog *progress.Reporter) error
+	// makeImage builds and populates the image file of the plan.
+	makeImage func(plan *image.Plan, sectors uint64, prog *progress.Reporter) error
 }{
 	mkudffsVersion: image.CheckTools,
-	makeImage:      image.MakeImage,
+	makeImage:      image.BuildImage,
 }
 
 // imageBuildOptions holds the command options of image build.
@@ -55,6 +56,11 @@ func imageBuildFlags(fs *flag.FlagSet) runFunc {
 // repository and writes only staging/plans/UUID/tree.img. It takes no
 // lock, because it runs as root and a lock file that root creates would
 // block the operator. docs/states.md, rows 15 to 19, gives the messages.
+//
+// Root runs it on a repository of a user with no privilege, and that
+// user can change the repository while it runs. Thus it reads each file
+// of the repository through a descriptor, never through a symlink, and
+// only a regular file of the owner of the repository.
 func (o *imageBuildOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "image build"
@@ -68,7 +74,13 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 2
 	}
-	cfg, err := readConfig(configPath(repoDir))
+	repo, err := image.OpenDir(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	}
+	defer func() { _ = repo.Close() }()
+	cfg, err := readRepoConfig(repo)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return configExitCode(err)
@@ -79,12 +91,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		return 1
 	}
 	layout := layoutOf(repoDir, cfg)
-	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
-	}
-	discs, err := stage.OpenDiscLogReadOnly(layout.stateDir())
+	ledger, discs, err := readRepoState(repo, layout, repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
@@ -97,7 +104,6 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 	}
 	disc := discTargetOf(ledger.Rows, discs, discUUID)
 	treeDir := layout.planTree(discUUID)
-	imagePath := layout.planImage(discUUID)
 
 	switch disc.info.State {
 	case stage.DiscPacked, stage.DiscBurned, stage.DiscVerified:
@@ -119,41 +125,128 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	if _, err := os.Stat(treeDir); errors.Is(err, os.ErrNotExist) {
+	plan, err := image.OpenPlan(layout.planDir(discUUID), planTreeName, planImageName)
+	if errors.Is(err, os.ErrNotExist) {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: no disc root at %s\n", cmd, treeDir)
 		return 1
 	} else if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
+	defer func() { _ = plan.Close() }()
+	if uid, _ := plan.Owner(); uid != repo.UID {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s belongs to uid %d, not to uid %d, the owner of the repository %s; image build refuses it\n",
+			cmd, layout.planDir(discUUID), uid, repo.UID, repoDir)
+		return 1
+	}
 
-	if _, err := os.Lstat(imagePath); err == nil {
+	if exists, err := plan.ImageExists(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	} else if exists {
 		if !o.force {
-			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s exists; add --force to build it again\n", cmd, imagePath)
+			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s exists; add --force to build it again\n", cmd, plan.ImagePath)
 			return 1
 		}
-		if err := os.Remove(imagePath); err != nil {
+		if err := plan.RemoveImage(); err != nil {
 			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 			return 1
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
 	}
 
-	discBin, err := readTreeDisc(treeDir)
+	discBin, err := plan.ReadDisc()
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s: %v\n", cmd, treeDir, err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
 	sectors := discBin.CapacitySectors
-	if err := imageHost.makeImage(treeDir, imagePath, sectors, e.progress()); err != nil {
+	if err := imageHost.makeImage(plan, sectors, e.progress()); err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "built image %s (%d bytes)\n", imagePath, sectors*image.SectorSize)
+	_, _ = fmt.Fprintf(stdout, "built image %s (%d bytes)\n", plan.ImagePath, sectors*image.SectorSize)
 	return 0
+}
+
+// readRepoConfig reads config.yaml through the descriptor of the
+// repository directory repo, as readConfig reads it by path.
+func readRepoConfig(repo *image.Dir) (repoConfig, error) {
+	path := configPath(repo.Path)
+	data, err := repo.ReadFile(configFileName)
+	if err != nil {
+		return repoConfig{}, err
+	}
+	f, err := decodeConfig(data)
+	if err != nil {
+		return repoConfig{}, &configError{path: path, err: err}
+	}
+	stagingDir := f.Staging.Dir
+	if !filepath.IsAbs(stagingDir) {
+		stagingDir = filepath.Join(repo.Path, stagingDir)
+	}
+	return repoConfig{
+		RepoUUID:   f.Repo.UUID,
+		StagingDir: stagingDir,
+		SourceRoot: f.Sources.Root,
+		PackDevice: f.Pack.Device,
+	}, nil
+}
+
+// readRepoState reads the disc ledger and the disc state log through
+// the descriptor of the repository directory repo. A missing state
+// directory or file is empty, as for the readers by path.
+func readRepoState(repo *image.Dir, layout repoLayout, repoUUID [16]byte) (format.DiscsTable, *stage.DiscLog, error) {
+	ledger := format.DiscsTable{RepoUUID: repoUUID}
+	var logData []byte
+	state, err := repo.Subdir(stateDirName)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return ledger, nil, err
+	default:
+		defer func() { _ = state.Close() }()
+		data, err := state.ReadFile(discsLedgerName)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+		case err != nil:
+			return ledger, nil, fmt.Errorf("disc ledger: %w", err)
+		default:
+			if _, err := ledger.Decode(data); err != nil {
+				return ledger, nil, fmt.Errorf("disc ledger %s: %w", layout.discsLedgerFile(), err)
+			}
+		}
+		logData, err = state.ReadFile(discLogFileName)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return ledger, nil, err
+		}
+	}
+	discs, err := openDiscLogData(logData, layout.discLogFile())
+	return ledger, discs, err
+}
+
+// openDiscLogData replays the disc state log data, which image build
+// read from path. The stage reader takes a directory, thus the data goes
+// to a new directory that only this process can change, and never
+// through the state directory of the repository again. An error names
+// path, not that directory.
+func openDiscLogData(data []byte, path string) (*stage.DiscLog, error) {
+	dir, err := image.PrivateTempDir("noahsark-state-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	copyPath := filepath.Join(dir, discLogFileName)
+	if data != nil {
+		if err := os.WriteFile(copyPath, data, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	discs, err := stage.OpenDiscLogReadOnly(dir)
+	if err != nil {
+		return nil, errors.New(strings.ReplaceAll(err.Error(), copyPath, path))
+	}
+	return discs, nil
 }
 
 // sudoLine is the command line that runs this image build as root. It
@@ -178,23 +271,4 @@ func (o *imageBuildOptions) sudoLine(repoDir string, rows []format.DiscsRow, dis
 		force = "--force "
 	}
 	return "sudo noahsark --repo=" + quoteShellWord(repoDir) + " image build " + force + arg
-}
-
-// readTreeDisc reads DISC.bin from a disc root. pack wrote it, so it
-// carries the capacity, the label and the disc number of the disc.
-func readTreeDisc(treeDir string) (format.Disc, error) {
-	names := image.NewNameCache()
-	base, err := image.FindNoahsark(treeDir, names)
-	if err != nil {
-		return format.Disc{}, err
-	}
-	buf, err := os.ReadFile(filepath.Join(base, names.Resolve(base, "DISC.bin")))
-	if err != nil {
-		return format.Disc{}, err
-	}
-	var disc format.Disc
-	if err := disc.Decode(buf); err != nil {
-		return format.Disc{}, err
-	}
-	return disc, nil
 }

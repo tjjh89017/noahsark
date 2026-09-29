@@ -733,20 +733,85 @@ makes. `image build DISC [--force]` does these steps.
    SEQ`.
 4. Refuse to go on when the disc root does not exist, with exit code 1.
 5. Refuse to go on when `staging/plans/<disc-uuid>/tree.img` exists, with exit
-   code 1. With `--force`, it removes the old image first. A build that then
+   code 1. With `--force`, it removes the old image first. It removes a
+   symlink there, never the file that the symlink names. A build that then
    fails leaves no image.
-6. Read the capacity from the `DISC.bin` of the disc root. Make a sparse image
-   file of that length at `staging/plans/<disc-uuid>/tree.img`.
+6. Read the capacity from the `DISC.bin` of the disc root. Create the image
+   file `staging/plans/<disc-uuid>/tree.img` with mode 0600, and make it a
+   sparse file of that length.
 7. Run `mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 --uid=0
-   --gid=0 --mode=0555 --bootarea=erase FILE`.
-8. Loop-mount the image file, copy the `NOAHSARK` tree into it, and unmount.
-9. Give the image file the owner of the directory that holds it, and mode
-   0644.
+   --gid=0 --mode=0555 --bootarea=erase /dev/fd/3`. The file descriptor 3 is
+   the image file.
+8. Attach the image file to a free loop device, with the autoclear flag.
+   Mount the loop device with `nosuid`, `nodev` and `noexec` on a new mount
+   point `noahsark-udf-mount-XXXXXXXX` in the system temporary directory.
+   Copy the `NOAHSARK` tree into it. Unmount it, detach the loop device, and
+   remove the mount point.
+9. Give the image file the owner and the group of the plan directory, and
+   mode 0644.
 
 Never use `--media-type=bdr` or `dvdr`. Both make a write-once VAT volume,
 which cannot be populated. `image build` removes the partial image when a step
 fails. It writes no file in `state/` or `catalog/`, and never creates the lock
 file. It prints `built image FILE (N bytes)`.
+
+### 10.1 Image build as root
+
+`image build` runs as root on a repository of a user with no privilege. That
+user, or a program of that user, can rename, replace and create files and
+symlinks in the repository while the build runs. `image build` gives that
+user no way to read or change a file that the user cannot read or change.
+These rules do that:
+
+- It opens each directory once and holds its file descriptor. Each later
+  step goes through the descriptor, never through the path again.
+- It reads `config.yaml`, `state/discs.bin`, `state/discstate.db` and
+  `DISC.bin` only when each is a regular file and not a symlink, and belongs
+  to the owner of the directory that holds it. A refusal names the path and
+  prints no content of the file. The disc state log goes to a new directory
+  of mode 0700 in the system temporary directory, for the replay, and
+  `image build` removes that directory before it goes on.
+- The plan directory `staging/plans/<disc-uuid>/` must not be a symlink. It
+  must belong to the owner of the repository directory.
+- The disc root `tree` can be a symlink, as `pack --out` makes it.
+  `image build` follows it one time and holds the directory that it names.
+- The disc root holds only directories and regular files. `image build`
+  opens each entry with no follow of a symlink, and refuses a symlink, a
+  FIFO, a socket, a device, and each entry that does not belong to the owner
+  of the plan directory. A refusal stops the build with exit code 1. A hard
+  link to a file of another user thus never goes into the image.
+- It creates the image file only where no file and no symlink is. `mkudffs`,
+  the loop device, the owner and the mode get the file descriptor of the
+  image, never its path. A rename or a symlink at `tree.img` during the build
+  changes no other file.
+- The mount point is a new directory of mode 0700 in the system temporary
+  directory. As root, each element of the path of that directory must be a
+  directory of root, and a directory that others can write must have the
+  sticky bit. Else `image build` refuses with `the temporary directory DIR is
+  not safe for the mount point, ...; set TMPDIR to a directory that only root
+  can change`. `sudo` removes `TMPDIR` by default, thus the directory is
+  `/tmp`.
+- It looks for `mkudffs` in `/usr/sbin`, `/usr/bin`, `/sbin`, `/bin`,
+  `/usr/local/sbin` and `/usr/local/bin`, in this order, never in `PATH`.
+  `mkudffs` gets only `PATH` of these directories and `LC_ALL=C`.
+
+A failure after the mount unmounts the image, detaches the loop device,
+removes the mount point and removes the image file. SIGINT, SIGTERM and
+SIGHUP stop the copy and do the same. When the unmount fails, `image build`
+removes the name of the image file and exits with code 1. Its message names
+the mount point and the loop device, and ends with `to clean up, run: sudo
+umount MNT && sudo rmdir MNT`. The kernel detaches the loop device after the
+unmount.
+
+A kill with SIGKILL, or a crash, can leave these:
+
+| What stays | How to find it | How to remove it |
+|---|---|---|
+| The partial image `tree.img`, of root, mode 0600 | `ls -l staging/plans/*/tree.img` | `image build --force` removes it. The owner of the plan directory can also remove it with `rm`. |
+| A mount of the image | `findmnt -t udf` shows `/tmp/noahsark-udf-mount-XXXXXXXX` | `sudo umount MNT`. The kernel then detaches the loop device. |
+| The mount point | `ls -d /tmp/noahsark-udf-mount-*` | `sudo rmdir MNT` after the unmount. |
+| A loop device with no mount | `losetup -l` shows the image file | `sudo losetup -d DEV`. |
+| A copy of the disc state log | `ls -d /tmp/noahsark-state-*` | `sudo rm -r DIR`. |
 
 ## 11. Burning
 
@@ -814,7 +879,9 @@ again before the verify, so that the read comes from the medium.
 
 `image build` reads the `mkudffs` version and refuses an older one. It runs
 `mkudffs` with no argument and reads the version from the `udftools X.Y`
-text that `mkudffs` prints. Each refusal exits with code 1:
+text that `mkudffs` prints. It looks for `mkudffs` only in the system
+directories that "Image build as root" names, never in `PATH`. Each refusal
+exits with code 1:
 
 | Case | Message |
 |---|---|
