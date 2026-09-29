@@ -64,7 +64,7 @@ func init() {
 			end:    stage.DiscBurned, word: stage.WordBurned,
 		},
 		stateCase{
-			row: "28", name: "disc verified with no terminal and no answer flag",
+			row: "28a", name: "disc verified with no terminal and no answer flag", like: "27",
 			start: stage.DiscBurned, args: []string{"disc", "verified", "{SEQ}"},
 			absent: []string{confirmQuestion, "needs --force-yes"},
 			end:    stage.DiscBurned, word: stage.WordBurned,

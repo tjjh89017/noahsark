@@ -52,7 +52,7 @@ func init() {
 	}
 	registerStateCases(
 		stateCase{
-			row: "59a", name: "disc lost with no terminal and no answer flag",
+			row: "59b", name: "disc lost with no terminal and no answer flag", like: "57",
 			start: stage.DiscBurned, args: []string{"disc", "lost", "{SEQ}"},
 			absent: []string{confirmQuestion, "needs --force-yes"},
 			end:    stage.DiscBurned, word: stage.WordBurned,

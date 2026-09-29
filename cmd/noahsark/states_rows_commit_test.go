@@ -58,6 +58,9 @@ func init() {
 			start: stage.DiscOnDiscOnly,
 			setup: func(t *testing.T, fx *discFixture) {
 				lostItemsSetup(t, fx)
+				// N of this row counts the items of the other source,
+				// not the lost items.
+				fx.cell("N", "")
 				other := t.TempDir()
 				if err := os.WriteFile(filepath.Join(other, "other.txt"), []byte("other content"), 0o644); err != nil {
 					t.Fatal(err)
