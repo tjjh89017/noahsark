@@ -2,15 +2,65 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
+
+// fakeMounts is the fake mount table of every fake env: the mount
+// point, and true for a read-only mount.
+var (
+	fakeMountsMu sync.Mutex
+	fakeMounts   = map[string]bool{}
+)
+
+// addFakeMount lists dir in the fake mount table until the test ends. A
+// loop mount of an image stands behind each entry.
+func addFakeMount(t *testing.T, dir string, readOnly bool) {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeMountsMu.Lock()
+	defer fakeMountsMu.Unlock()
+	fakeMounts[resolved] = readOnly
+	t.Cleanup(func() {
+		fakeMountsMu.Lock()
+		defer fakeMountsMu.Unlock()
+		delete(fakeMounts, resolved)
+	})
+}
+
+// fakeMountinfo returns the fake mount table in the format of
+// /proc/self/mountinfo.
+func fakeMountinfo() (io.ReadCloser, error) {
+	fakeMountsMu.Lock()
+	defer fakeMountsMu.Unlock()
+	var b strings.Builder
+	b.WriteString("22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n")
+	id := 100
+	for dir, readOnly := range fakeMounts {
+		opt := "rw"
+		if readOnly {
+			opt = "ro"
+		}
+		fmt.Fprintf(&b, "%d 22 7:%d / %s %s,relatime shared:%d - udf /dev/loop%d %s\n",
+			id, id, strings.ReplaceAll(dir, " ", `\040`), opt, id, id, opt)
+		id++
+	}
+	return io.NopCloser(strings.NewReader(b.String())), nil
+}
 
 // discLogBytes returns the bytes of the disc state log of repo.
 func discLogBytes(t *testing.T, repo string) []byte {
@@ -250,9 +300,9 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	}
 }
 
-// TestVerifyHealReportsBlocks checks that verify --heal reports in the
-// operator's words: repaired blocks, with no talk of stripes.
-func TestVerifyHealReportsBlocks(t *testing.T) {
+// TestVerifyHealReportsFiles checks that verify --heal reports in the
+// operator's words: healed files, with no talk of stripes.
+func TestVerifyHealReportsFiles(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -271,8 +321,8 @@ func TestVerifyHealReportsBlocks(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify --heal: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "heal: repaired 0 block(s)") {
-		t.Fatalf("verify --heal output %q, want the repaired-blocks line", out)
+	if !strings.Contains(out, `: healed 0 file(s) into `+healed+"\n") || !strings.Contains(out, "\n"+notCountedDisc+"\n") {
+		t.Fatalf("verify --heal output %q, want the healed line and the not counted line", out)
 	}
 	if strings.Contains(out, "stripe") {
 		t.Fatalf("verify --heal output %q still uses the word stripe", out)
@@ -281,8 +331,8 @@ func TestVerifyHealReportsBlocks(t *testing.T) {
 
 // TestVerifyHealNeverCountsAsACopy verifies the real disc once, then
 // heals it into a directory on the hard disk. A heal must leave the disc
-// state log exactly as the one real verify left it, and it must tell the
-// operator to burn and verify a new disc.
+// state log exactly as the one real verify left it, and it must say that
+// the healed tree is not counted.
 func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -317,11 +367,11 @@ func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify --heal: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "heal: repaired 0 block(s)") {
-		t.Fatalf("verify --heal output %q, want the repaired-blocks line", out)
+	if !strings.Contains(out, `disc 0 "`) || !strings.Contains(out, `: healed 0 file(s) into `+healed+"\n") {
+		t.Fatalf("verify --heal output %q, want the healed line", out)
 	}
-	if !strings.Contains(out, "burn the healed tree to a new disc") {
-		t.Fatalf("verify --heal output %q, want it to say to burn the healed tree and verify that disc", out)
+	if !strings.Contains(out, "\n"+notCountedDisc+"\n") {
+		t.Fatalf("verify --heal output %q, want the not counted line: a healed tree is not a disc", out)
 	}
 	if strings.Contains(out, nextStatusLine) {
 		t.Fatalf("verify --heal output %q, want no next line: a heal records nothing", out)
@@ -378,4 +428,91 @@ func TestVerifyUsageErrorsExitTwo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestVerifyHealRepairsADamagedDisc damages one chunk of a disc with
+// FEC, heals it, and checks the three lines of a heal. The heal names
+// the one repaired file and records nothing. With no repository, the
+// lines name the disc by its uuid.
+func TestVerifyHealRepairsADamagedDisc(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec")
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, packOut)
+	}
+	mounted := filepath.Join(work, "mounted")
+	copyTree(t, packedTreeDir(t, repo, packOut), mounted)
+	corruptDiscRoot(t, mounted)
+	logBefore := discLogBytes(t, repo)
+	discUUID := packedDiscUUID(t, packOut)
+	items := len(readLogs(t, repo).Items.ItemsOfDisc(mustUUID(t, discUUID)))
+	label := defaultRefName() + " disc 0"
+
+	healed := filepath.Join(work, "healed")
+	te := newTestEnv(work)
+	code, _ = te.run("--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
+	want := []string{
+		`disc 0 "` + label + `": healed 1 file(s) into ` + healed,
+		`disc 0 "` + label + `": ` + strconv.Itoa(items) + ` items, ok`,
+		notCountedDisc,
+	}
+	if got := strings.Split(strings.TrimRight(te.out.String(), "\n"), "\n"); code != 0 || !slices.Equal(got, want) {
+		t.Fatalf("verify --heal: exit %d, lines %q, want 0 and %q\nstderr: %s", code, got, want, te.errOut.String())
+	}
+	if !bytes.Equal(discLogBytes(t, repo), logBefore) {
+		t.Fatal("verify --heal wrote the disc state log")
+	}
+
+	healedNoRepo := filepath.Join(work, "healed-no-repo")
+	code, _ = te.run("verify", "--heal", "--out="+healedNoRepo, mounted)
+	if code != 0 || !strings.HasPrefix(te.out.String(), `disc `+discUUID+` "`+label+`": healed 1 file(s) into `+healedNoRepo+"\n") {
+		t.Fatalf("verify --heal with no repository: exit %d: %s%s", code, te.out.String(), te.errOut.String())
+	}
+}
+
+// TestVerifyHealRefusesADiscWithNoFEC checks that --heal refuses a disc
+// whose run has no FEC, and writes nothing into --out.
+func TestVerifyHealRefusesADiscWithNoFEC(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscBurned)
+	healed := filepath.Join(fx.work, "healed")
+	code, out := fx.run(t, "verify", "--heal", "--out="+healed, fx.root)
+	if code != 1 || !strings.Contains(out, "disc 0 has no FEC; --heal needs a disc with FEC") {
+		t.Fatalf("verify --heal of a disc with no FEC: exit %d, want 1 and the refusal: %s", code, out)
+	}
+	if _, err := os.Stat(healed); !os.IsNotExist(err) {
+		t.Fatalf("verify --heal of a disc with no FEC wrote %s", healed)
+	}
+}
+
+// TestVerifyUndoTakesNoOtherOption checks that --undo with another
+// option of verify is a usage error.
+func TestVerifyUndoTakesNoOtherOption(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscVerified)
+	for _, opt := range []string{"--no-mark", "--heal", "--out=" + fx.work} {
+		code, out := fx.run(t, "verify", "--undo", opt, "0")
+		if code != 2 || !strings.Contains(out, "--undo takes no other option") {
+			t.Fatalf("verify --undo %s: exit %d, want 2: %s", opt, code, out)
+		}
+	}
+	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscVerified {
+		t.Fatalf("disc state %s, want verified", got)
+	}
+}
+
+// mustUUID decodes the uuid text s.
+func mustUUID(t *testing.T, s string) [16]byte {
+	t.Helper()
+	u, err := decodeUUID(strings.ReplaceAll(s, "-", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }
