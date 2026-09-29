@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -32,7 +33,14 @@ func buildFixtureRun(t *testing.T) (runRoot string, snapID object.ID) {
 	}
 
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	objectPath := func(kind format.ObjectKind, id object.ID) string {
+		dir := "meta"
+		if kind == format.ObjectKindChunk {
+			dir = "chunks"
+		}
+		return filepath.Join(stagingDir, dir, id.FanoutByte(), id.TextForm())
+	}
+	w := object.NewWriter(objectPath, objectPath)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -43,7 +51,7 @@ func buildFixtureRun(t *testing.T) (runRoot string, snapID object.ID) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reachable, err := image.CollectReachable(stagingDir, []object.ID{snapID})
+	reachable, err := image.CollectReachable(objectPath, []object.ID{snapID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +66,10 @@ func buildFixtureRun(t *testing.T) (runRoot string, snapID object.ID) {
 
 	outDir := filepath.Join(t.TempDir(), "run")
 	opts := image.PackOptions{
-		StagingDir:            stagingDir,
+		ObjectPath:            objectPath,
+		SnapshotIDs:           func() ([]object.ID, error) { return []object.ID{snapID}, nil },
+		DiscsLedger:           filepath.Join(stagingDir, "discs.bin"),
+		RefsLedger:            filepath.Join(stagingDir, "refslog.bin"),
 		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors: capacitySectors,
 		OutputDir:             outDir,

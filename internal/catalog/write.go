@@ -53,44 +53,62 @@ func (c *Catalog) WriteObject(kind format.ObjectKind, id object.ID, raw []byte) 
 	return nil
 }
 
-// WriteFromRoot copies one run's catalog, every snapshot object under
-// snapshots/, and every object its own INDEX lists as a tree,
-// into the catalog. root is a freshly packed run tree or a mounted disc
-// root; both share one on-disc layout (FORMAT.md "Disc and run model"),
-// so the same read and copy path serves pack, right after it builds a
-// run, and recover, for every disc it is given. It recomputes and
-// persists the completeness of every snapshot it copied, and returns
-// the read result so the caller can report what it found.
-func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
+// WriteTablesFromRoot copies the INDEX, REFS and DISCS tables of the
+// run at root into the catalog. root is a packed run tree or a mounted
+// disc root; both share one on-disc layout (FORMAT.md "Disc and run
+// model"). pack calls it: commit already wrote every snapshot, tree and
+// blob object of the run into the catalog. It returns the read result.
+func WriteTablesFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
+	rr, _, _, err := writeTables(c, root)
+	return rr, err
+}
+
+// writeTables does the work of WriteTablesFromRoot. It also returns the
+// NOAHSARK directory of root and its name cache.
+func writeTables(c *Catalog, root string) (*image.ReadResult, string, *image.NameCache, error) {
 	rr, err := image.Read(root)
 	if err != nil {
-		return nil, fmt.Errorf("catalog: %s: %w", root, err)
+		return nil, "", nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 
 	names := image.NewNameCache()
 	base, err := image.FindNoahsark(root, names)
 	if err != nil {
-		return nil, fmt.Errorf("catalog: %s: %w", root, err)
+		return nil, "", nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
 	if err != nil {
-		return nil, fmt.Errorf("catalog: %s: %w", root, err)
+		return nil, "", nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 	catalogDir := names.Join(runDir, "catalog")
 
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "INDEX.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("catalog: %w", err)
+		return nil, "", nil, fmt.Errorf("catalog: %w", err)
 	}
 	refsBuf, err := os.ReadFile(filepath.Join(catalogDir, names.Resolve(catalogDir, "REFS.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("catalog: %w", err)
+		return nil, "", nil, fmt.Errorf("catalog: %w", err)
 	}
 	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, names.Resolve(catalogDir, "DISCS.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("catalog: %w", err)
+		return nil, "", nil, fmt.Errorf("catalog: %w", err)
 	}
 	if err := c.WriteDisc(rr.Disc.DiscUUID, indexBuf, refsBuf, discsBuf); err != nil {
+		return nil, "", nil, err
+	}
+	return rr, base, names, nil
+}
+
+// WriteFromRoot copies the tables of the run at root, every snapshot
+// object under snapshots/, and every tree and blob object that its own
+// INDEX lists, into the catalog. A counted verify and recover call it
+// for each disc that they read. It computes again and saves the
+// completeness of every snapshot that it copied, and returns the read
+// result so the caller can report what it found.
+func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
+	rr, base, names, err := writeTables(c, root)
+	if err != nil {
 		return nil, err
 	}
 

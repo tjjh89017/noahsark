@@ -53,7 +53,7 @@ scenario_rebuild() {
 	mount_populate "$image1" "$tree1" "$mnt1"
 	"$BIN" verify "$mnt1"
 
-	# Losing the whole repository directory: config, staging objects and
+	# Losing the whole repository directory: config, staging, catalog and
 	# the state log all go together, the same way the incremental
 	# scenario proves discs are the only source for restore.
 	rm -rf "$repo"
@@ -102,7 +102,7 @@ scenario_rebuild() {
 	"$BIN" --repo="$repo" recover "$mnt1"
 	local index_count1 ondisc_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
-	ondisc_count1="$(run_tool ci-state-count "$repo/staging")"
+	ondisc_count1="$(run_tool ci-state-count "$repo/state")"
 	if [ "$ondisc_count1" != "$index_count1" ]; then
 		fail "rebuild: on-disc count $ondisc_count1 does not equal disc 1 INDEX object count $index_count1"
 	fi
@@ -162,7 +162,7 @@ scenario_rebuild() {
 	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
 	local index_count2 ondisc_count2 want_count2
 	index_count2="$(run_tool ci-index-count "$mnt2")"
-	ondisc_count2="$(run_tool ci-state-count "$repo/staging")"
+	ondisc_count2="$(run_tool ci-state-count "$repo/state")"
 	want_count2=$((index_count1 + index_count2))
 	if [ "$ondisc_count2" != "$want_count2" ]; then
 		fail "rebuild: on-disc count after 2-disc rebuild is $ondisc_count2, want $want_count2 (disc 1 + disc 2 INDEX object counts)"
@@ -171,7 +171,7 @@ scenario_rebuild() {
 	# A repeat rebuild from the same two discs must be idempotent.
 	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
 	local ondisc_count3
-	ondisc_count3="$(run_tool ci-state-count "$repo/staging")"
+	ondisc_count3="$(run_tool ci-state-count "$repo/state")"
 	if [ "$ondisc_count3" != "$ondisc_count2" ]; then
 		fail "rebuild: on-disc count changed on a repeat 2-disc rebuild: $ondisc_count2 then $ondisc_count3"
 	fi

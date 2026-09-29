@@ -33,7 +33,7 @@ func stageFixture(t *testing.T) (string, object.ID) {
 	}
 
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -65,7 +65,7 @@ func stageMultiChunkFixture(t *testing.T, contentBytes int) (string, object.ID) 
 	}
 
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -77,7 +77,7 @@ func stageMultiChunkFixture(t *testing.T, contentBytes int) (string, object.ID) 
 func testOpts(t *testing.T, stagingDir string, snapID object.ID, outDir string) BuildOptions {
 	t.Helper()
 	return BuildOptions{
-		StagingDir:            stagingDir,
+		ObjectPath:            testObjectPath(stagingDir),
 		Snapshots:             []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors: 1 << 20, // generously large for a tiny fixture
 		OutputDir:             outDir,

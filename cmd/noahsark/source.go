@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
-	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
@@ -29,26 +27,16 @@ type snapshotSource interface {
 }
 
 // catalogSource resolves a snapshot from the repository alone, with no
-// disc present. It looks in the staging store first and in the local
-// catalog second, so a snapshot that commit has just written lists before
-// the first pack. ls, log and plan use it.
+// disc present: from the catalog and the local ref file. commit writes
+// every snapshot, tree and blob object into the catalog, thus a
+// snapshot lists before the first pack. ls, log and plan use it.
 type catalogSource struct {
-	c          *catalog.Catalog
-	repoDir    string
-	stagingDir string
+	c        *catalog.Catalog
+	refsPath string
 }
 
-// Tree reads one tree object: the staged file first, then the catalog. An
-// id that neither holds names both places, so the operator knows
-// whether to pack or to recover.
+// Tree reads one tree object from the catalog.
 func (s *catalogSource) Tree(id object.ID) (*format.Tree, error) {
-	if buf, err := os.ReadFile(image.StagedPath(s.stagingDir, id, format.ObjectKindTree)); err == nil {
-		var t format.Tree
-		if _, err := t.Decode(buf); err != nil {
-			return nil, fmt.Errorf("staged tree %s: %w", id.TextForm(), err)
-		}
-		return &t, nil
-	}
 	t, err := s.c.ReadTree(id)
 	if err != nil {
 		return nil, &notHeldError{kind: "tree", id: id}
@@ -56,16 +44,8 @@ func (s *catalogSource) Tree(id object.ID) (*format.Tree, error) {
 	return t, nil
 }
 
-// Snapshot reads one snapshot object: the staged file first, then the
-// catalog.
+// Snapshot reads one snapshot object from the catalog.
 func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
-	if buf, err := os.ReadFile(image.StagedPath(s.stagingDir, id, format.ObjectKindSnapshot)); err == nil {
-		var snap format.Snapshot
-		if _, err := snap.Decode(buf); err != nil {
-			return nil, fmt.Errorf("staged snapshot %s: %w", id.TextForm(), err)
-		}
-		return &snap, nil
-	}
 	snap, err := s.c.ReadSnapshot(id)
 	if err != nil {
 		return nil, &notHeldError{kind: "snapshot", id: id}
@@ -78,7 +58,7 @@ func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 // a pack has not yet carried the newest names into any disc's REFS.
 func (s *catalogSource) Refs() (*format.RefsTable, error) {
 	catalogRefs, catalogErr := s.c.Refs()
-	local, localErr := readRefs(s.repoDir)
+	local, localErr := readRefs(s.refsPath)
 	if catalogErr != nil && (localErr != nil || len(local) == 0) {
 		// Nothing local and nothing in the catalog: the repository holds no ref
 		// at all, and the catalog's own message names the fix.
@@ -119,47 +99,20 @@ func (s *catalogSource) Refs() (*format.RefsTable, error) {
 	return merged, nil
 }
 
-// SnapshotIDs lists every snapshot the repository knows: the staged
-// ones and the catalog ones, deduplicated.
+// SnapshotIDs lists every snapshot of the catalog.
 func (s *catalogSource) SnapshotIDs() ([]object.ID, error) {
-	seen := make(map[object.ID]bool)
-	var ids []object.ID
-	add := func(id object.ID) {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	entries, err := os.ReadDir(filepath.Join(s.stagingDir, "snapshots"))
-	if err == nil {
-		for _, e := range entries {
-			if id, err := object.ParseID(e.Name()); err == nil {
-				add(id)
-			}
-		}
-	}
-	catalogIDs, err := s.c.ListSnapshots()
-	if err != nil && len(ids) == 0 {
-		return nil, err
-	}
-	for _, id := range catalogIDs {
-		add(id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
-	return ids, nil
+	return s.c.ListSnapshots()
 }
 
-// notHeldError reports an object that neither the staging store nor the
-// catalog holds. It names both places, because the fix differs: an
-// object that was never packed waits for pack, and one that was packed
-// and freed comes back with recover.
+// notHeldError reports an object that the catalog does not hold. recover
+// with the disc that holds it gives it back.
 type notHeldError struct {
 	kind string
 	id   object.ID
 }
 
 func (e *notHeldError) Error() string {
-	return fmt.Sprintf("%s %s is neither staged nor in the catalog; run pack, or run recover with the disc that holds it", e.kind, e.id.TextForm())
+	return fmt.Sprintf("%s %s is not in the catalog; run recover with the disc that holds it", e.kind, e.id.TextForm())
 }
 
 // ParseSnapshotArg resolves arg as a snapshot id, or, failing that, as a
@@ -237,7 +190,7 @@ func openCatalogSource(e *env) (*catalogSource, *catalog.Catalog, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &catalogSource{c: c, repoDir: repoDir, stagingDir: cfg.StagingDir}, c, nil
+	return &catalogSource{c: c, refsPath: layoutOf(repoDir, cfg).refsFile()}, c, nil
 }
 
 // looksLikeDiscRoot reports whether s names an existing directory: a

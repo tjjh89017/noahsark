@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/repolock"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // statusDiscLineRe matches one disc line of "status": the disc number,
@@ -127,15 +128,7 @@ func TestStatusDiscsKeepsExactNumbers(t *testing.T) {
 	if discs[0].PackedObjects == 0 {
 		t.Fatalf("packed_objects = 0, want the exact count after a pack")
 	}
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stagedObjects, _, err := stagedTotals(cfg.StagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stagedObjects != 0 {
+	if stagedObjects := countByState(t, repo, stage.Staged); stagedObjects != 0 {
 		t.Fatalf("staged_objects = %d, want 0", stagedObjects)
 	}
 }

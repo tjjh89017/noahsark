@@ -117,8 +117,8 @@ func TestLsMarksAnUnstableEntry(t *testing.T) {
 	oldNewWriter := newWriter
 	defer func() { newWriter = oldNewWriter }()
 	var calls int
-	newWriter = func(stagingDir string) *object.Writer {
-		w := oldNewWriter(stagingDir)
+	newWriter = func(chunkPath, metaPath object.PathFunc) *object.Writer {
+		w := oldNewWriter(chunkPath, metaPath)
 		w.Stat = func(path string) (os.FileInfo, error) {
 			real, err := os.Lstat(path)
 			if err != nil {
@@ -290,11 +290,6 @@ func TestLsFromCatalogReportsPartialSnapshot(t *testing.T) {
 
 	catalogDir := repoCatalogDir(t, repo)
 	if err := os.RemoveAll(catalogDir); err != nil {
-		t.Fatal(err)
-	}
-	// ls reads the staging store first, so the staged trees must go
-	// too, the way gc frees them once both copies are verified.
-	if err := os.RemoveAll(filepath.Join(repo, "staging", "objects")); err != nil {
 		t.Fatal(err)
 	}
 

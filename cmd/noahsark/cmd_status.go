@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -65,12 +66,13 @@ func cmdStatus(e *env, args []string) int {
 		return 1
 	}
 
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	layout := layoutOf(repoDir, cfg)
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
-	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
+	stageLog, err := stage.OpenReadOnly(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
@@ -79,7 +81,12 @@ func cmdStatus(e *env, args []string) int {
 
 	discs := summarizeDiscs(ledger.Rows, stageLog)
 
-	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
+	c, err := catalog.Open(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+		return 1
+	}
+	stagedObjects, stagedBytes, err := image.StagedTotals(layout.objectPath(c), stageLog)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1

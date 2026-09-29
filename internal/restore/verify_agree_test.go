@@ -28,7 +28,7 @@ func TestVerifyAndRestoreAgreeOnAHeaderCRCMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs, err := image.CollectReachable(stagingDir, []object.ID{snapID})
+	objs, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snapID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestVerifyAndRestoreAgreeOnAHeaderCRCMismatch(t *testing.T) {
 
 	outDir := t.TempDir()
 	opts := image.PackOptions{
-		StagingDir:            stagingDir,
+		Store:                 testStore(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: multiFixedClock()}},
 		TargetCapacitySectors: (50_000_000 + image.SectorSize - 1) / image.SectorSize,
 		OutputDir:             outDir,
@@ -163,7 +163,7 @@ func TestRestoreRefusesAChunkHeaderCRCMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs, err := image.CollectReachable(stagingDir, []object.ID{snapID})
+	objs, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snapID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestRestoreRefusesAChunkHeaderCRCMismatch(t *testing.T) {
 
 	outDir := t.TempDir()
 	opts := image.PackOptions{
-		StagingDir:            stagingDir,
+		Store:                 testStore(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: multiFixedClock()}},
 		TargetCapacitySectors: (50_000_000 + image.SectorSize - 1) / image.SectorSize,
 		OutputDir:             outDir,

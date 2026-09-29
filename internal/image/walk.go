@@ -3,7 +3,6 @@ package image
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -29,55 +28,18 @@ type ObjectPathFunc func(kind format.ObjectKind, id object.ID) string
 // SnapshotIDsFunc lists the id of every snapshot a pack covers.
 type SnapshotIDsFunc func() ([]object.ID, error)
 
-// stagedObjectPath returns the path of id's object file under a staging
-// directory. Both a snapshot and a non-snapshot object share the same
-// two-level fan-out scheme; the caller picks the right root.
-func stagedObjectPath(root string, id object.ID) string {
-	return filepath.Join(root, id.FanoutByte(), id.TextForm())
-}
-
-// StagedPath returns the path of id's staged object file under
-// stagingDir, given its kind.
-func StagedPath(stagingDir string, id object.ID, kind format.ObjectKind) string {
-	if kind == format.ObjectKindSnapshot {
-		return filepath.Join(stagingDir, "snapshots", id.TextForm())
-	}
-	return stagedObjectPath(filepath.Join(stagingDir, "objects"), id)
-}
-
-// StagedPathFunc returns the ObjectPathFunc for the staging directory
-// stagingDir. It is the default when a caller gives no function.
-func StagedPathFunc(stagingDir string) ObjectPathFunc {
-	return func(kind format.ObjectKind, id object.ID) string {
-		return StagedPath(stagingDir, id, kind)
-	}
-}
-
-// readObjectFile reads and returns the whole bytes of an object file at
-// path, an object.ID computed from the staging directory's own layout.
+// readObjectFile reads and returns the whole bytes of the object file at
+// path.
 func readObjectFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// CollectReachable walks every snapshot in snapshotIDs from stagingDir and
-// returns the full set of objects a run over exactly those snapshots must
-// store: the snapshot objects themselves, and every tree, blob and chunk
-// object reachable from their root trees. Objects are deduplicated by id.
-func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableObject, error) {
-	cache := NewNameCache()
-	objectsRoot := cache.Join(stagingDir, "objects")
-	snapshotsRoot := cache.Join(stagingDir, "snapshots")
-	return CollectReachableFrom(func(kind format.ObjectKind, id object.ID) string {
-		if kind == format.ObjectKindSnapshot {
-			return filepath.Join(snapshotsRoot, id.TextForm())
-		}
-		return stagedObjectPath(objectsRoot, id)
-	}, snapshotIDs)
-}
-
-// CollectReachableFrom does the work of CollectReachable. It finds each
-// object file through objectPath.
-func CollectReachableFrom(objectPath ObjectPathFunc, snapshotIDs []object.ID) ([]ReachableObject, error) {
+// CollectReachable walks every snapshot in snapshotIDs and returns the
+// full set of objects a run over exactly those snapshots must store: the
+// snapshot objects themselves, and every tree, blob and chunk object
+// reachable from their root trees. Objects are deduplicated by id. It
+// finds each object file through objectPath.
+func CollectReachable(objectPath ObjectPathFunc, snapshotIDs []object.ID) ([]ReachableObject, error) {
 	seen := make(map[object.ID]bool)
 	var out []ReachableObject
 

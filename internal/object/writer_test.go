@@ -82,14 +82,14 @@ func TestCommitTwiceIsByteIdentical(t *testing.T) {
 	staging1 := t.TempDir()
 	staging2 := t.TempDir()
 
-	w1 := NewWriter(staging1)
+	w1 := testWriter(staging1)
 	w1.Now = fixedClock
 	id1, sum1, err := w1.Commit(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	w2 := NewWriter(staging2)
+	w2 := testWriter(staging2)
 	w2.Now = fixedClock
 	id2, sum2, err := w2.Commit(src)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestCommitAgainAfterOneFileChanges(t *testing.T) {
 	buildFixture(t, src)
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	if _, _, err := w.Commit(src); err != nil {
 		t.Fatal(err)
@@ -161,23 +161,23 @@ func TestCommitAgainAfterOneFileChanges(t *testing.T) {
 	// Expected: one new chunk (b.txt's new content), one new blob (over
 	// that chunk), the sub/ tree, the root directory's tree, the
 	// synthetic root tree, and the new snapshot. That is six files, one
-	// under snapshots/ and five under objects/.
-	var snapshots, objects int
+	// under chunks/ and five under meta/.
+	var chunks, metas int
 	for _, p := range newPaths {
 		switch {
-		case strings.HasPrefix(p, "snapshots"+string(filepath.Separator)):
-			snapshots++
-		case strings.HasPrefix(p, "objects"+string(filepath.Separator)):
-			objects++
+		case strings.HasPrefix(p, "chunks"+string(filepath.Separator)):
+			chunks++
+		case strings.HasPrefix(p, "meta"+string(filepath.Separator)):
+			metas++
 		default:
-			t.Fatalf("unexpected new path outside objects/ and snapshots/: %s", p)
+			t.Fatalf("unexpected new path outside chunks/ and meta/: %s", p)
 		}
 	}
-	if snapshots != 1 {
-		t.Fatalf("new snapshot files = %d, want 1 (new paths: %v)", snapshots, newPaths)
+	if chunks != 1 {
+		t.Fatalf("new chunk files = %d, want 1 (new paths: %v)", chunks, newPaths)
 	}
-	if objects != 5 {
-		t.Fatalf("new object files = %d, want 5: 1 chunk, 1 blob, 3 trees (new paths: %v)", objects, newPaths)
+	if metas != 5 {
+		t.Fatalf("new metadata files = %d, want 5: 1 blob, 3 trees, 1 snapshot (new paths: %v)", metas, newPaths)
 	}
 }
 
@@ -196,7 +196,7 @@ func TestEveryObjectDecodesAndItsIDMatchesItsFileName(t *testing.T) {
 	buildFixture(t, src)
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	if _, _, err := w.Commit(src); err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func checkNoTempFiles(t *testing.T, staging string) {
 // loadTree decodes the tree object id from staging.
 func loadTree(t *testing.T, staging string, id ID) *format.Tree {
 	t.Helper()
-	buf, err := os.ReadFile(filepath.Join(staging, "objects", id.FanoutByte(), id.TextForm()))
+	buf, err := os.ReadFile(testMetaPath(staging)(format.ObjectKindTree, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func loadTree(t *testing.T, staging string, id ID) *format.Tree {
 // loadSnapshot decodes the snapshot object id from staging.
 func loadSnapshot(t *testing.T, staging string, id ID) *format.Snapshot {
 	t.Helper()
-	buf, err := os.ReadFile(filepath.Join(staging, "snapshots", id.TextForm()))
+	buf, err := os.ReadFile(testMetaPath(staging)(format.ObjectKindSnapshot, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestUnstableFileIsFlaggedAndReported(t *testing.T) {
 	}
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 
 	var calls int
@@ -414,7 +414,7 @@ func TestStableTreeGetsNoUnstableFlags(t *testing.T) {
 	buildFixture(t, src)
 
 	staging1 := t.TempDir()
-	w1 := NewWriter(staging1)
+	w1 := testWriter(staging1)
 	w1.Now = fixedClock
 	_, sum1, err := w1.Commit(src)
 	if err != nil {
@@ -425,7 +425,7 @@ func TestStableTreeGetsNoUnstableFlags(t *testing.T) {
 	}
 
 	staging2 := t.TempDir()
-	w2 := NewWriter(staging2)
+	w2 := testWriter(staging2)
 	w2.Now = fixedClock
 	_, sum2, err := w2.Commit(src)
 	if err != nil {
@@ -473,7 +473,7 @@ func TestConcurrentMutationDuringCommit(t *testing.T) {
 	mustWriteBytes(t, target, initial)
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 
 	stop := make(chan struct{})
@@ -568,7 +568,7 @@ func TestCommitMessageStoredAsSnapshotMeta(t *testing.T) {
 	buildFixture(t, src)
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	w.Message = "a test commit message"
 	id, _, err := w.Commit(src)
@@ -576,7 +576,7 @@ func TestCommitMessageStoredAsSnapshotMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(staging, "snapshots", id.TextForm()))
+	raw, err := os.ReadFile(testMetaPath(staging)(format.ObjectKindSnapshot, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,14 +602,14 @@ func TestCommitNoMessageWritesNoMeta(t *testing.T) {
 	buildFixture(t, src)
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	id, _, err := w.Commit(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(staging, "snapshots", id.TextForm()))
+	raw, err := os.ReadFile(testMetaPath(staging)(format.ObjectKindSnapshot, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestCommitRewritesATruncatedExistingObject(t *testing.T) {
 
 	staging := t.TempDir()
 	id := ComputeID(format.ObjectKindChunk, []byte(content))
-	objPath := filepath.Join(staging, "objects", id.FanoutByte(), id.TextForm())
+	objPath := testChunkPath(staging)(format.ObjectKindChunk, id)
 	if err := os.MkdirAll(filepath.Dir(objPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +642,7 @@ func TestCommitRewritesATruncatedExistingObject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	_, _, err := w.Commit(src)
 	if err != nil {
@@ -687,7 +687,7 @@ func TestCommitSkipsOneUnreadableFileAndKeepsTheRest(t *testing.T) {
 	defer func() { _ = os.Chmod(bPath, 0o644) }()
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 
 	snapID, sum, err := w.Commit(src)
@@ -732,7 +732,7 @@ func TestCommitSkipsOneUnreadableSubdirectory(t *testing.T) {
 	defer func() { _ = os.Chmod(badDir, 0o755) }()
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 
 	snapID, sum, err := w.Commit(src)
@@ -795,7 +795,7 @@ func TestCommitDropsEntryOnMidFileReadError(t *testing.T) {
 	}
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	realOpen := w.Open
 	w.Open = func(path string) (io.ReadCloser, error) {

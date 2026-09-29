@@ -36,6 +36,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -60,7 +62,10 @@ func main() {
 	}
 	workDir := args[0]
 	srcDir := filepath.Join(workDir, "src")
-	stagingDir := filepath.Join(workDir, "staging")
+	// The fixture keeps the repository layout below WORKDIR: chunk
+	// objects below staging/chunks, and snapshot, tree and blob objects
+	// in the catalog.
+	chunksDir := filepath.Join(workDir, "staging", "chunks")
 	treeDir := filepath.Join(workDir, "tree")
 	imagePath := filepath.Join(workDir, "run.img")
 
@@ -86,13 +91,21 @@ func main() {
 		must(writeRandomFile(filepath.Join(srcDir, "sub", "big.bin"), contentBytes))
 	}
 
-	w := object.NewWriter(stagingDir)
+	c, err := catalog.Open(workDir)
+	must(err)
+	objectPath := func(kind format.ObjectKind, id object.ID) string {
+		if kind == format.ObjectKindChunk {
+			return filepath.Join(chunksDir, id.FanoutByte(), id.TextForm())
+		}
+		return c.MetaPath(kind, id)
+	}
+	w := object.NewWriter(objectPath, objectPath)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	must(err)
 
 	opts := image.BuildOptions{
-		StagingDir:            stagingDir,
+		ObjectPath:            objectPath,
 		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors: targetSectors,
 		OutputDir:             treeDir,

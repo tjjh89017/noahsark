@@ -32,7 +32,7 @@ func TestPathFuncsReceiveTheirOwnKinds(t *testing.T) {
 	root := t.TempDir()
 	chunkKinds := map[format.ObjectKind]int{}
 	metaKinds := map[format.ObjectKind]int{}
-	w := NewWriter(t.TempDir())
+	w := testWriter(t.TempDir())
 	w.ChunkPath = func(kind format.ObjectKind, id ID) string {
 		chunkKinds[kind]++
 		return filepath.Join(root, "chunks", id.TextForm())
@@ -62,45 +62,53 @@ func TestPathFuncsReceiveTheirOwnKinds(t *testing.T) {
 	}
 }
 
-func TestDefaultPathsMatchStagingLayout(t *testing.T) {
-	staging := t.TempDir()
-	w := NewWriter(staging)
+// testChunkPath gives the path of a chunk object below dir, in a fan-out
+// directory: dir/chunks/ab/<id>.
+func testChunkPath(dir string) PathFunc {
+	return func(_ format.ObjectKind, id ID) string {
+		return filepath.Join(dir, "chunks", id.FanoutByte(), id.TextForm())
+	}
+}
+
+// testMetaPath gives the path of a blob, tree or snapshot object below
+// dir, in a fan-out directory: dir/meta/ab/<id>.
+func testMetaPath(dir string) PathFunc {
+	return func(_ format.ObjectKind, id ID) string {
+		return filepath.Join(dir, "meta", id.FanoutByte(), id.TextForm())
+	}
+}
+
+// testWriter returns a Writer that writes every object below dir, with
+// testChunkPath and testMetaPath.
+func testWriter(dir string) *Writer {
+	return NewWriter(testChunkPath(dir), testMetaPath(dir))
+}
+
+func TestNewWriterUsesTheGivenPaths(t *testing.T) {
+	dir := t.TempDir()
+	w := testWriter(dir)
 	snap := commitFixture(t, w, fixtureTree(t))
 
-	id := ComputeID(format.ObjectKindChunk, []byte("x"))
-	wantObj := filepath.Join(staging, "objects", id.FanoutByte(), id.TextForm())
-	for _, k := range []format.ObjectKind{format.ObjectKindChunk, format.ObjectKindBlob, format.ObjectKindTree} {
-		fn := w.ChunkPath
-		if k != format.ObjectKindChunk {
-			fn = w.MetaPath
-		}
-		if got := fn(k, id); got != wantObj {
-			t.Fatalf("kind %d path = %s, want %s", k, got, wantObj)
-		}
-	}
-	wantSnap := filepath.Join(staging, "snapshots", snap.TextForm())
-	if got := w.MetaPath(format.ObjectKindSnapshot, snap); got != wantSnap {
-		t.Fatalf("snapshot path = %s, want %s", got, wantSnap)
-	}
+	wantSnap := filepath.Join(dir, "meta", snap.FanoutByte(), snap.TextForm())
 	if _, err := os.Stat(wantSnap); err != nil {
 		t.Fatal(err)
 	}
-	for _, rel := range listFiles(t, staging) {
-		if !strings.HasPrefix(rel, "objects"+string(filepath.Separator)) &&
-			!strings.HasPrefix(rel, "snapshots"+string(filepath.Separator)) {
-			t.Fatalf("file outside objects and snapshots: %s", rel)
+	for _, rel := range listFiles(t, dir) {
+		if !strings.HasPrefix(rel, "chunks"+string(filepath.Separator)) &&
+			!strings.HasPrefix(rel, "meta"+string(filepath.Separator)) {
+			t.Fatalf("file outside chunks and meta: %s", rel)
 		}
 	}
 }
 
 func TestPathFuncsDoNotChangeObjectBytes(t *testing.T) {
 	staging := t.TempDir()
-	def := NewWriter(staging)
+	def := testWriter(staging)
 	src := fixtureTree(t)
 	defSnap := commitFixture(t, def, src)
 
 	root := t.TempDir()
-	custom := NewWriter(t.TempDir())
+	custom := testWriter(t.TempDir())
 	custom.ChunkPath = func(_ format.ObjectKind, id ID) string {
 		return filepath.Join(root, "c", id.TextForm())
 	}

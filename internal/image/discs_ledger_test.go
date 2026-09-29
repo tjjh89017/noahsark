@@ -51,7 +51,7 @@ func TestPackAfterLedgerGapAvoidsReuse(t *testing.T) {
 		{RunSeq: 1, DiscSeq: 0, DiscUUID: [16]byte{1}, CapacitySectors: 1000},
 		{RunSeq: 4, DiscSeq: 3, DiscUUID: [16]byte{2}, CapacitySectors: 1000},
 	}
-	if err := SaveDiscsLedger(stagingDir, [16]byte{1, 2, 3, 4}, gapRows); err != nil {
+	if err := SaveDiscsLedger(testDiscsLedger(stagingDir), [16]byte{1, 2, 3, 4}, gapRows); err != nil {
 		t.Fatal(err)
 	}
 

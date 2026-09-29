@@ -40,7 +40,7 @@ func readTree(t *testing.T, root string) map[string][]byte {
 // the same run that it writes from the staging layout.
 func TestPackReadsObjectsThroughPathFunctions(t *testing.T) {
 	stagingDir, snapID := packFixture(t)
-	objs, err := CollectReachable(stagingDir, []object.ID{snapID})
+	objs, err := CollectReachable(testObjectPath(stagingDir), []object.ID{snapID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestPackReadsObjectsThroughPathFunctions(t *testing.T) {
 		if o.Kind == format.ObjectKindChunk {
 			dst = filepath.Join(chunkDir, "c-"+o.ID.TextForm())
 		}
-		data, err := os.ReadFile(StagedPath(stagingDir, o.ID, o.Kind))
+		data, err := os.ReadFile(testObjectPath(stagingDir)(o.Kind, o.ID))
 		if err != nil {
 			t.Fatal(err)
 		}

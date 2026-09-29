@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -94,14 +95,23 @@ func (o *commitOptions) run(e *env, args []string) int {
 		return 2
 	}
 
-	commitStageLog, err := stage.Open(cfg.StagingDir)
+	layout := layoutOf(repoDir, cfg)
+	commitStageLog, err := stage.Open(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 	warnIfTruncated("commit", commitStageLog, stderr)
+	c, err := catalog.Open(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 1
+	}
 
-	w := newWriter(cfg.StagingDir)
+	// Chunk objects go to staging. Snapshot, tree and blob objects go
+	// directly into the catalog.
+	w := newWriter(layout.chunkPath, c.MetaPath)
+	w.Now = e.now
 	w.Progress = e.progress()
 	w.Message = o.message
 	w.OneFileSystem = o.oneFileSystem
@@ -128,12 +138,16 @@ func (o *commitOptions) run(e *env, args []string) int {
 	// a ref that names a snapshot whose objects have no state log
 	// record: pack only places an id it finds STAGED, so an object with
 	// no record is never packed.
-	if err := markStaged(cfg.StagingDir, snapID, sum.Reachable); err != nil {
+	if err := markStaged(commitStageLog, snapID, sum.Reachable); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 1
+	}
+	if err := c.MarkComplete(snapID); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 
-	if err := updateRef(repoDir, ref, snapID); err != nil {
+	if err := updateRef(layout.refsFile(), ref, snapID); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
@@ -156,7 +170,7 @@ func (o *commitOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
 	}
 
-	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
+	stagedObjects, stagedBytes, err := image.StagedTotals(layout.objectPath(c), commitStageLog)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
@@ -195,26 +209,12 @@ func printSpecialWarnings(stdout io.Writer, special []object.SpecialPath) {
 	_, _ = fmt.Fprintf(stdout, "special files: %d; a FIFO, a socket and a device node carry no content, and restore does not create them\n", len(special))
 }
 
-// stagedTotals reports the repository-wide STAGED total: how many
-// objects still wait for a pack, and their combined byte size.
-func stagedTotals(stagingDir string) (objects int, bytes uint64, err error) {
-	l, err := stage.Open(stagingDir)
-	if err != nil {
-		return 0, 0, err
-	}
-	return image.StagedTotals(stagingDir, l)
-}
-
-// markStaged appends a Staged state.db record for the snapshot and every
-// object reachable names that has no record yet: the whole staging
-// state machine's entry point. reachable comes from the Writer's own
-// Summary, not a walk of the staging directory: an object the Writer
-// found already on a disc gets no staging file to walk into.
-func markStaged(stagingDir string, snapID object.ID, reachable []object.ID) error {
-	l, err := stage.Open(stagingDir)
-	if err != nil {
-		return err
-	}
+// markStaged appends a Staged record to the state log l for the
+// snapshot and every object reachable names that has no record yet: the
+// whole staging state machine's entry point. reachable comes from the
+// Writer's own Summary, not a walk of the files: a chunk the Writer
+// found already on a disc gets no chunk file to walk into.
+func markStaged(l *stage.Log, snapID object.ID, reachable []object.ID) error {
 	if err := l.EnsureStaged(snapID); err != nil {
 		return err
 	}

@@ -38,7 +38,7 @@ func commitTwoSubdirFixture(t *testing.T) (stagingDir, srcDir string, snapID obj
 	}
 
 	stagingDir = t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = multiFixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {

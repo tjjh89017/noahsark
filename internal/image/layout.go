@@ -25,12 +25,7 @@ type SnapshotRef struct {
 
 // BuildOptions holds everything Build needs to lay out one run.
 type BuildOptions struct {
-	// StagingDir is the staging directory objects and snapshots come
-	// from, in the layout internal/object writes: objects/<ab>/<name>
-	// and snapshots/<name>.
-	StagingDir string
 	// ObjectPath gives the file path of an object from its kind and id.
-	// When nil, objects come from StagingDir.
 	ObjectPath ObjectPathFunc
 	// Snapshots names every snapshot this run stores, and the REFS
 	// records that point at them. This build writes one run per disc, so
@@ -94,29 +89,11 @@ type fileRow struct {
 	inStream bool
 }
 
-// objectPath returns opts.ObjectPath, or the staging directory's own
-// layout when it is nil.
-func (opts BuildOptions) objectPath() ObjectPathFunc {
-	if opts.ObjectPath != nil {
-		return opts.ObjectPath
-	}
-	return StagedPathFunc(opts.StagingDir)
-}
-
-// collectReachable walks the snapshots through opts.ObjectPath when
-// set, or through the staging directory otherwise.
-func (opts BuildOptions) collectReachable(snapIDs []object.ID) ([]ReachableObject, error) {
-	if opts.ObjectPath != nil {
-		return CollectReachableFrom(opts.ObjectPath, snapIDs)
-	}
-	return CollectReachable(opts.StagingDir, snapIDs)
-}
-
 // Build lays out one run over the snapshots opts names and writes the
 // full NOAHSARK tree under opts.OutputDir as ordinary files.
 func Build(opts BuildOptions) (*Result, error) {
-	if opts.StagingDir == "" || opts.OutputDir == "" {
-		return nil, fmt.Errorf("staging directory and output directory are required")
+	if opts.ObjectPath == nil || opts.OutputDir == "" {
+		return nil, fmt.Errorf("an object path function and an output directory are required")
 	}
 	if len(opts.Snapshots) == 0 {
 		return nil, fmt.Errorf("at least one snapshot is required")
@@ -134,7 +111,7 @@ func Build(opts BuildOptions) (*Result, error) {
 	for i, s := range opts.Snapshots {
 		snapIDs[i] = s.ID
 	}
-	reachable, err := opts.collectReachable(snapIDs)
+	reachable, err := CollectReachable(opts.ObjectPath, snapIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +158,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		if h.Bytes != nil {
 			row.data = h.Bytes
 		} else {
-			row.srcPath = opts.objectPath()(h.Kind, h.ID)
+			row.srcPath = opts.ObjectPath(h.Kind, h.ID)
 			row.srcID = h.ID
 		}
 		rows = append(rows, row)

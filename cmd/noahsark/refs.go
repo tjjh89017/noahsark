@@ -4,35 +4,32 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// refsFileName is the local ref file's name inside a repository. It
-// tracks the newest snapshot committed under each ref name so pack can
-// select by --ref, the same way OPERATIONS.md's local ref log does,
-// reduced to a flat text file since no ref history or state log exists
-// in this build.
-const refsFileName = "refs.txt"
+// The local ref file, refs.txt, holds the newest snapshot of each ref
+// name: one line for each name, the name, one space, and the snapshot id
+// in text form. repoLayout.refsFile gives its path.
 
-// updateRef sets name to point at id in repoDir's ref file, creating the
-// file if needed and replacing any earlier value for name.
-func updateRef(repoDir, name string, id object.ID) error {
-	refs, err := readRefs(repoDir)
+// updateRef sets name to point at id in the ref file at path, creating
+// the file if needed and replacing any earlier value for name.
+func updateRef(path, name string, id object.ID) error {
+	refs, err := readRefs(path)
 	if err != nil {
 		return err
 	}
 	refs[name] = id.TextForm()
-	return writeRefs(repoDir, refs)
+	return writeRefs(path, refs)
 }
 
-// writeRefs replaces repoDir's ref file with exactly the name-to-id-text
-// pairs in refs. recover uses this to restore every ref a disc's
-// REFS table names in one write, instead of one updateRef call per name.
-func writeRefs(repoDir string, refs map[string]string) error {
+// writeRefs replaces the ref file at path with exactly the
+// name-to-id-text pairs in refs. recover uses this to restore every ref
+// a disc's REFS table names in one write, instead of one updateRef call
+// per name.
+func writeRefs(path string, refs map[string]string) error {
 	names := make([]string, 0, len(refs))
 	for n := range refs {
 		names = append(names, n)
@@ -43,13 +40,13 @@ func writeRefs(repoDir string, refs map[string]string) error {
 	for _, n := range names {
 		_, _ = fmt.Fprintf(&b, "%s %s\n", n, refs[n])
 	}
-	return os.WriteFile(filepath.Join(repoDir, refsFileName), []byte(b.String()), 0o644)
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
-// resolveRef returns the snapshot id name points at in repoDir's ref
-// file.
-func resolveRef(repoDir, name string) (object.ID, error) {
-	refs, err := readRefs(repoDir)
+// resolveRef returns the snapshot id name points at in the ref file at
+// path.
+func resolveRef(path, name string) (object.ID, error) {
+	refs, err := readRefs(path)
 	if err != nil {
 		return object.ID{}, err
 	}
@@ -60,12 +57,12 @@ func resolveRef(repoDir, name string) (object.ID, error) {
 	return parseSnapshotID(text)
 }
 
-// readRefs reads repoDir's ref file into a name-to-id-text map. A
+// readRefs reads the ref file at path into a name-to-id-text map. A
 // missing file is an empty map, matching a fresh repository with no
 // commit yet.
-func readRefs(repoDir string) (map[string]string, error) {
+func readRefs(path string) (map[string]string, error) {
 	refs := make(map[string]string)
-	f, err := os.Open(filepath.Join(repoDir, refsFileName))
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return refs, nil
 	}

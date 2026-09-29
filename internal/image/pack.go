@@ -22,42 +22,39 @@ import (
 // failure, so pack prints the reason and exits with success.
 var ErrNothingToPack = errors.New("nothing to pack")
 
-// discsLedgerName is the local repository ledger of every disc pack has
-// already built. It reuses DISCS.bin's own container format directly,
-// with run_hash filled in as soon as it is known, since that is the
-// exact same information a real DISCS table carries for an earlier run
-// and this build has no burn step to read it back from a drive. See
-// docs/decisions.md, "Burning and disc lifecycle".
-const discsLedgerName = "discs.bin"
+// Store names the repository files that Pack and DryRun read and
+// write. The caller gives every path: the image package has no layout
+// of its own.
+type Store struct {
+	// ObjectPath gives the file path of an object from its kind and id.
+	ObjectPath ObjectPathFunc
+	// SnapshotIDs lists every snapshot of the repository. Every run
+	// carries each snapshot that an earlier disc holds, and packs each
+	// snapshot that is still staged.
+	SnapshotIDs SnapshotIDsFunc
+	// DiscsLedger is the path of the disc ledger.
+	DiscsLedger string
+	// RefsLedger is the path of the ref ledger.
+	RefsLedger string
+}
 
-// DiscsLedgerName is discsLedgerName, exported for recover, which
-// reports the ledger path it rewrote.
-const DiscsLedgerName = discsLedgerName
-
-// refsLedgerName is the local repository ledger of every ref pack has
-// already written into a run's refs.bin. It reuses REFS's own container
-// format directly, the same way discsLedgerName mirrors DISCS: a fresh
-// pack loads it, merges in the refs named on its own command line, and
-// saves the merged set back, so every run's refs.bin carries every ref
-// the repository knows, not only the ones packed this time.
-const refsLedgerName = "refslog.bin"
-
-// RefsLedgerName is refsLedgerName, exported for recover, which
-// reports the ledger path it rewrote.
-const RefsLedgerName = refsLedgerName
+// check reports the first field of s that is not set.
+func (s Store) check() error {
+	switch {
+	case s.ObjectPath == nil:
+		return fmt.Errorf("an object path function is required")
+	case s.SnapshotIDs == nil:
+		return fmt.Errorf("a snapshot list function is required")
+	case s.DiscsLedger == "" || s.RefsLedger == "":
+		return fmt.Errorf("the disc ledger and the ref ledger paths are required")
+	}
+	return nil
+}
 
 // PackOptions holds everything Pack needs to select the next run's
 // objects from the staging store and lay it out.
 type PackOptions struct {
-	// StagingDir is the staging directory objects, snapshots and the
-	// state log live under.
-	StagingDir string
-	// ObjectPath gives the file path of an object from its kind and id.
-	// When nil, objects come from StagingDir.
-	ObjectPath ObjectPathFunc
-	// SnapshotIDs lists the snapshot ids to pack. When nil, the snapshot
-	// files in StagingDir give the list.
-	SnapshotIDs SnapshotIDsFunc
+	Store
 	// Snapshots names the refs this run's REFS table carries.
 	Snapshots []SnapshotRef
 	// TargetCapacitySectors is the pack limit. Pack refuses to run
@@ -148,27 +145,15 @@ type packUnit struct {
 	ByteLen  uint64 // set once selectRun has sized the candidate.
 }
 
-// objectPath returns opts.ObjectPath, or the staging directory's own
-// layout when it is nil.
-func (opts PackOptions) objectPath() ObjectPathFunc {
-	if opts.ObjectPath != nil {
-		return opts.ObjectPath
-	}
-	return StagedPathFunc(opts.StagingDir)
-}
-
-// snapshotIDs lists the snapshots to pack, through opts.SnapshotIDs
-// when set, or from the staging directory otherwise.
+// snapshotIDs lists the snapshots through opts.SnapshotIDs, sorted by
+// id bytes.
 func (opts PackOptions) snapshotIDs() ([]object.ID, error) {
-	if opts.SnapshotIDs != nil {
-		ids, err := opts.SnapshotIDs()
-		if err != nil {
-			return nil, err
-		}
-		sort.Slice(ids, func(i, j int) bool { return lessBytes(ids[i][:], ids[j][:]) })
-		return ids, nil
+	ids, err := opts.SnapshotIDs()
+	if err != nil {
+		return nil, err
 	}
-	return listSnapshots(opts.StagingDir)
+	sort.Slice(ids, func(i, j int) bool { return lessBytes(ids[i][:], ids[j][:]) })
+	return ids, nil
 }
 
 // Pack selects the STAGED objects for exactly one run within
@@ -179,8 +164,11 @@ func (opts PackOptions) snapshotIDs() ([]object.ID, error) {
 // object in the repository is always written to this run's catalog,
 // whatever its own state.
 func Pack(opts PackOptions) (*PackResult, error) {
-	if opts.StagingDir == "" || opts.OutputDir == "" {
-		return nil, fmt.Errorf("staging directory and output directory are required")
+	if err := opts.check(); err != nil {
+		return nil, err
+	}
+	if opts.OutputDir == "" {
+		return nil, fmt.Errorf("an output directory is required")
 	}
 	if opts.TargetCapacitySectors == 0 {
 		return nil, fmt.Errorf("target capacity is required and must not be zero")
@@ -199,13 +187,8 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, err
 	}
 	if len(allSnapshotIDs) == 0 && len(opts.Snapshots) == 0 {
-		// Nothing staged, and no ref resolved to a snapshot either: this
-		// repository has never had a commit. gc can also empty
-		// staging/snapshots once every object of an old, fully packed
-		// snapshot goes CLEAN and is deleted; opts.Snapshots, resolved
-		// from refs.txt before Pack runs, still names that snapshot
-		// then, so this case is left to the "nothing to pack" message
-		// below instead of being reported as never committed.
+		// No snapshot and no ref: this repository has never had a
+		// commit.
 		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
 	}
 
@@ -213,7 +196,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		rec, ok := opts.StageLog.Get(id)
 		return ok && rec.State.OnDisc()
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.objectPath(), allSnapshotIDs, onDisc)
+	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +224,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, fmt.Errorf("%w: every object of %s is already on a disc", ErrNothingToPack, refNamesText(opts.Snapshots))
 	}
 
-	ledger, err := LoadDiscsLedger(opts.StagingDir, opts.RepoUUID)
+	ledger, err := LoadDiscsLedger(opts.DiscsLedger, opts.RepoUUID)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +234,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	refsLedger, err := LoadRefsLedger(opts.StagingDir, opts.RepoUUID)
+	refsLedger, err := LoadRefsLedger(opts.RefsLedger, opts.RepoUUID)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +284,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		if needErr != nil {
 			return nil, needErr
 		}
-		smallest, err := smallestCandidate(opts.objectPath(), candidates)
+		smallest, err := smallestCandidate(opts.ObjectPath, candidates)
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +333,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		if h.Bytes != nil {
 			row.data = h.Bytes
 		} else {
-			row.srcPath = opts.objectPath()(h.Kind, h.ID)
+			row.srcPath = opts.ObjectPath(h.Kind, h.ID)
 			row.srcID = h.ID
 		}
 		rows = append(rows, row)
@@ -439,10 +422,10 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	// until the run is written. The local ledger row, and so every
 	// later run's copy of DISCS, carries the real value from here on.
 	ledger.Rows = append(ledger.Rows, newRow)
-	if err := SaveDiscsLedger(opts.StagingDir, opts.RepoUUID, ledger.Rows); err != nil {
+	if err := SaveDiscsLedger(opts.DiscsLedger, opts.RepoUUID, ledger.Rows); err != nil {
 		return nil, err
 	}
-	if err := SaveRefsLedger(opts.StagingDir, opts.RepoUUID, mergedRefRecords); err != nil {
+	if err := SaveRefsLedger(opts.RefsLedger, opts.RepoUUID, mergedRefRecords); err != nil {
 		return nil, err
 	}
 
@@ -456,7 +439,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 			continue
 		}
 		remainingObjects++
-		n, err := objectByteLen(opts.objectPath(), u)
+		n, err := objectByteLen(opts.ObjectPath, u)
 		if err != nil {
 			return nil, err
 		}
@@ -512,8 +495,8 @@ type DryRunDisc struct {
 // because a loop of real packs writes exactly those discs and then
 // refuses in the same way.
 func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDisc, error) {
-	if opts.StagingDir == "" {
-		return nil, fmt.Errorf("staging directory is required")
+	if err := opts.check(); err != nil {
+		return nil, err
 	}
 	if opts.TargetCapacitySectors == 0 {
 		return nil, fmt.Errorf("target capacity is required and must not be zero")
@@ -539,7 +522,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		rec, ok := opts.StageLog.Get(id)
 		return ok && rec.State.OnDisc()
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.objectPath(), allSnapshotIDs, onDisc)
+	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
 	if err != nil {
 		return nil, err
 	}
@@ -559,11 +542,11 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		return nil, nil
 	}
 
-	ledger, err := LoadDiscsLedger(opts.StagingDir, opts.RepoUUID)
+	ledger, err := LoadDiscsLedger(opts.DiscsLedger, opts.RepoUUID)
 	if err != nil {
 		return nil, err
 	}
-	refsLedger, err := LoadRefsLedger(opts.StagingDir, opts.RepoUUID)
+	refsLedger, err := LoadRefsLedger(opts.RefsLedger, opts.RepoUUID)
 	if err != nil {
 		return nil, err
 	}
@@ -618,7 +601,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 			if needErr != nil {
 				return discs, needErr
 			}
-			smallest, err := smallestCandidate(discOpts.objectPath(), candidates)
+			smallest, err := smallestCandidate(discOpts.ObjectPath, candidates)
 			if err != nil {
 				return discs, err
 			}
@@ -655,7 +638,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 // buildRefs, buildDiscs and buildReadme read from BuildOptions.
 func (opts PackOptions) asBuildOptions() BuildOptions {
 	return BuildOptions{
-		StagingDir: opts.StagingDir, ObjectPath: opts.ObjectPath,
+		ObjectPath:            opts.ObjectPath,
 		Snapshots:             opts.Snapshots,
 		TargetCapacitySectors: opts.TargetCapacitySectors,
 		OutputDir:             opts.OutputDir, RepoUUID: opts.RepoUUID, DiscUUID: opts.DiscUUID,
@@ -711,7 +694,7 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 
 		for i, cand := range candidates {
 			if !sizeKnown[i] {
-				size, err := objectByteLen(opts.objectPath(), cand)
+				size, err := objectByteLen(opts.ObjectPath, cand)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -837,49 +820,36 @@ func objectByteLen(objectPath ObjectPathFunc, u packUnit) (uint64, error) {
 	return uint64(fi.Size()), nil
 }
 
-// StagedTotals sums the repository-wide STAGED objects stageLog knows:
-// how many, and their total on-disk byte length. It is the same count
-// the next pack would still have left to place.
-func StagedTotals(stagingDir string, stageLog *stage.Log) (objects int, bytes uint64, err error) {
-	objectsRoot := filepath.Join(stagingDir, "objects")
-	snapshotsRoot := filepath.Join(stagingDir, "snapshots")
-	for _, id := range stageLog.IDsInState(stage.Staged) {
-		fi, statErr := os.Stat(stagedObjectPath(objectsRoot, id))
-		if os.IsNotExist(statErr) {
-			fi, statErr = os.Stat(filepath.Join(snapshotsRoot, id.TextForm()))
-		}
-		if statErr != nil {
-			return 0, 0, fmt.Errorf("%s: %w", id.TextForm(), statErr)
-		}
-		objects++
-		bytes += uint64(fi.Size())
-	}
-	return objects, bytes, nil
+// stagedKinds is the order in which StagedTotals looks for the file of
+// a staged item. The state log does not hold the kind of an item.
+var stagedKinds = []format.ObjectKind{
+	format.ObjectKindChunk, format.ObjectKindBlob, format.ObjectKindTree, format.ObjectKindSnapshot,
 }
 
-// listSnapshots returns every snapshot id in stagingDir/snapshots,
-// sorted ascending by id bytes.
-func listSnapshots(stagingDir string) ([]object.ID, error) {
-	entries, err := os.ReadDir(filepath.Join(stagingDir, "snapshots"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+// StagedTotals sums the repository-wide STAGED objects stageLog knows:
+// how many, and the total size of their files. objectPath gives the file
+// of each kind; the first kind whose file exists gives the size. It is
+// the same count the next pack would still have left to place.
+func StagedTotals(objectPath ObjectPathFunc, stageLog *stage.Log) (objects int, bytes uint64, err error) {
+	for _, id := range stageLog.IDsInState(stage.Staged) {
+		size, found := int64(0), false
+		for _, kind := range stagedKinds {
+			fi, statErr := os.Stat(objectPath(kind, id))
+			if statErr == nil {
+				size, found = fi.Size(), true
+				break
+			}
+			if !os.IsNotExist(statErr) {
+				return 0, 0, fmt.Errorf("%s: %w", id.TextForm(), statErr)
+			}
 		}
-		return nil, fmt.Errorf("staging snapshots directory: %w", err)
+		if !found {
+			return 0, 0, fmt.Errorf("%s: %w", id.TextForm(), os.ErrNotExist)
+		}
+		objects++
+		bytes += uint64(size)
 	}
-	ids := make([]object.ID, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		id, err := object.ParseID(e.Name())
-		if err != nil {
-			continue
-		}
-		ids = append(ids, id)
-	}
-	sort.Slice(ids, func(i, j int) bool { return lessBytes(ids[i][:], ids[j][:]) })
-	return ids, nil
+	return objects, bytes, nil
 }
 
 // buildPackOrder walks every snapshot in the repository, children before
@@ -952,6 +922,12 @@ func buildPackOrder(objectPath ObjectPathFunc, snapshotIDs []object.ID, onDisc f
 		}
 		if err := verifyObjectID(snapID, format.ObjectKindSnapshot, data); err != nil {
 			return nil, nil, err
+		}
+		if onDisc(snapID) {
+			// A snapshot goes to a disc only after every object that it
+			// reaches, thus its tree needs no walk.
+			seen[snapID] = true
+			continue
 		}
 		if err := visitTree(object.ID(snap.RootTree)); err != nil {
 			return nil, nil, err
@@ -1030,71 +1006,6 @@ func NextSeqNumbers(rows []format.DiscsRow) (runSeq, discSeq uint64) {
 		}
 	}
 	return maxRunSeq + 1, maxDiscSeq + 1
-}
-
-// LoadDiscsLedger reads the local disc ledger, or returns an empty one
-// for a repository with no disc packed yet. recover also calls
-// this to inspect the ledger it is about to replace.
-func LoadDiscsLedger(stagingDir string, repoUUID [16]byte) (format.DiscsTable, error) {
-	data, err := os.ReadFile(filepath.Join(stagingDir, discsLedgerName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return format.DiscsTable{RepoUUID: repoUUID}, nil
-		}
-		return format.DiscsTable{}, fmt.Errorf("%s: %w", discsLedgerName, err)
-	}
-	var t format.DiscsTable
-	if _, err := t.Decode(data); err != nil {
-		return format.DiscsTable{}, fmt.Errorf("%s: %w", discsLedgerName, err)
-	}
-	return t, nil
-}
-
-// SaveDiscsLedger writes the local disc ledger: the rows a later Pack
-// call reads back as prior rows for its own DISCS table. recover
-// also calls this to restore the ledger from discs.
-func SaveDiscsLedger(stagingDir string, repoUUID [16]byte, rows []format.DiscsRow) error {
-	t := format.DiscsTable{
-		Header: format.CommonHeader{
-			MagicProject: format.ProjectMagic, MagicKind: format.MagicDiscs,
-			VersionMajor: 1, HeaderLen: format.DiscsHeaderLen,
-		},
-		RepoUUID: repoUUID, RecordCount: uint64(len(rows)), Rows: rows,
-	}
-	buf := make([]byte, t.EncodedLen())
-	if _, err := t.Encode(buf); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(stagingDir, discsLedgerName), buf, 0o644)
-}
-
-// LoadRefsLedger reads the local refs ledger, or returns an empty one
-// for a repository with no ref packed yet.
-func LoadRefsLedger(stagingDir string, repoUUID [16]byte) (format.RefsTable, error) {
-	data, err := os.ReadFile(filepath.Join(stagingDir, refsLedgerName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return format.RefsTable{RepoUUID: repoUUID}, nil
-		}
-		return format.RefsTable{}, fmt.Errorf("%s: %w", refsLedgerName, err)
-	}
-	var t format.RefsTable
-	if _, err := t.Decode(data); err != nil {
-		return format.RefsTable{}, fmt.Errorf("%s: %w", refsLedgerName, err)
-	}
-	return t, nil
-}
-
-// SaveRefsLedger writes the local refs ledger: the records a later Pack
-// call reads back as the refs earlier runs already carry, so it can
-// carry them into its own refs.bin unchanged. recover also calls
-// this to restore the ledger from discs.
-func SaveRefsLedger(stagingDir string, repoUUID [16]byte, recs []format.RefRecord) error {
-	buf, _, err := encodeRefsTable(repoUUID, append([]format.RefRecord(nil), recs...))
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(stagingDir, refsLedgerName), buf, 0o644)
 }
 
 // carriedSnapshots returns the snapshot ids an earlier disc already

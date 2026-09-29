@@ -100,7 +100,14 @@ func (o *packOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	snapshots, err = addPendingRefs(repoDir, cfg.StagingDir, repoUUID, snapshots, now)
+	layout := layoutOf(repoDir, cfg)
+	c, err := catalog.Open(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+
+	snapshots, err = addPendingRefs(layout, repoUUID, snapshots, now)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -112,7 +119,7 @@ func (o *packOptions) run(e *env, args []string) int {
 	// already-packed repository instead of one that never had a
 	// commit.
 	if len(snapshots) == 0 {
-		if newest := newestRef(cfg.StagingDir, allRepoRefs(repoDir)); newest != nil {
+		if newest := newestRef(c, allRepoRefs(layout)); newest != nil {
 			newest.Time = now
 			snapshots = append(snapshots, *newest)
 		}
@@ -127,14 +134,14 @@ func (o *packOptions) run(e *env, args []string) int {
 		if o.label != "" {
 			return o.label
 		}
-		return defaultLabel(repoDir, cfg, snapshots, discSeq)
+		return defaultLabel(layout, c, snapshots, discSeq)
 	}
 
 	if o.dryRun {
-		return runPackDryRun(stdout, stderr, cfg, repoUUID, snapshots, capacitySectors, fecEnabled, labelFor)
+		return runPackDryRun(stdout, stderr, layout, c, repoUUID, snapshots, capacitySectors, fecEnabled, labelFor)
 	}
 
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -142,16 +149,14 @@ func (o *packOptions) run(e *env, args []string) int {
 	_, nextDiscSeq := image.NextSeqNumbers(ledger.Rows)
 	discLabel := labelFor(nextDiscSeq)
 
-	discUUIDBytes := make([]byte, 16)
-	if _, err := rand.Read(discUUIDBytes); err != nil {
+	var discUUID [16]byte
+	if _, err := rand.Read(discUUID[:]); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	var discUUID [16]byte
-	copy(discUUID[:], discUUIDBytes)
 
 	if outDir == "" {
-		outDir = filepath.Join(cfg.StagingDir, "plans", hex.EncodeToString(discUUIDBytes), "tree")
+		outDir = layout.planTree(discUUID)
 	}
 	absOut, err := filepath.Abs(outDir)
 	if err != nil {
@@ -166,7 +171,7 @@ func (o *packOptions) run(e *env, args []string) int {
 		return 2
 	}
 
-	stageLog, err := stage.Open(cfg.StagingDir)
+	stageLog, err := stage.Open(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -174,7 +179,7 @@ func (o *packOptions) run(e *env, args []string) int {
 	warnIfTruncated("pack", stageLog, stderr)
 
 	opts := image.PackOptions{
-		StagingDir:            cfg.StagingDir,
+		Store:                 packStore(layout, c, stageLog),
 		Snapshots:             snapshots,
 		TargetCapacitySectors: capacitySectors,
 		OutputDir:             absOut,
@@ -203,10 +208,9 @@ func (o *packOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	if err := populateCatalog(repoDir, absOut); err != nil {
-		// The catalog is only an accelerator: a failure to populate it
-		// never fails the pack, since every command must still work
-		// with the catalog absent or stale.
+	if _, err := catalog.WriteTablesFromRoot(c, absOut); err != nil {
+		// The disc root is packed and recorded. A failure to copy its
+		// tables into the catalog does not undo that.
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 	}
 
@@ -240,8 +244,8 @@ func (o *packOptions) run(e *env, args []string) int {
 // tree, no state record, no catalog entry, no ledger row, and no sequence
 // number is used. It takes no repository lock, since it only reads the
 // staging store and the ledgers.
-func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
-	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
+func runPackDryRun(stdout, stderr io.Writer, layout repoLayout, c *catalog.Catalog, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
+	stageLog, err := stage.OpenReadOnly(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -249,7 +253,7 @@ func runPackDryRun(stdout, stderr io.Writer, cfg repoConfig, repoUUID [16]byte, 
 	warnIfTruncated("pack", stageLog, stderr)
 
 	opts := image.PackOptions{
-		StagingDir:            cfg.StagingDir,
+		Store:                 packStore(layout, c, stageLog),
 		Snapshots:             snapshots,
 		TargetCapacitySectors: capacitySectors,
 		RepoUUID:              repoUUID,
@@ -319,10 +323,10 @@ func kindWord(kind format.ObjectKind) string {
 // that carries no ref uses the newest ref of the repository instead, so
 // a later disc of the same run of packs keeps a name an operator reads.
 // A repository with no ref at all gets the disc number alone.
-func defaultLabel(repoDir string, cfg repoConfig, snapshots []image.SnapshotRef, discSeq uint64) string {
-	name := newestRefName(cfg.StagingDir, snapshots)
+func defaultLabel(layout repoLayout, c *catalog.Catalog, snapshots []image.SnapshotRef, discSeq uint64) string {
+	name := newestRefName(c, snapshots)
 	if name == "" {
-		name = newestRefName(cfg.StagingDir, allRepoRefs(repoDir))
+		name = newestRefName(c, allRepoRefs(layout))
 	}
 	if name == "" {
 		return fmt.Sprintf("disc %d", discSeq)
@@ -332,8 +336,8 @@ func defaultLabel(repoDir string, cfg repoConfig, snapshots []image.SnapshotRef,
 
 // newestRef returns the ref whose snapshot was committed last, by the
 // same rule newestRefName applies, or nil when snapshots is empty.
-func newestRef(stagingDir string, snapshots []image.SnapshotRef) *image.SnapshotRef {
-	name := newestRefName(stagingDir, snapshots)
+func newestRef(c *catalog.Catalog, snapshots []image.SnapshotRef) *image.SnapshotRef {
+	name := newestRefName(c, snapshots)
 	if name == "" {
 		return nil
 	}
@@ -348,15 +352,15 @@ func newestRef(stagingDir string, snapshots []image.SnapshotRef) *image.Snapshot
 // newestRefName returns the name of the ref whose snapshot was
 // committed last. A tie goes to the name that sorts last, so a set of
 // date names committed in the same second still gives the latest date.
-// A snapshot whose staged object gc has already freed counts as the
-// oldest, thus a name is still returned while any ref is given.
-func newestRefName(stagingDir string, snapshots []image.SnapshotRef) string {
+// A snapshot that the catalog does not hold counts as the oldest, thus
+// a name is still returned while any ref is given.
+func newestRefName(c *catalog.Catalog, snapshots []image.SnapshotRef) string {
 	name := ""
 	var newest int64
 	for _, s := range snapshots {
-		sec, err := snapshotTime(stagingDir, s.ID)
-		if err != nil {
-			sec = 0
+		var sec int64
+		if snap, err := c.ReadSnapshot(s.ID); err == nil {
+			sec = snap.TimeSec
 		}
 		if name == "" || sec > newest || (sec == newest && s.Name > name) {
 			name, newest = s.Name, sec
@@ -368,8 +372,8 @@ func newestRefName(stagingDir string, snapshots []image.SnapshotRef) string {
 // allRepoRefs reads every ref of the repository, for the label of a
 // disc that carries no ref of its own. An unreadable ref file gives no
 // ref, and the label then falls back to the disc number.
-func allRepoRefs(repoDir string) []image.SnapshotRef {
-	refs, err := readRefs(repoDir)
+func allRepoRefs(layout repoLayout) []image.SnapshotRef {
+	refs, err := readRefs(layout.refsFile())
 	if err != nil {
 		return nil
 	}
@@ -387,19 +391,6 @@ func allRepoRefs(repoDir string) []image.SnapshotRef {
 		out = append(out, image.SnapshotRef{Name: n, ID: id})
 	}
 	return out
-}
-
-// snapshotTime reads one staged snapshot object's commit time.
-func snapshotTime(stagingDir string, id object.ID) (int64, error) {
-	data, err := os.ReadFile(filepath.Join(stagingDir, "snapshots", id.TextForm()))
-	if err != nil {
-		return 0, err
-	}
-	var snap format.Snapshot
-	if _, err := snap.Decode(data); err != nil {
-		return 0, err
-	}
-	return snap.TimeSec, nil
 }
 
 // stringList implements flag.Value for a repeatable flag.
@@ -473,12 +464,12 @@ func dirIsEmptyOrMissing(path string) (bool, error) {
 // ref name whose current snapshot the refs ledger does not already
 // carry under that name, so a pack picks up every pending ref, not
 // only the one named on its command line.
-func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image.SnapshotRef, now time.Time) ([]image.SnapshotRef, error) {
-	allRefs, err := readRefs(repoDir)
+func addPendingRefs(layout repoLayout, repoUUID [16]byte, named []image.SnapshotRef, now time.Time) ([]image.SnapshotRef, error) {
+	allRefs, err := readRefs(layout.refsFile())
 	if err != nil {
 		return named, err
 	}
-	ledger, err := image.LoadRefsLedger(stagingDir, repoUUID)
+	ledger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
 	if err != nil {
 		return named, err
 	}
@@ -514,16 +505,30 @@ func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image
 	return named, nil
 }
 
-// populateCatalog copies the run just packed at runRoot, every known
-// snapshot, and every tree it reaches, into the catalog, so a
-// later ls or plan can run with no disc present.
-func populateCatalog(repoDir, runRoot string) error {
-	c, err := catalog.Open(repoDir)
-	if err != nil {
-		return err
+// packStore gives pack the paths of the repository. Chunk objects come
+// from staging, and snapshot, tree and blob objects from the catalog c.
+// The snapshots are the snapshots of the catalog that the state log l
+// knows: a staged snapshot is packed, and a snapshot that a disc holds
+// is carried, as every run carries every snapshot of the repository.
+func packStore(layout repoLayout, c *catalog.Catalog, l *stage.Log) image.Store {
+	return image.Store{
+		ObjectPath: layout.objectPath(c),
+		SnapshotIDs: func() ([]object.ID, error) {
+			all, err := c.ListSnapshots()
+			if err != nil {
+				return nil, err
+			}
+			known := make([]object.ID, 0, len(all))
+			for _, id := range all {
+				if _, ok := l.Get(id); ok {
+					known = append(known, id)
+				}
+			}
+			return known, nil
+		},
+		DiscsLedger: layout.discsLedgerFile(),
+		RefsLedger:  layout.refsLedgerFile(),
 	}
-	_, err = catalog.WriteFromRoot(c, runRoot)
-	return err
 }
 
 func decodeUUID(s string) ([16]byte, error) {

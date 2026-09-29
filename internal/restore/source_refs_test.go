@@ -22,7 +22,7 @@ func commitRefsFixture(t *testing.T, stagingDir, name string) object.ID {
 	if err := os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("content of "+name), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = multiFixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -34,7 +34,7 @@ func commitRefsFixture(t *testing.T, stagingDir, name string) object.ID {
 // markRefsFixtureStaged marks every object id reaches as Staged.
 func markRefsFixtureStaged(t *testing.T, stagingDir string, id object.ID, l *stage.Log) {
 	t.Helper()
-	objs, err := image.CollectReachable(stagingDir, []object.ID{id})
+	objs, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, firstSnap, l)
 	firstOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "run1", ID: firstSnap, Time: multiFixedClock()}},
+		Store: testStore(stagingDir), Snapshots: []image.SnapshotRef{{Name: "run1", ID: firstSnap, Time: multiFixedClock()}},
 		TargetCapacitySectors: 100_000,
 		OutputDir:             firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
@@ -109,7 +109,7 @@ func TestSourceRefsMergesAcrossDiscs(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, secondSnap, l)
 	secondOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "run2", ID: secondSnap, Time: multiFixedClock()}},
+		Store: testStore(stagingDir), Snapshots: []image.SnapshotRef{{Name: "run2", ID: secondSnap, Time: multiFixedClock()}},
 		TargetCapacitySectors: 100_000,
 		OutputDir:             secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: multiFixedClock, StageLog: l,
@@ -166,7 +166,7 @@ func TestSourceParseSnapshotArgUnknownRefNamesProvidedDiscs(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, snap, l)
 	out := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "only", ID: snap, Time: multiFixedClock()}},
+		Store: testStore(stagingDir), Snapshots: []image.SnapshotRef{{Name: "only", ID: snap, Time: multiFixedClock()}},
 		TargetCapacitySectors: 100_000,
 		OutputDir:             out, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
@@ -206,7 +206,7 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, oldSnap, l)
 	firstOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: oldSnap, Time: multiFixedClock()}},
+		Store: testStore(stagingDir), Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: oldSnap, Time: multiFixedClock()}},
 		TargetCapacitySectors: 100_000,
 		OutputDir:             firstOut, RepoUUID: repoUUID, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: multiFixedClock, StageLog: l,
@@ -218,7 +218,7 @@ func TestSourceRefsNewestRecordWins(t *testing.T) {
 	markRefsFixtureStaged(t, stagingDir, newSnap, l)
 	secondOut := t.TempDir()
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir: stagingDir, Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: newSnap, Time: multiFixedClock().Add(time.Second)}},
+		Store: testStore(stagingDir), Snapshots: []image.SnapshotRef{{Name: "2026-09-13", ID: newSnap, Time: multiFixedClock().Add(time.Second)}},
 		TargetCapacitySectors: 100_000,
 		OutputDir:             secondOut, RepoUUID: repoUUID, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: multiFixedClock, StageLog: l,

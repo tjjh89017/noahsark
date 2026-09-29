@@ -41,7 +41,7 @@ func commitMultiFixture(t *testing.T) (stagingDir, srcDir string, snapID object.
 	}
 
 	stagingDir = t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = multiFixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -59,7 +59,7 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs, err := image.CollectReachable(stagingDir, []object.ID{snapID})
+	objs, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snapID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 		outDir := t.TempDir()
 		sectors := (capBytes + image.SectorSize - 1) / image.SectorSize
 		opts := image.PackOptions{
-			StagingDir:            stagingDir,
+			Store:                 testStore(stagingDir),
 			Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: multiFixedClock()}},
 			TargetCapacitySectors: sectors,
 			OutputDir:             outDir,
@@ -184,13 +184,13 @@ func TestRestoreMultiMissingDiscNamesIt(t *testing.T) {
 // left unpacked onto one new disc.
 func packOneDisc(t *testing.T, stagingDir string, l *stage.Log, src string, repoUUID, discUUID [16]byte, name, label string) (object.ID, string) {
 	t.Helper()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = multiFixedClock
 	snap, _, err := w.Commit(src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs, err := image.CollectReachable(stagingDir, []object.ID{snap})
+	objs, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snap})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func packOneDisc(t *testing.T, stagingDir string, l *stage.Log, src string, repo
 	dir := t.TempDir()
 	sectors := (uint64(20_000_000) + image.SectorSize - 1) / image.SectorSize
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir:            stagingDir,
+		Store:                 testStore(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
 		TargetCapacitySectors: sectors,
 		OutputDir:             dir,
@@ -309,13 +309,13 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(firstSrc, "a.bin"), bytes.Repeat([]byte{1}, 500_000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w1 := object.NewWriter(stagingDir)
+	w1 := testWriter(stagingDir)
 	w1.Now = multiFixedClock
 	snap1, _, err := w1.Commit(firstSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs1, err := image.CollectReachable(stagingDir, []object.ID{snap1})
+	objs1, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snap1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	disc1Dir := t.TempDir()
 	disc1Sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir:            stagingDir,
+		Store:                 testStore(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: "ONE", ID: snap1, Time: multiFixedClock()}},
 		TargetCapacitySectors: disc1Sectors,
 		OutputDir:             disc1Dir,
@@ -345,13 +345,13 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secondSrc, "b.bin"), bytes.Repeat([]byte{2}, 500_000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w2 := object.NewWriter(stagingDir)
+	w2 := testWriter(stagingDir)
 	w2.Now = multiFixedClock
 	snap2, _, err := w2.Commit(secondSrc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	objs2, err := image.CollectReachable(stagingDir, []object.ID{snap2})
+	objs2, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snap2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestRestoreMultiUnnamedMissingListsDiscsTableCandidate(t *testing.T) {
 	disc2Dir := t.TempDir()
 	disc2Sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
 	if _, err := image.Pack(image.PackOptions{
-		StagingDir:            stagingDir,
+		Store:                 testStore(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: "TWO", ID: snap2, Time: multiFixedClock()}},
 		TargetCapacitySectors: disc2Sectors,
 		OutputDir:             disc2Dir,
@@ -451,13 +451,13 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(src, "f.bin"), bytes.Repeat([]byte{fill}, 500_000), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		w := object.NewWriter(stagingDir)
+		w := testWriter(stagingDir)
 		w.Now = multiFixedClock
 		snap, _, err := w.Commit(src)
 		if err != nil {
 			t.Fatal(err)
 		}
-		objs, err := image.CollectReachable(stagingDir, []object.ID{snap})
+		objs, err := image.CollectReachable(testObjectPath(stagingDir), []object.ID{snap})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -469,7 +469,7 @@ func TestRestoreMultiKnownDiscsCandidateBothDirections(t *testing.T) {
 		dir := t.TempDir()
 		sectors := (uint64(10_000_000) + image.SectorSize - 1) / image.SectorSize
 		if _, err := image.Pack(image.PackOptions{
-			StagingDir:            stagingDir,
+			Store:                 testStore(stagingDir),
 			Snapshots:             []image.SnapshotRef{{Name: name, ID: snap, Time: multiFixedClock()}},
 			TargetCapacitySectors: sectors,
 			OutputDir:             dir,

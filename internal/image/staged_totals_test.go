@@ -19,7 +19,7 @@ func TestStagedTotals(t *testing.T) {
 	snapID := commitNamedFixture(t, stagingDir, "totals")
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
-	objects, bytes, err := StagedTotals(stagingDir, l)
+	objects, bytes, err := StagedTotals(testObjectPath(stagingDir), l)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestStagedTotals(t *testing.T) {
 		t.Fatalf("pack: %v", err)
 	}
 
-	objects, bytes, err = StagedTotals(stagingDir, l)
+	objects, bytes, err = StagedTotals(testObjectPath(stagingDir), l)
 	if err != nil {
 		t.Fatal(err)
 	}

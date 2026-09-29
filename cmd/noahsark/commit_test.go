@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
@@ -160,12 +161,11 @@ func TestCommitOneFileSystemFlagExists(t *testing.T) {
 }
 
 // stagingObjectsSnapshot reports the file count and total byte size of
-// repo's staging/objects tree, so a test can check a later call added
+// repo's chunk files in staging, so a test can check a later call added
 // nothing there.
 func stagingObjectsSnapshot(t *testing.T, repo string) (files int, bytes int64) {
 	t.Helper()
-	objectsDir := filepath.Join(repo, "staging", "objects")
-	err := filepath.Walk(objectsDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(testLayout(t, repo).chunksDir(), func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -225,10 +225,10 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 
 	filesAfter, bytesAfter := stagingObjectsSnapshot(t, repo)
 	if filesAfter != filesBefore {
-		t.Fatalf("staging/objects file count = %d, want unchanged %d; commit output: %s", filesAfter, filesBefore, out)
+		t.Fatalf("staging chunk file count = %d, want unchanged %d; commit output: %s", filesAfter, filesBefore, out)
 	}
 	if bytesAfter != bytesBefore {
-		t.Fatalf("staging/objects bytes = %d, want unchanged %d", bytesAfter, bytesBefore)
+		t.Fatalf("staging chunk bytes = %d, want unchanged %d", bytesAfter, bytesBefore)
 	}
 
 	// Only the new snapshot object enters the state log Staged; every
@@ -410,8 +410,8 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 	oldNewWriter := newWriter
 	defer func() { newWriter = oldNewWriter }()
 	var calls int
-	newWriter = func(stagingDir string) *object.Writer {
-		w := object.NewWriter(stagingDir)
+	newWriter = func(chunkPath, metaPath object.PathFunc) *object.Writer {
+		w := object.NewWriter(chunkPath, metaPath)
 		w.Stat = func(path string) (os.FileInfo, error) {
 			real, err := os.Lstat(path)
 			if err != nil {
@@ -457,7 +457,8 @@ func TestCommitRecordsStagedBeforeMovingRef(t *testing.T) {
 
 	// A directory in refs.txt's place makes writeRefs's os.WriteFile
 	// fail, without needing a permission trick that root would ignore.
-	if err := os.MkdirAll(filepath.Join(repo, "refs.txt"), 0o755); err != nil {
+	layout := testLayout(t, repo)
+	if err := os.MkdirAll(layout.refsFile(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -466,29 +467,23 @@ func TestCommitRecordsStagedBeforeMovingRef(t *testing.T) {
 		t.Fatalf("commit: exit %d, want 1 (the ref move must fail); output: %s", code, out)
 	}
 
-	cfg, err := readConfig(configPath(repo))
+	c, err := catalog.Open(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapEntries, err := os.ReadDir(filepath.Join(cfg.StagingDir, "snapshots"))
+	snapIDs, err := c.ListSnapshots()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapEntries) != 1 {
-		t.Fatalf("staging/snapshots has %d entries, want exactly 1", len(snapEntries))
+	if len(snapIDs) != 1 {
+		t.Fatalf("the catalog holds %d snapshots, want exactly 1", len(snapIDs))
 	}
-	snapID, err := object.ParseID(snapEntries[0].Name())
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapID := snapIDs[0]
 
-	l, err := stage.Open(cfg.StagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	l := openTestLog(t, repo)
 	rec, ok := l.Get(snapID)
 	if !ok || rec.State != stage.Staged {
-		t.Fatalf("snapshot %s state = %+v, ok=%v, want a Staged record despite the ref move failing", snapEntries[0].Name(), rec, ok)
+		t.Fatalf("snapshot %s state = %+v, ok=%v, want a Staged record despite the ref move failing", snapID.TextForm(), rec, ok)
 	}
 }
 

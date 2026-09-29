@@ -90,13 +90,13 @@ func TestGCRetentionGate(t *testing.T) {
 	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run (after retention) output %q, want more than 0 objects", out)
 	}
-	objDir := filepath.Join(repo, "staging", "objects")
+	objDir := testLayout(t, repo).chunksDir()
 	before1, err := countFiles(objDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if before1 == 0 {
-		t.Fatal("staging/objects is empty before gc; test fixture produced nothing to delete")
+		t.Fatal("staging holds no chunk file before gc; test fixture produced nothing to delete")
 	}
 
 	// A real run actually deletes, and is reflected in the object count
@@ -113,7 +113,7 @@ func TestGCRetentionGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after1 >= before1 {
-		t.Fatalf("staging/objects has %d files after gc, had %d before; want fewer", after1, before1)
+		t.Fatalf("staging has %d chunk files after gc, had %d before; want fewer", after1, before1)
 	}
 
 	// A second gc run finds nothing left to do; nothing eligible is
@@ -272,7 +272,7 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	objs, uncataloged := gcPlanStagingObjects(l, c, stagingDir, 0, time.Now())
+	objs, uncataloged := gcPlanStagingObjects(l, c, repoLayout{repo: t.TempDir(), staging: stagingDir}, 0, time.Now())
 	if len(objs) != 1 {
 		t.Fatalf("gcPlanStagingObjects returned %d object(s), want 1", len(objs))
 	}
@@ -356,7 +356,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	packAndVerifyDisc(t, work, repo, src)
 	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
 
-	objDir := filepath.Join(repo, "staging", "objects")
+	objDir := testLayout(t, repo).chunksDir()
 	staged, err := countFiles(objDir)
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +374,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 		t.Fatalf("gc with a failing unlink output %q, want the unlink error named", out)
 	}
 	if n, err := countFiles(objDir); err != nil || n != staged {
-		t.Fatalf("staging/objects has %d file(s), %v; want the %d orphans left behind", n, err, staged)
+		t.Fatalf("staging has %d chunk file(s), %v; want the %d orphans left behind", n, err, staged)
 	}
 	if n := countByState(t, repo, stage.OnDiscOnly); n == 0 {
 		t.Fatal("gc unlinked before it recorded: no ON-DISC record survived the failed unlink")
@@ -389,7 +389,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 		t.Fatalf("gc (second run): exit %d, want 0: %s", code, out)
 	}
 	if n, err := countFiles(objDir); err != nil || n != 0 {
-		t.Fatalf("staging/objects has %d file(s), %v; want the orphans freed", n, err)
+		t.Fatalf("staging has %d chunk file(s), %v; want the orphans freed", n, err)
 	}
 }
 
@@ -613,7 +613,7 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 
 	objs := []gcObj{{
 		id:          id,
-		path:        filepath.Join(dir, "objects", "no", "such-file"),
+		path:        filepath.Join(dir, "no", "such-file"),
 		size:        1234,
 		needsRecord: true,
 	}}
@@ -649,7 +649,7 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := filepath.Join(dir, "objects", "present")
+	path := filepath.Join(dir, "chunks", "present")
 	if err := writeFile(path, "payload"); err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +734,7 @@ func TestGCWarnsOnTruncatedStateLog(t *testing.T) {
 	// Corrupt the last byte of state.db's last record's CRC, simulating
 	// a crash mid-append, the same way internal/stage's own truncated
 	// tail tests do.
-	statePath := filepath.Join(repo, "staging", "state.db")
+	statePath := testLayout(t, repo).stateLogFile()
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)

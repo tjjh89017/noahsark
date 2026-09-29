@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/tjjh89017/noahsark/internal/object"
 )
 
 // TestLogListsKnownSnapshots checks that a bare log lists the one
@@ -30,10 +28,9 @@ func TestLogListsKnownSnapshots(t *testing.T) {
 }
 
 // TestLogNamesARefOnAnotherDiscAfterGC checks that log on a disc root
-// still lists a ref whose own snapshot object gc has freed from
-// staging: REFS.bin carries the ref forward on every later run, but
-// packing stops carrying the freed snapshot object itself, so it is no
-// longer physically on the newest disc.
+// still lists a ref whose disc gc has freed: REFS.bin carries the ref
+// forward on every later run, and every run carries every snapshot
+// object of the catalog, thus the newest disc holds it too.
 func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
 
 	work := t.TempDir()
@@ -75,8 +72,8 @@ func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
 	if !strings.Contains(out, "refs: B") {
 		t.Fatalf("log output %q is missing ref B", out)
 	}
-	if !strings.Contains(out, snapA) || !strings.Contains(out, "refs: A") || !strings.Contains(out, "on another disc") {
-		t.Fatalf("log output %q does not name ref A's snapshot on another disc", out)
+	if !strings.Contains(out, snapA) || !strings.Contains(out, "refs: A") {
+		t.Fatalf("log output %q does not name ref A's snapshot", out)
 	}
 }
 
@@ -119,15 +116,9 @@ func TestLogAcceptsARefName(t *testing.T) {
 // time, and checks that the truly newer one still lists first, not
 // whichever sort.Slice happened to leave on top.
 func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
-	oldNewWriter := newWriter
-	defer func() { newWriter = oldNewWriter }()
 	base := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
 	next := base
-	newWriter = func(stagingDir string) *object.Writer {
-		w := oldNewWriter(stagingDir)
-		w.Now = func() time.Time { return next }
-		return w
-	}
+	setFakeNow(t, func() time.Time { return next })
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")

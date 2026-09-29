@@ -15,9 +15,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// configFileName is the config file name inside a repository directory.
-const configFileName = "config.yaml"
-
 // The defaults of the config keys that have one.
 const (
 	defaultStagingDir = "staging"
@@ -289,9 +286,4 @@ func readConfig(path string) (repoConfig, error) {
 		SourceRoot: f.Sources.Root,
 		PackDevice: f.Pack.Device,
 	}, nil
-}
-
-// configPath returns the config file path inside a repository directory.
-func configPath(repoDir string) string {
-	return filepath.Join(repoDir, configFileName)
 }
