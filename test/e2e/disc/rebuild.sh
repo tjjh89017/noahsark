@@ -49,7 +49,7 @@ scenario_rebuild() {
 	size1="$(du -sb "$tree1" | cut -f1)"
 	log "rebuild: disc 1 packed tree size: $size1 bytes"
 
-	sudo "$BIN" image build --out="$image1" "$tree1"
+	image_build "$repo" "$tree1" "$image1"
 	mount_populate "$image1" "$tree1" "$mnt1"
 	"$BIN" verify "$mnt1"
 
@@ -136,7 +136,7 @@ scenario_rebuild() {
 		fail "rebuild: disc 2 size $size2 is not under 25% of disc 1's $size1; recover did not prevent re-packing disc 1's content"
 	fi
 
-	sudo "$BIN" image build --out="$image2" "$tree2"
+	image_build "$repo" "$tree2" "$image2"
 	mount_populate "$image2" "$tree2" "$mnt2"
 	"$BIN" verify "$mnt2"
 	# verify's own output no longer carries the DISCS row count; read it

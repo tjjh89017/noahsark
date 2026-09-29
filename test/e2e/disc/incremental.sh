@@ -57,7 +57,7 @@ scenario_incremental() {
 	size1="$(du -sb "$tree1" | cut -f1)"
 	log "incremental: disc 1 packed tree size: $size1 bytes"
 
-	sudo "$BIN" image build --out="$image1" "$tree1"
+	image_build "$repo" "$tree1" "$image1"
 	mount_populate "$image1" "$tree1" "$mnt1"
 	"$BIN" verify "$mnt1"
 	# verify's own output no longer carries the DISCS row count; read it
@@ -106,7 +106,7 @@ scenario_incremental() {
 		fail "incremental: disc 2 size $size2 is not under 40% of disc 1's $size1"
 	fi
 
-	sudo "$BIN" image build --out="$image2" "$tree2"
+	image_build "$repo" "$tree2" "$image2"
 	mount_populate "$image2" "$tree2" "$mnt2"
 	"$BIN" verify "$mnt2"
 	local field_out2

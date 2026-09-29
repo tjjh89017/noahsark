@@ -46,7 +46,7 @@ func CheckTools() (string, error) {
 	major, _ := strconv.Atoi(m[1])
 	minor, _ := strconv.Atoi(m[2])
 	if major < MinUDFToolsMajor || (major == MinUDFToolsMajor && minor < MinUDFToolsMinor) {
-		return m[0], fmt.Errorf("udftools %s is older than the required %d.%d", m[0], MinUDFToolsMajor, MinUDFToolsMinor)
+		return m[0], fmt.Errorf("mkudffs is from %s; image build needs udftools %d.%d or newer", m[0], MinUDFToolsMajor, MinUDFToolsMinor)
 	}
 	return m[0], nil
 }
@@ -68,16 +68,16 @@ var ErrPopulateNeedsRoot = errors.New("populating the UDF image needs root for t
 // filesystem; populating it needs a loop mount, which needs root.
 // MakeImage always runs that populate step: it never leaves an image
 // that mkudffs built but nothing filled in. When the calling process
-// is not root, MakeImage removes the partial image and returns
-// ErrPopulateNeedsRoot rather than shelling out to sudo itself. prog
-// reports bytes copied during populate; a nil prog reports nothing.
+// is not root, MakeImage returns ErrPopulateNeedsRoot rather than
+// shelling out to sudo itself. The caller checks the mkudffs version
+// with CheckTools first. MakeImage removes the image file when a step
+// fails. The finished image gets the owner of the directory that holds
+// it, and mode 0644. prog reports bytes copied during populate; a nil
+// prog reports nothing.
 //
 // docs/decisions.md, "Image build", records why this is the chosen path
 // over a from-scratch Go UDF writer.
 func MakeImage(dir, imagePath string, sectors uint64, prog *progress.Reporter) error {
-	if _, err := CheckTools(); err != nil {
-		return err
-	}
 	if sectors == 0 {
 		return fmt.Errorf("sectors must not be zero")
 	}
@@ -94,15 +94,24 @@ func MakeImage(dir, imagePath string, sectors uint64, prog *progress.Reporter) e
 		return fmt.Errorf("tree directory %s: not a directory", treeRoot)
 	}
 
-	size := sectors * SectorSize
 	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
 		return err
 	}
+	if err := buildImage(dir, imagePath, sectors, prog); err != nil {
+		_ = os.Remove(imagePath)
+		return err
+	}
+	return nil
+}
+
+// buildImage makes the sparse file, formats it, populates it, and gives
+// it the owner of its directory and mode 0644.
+func buildImage(dir, imagePath string, sectors uint64, prog *progress.Reporter) error {
 	f, err := os.Create(imagePath)
 	if err != nil {
 		return err
 	}
-	if err := f.Truncate(int64(size)); err != nil {
+	if err := f.Truncate(int64(sectors * SectorSize)); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -127,10 +136,25 @@ func MakeImage(dir, imagePath string, sectors uint64, prog *progress.Reporter) e
 	}
 
 	if err := populateImage(dir, imagePath, sectors, prog); err != nil {
-		_ = os.Remove(imagePath)
 		return err
 	}
-	return nil
+	return giveDirOwner(imagePath)
+}
+
+// giveDirOwner gives path the owner and group of the directory that
+// holds it, and mode 0644. image build runs as root, and the operator
+// must be able to read and remove the image without root.
+func giveDirOwner(path string) error {
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		if err := os.Chown(path, int(st.Uid), int(st.Gid)); err != nil {
+			return err
+		}
+	}
+	return os.Chmod(path, 0o644)
 }
 
 // geteuid reports the calling process's effective user id. It is a
