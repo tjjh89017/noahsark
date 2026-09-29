@@ -89,9 +89,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
-	if n := discs.TornBytes(); n > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: the disc state log's tail was truncated; %d byte(s) after the last valid record were ignored, matching a crash during an earlier append\n", cmd, n)
-	}
+	warnDiscLogTornTail(cmd, discs, stderr)
 	discUUID, err := resolveDisc(ledger.Rows, discs, args[0])
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
