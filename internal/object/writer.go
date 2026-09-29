@@ -100,12 +100,22 @@ type SkippedPath struct {
 	Reason string
 }
 
+// PathFunc returns the file path of the object with this kind and id.
+type PathFunc func(kind format.ObjectKind, id ID) string
+
 // Writer commits one source directory tree into a staging directory as
 // chunk, blob, tree and snapshot object files.
 type Writer struct {
 	// StagingDir is the staging directory objects and snapshots are
-	// written under.
+	// written under. Only the default path functions read it.
 	StagingDir string
+	// ChunkPath returns the file path of a chunk object. The writer
+	// calls it with the chunk kind and the chunk id.
+	ChunkPath PathFunc
+	// MetaPath returns the file path of a snapshot, tree or blob
+	// object. The writer calls it with the kind and the id of the
+	// object.
+	MetaPath PathFunc
 	// Profile is the chunker profile applied to every regular file.
 	Profile chunker.Profile
 	// Now returns the snapshot time. Tests set it to a fixed clock so a
@@ -183,6 +193,8 @@ type Writer struct {
 func NewWriter(stagingDir string) *Writer {
 	return &Writer{
 		StagingDir:      stagingDir,
+		ChunkPath:       stagingObjectPath(stagingDir),
+		MetaPath:        stagingMetaPath(stagingDir),
 		Profile:         chunker.DefaultProfile,
 		Now:             time.Now,
 		RestatAfterRead: true,
@@ -502,7 +514,7 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 	if _, err := c.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, err := writeObjectFile(w.ChunkPath(format.ObjectKindChunk, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -539,7 +551,7 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	if _, err := b.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, err := writeObjectFile(w.MetaPath(format.ObjectKindBlob, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -575,7 +587,7 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	if _, err := t.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.objectPath(id), buf)
+	isNew, err := writeObjectFile(w.MetaPath(format.ObjectKindTree, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -616,7 +628,7 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	if _, err := s.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.snapshotPath(id), buf)
+	isNew, err := writeObjectFile(w.MetaPath(format.ObjectKindSnapshot, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -643,12 +655,25 @@ func (w *Writer) totalReachableSize() uint64 {
 	return total
 }
 
-func (w *Writer) objectPath(id ID) string {
-	return filepath.Join(w.StagingDir, "objects", id.FanoutByte(), id.TextForm())
+// stagingObjectPath returns the default path function for objects: a
+// file under objects/ in stagingDir, in a fanout directory.
+func stagingObjectPath(stagingDir string) PathFunc {
+	return func(_ format.ObjectKind, id ID) string {
+		return filepath.Join(stagingDir, "objects", id.FanoutByte(), id.TextForm())
+	}
 }
 
-func (w *Writer) snapshotPath(id ID) string {
-	return filepath.Join(w.StagingDir, "snapshots", id.TextForm())
+// stagingMetaPath returns the default path function for metadata
+// objects. A snapshot goes under snapshots/ in stagingDir. A tree or a
+// blob goes to the same path as a chunk.
+func stagingMetaPath(stagingDir string) PathFunc {
+	objects := stagingObjectPath(stagingDir)
+	return func(kind format.ObjectKind, id ID) string {
+		if kind == format.ObjectKindSnapshot {
+			return filepath.Join(stagingDir, "snapshots", id.TextForm())
+		}
+		return objects(kind, id)
+	}
 }
 
 // commonHeader builds the common header every object file starts with.
