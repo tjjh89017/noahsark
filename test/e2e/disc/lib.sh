@@ -155,6 +155,20 @@ gen_small_tree() {
 	head -c 8 /dev/zero >"$dir/zeros8.bin"
 }
 
+# image_build REPO TREE_DIR IMAGE builds the image of the disc whose
+# pack --out directory is TREE_DIR, and moves the image to IMAGE.
+image_build() {
+	local repo="$1" tree_dir="$2" image="$3" plan
+	for plan in "$repo"/staging/plans/*/; do
+		if [ "$(readlink -f "${plan}tree")" = "$(readlink -f "$tree_dir")" ]; then
+			sudo "$BIN" --repo="$repo" image build "$(basename "$plan")"
+			mv "${plan}tree.img" "$image"
+			return
+		fi
+	done
+	fail "image_build: no disc of $repo has the disc root $tree_dir"
+}
+
 # mount_populate IMAGE TREE_DIR MOUNTPOINT loop-mounts a UDF image mkudffs
 # built empty, copies a packed NOAHSARK tree into it, and hands ownership
 # to the calling user.

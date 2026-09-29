@@ -222,7 +222,7 @@ scenario_cli() {
 
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
 	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
-	sudo "$BIN" image build --out="$image" "$tree"
+	image_build "$repo" "$tree" "$image"
 
 	mount_populate "$image" "$tree" "$mnt"
 	assert_listing_matches "$mnt" "$work"
@@ -314,7 +314,7 @@ scenario_media() {
 		rm -rf "$tree_fec" "$small_src2"
 	fi
 
-	sudo "$BIN" image build --out="$image" "$tree"
+	image_build "$repo" "$tree" "$image"
 	assert_sparse "$image" "$apparent"
 
 	mount_populate "$image" "$tree" "$mnt"

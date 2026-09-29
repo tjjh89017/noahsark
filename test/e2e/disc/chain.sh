@@ -141,7 +141,7 @@ chain_pack_one() {
 	CHAIN_REMAINING_BYTES="$(echo "$staged" | grep -oE '[0-9]+ bytes$' | grep -oE '^[0-9]+')"
 	log "chain: disc $n: $staged"
 
-	sudo "$BIN" image build --out="$image" "$tree"
+	image_build "$repo" "$tree" "$image"
 	mount_populate "$image" "$tree" "$mnt"
 	# Unmount whether verify passes or fails: a failure must not leave
 	# the mount busy for the runner's own cleanup.
