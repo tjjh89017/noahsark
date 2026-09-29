@@ -113,8 +113,8 @@ func (e *TreeEntry) EncodedLen() int {
 // EncodedLen(). buf must be at least that many bytes.
 func (e *TreeEntry) Encode(buf []byte) (int, error) {
 	nameLen := len(e.Name)
-	if nameLen < 1 || nameLen > 4095 {
-		return 0, ErrBadField
+	if err := ValidateEntryName(e.Name); err != nil {
+		return 0, err
 	}
 	contentLen := e.contentLen()
 	contentOff, extOff, extLen, entryLen := e.areas()
@@ -211,7 +211,7 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 	}
 
 	name := append([]byte(nil), buf[TreeEntryHeaderLen:TreeEntryHeaderLen+nameLen]...)
-	if err := validateEntryName(name); err != nil {
+	if err := ValidateEntryName(name); err != nil {
 		return 0, err
 	}
 
@@ -278,10 +278,11 @@ func (t *TLV) sortBytes() []byte {
 	return key
 }
 
-// validateEntryName rejects an empty name, ".", "..", and a name
-// containing '/', '\' or NUL.
-func validateEntryName(name []byte) error {
-	if len(name) == 0 {
+// ValidateEntryName rejects a name that a tree entry must not hold: an
+// empty name, a name above 4095 bytes, ".", "..", and a name containing
+// '/', '\' or NUL. The encoder and the decoder both apply it.
+func ValidateEntryName(name []byte) error {
+	if len(name) == 0 || len(name) > 4095 {
 		return ErrBadField
 	}
 	if string(name) == "." || string(name) == ".." {

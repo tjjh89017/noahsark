@@ -92,6 +92,27 @@ func TestLogNewestFirst(t *testing.T) {
 	}
 }
 
+// TestLogValueOfADash commits with the message "-" and the ref "-". Each
+// prints as `\x2d`, thus a field of "-" always means no value.
+func TestLogValueOfADash(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=-", "-m", "-", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, out, errOut := runLs(t, repo, "log")
+	if code != 0 {
+		t.Fatalf("log: exit %d: %s", code, errOut)
+	}
+	f := strings.Split(strings.TrimSuffix(out, "\n"), "\t")
+	if len(f) != 5 || f[2] != `\x2d` || f[4] != `\x2d` {
+		t.Fatalf("log line %q, want `\\x2d` in the refs and the message fields", out)
+	}
+}
+
 // TestLogRefToASnapshotNotHeld checks the line of a ref whose snapshot
 // object the catalog does not hold: "-" in the time, the source path and
 // the message fields.

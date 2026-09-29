@@ -269,6 +269,10 @@ burn recorded; verified
 next: noahsark status
 ```
 
+The number counts the items on the disc. From the second disc on, it is
+larger than the number that `pack` printed: each disc also carries the
+snapshots of the earlier discs.
+
 Write the disc number, the first 8 characters of the uuid, and the storage
 place on the sleeve of the disc. The tool keeps no shelf notes.
 
@@ -423,14 +427,16 @@ frees nothing:
 
 ```
 $ noahsark gc --dry-run
-gc: would free 8 item(s), 3001350 bytes
+gc: would free 8 item(s), 25031375790 bytes
 ```
+
+The bytes count the staged data, the disc root and the image.
 
 Then run `gc`. It asks no question.
 
 ```
 $ noahsark gc
-gc: freed 8 item(s), 3001350 bytes
+gc: freed 8 item(s), 25031375790 bytes
 next: noahsark status
 ```
 
@@ -463,7 +469,7 @@ $ noahsark log
 
 `ls` prints the mode, the type, the size in bytes, the modification time
 in UTC and the path. The path is relative to the source root. Without
-`-R`, `ls` lists one level:
+`-R`, `ls` lists one level. With `-R`, it lists every level:
 
 ```
 $ noahsark ls -R 2026-09-14
@@ -495,9 +501,9 @@ Mount any disc of the repository, and ask for the plan:
 ```
 $ sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
 $ noahsark restore --dry-run --disc=/mnt/ark 2026-10-12 /srv/restore
-disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 8 items, 3001350 bytes
-disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11): 12 items, 3002699 bytes
-totals: 2 discs, 20 items, 6004049 bytes
+disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 2 items, 2999478 bytes
+disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11): 4 items, 3002699 bytes
+totals: 2 discs, 6 items, 6002177 bytes
 ```
 
 Get the discs from the shelf.
@@ -509,9 +515,9 @@ same line without `--dry-run`:
 
 ```
 $ noahsark restore --disc=/mnt/ark 2026-10-12 /srv/restore
-disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 8 items, 3001350 bytes
-disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11): 12 items, 3002699 bytes
-totals: 2 discs, 20 items, 6004049 bytes
+disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 2 items, 2999478 bytes
+disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11): 4 items, 3002699 bytes
+totals: 2 discs, 6 items, 6002177 bytes
 disc 0 "2026-09-14 disc 0": found
 expected disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11), found disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230)
 insert disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11) into /mnt/ark and press Enter
@@ -551,8 +557,8 @@ trailing slash:
 
 ```
 $ noahsark restore --disc=/mnt/ark 2026-09-14 photos /srv/drill
-disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 1 items, 2998146 bytes
-totals: 1 discs, 1 items, 2998146 bytes
+disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 1 items, 2998210 bytes
+totals: 1 discs, 1 items, 2998210 bytes
 disc 0 "2026-09-14 disc 0": found
 restored snapshot 1b03c7e2a9f4 into /srv/drill
 ```
@@ -638,7 +644,7 @@ the copy to `recover`. See "A second copy".
 | `image build`: `FILE exists; add --force to build it again` | Add `--force` after `image build`. |
 | `repository lock ... is held` | Another `noahsark` command runs on this repository. Wait for it. |
 | `nothing changed` | You answered no to the question. Run the command again, and answer `y`. |
-| `commit` prints `unstable PATH` or `skipped PATH` | The snapshot is written. A file changed or could not be read. Run `commit` again later. |
+| `commit` prints `unstable PATH` or `skipped PATH` | The snapshot is written. A file changed or could not be read: run `commit` again later. A name that holds `\` cannot be stored: rename the file, then run `commit` again. |
 
 A failed `verify` removes one record: the verified record first, else the
 burn record. The state of the disc goes down one step, and `gc` holds the

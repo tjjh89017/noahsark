@@ -235,6 +235,36 @@ func TestPackUndoKeepsTheOutDirectory(t *testing.T) {
 	}
 }
 
+// TestPackUndoPrintsTheNextLineWhenTheFilesStay makes the removal of the
+// plan directory fail after the PackUndone event. The disc is undone,
+// the command exits 1, and the next line is the last line of stdout.
+func TestPackUndoPrintsTheNextLineWhenTheFilesStay(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a file in a read-only directory")
+	}
+	fx := repoWithDisc(t, stage.DiscPacked)
+	plans := testLayout(t, fx.repo).plansDir()
+	if err := os.Chmod(plans, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(plans, 0o755) })
+
+	te := newTestEnv(t.TempDir())
+	code, _ := te.run("--repo="+fx.repo, "--yes", "pack", "--undo", "0")
+	if code != 1 {
+		t.Fatalf("pack --undo: exit %d, want 1", code)
+	}
+	if !strings.Contains(te.errOut.String(), "is undone, but its files stay") {
+		t.Errorf("stderr %q has no line that the files stay", te.errOut.String())
+	}
+	if !strings.HasSuffix(te.out.String(), nextStatusLine+"\n") {
+		t.Errorf("stdout %q does not end with the next line", te.out.String())
+	}
+	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscUndone {
+		t.Errorf("disc 0 is %s, want undone", got)
+	}
+}
+
 // TestPackUndoTakesNoOtherOption refuses --undo with a pack option, and
 // --undo with no DISC, as usage errors.
 func TestPackUndoTakesNoOtherOption(t *testing.T) {

@@ -146,7 +146,7 @@ func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
 	}
 
 	for _, id := range snapIDs {
-		if err := c.refreshComplete(id); err != nil {
+		if err := c.RefreshComplete(id); err != nil {
 			return nil, err
 		}
 	}

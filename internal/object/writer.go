@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -310,6 +311,10 @@ func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 			sum.Excluded++
 			continue
 		}
+		if reason := forbiddenNameReason(de.Name()); reason != "" {
+			sum.Skipped = append(sum.Skipped, SkippedPath{Path: w.relPath(childPath), Reason: reason})
+			continue
+		}
 		te, err := w.commitEntry(childPath, de.Name(), sum)
 		if se, ok := asSkip(err); ok {
 			sum.Skipped = append(sum.Skipped, SkippedPath{Path: w.relPath(childPath), Reason: se.reason})
@@ -322,6 +327,23 @@ func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 	}
 	sortTreeEntries(entries)
 	return w.writeTree(entries, sum)
+}
+
+// forbiddenNameReason returns why a tree entry cannot hold name, or ""
+// when it can. A source filesystem can give a name that the tree format
+// refuses, such as one that holds a backslash.
+func forbiddenNameReason(name string) string {
+	if format.ValidateEntryName([]byte(name)) == nil {
+		return ""
+	}
+	switch {
+	case strings.Contains(name, `\`):
+		return `the name holds a \, which a tree entry name must not hold`
+	case len(name) > 4095:
+		return "the name is longer than 4095 bytes, the limit of a tree entry name"
+	default:
+		return "a tree entry name cannot hold this name"
+	}
 }
 
 // commitEntry builds the tree entry for one directory child, writing

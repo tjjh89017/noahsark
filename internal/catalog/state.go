@@ -104,16 +104,17 @@ func (c *Catalog) Partial(id object.ID) bool {
 	return listed && !complete
 }
 
-// PartialError reports that the catalog does not hold every tree that a
-// snapshot reaches. When it can, it names the disc that holds a missing
-// tree.
+// PartialError reports that the catalog does not hold every tree and
+// blob object that a snapshot reaches. When it can, it names the disc
+// that holds a missing object.
 type PartialError struct {
 	// Snapshot is the partial snapshot.
 	Snapshot object.ID
-	// MissingTree is the first tree id that the walk could not find, or
-	// Snapshot itself when the catalog does not hold the snapshot object.
-	MissingTree object.ID
-	// DiscUUID is the disc that stores MissingTree, found through the
+	// MissingObject is the first tree or blob id that the walk could not
+	// find, or Snapshot itself when the catalog does not hold the
+	// snapshot object.
+	MissingObject object.ID
+	// DiscUUID is the disc that stores MissingObject, found through the
 	// Objects or Prereqs table of an INDEX in the catalog. HasDiscUUID
 	// is false when no INDEX names the disc.
 	DiscUUID    [16]byte
@@ -126,10 +127,10 @@ type PartialError struct {
 func (e *PartialError) Error() string {
 	if e.HasDiscUUID {
 		return fmt.Sprintf("snapshot %s: object %s is missing from the catalog; disc %s%s holds it",
-			e.Snapshot.TextForm(), e.MissingTree.TextForm(), uuidText(e.DiscUUID), LabelSuffix(e.Label))
+			e.Snapshot.TextForm(), e.MissingObject.TextForm(), uuidText(e.DiscUUID), LabelSuffix(e.Label))
 	}
 	return fmt.Sprintf("snapshot %s: object %s is missing from the catalog; no INDEX in the catalog names the disc that holds it",
-		e.Snapshot.TextForm(), e.MissingTree.TextForm())
+		e.Snapshot.TextForm(), e.MissingObject.TextForm())
 }
 
 // LabelSuffix renders a disc label for a message that already names the
@@ -141,15 +142,15 @@ func LabelSuffix(label string) string {
 	return " (" + label + ")"
 }
 
-// CheckComplete reports whether id's tree set is present in the catalog.
-// It trusts the completeness file when Complete already says true.
-// Otherwise it returns a PartialError that names the missing tree and,
-// when it can, the disc that holds it.
+// CheckComplete reports whether the catalog holds every tree and blob
+// object that snapshot id reaches. It trusts the completeness file when
+// Complete already says true. Otherwise it returns a PartialError that
+// names the missing object and, when it can, the disc that holds it.
 func (c *Catalog) CheckComplete(id object.ID) error {
 	if c.Complete(id) {
 		return nil
 	}
-	missing, ok, err := c.walkTrees(id)
+	missing, ok, err := c.walkObjects(id)
 	if err != nil {
 		return err
 	}
@@ -159,15 +160,16 @@ func (c *Catalog) CheckComplete(id object.ID) error {
 	return c.partialError(id, missing)
 }
 
-// walkTrees walks every tree reachable from snapshot id's root tree,
-// using only trees already present in the catalog. It returns the first
-// tree id it could not find and false, or a zero id and true when every
-// reachable tree is present. A snapshot id the catalog has never seen at
+// walkObjects walks every tree and blob reachable from snapshot id's
+// root tree, using only objects already present in the catalog. It
+// returns the first object id it could not find and false, or a zero id
+// and true when every reachable object is present. A tree that does not
+// decode counts as missing. A snapshot id the catalog has never seen at
 // all is reported as missing, id itself, rather than a hard error: a
-// pack or a recover that never saw this snapshot's disc leaves
-// exactly that gap, and CheckComplete resolves it the same way it
-// resolves a missing tree.
-func (c *Catalog) walkTrees(id object.ID) (missing object.ID, complete bool, err error) {
+// pack or a recover that never saw this snapshot's disc leaves exactly
+// that gap, and CheckComplete resolves it the same way it resolves a
+// missing tree.
+func (c *Catalog) walkObjects(id object.ID) (missing object.ID, complete bool, err error) {
 	snap, err := c.ReadSnapshot(id)
 	if os.IsNotExist(err) {
 		return id, false, nil
@@ -176,48 +178,56 @@ func (c *Catalog) walkTrees(id object.ID) (missing object.ID, complete bool, err
 		return object.ID{}, false, err
 	}
 	seen := make(map[object.ID]bool)
-	ok := true
-	var missID object.ID
-	var walk func(treeID object.ID)
-	walk = func(treeID object.ID) {
-		if !ok || seen[treeID] {
-			return
+	pending := []object.ID{object.ID(snap.RootTree)}
+	for len(pending) > 0 {
+		treeID := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if seen[treeID] {
+			continue
 		}
 		seen[treeID] = true
 		tree, err := c.ReadTree(treeID)
 		if err != nil {
-			ok = false
-			missID = treeID
-			return
+			return treeID, false, nil
 		}
 		for _, e := range tree.Entries {
-			if e.EntryType == format.EntryTypeDirectory {
-				walk(object.ID(e.ContentID))
+			switch e.EntryType {
+			case format.EntryTypeDirectory:
+				pending = append(pending, object.ID(e.ContentID))
+			case format.EntryTypeRegular:
+				blobID := object.ID(e.ContentID)
+				_, err := os.Stat(c.MetaPath(format.ObjectKindBlob, blobID))
+				if os.IsNotExist(err) {
+					return blobID, false, nil
+				}
+				if err != nil {
+					return object.ID{}, false, err
+				}
 			}
 		}
 	}
-	walk(object.ID(snap.RootTree))
-	return missID, ok, nil
+	return object.ID{}, true, nil
 }
 
-// refreshComplete recomputes and persists id's completeness. It returns
-// only I/O errors, never a PartialError; call CheckComplete for a
-// resolved report of what is missing.
-func (c *Catalog) refreshComplete(id object.ID) error {
-	_, ok, err := c.walkTrees(id)
+// RefreshComplete computes again and saves the completeness of snapshot
+// id. It does not trust the completeness file. It returns only I/O
+// errors, never a PartialError; call CheckComplete for a resolved report
+// of what is missing.
+func (c *Catalog) RefreshComplete(id object.ID) error {
+	_, ok, err := c.walkObjects(id)
 	if err != nil {
 		return err
 	}
 	return c.setComplete(id, ok)
 }
 
-// partialError builds a PartialError for snapshot id and its
-// first missing tree, resolving the disc that holds the tree through
+// partialError builds a PartialError for snapshot id and its first
+// missing object, resolving the disc that holds the object through
 // LocateObject and its label through DiscRow.
-func (c *Catalog) partialError(id, missingTree object.ID) *PartialError {
-	e := &PartialError{Snapshot: id, MissingTree: missingTree}
+func (c *Catalog) partialError(id, missingObject object.ID) *PartialError {
+	e := &PartialError{Snapshot: id, MissingObject: missingObject}
 
-	loc, found := c.LocateObject(missingTree)
+	loc, found := c.LocateObject(missingObject)
 	if !found {
 		return e
 	}

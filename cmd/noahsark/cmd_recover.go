@@ -442,15 +442,7 @@ func catalogFromDisc(repoDir, root string, rr *image.ReadResult) error {
 		snapshots[id] = true
 	}
 	for id := range snapshots {
-		complete, err := snapshotComplete(c, id)
-		if err != nil {
-			return err
-		}
-		mark := c.MarkPartial
-		if complete {
-			mark = c.MarkComplete
-		}
-		if err := mark(id); err != nil {
+		if err := c.RefreshComplete(id); err != nil {
 			return err
 		}
 	}
@@ -476,50 +468,6 @@ func writeDiscTables(c *catalog.Catalog, base string, names *image.NameCache, di
 		}
 	}
 	return c.WriteDisc(discUUID, bufs[0], bufs[1], bufs[2])
-}
-
-// snapshotComplete reports whether the catalog holds the snapshot id
-// and every tree and blob object that it reaches.
-func snapshotComplete(c *catalog.Catalog, id object.ID) (bool, error) {
-	snap, err := c.ReadSnapshot(id)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	seen := map[object.ID]bool{}
-	pending := []object.ID{object.ID(snap.RootTree)}
-	for len(pending) > 0 {
-		treeID := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if seen[treeID] {
-			continue
-		}
-		seen[treeID] = true
-		tree, err := c.ReadTree(treeID)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		for _, entry := range tree.Entries {
-			switch entry.EntryType {
-			case format.EntryTypeDirectory:
-				pending = append(pending, object.ID(entry.ContentID))
-			case format.EntryTypeRegular:
-				_, err := os.Stat(c.MetaPath(format.ObjectKindBlob, object.ID(entry.ContentID)))
-				if errors.Is(err, os.ErrNotExist) {
-					return false, nil
-				}
-				if err != nil {
-					return false, err
-				}
-			}
-		}
-	}
-	return true, nil
 }
 
 // mergeDiscsRows unions existing, the rows of the disc ledger, with
