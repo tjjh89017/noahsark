@@ -158,14 +158,14 @@ scenario_rebuild() {
 	log "rebuild: NEXT restored from both discs matches"
 
 	# recover again, with both discs: exit 0, same on-disc count as
-	# after the first rebuild plus disc 2's own new objects.
+	# the distinct objects that the two discs list.
 	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
-	local index_count2 ondisc_count2 want_count2
-	index_count2="$(run_tool ci-index-count "$mnt2")"
+	# Both discs carry the snapshot BASE, thus count distinct objects.
+	local ondisc_count2 want_count2
 	ondisc_count2="$(run_tool ci-state-count "$repo/state")"
-	want_count2=$((index_count1 + index_count2))
+	want_count2="$(run_tool ci-index-count "$mnt1" "$mnt2")"
 	if [ "$ondisc_count2" != "$want_count2" ]; then
-		fail "rebuild: on-disc count after 2-disc rebuild is $ondisc_count2, want $want_count2 (disc 1 + disc 2 INDEX object counts)"
+		fail "rebuild: on-disc count after 2-disc rebuild is $ondisc_count2, want $want_count2 (distinct objects of the disc 1 and disc 2 INDEX)"
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
