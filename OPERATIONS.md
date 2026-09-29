@@ -85,7 +85,9 @@ variable `NOAHSARK_REPO`; then the current directory and each ancestor of it.
 and it refuses `--repo` with exit code 2.
 
 With no repository, every command other than `init`, `recover` and `verify`
-exits with code 2. `recover` creates the repository directory when it is
+prints `no repository; run noahsark init, or give --repo` and exits with code
+2. `restore`, `ls` and `log` print `no repository; run recover first, one
+time for each disc` in its place. `recover` creates the repository directory when it is
 absent; it needs `--repo` or `NOAHSARK_REPO` then. `verify` with no
 repository checks the disc root, records nothing, and prints `not counted: no
 repository`.
@@ -99,7 +101,8 @@ staging/
     plans/<disc-uuid>/tree.img  the image that image build writes
 ```
 
-`ab` is the first two hex digits of the digest of `<id>`. Staging holds chunk
+`ab` is the first two hex digits of the digest of `<id>`. `<disc-uuid>` is the
+uuid in the hyphenated form, in lower case: `8-4-4-4-12` hex digits. Staging holds chunk
 data only. It holds no state and no metadata object: the loss of `staging/`
 loses the chunk data of the items that no disc holds yet, and nothing else.
 Keep staging on a local filesystem.
@@ -114,13 +117,17 @@ trims it.
 |---|---|
 | `snapshots/<id>` | A byte copy of each snapshot object. |
 | `trees/ab/<id>`, `blobs/ab/<id>` | A byte copy of each tree and blob object. |
-| `discs/<disc-uuid>/INDEX.bin`, `REFS.bin`, `DISCS.bin` | Byte copies of the tables that FORMAT.md's "The run index and the catalog" defines. The key is the disc uuid, never `run_seq`. |
+| `discs/<disc-uuid>/INDEX.bin`, `REFS.bin`, `DISCS.bin` | Byte copies of the tables that FORMAT.md's "The run index and the catalog" defines. The key is the disc uuid, never `run_seq`. The uuid is written in the hyphenated form, in lower case. |
 
 `<repo>/state/catalog-state.txt` names, for each snapshot id, whether the
 catalog holds every tree and blob object that the snapshot reaches. One line
-holds the snapshot id, one space, and `complete` or `partial`. `commit`
-writes `complete`. `recover` writes `partial` when a disc that it reads names
-a snapshot whose objects the catalog does not hold.
+holds the full text form of the snapshot id, one space, and `complete` or
+`partial`. `commit` writes `complete`. `recover` computes the value again on
+each call, for each snapshot that the disc names or that the file lists:
+`partial` when the catalog does not hold every object that the snapshot
+reaches, else `complete`. A `partial` snapshot becomes `complete` when a later
+`recover` gives the missing objects. `ls`, `log` and `restore` of a `partial`
+snapshot exit with code 1 and name `recover` ("Command notes").
 
 Writers of the catalog:
 
@@ -227,12 +234,15 @@ machines to the files of the repository.
 5. A counted mount is a read-only mount, outside the repository, whose path is
    itself a mount point. A loop mount counts. `verify` of any other disc root
    checks every byte and records nothing.
-6. A change of a disc state writes one event to the disc state log. It writes
-   no item record, except for `pack`, `pack --undo`, `gc`, `disc lost`, `disc
-   lost --undo` and `recover`.
+6. A change of a disc state writes one event to the disc state log. There are
+   two exceptions. A good counted `verify` of a `packed` disc writes
+   `BurnRecorded`, then `CheckOK`. `recover` of a damaged disc writes
+   `Recovered`, then `CheckFailed`. A change writes no item record, except for
+   `pack`, `pack --undo`, `gc`, `disc lost`, `disc lost --undo` and `recover`.
 7. `gc` records a freed item as OnDisc. `recover` records each item that it
-   reads from a disc and that the log does not know as OnDisc. It leaves an
-   item that the log already knows at its own state.
+   reads from a disc and that the log does not know as OnDisc. It treats an
+   item that is `Lost` in the log as not known, and records it as OnDisc. It
+   leaves an item that the log knows in another state at its own state.
 
 ### 4.3 State log replay
 
@@ -252,8 +262,10 @@ and a disc event that the replay does not permit. The tool reports an error,
 names the record, changes no byte of the file, and stops.
 
 An append is durable: the tool writes the record, syncs the file, and syncs
-the directory when the append created the file. An error from a write, a sync
-or a close stops the command.
+the directory when the append created the file. A command can append several
+records as one batch. It writes all records of the batch, then syncs the file
+one time, before the next step that depends on the records. An error from a
+write, a sync or a close stops the command.
 
 ### 4.4 GC rules
 
@@ -267,7 +279,10 @@ or a close stops the command.
 3. One verified disc is enough. No option and no config key asks for more.
 4. `gc` confirms, before it frees an item, that the catalog `INDEX.bin` of the
    disc of the item's own record lists the item. When the catalog does not
-   hold that INDEX, `gc` leaves the item alone and reports it.
+   hold that INDEX, `gc` leaves the item alone and reports it. When the INDEX
+   does not list some items of a `verified` disc, `gc` frees no item of that
+   disc, appends no `Freed` event for it, and reports the skip. `Freed` moves
+   the whole disc, thus `gc` never frees a part of a disc.
 5. `gc` writes the OnDisc records and the `Freed` event and syncs them before
    it unlinks a chunk file. A crash between the two leaves an orphan.
 6. `gc` removes `staging/plans/<disc-uuid>/` of a freed disc. For a `pack
@@ -294,7 +309,9 @@ snapshot. No ref name is reserved.
 
 A `SNAPSHOT` argument is a ref name, or a unique prefix of the digest part of
 a snapshot id. The tool prints a snapshot id as the first 12 hex characters of
-its digest, without the constant multihash prefix. A prefix that matches more
+its digest, without the constant multihash prefix. This short form is for the
+output of `commit`, `ls`, `log`, `restore` and `status` only. A file of
+`state/` and the line `recover: damaged: ID` use the full text form of an id. A prefix that matches more
 than one snapshot is a usage error: the tool lists the candidates and exits
 with code 2.
 
@@ -331,7 +348,9 @@ The lock is advisory. It is not a security boundary.
 2. Walk the source. Leave out each excluded path.
 3. For each regular file: chunk it, hash each chunk with SHA-256, and compress
    each chunk with zstd. Write a chunk into `staging/chunks/` only when the
-   state log does not know its id. Write the blob object that lists the chunks
+   state log does not know its id, or when the item is Staged and its chunk
+   file in `staging/chunks/` is missing or has a size other than the size of
+   the chunk that `commit` made. Write the blob object that lists the chunks
    into `catalog/blobs/`.
 4. For each directory, bottom-up: write the tree object into `catalog/trees/`.
 5. Write the snapshot object, with the root tree, the time and the `-m`
@@ -450,7 +469,8 @@ line for each disc and a `total:` line. The numbers are an estimate.
 ### 8.4 Undo a pack
 
 `pack --undo DISC` returns the items of the newest disc to Staged, while that
-disc is `packed`. It asks an ordinary confirmation. After a yes, it does these
+disc is `packed`. The newest disc is the disc with the highest `disc_seq` among
+the rows of the disc ledger and the `Packed` events whose disc is not undone. It asks an ordinary confirmation. After a yes, it does these
 steps in this order:
 
 1. Append the Staged records with reason 1, and the `PackUndone` event.
@@ -459,6 +479,9 @@ steps in this order:
 4. Remove `staging/plans/<disc-uuid>/`. For a `pack --out=DIR` disc, it
    removes the symlink and keeps `DIR`, and prints `disc root DIR kept; delete
    it yourself`.
+
+`pack --undo` leaves `state/refslog.bin` as it is. The ref ledger is an
+append-only history, and the next `pack` writes each ref of it again.
 
 It refuses a disc that is not the newest, and a disc that is not `packed`.
 `docs/states.md`, rows 11 to 14, gives the messages.
@@ -514,19 +537,21 @@ makes. `image build DISC [--force]` does these steps.
 
 1. Resolve `DISC` through the repository. It reads `config.yaml`,
    `state/discs.bin` and `state/discstate.db`, and writes no file of them.
-   It refuses a disc that is `on disc only`, `lost` or `missing`, and a disc
-   whose disc root does not exist, with exit code 1.
-2. Check the `mkudffs` version ("Tool version check").
+   It refuses a disc that is `on disc only`, `lost` or `missing`, with exit
+   code 1. The state check comes first.
+2. Check the `mkudffs` version ("Tool version check"). This check comes after
+   the state check and before the check for root.
 3. Refuse to go on when it is not root, with exit code 1. It prints the exact
    `sudo noahsark --repo=REPO image build SEQ` line to run.
-4. Refuse to go on when `staging/plans/<disc-uuid>/tree.img` exists, with exit
+4. Refuse to go on when the disc root does not exist, with exit code 1.
+5. Refuse to go on when `staging/plans/<disc-uuid>/tree.img` exists, with exit
    code 1. With `--force`, it removes the old image first.
-5. Read the capacity from the `DISC.bin` of the disc root. Make a sparse image
+6. Read the capacity from the `DISC.bin` of the disc root. Make a sparse image
    file of that length at `staging/plans/<disc-uuid>/tree.img`.
-6. Run `mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 --uid=0
+7. Run `mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 --uid=0
    --gid=0 --mode=0555 --bootarea=erase FILE`.
-7. Loop-mount the image file, copy the `NOAHSARK` tree into it, and unmount.
-8. Give the image file the owner of the directory that holds it, and mode
+8. Loop-mount the image file, copy the `NOAHSARK` tree into it, and unmount.
+9. Give the image file the owner of the directory that holds it, and mode
    0644.
 
 Never use `--media-type=bdr` or `dvdr`. Both make a write-once VAT volume,
@@ -631,8 +656,9 @@ object through the filesystem. It checks every file that INDEX lists against
 its recorded hash, and every object against its content id. When the run has
 FEC, it checks the checksum column and the parity too.
 
-With a repository, `verify` refuses a disc whose uuid the disc state log does
-not hold, a `lost` disc and a `missing` disc, with exit code 1. When
+With a repository, `verify`, also with `--heal`, refuses a disc whose uuid the
+disc state log does not hold, a `lost` disc and a `missing` disc, with exit
+code 1. When
 `DISC-ROOT` is a counted mount ("Transition rules") and `--no-mark` is not
 given:
 
@@ -644,7 +670,9 @@ given:
 
 When `DISC-ROOT` is not a counted mount, `verify` checks every byte, records
 nothing, and prints `not counted: this is not a disc`. With no repository, it
-prints `not counted: no repository`. `--no-mark` writes nothing: no record, no
+prints `not counted: no repository`. A failed check of such a root prints
+`disc SEQ "LABEL": bad; REASON` first, then the same `not counted` line, and
+exits with code 1. It removes no record and logs nothing. `--no-mark` writes nothing: no record, no
 verify log event and no catalog entry.
 
 `verify --undo DISC` removes the verified record of a `verified` disc. It asks
@@ -714,6 +742,12 @@ of a disc, for example a disc that was `missing` and is then marked `lost`.
 `restore` skips each file that `DEST` already holds with the content and the
 type of the snapshot, and each chunk that a part file already holds. The plan
 counts only what is left.
+
+The plan keeps counts only: for each disc, the number of items and the number
+of bytes. It keeps no list of chunks, so that the memory of `restore` does not
+grow with the snapshot ("Scope and conventions"). While `restore` reads a disc,
+it decides for each chunk of the walk whether the chunk belongs to this disc.
+It reads the catalog INDEX of this disc for that, one disc at a time.
 
 `restore` prints the plan first, in this form:
 
@@ -820,7 +854,9 @@ Each problem carries the path, a kind and the reason.
 | file not restored | A bad object, a chunk on a `lost` disc, a chunk with no known disc, or a write that failed. | 1 |
 
 `restore` prints one line for each problem, 20 lines at most, then the count
-of the rest, then one summary line that counts each kind.
+of the rest, then one summary line that counts each kind. Every one of these
+lines has the prefix `noahsark: restore: warning: `. The line of a problem is
+`noahsark: restore: warning: PATH: REASON`.
 
 ### 15.3 Name and symlink safety
 
@@ -959,7 +995,9 @@ repository. Do not run `init` to recover a lost repository.
 
 **`commit`** prints `snapshot ID`, `ref NAME -> ID`, `new items: N, existing
 items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped or
-special path, `staged: N items, B bytes`, and `next: noahsark status`. Exit: 1
+special path, `staged: N items, B bytes`, and `next: noahsark status`. `B` is
+the sum of the stored file sizes of the Staged items: the chunk files in
+`staging/chunks/` and the metadata object files in `catalog/`. Exit: 1
 when a file was skipped or unstable; the snapshot is committed all the same. A
 special file never changes the exit code.
 
@@ -984,7 +1022,9 @@ keeps the catalog data of the disc.
 bad; REASON`, then one line that names what changed, as `docs/states.md`,
 rows 31 to 46, gives. It ends with `next: noahsark status` when it wrote a
 record or a verify log event. `--no-mark` and a `verify` that is not counted
-print no `next:` line. With no repository, it names the disc by uuid. "Verify
+print no `next:` line. A failed check of a root that is not counted prints
+`disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc`, and
+exits with code 1. With no repository, it names the disc by uuid. "Verify
 and heal" gives the lines of `--heal`. Exit: 1 when the check or the heal
 failed, or when the state refused the command. 2 for `--heal` with no
 `--out`.
@@ -999,8 +1039,11 @@ disc SEQ "LABEL"  STATE  [fec  ]UUID
 Two spaces separate the fields. `STATE` is the state word, with the suffix
 `, last check DATE`, `, last check failed DATE` or `, not checked` where
 `docs/states.md`, "Disc states", gives one. `fec  ` is present only for a
-disc that has FEC. `docs/states.md`, "Disc states" and "State to `next:`
-block", give the words and the blocks. `status` writes nothing.
+disc that has FEC. `DATE` is a local date, as `YYYY-MM-DD`. `B` in the
+`staged:` line is the sum of the stored file sizes of the Staged items: the
+chunk files in `staging/chunks/` and the metadata object files in `catalog/`.
+`docs/states.md`, "Disc states" and "State to `next:` block", give the words
+and the blocks. `status` writes nothing.
 
 **`gc`** prints the freed line first, then one line for each disc that holds
 items back, then one line for each disc whose items it skipped:
@@ -1010,20 +1053,27 @@ gc: freed N item(s), B bytes
 gc: disc SEQ: too soon; N item(s) held until DATE
 gc: disc SEQ: not verified; N item(s) held
 gc: N item(s) skipped: disc SEQ's table is not in the catalog
+gc: N item(s) skipped: disc SEQ's table does not list them
 ```
+
+`DATE` is a local date, as `YYYY-MM-DD`. The last skip line means that the
+INDEX of a `verified` disc in the catalog does not list N items of the disc.
+`gc` then frees no item of that disc and appends no `Freed` event for it.
 
 The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`.
 The last line is `next: noahsark status`. `--dry-run` prints no `next:`
 line. A
 `missing` or `lost` disc gets no line. It asks no confirmation. Exit: 0 when
 nothing was eligible. 1 when a chunk file could not be unlinked, or when an
-item was skipped because its INDEX is not in the catalog.
+item was skipped because its INDEX is not in the catalog or does not list it.
 
 `gc --dry-run` prints the same lines, with `gc: would free N item(s), B
 bytes` in place of the freed line. It prints no `next:` line. It exits with code 1 when `gc` would skip
 an item, else 0.
 
-**`restore`** takes a snapshot id prefix or a ref name. It prints the plan,
+**`restore`** takes a snapshot id prefix or a ref name. For a `partial`
+snapshot, it prints `snapshot ID is partial; run recover with more discs`
+and exits with code 1 before it reads a disc. It prints the plan,
 the disc lines, the problem lines as `noahsark: restore: warning: PATH:
 REASON`, then `restored snapshot ID into DEST`, then `skipped: N file(s)
 already restored` when `DEST` already held a file. It prints no `next:`
@@ -1042,7 +1092,11 @@ the OnDisc records of the items that pass their check, and a `Recovered`
 event with the `close` and `fec` flags that the disc records. For a disc that
 the repository already knows and that is not `missing`, it writes only the
 catalog entries, and prints `recover: ok; disc SEQ "LABEL" already known`.
-For each disc that the disc names and that the repository does not know, it
+It still checks every object of that disc. It writes no event. When an object
+is damaged, it prints the `damaged:` lines below instead of `ok`, and exits
+with code 1. It treats an item that is `Lost` in the log as not known, and
+records it as OnDisc. After each call it computes the value of
+`catalog-state.txt` again ("Catalog layout"). For each disc that the disc names and that the repository does not know, it
 appends `NamedMissing`. A partly damaged disc is not skipped: `recover` keeps
 each object that passes its check, appends `CheckFailed` after `Recovered`,
 and prints these lines:
@@ -1052,7 +1106,8 @@ recover: damaged: ID
 recover: N item(s) damaged on disc SEQ "LABEL"
 ```
 
-There is one `damaged:` line for each damaged object, then the count line.
+There is one `damaged:` line for each damaged object, with its full text id,
+then the count line.
 Then it exits with code 1. Else it prints `recover: ok`, or one `recover:
 disc SEQ "LABEL" (UUID) named by another disc, not yet given` line for each
 `missing` disc, and then exits with code 1. Each of these ends with `next:
@@ -1060,7 +1115,9 @@ noahsark status`, unless `recover` refused the disc. Do not run `disc burned` or
 `verify` for a recovered disc to raise its state: it is `on disc only`.
 
 **`ls`** lists the entries of a snapshot below `PATH`, or below the source
-root, from the catalog. Without `-R`, it lists one level. It prints one entry
+root, from the catalog. For a `partial` snapshot ("Catalog layout"), it
+prints `snapshot ID is partial; run recover with more discs` and exits with
+code 1. Without `-R`, it lists one level. It prints one entry
 on each line. The fields are separated by one tab, in this order:
 
 | Field | Form |
@@ -1087,7 +1144,10 @@ there is none. The source
 path and the message are escaped as an `ls` path is. When `refs.txt` or a
 catalog REFS table names a snapshot whose object the catalog does not hold,
 `log` prints a line for it with `-` in the time, the source path and the
-message fields.
+message fields. The time is in UTC, not in local time. When a line names a
+`partial` snapshot, `log` prints all its lines, then `snapshot ID is partial;
+run recover with more discs` for each such snapshot to standard error, and
+exits with code 1.
 
 ### 16.5 Confirmations
 
@@ -1173,6 +1233,8 @@ Every command uses exactly these three codes.
 | 22 | `restore` stops between two discs: killed, or no terminal | Mount the named disc and run the same `restore` again. It completes the part files. |
 | 23 | `nothing changed` | The confirmation was answered no. Run the command again, and answer `y`, or give `--yes` (`--force-yes` for `disc verified` and `disc lost`). |
 | 24 | An unknown format version on a disc | The tool refuses the disc. Use a newer tool. |
+| 25 | `no repository; run noahsark init, or give --repo` | Run `init` in the directory of the repository, or give `--repo` or set `NOAHSARK_REPO`. |
+| 26 | `snapshot ID is partial; run recover with more discs` | Run `recover` with each disc that you still hold, then run the command again. |
 
 ## 20. Test list
 

@@ -284,7 +284,27 @@ charges the space bitmap, 4 MiB, two blocks for each file, two blocks for each
 directory, and 0.1 percent of the capacity. A test guards the margin. The
 estimate changes no disc byte.
 
+**image build checks in a fixed order.** The state check needs no tool. The
+`mkudffs` check needs no root. So the cheapest and most useful refusal comes
+first, and root comes last.
+
 ## Staging and gc
+
+**gc frees a whole disc or nothing of it.** The `Freed` event moves a disc
+to `on disc only`. When the INDEX of a disc in the catalog lacks some items,
+a part free would leave a state that says the staged copy is gone while some
+data stays only in staging. So `gc` skips the disc and reports it.
+
+**The uuid in a path is hyphenated and lower case.** One form gives one
+path for one disc, also on a filesystem that folds case.
+
+**Staged bytes count stored file sizes.** The sum of the chunk files in
+staging and the metadata files in the catalog is what the disk holds for the
+Staged items. It is the number that the operator compares with the capacity.
+
+**A date in `status` and `gc` is local.** The operator reads it against the
+calendar of the host, as the default ref name does. `ls` and `log` print
+times that a program parses, thus they use RFC 3339 in UTC.
 
 **An item stores four states; the other item words are derived.** The state
 log stores Staged, Packed, OnDisc and Lost. The words `burned` and `clean`
@@ -331,6 +351,10 @@ second time.
 
 ## Commit
 
+**commit repairs a Staged chunk file.** A Staged item whose chunk file is
+missing or has the wrong size cannot be packed. The source still holds the
+data, so `commit` writes the chunk again. No other command can repair it.
+
 **Every snapshot is a root snapshot, from one source root.** The build writes
 no parent id and reads every file on every run. Dedup makes the second commit
 cheap in space. The quick check and parent chains were cut: they add state
@@ -369,6 +393,14 @@ reachable objects after the write and records them as Staged. This costs one mor
 walk of the tree and keeps `internal/object` free of staging state.
 
 ## Pack
+
+**pack --undo takes the highest disc number that is not undone.** The disc
+ledger row and the `Packed` event give the same number for a live disc.
+An undone disc is out of both, thus its hole never counts as the newest disc.
+
+**pack --undo leaves the ref ledger.** The ledger is an append-only history
+of refs that a disc carried. A ref that a later `pack` writes again is
+harmless, and a rewrite of the ledger would add a failure point.
 
 **`pack` takes the whole Staged pool.** It has no option that selects a
 snapshot or a ref. Every run carries every pending ref and every snapshot
@@ -410,6 +442,13 @@ cannot hold a hash of themselves in INDEX. The run header and their own CRCs
 protect them.
 
 ## Restore
+
+**The restore plan keeps counts, not chunk lists.** Peak memory must follow
+the chunk size and never the snapshot size. Each disc pass reads the INDEX of
+that disc from the catalog and takes the chunks that belong to it.
+
+**Every restore problem line has one prefix.** A script finds the lines of
+one command with one pattern.
 
 **`restore` has one mode: one mounted disc at a time.** It plans from the
 catalog, reads one mounted disc at a time, and asks for the next disc. It
@@ -527,6 +566,37 @@ refusal or a no answer leaves the step the same. `restore`, `ls`, `log`,
 --no-mark` and a `verify` that is not counted change no state, thus they
 print none. The `totals:` line of the restore plan has a fixed plural form,
 `totals: D discs, N items, B bytes`, also for 1, because a program parses it.
+
+## Recover and the catalog
+
+**recover computes `partial` again on each call.** The operator gives the
+discs in any order. A snapshot becomes `complete` when the discs together
+hold every object, and the file must show that. `ls`, `log` and `restore`
+of a `partial` snapshot exit 1 and name `recover`, so that the operator
+learns why a listing is short.
+
+**recover of a known disc writes no event.** The state of that disc is
+already right. The call only checks the objects and adds the catalog entries,
+and it reports damage in the same lines as a first `recover`.
+
+**A `Lost` item that a disc holds becomes OnDisc.** The disc is the truth
+for what it holds ("The trust rule"), and the log's own record of the loss
+is the older word.
+
+**Ids in files and in the damaged lines are full.** The 12-character form
+can match two ids in a large catalog, and a file must not hold an ambiguous
+key.
+
+## State log
+
+**A change writes one event, with two exceptions.** A good `verify` of a
+`packed` disc records the burn, then the check, so that replay never skips a
+state. `recover` of a damaged disc records the read, then the failed check.
+A batch of records gets one sync before the next dependent step: the next
+step needs the records durable, not each record on its own.
+
+**A failed verify of a root that is not counted removes no record.** The
+tool cannot tell that root from the disc, so it cannot lower the disc.
 
 ## Locking
 
