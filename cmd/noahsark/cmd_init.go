@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -31,8 +30,8 @@ func initFlags(fs *flag.FlagSet) runFunc {
 
 // run implements "noahsark init". It makes the current directory the
 // repository, and it does not use repository discovery. It takes no
-// --capacity: the operator gives the capacity to pack, or puts
-// pack.capacity in the config. --source stores sources.root, so a later
+// --capacity: the operator gives the capacity to each pack. --source
+// stores sources.root, so a later
 // commit with no SOURCE on its own command line can read it. It holds
 // one path, since Writer.Commit takes one source directory. See
 // docs/decisions.md, "Commit".
@@ -83,22 +82,13 @@ func (o *initOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	uuidBytes := make([]byte, 16)
-	if _, err := rand.Read(uuidBytes); err != nil {
+	var repoUUID [16]byte
+	if _, err := rand.Read(repoUUID[:]); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}
 
-	cfg := repoConfig{
-		RepoUUID: hex.EncodeToString(uuidBytes),
-		// Written relative to the repository directory, so the staging
-		// store still follows the repository if its directory is later
-		// renamed or moved; readConfig resolves it back to an absolute
-		// path against the config file's own directory.
-		StagingDir: "staging",
-		SourceRoot: absSourcePath,
-	}
-	if err := writeConfig(filepath.Join(absRepoPath, configFileName), cfg); err != nil {
+	if err := writeConfig(configPath(absRepoPath), newConfigFile(repoUUID, absSourcePath)); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
 	}

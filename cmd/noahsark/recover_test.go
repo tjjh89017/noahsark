@@ -277,8 +277,8 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 	if !strings.Contains(out, uuid1) {
 		t.Fatalf("output %q does not name the missing disc %s", out, uuid1)
 	}
-	if !strings.Contains(out, "sources.root and pack.capacity") {
-		t.Fatalf("output %q does not say which config keys the new repository still needs", out)
+	if strings.Contains(out, "config:") {
+		t.Fatalf("output %q names config keys to complete; recover prints no such hint", out)
 	}
 }
 

@@ -70,9 +70,6 @@ func (o *commitOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 2
 	}
-	if refuseBadConfig("commit", cfg, stderr, configKeysForCommit...) {
-		return 2
-	}
 
 	lk, code, ok := lockRepo("commit", repoDir, stderr)
 	if !ok {

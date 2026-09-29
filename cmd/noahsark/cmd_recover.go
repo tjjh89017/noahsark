@@ -5,12 +5,10 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -80,6 +78,9 @@ func cmdRecover(e *env, args []string) int {
 	cfg, err := ensureRecoverRepo(repoDir, repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
+		if isConfigError(err) {
+			return 2
+		}
 		return 1
 	}
 
@@ -185,11 +186,9 @@ func cmdRecover(e *env, args []string) int {
 			label := string(row.Label[:row.LabelLen])
 			_, _ = fmt.Fprintf(stdout, "rebuild is partial: %s not fed yet\n", discName(row.DiscSeq, label, row.DiscUUID))
 		}
-		printConfigToComplete(stdout, repoDir, cfg)
 		return 1
 	}
 
-	printConfigToComplete(stdout, repoDir, cfg)
 	_, _ = fmt.Fprintln(stdout, "recover: ok")
 	return 0
 }
@@ -260,16 +259,10 @@ func ensureRecoverRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 	if err := os.MkdirAll(filepath.Join(stagingDir, "snapshots"), 0o755); err != nil {
 		return repoConfig{}, err
 	}
-	cfg := repoConfig{RepoUUID: hex.EncodeToString(repoUUID[:]), StagingDir: stagingDir}
-	// Written relative to the repository directory, the same as
-	// cmdInit, so it survives a later rename of repoDir; cfg itself
-	// keeps the absolute path this call's own caller needs right away.
-	fileCfg := cfg
-	fileCfg.StagingDir = "staging"
-	if err := writeConfig(configPath(repoDir), fileCfg); err != nil {
+	if err := writeConfig(configPath(repoDir), newConfigFile(repoUUID, "")); err != nil {
 		return repoConfig{}, err
 	}
-	return cfg, nil
+	return readConfig(configPath(repoDir))
 }
 
 // mergeDiscsRows unions every provided disc's DISCS rows with existing,
@@ -360,16 +353,4 @@ func mergeRefs(records []format.RefRecord) map[string]string {
 func uuidText(u [16]byte) string {
 	h := hex.EncodeToString(u[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
-}
-
-// printConfigToComplete names the keys a rebuilt config does not carry.
-// recover reads the discs, and no disc holds the source path or the
-// media size, so the operator writes those two keys back by hand.
-func printConfigToComplete(stdout io.Writer, repoDir string, cfg repoConfig) {
-	missing := missingConfigKeys(cfg)
-	if len(missing) == 0 {
-		return
-	}
-	_, _ = fmt.Fprintf(stdout, "config: put %s into %s; no disc carries them\n",
-		strings.Join(missing, " and "), configPath(repoDir))
 }

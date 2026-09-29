@@ -40,7 +40,7 @@ func TestInitMakesTheWorkingDirectoryTheRepository(t *testing.T) {
 }
 
 // TestInitWritesSourceRoot checks that init --source stores an absolute
-// sources.root line in the config, resolved against the given path.
+// sources.root in the config, resolved against the given path.
 func TestInitWritesSourceRoot(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -63,7 +63,7 @@ func TestInitWritesSourceRoot(t *testing.T) {
 }
 
 // TestInitWithNoSourceLeavesConfigWithoutKey checks that a plain init,
-// with no --source, writes no sources.root line at all.
+// with no --source, writes no sources.root key at all.
 func TestInitWithNoSourceLeavesConfigWithoutKey(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
@@ -74,8 +74,8 @@ func TestInitWithNoSourceLeavesConfigWithoutKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "sources.root") {
-		t.Fatalf("config = %q, want no sources.root line", data)
+	if strings.Contains(string(data), "sources:") || strings.Contains(string(data), "root:") {
+		t.Fatalf("config = %q, want no sources.root key", data)
 	}
 
 	cfg, err := readConfig(configPath(repo))

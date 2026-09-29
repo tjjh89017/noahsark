@@ -63,8 +63,8 @@ func TestStatusReportsPackedDisc(t *testing.T) {
 }
 
 // TestStatusNextLinesFollowTheCycle walks one disc from packed to
-// verified and checks the "next" line at each step: burn it, verify the
-// second copy, then nothing to do.
+// verified and checks the "next" line at each step: burn it, then
+// nothing to do after one verify.
 func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -93,27 +93,11 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 	lines = statusLines(t, repo)
-	if got := lines[len(lines)-1]; got != "next: verify the second copy of disc 0" {
-		t.Fatalf("next line after the first verify = %q", got)
-	}
-	if !strings.Contains(lines[1], "verified 1/2") {
-		t.Fatalf("disc line after the first verify = %q, want verified 1/2", lines[1])
-	}
-
-	if code, out := runCmd(t, "--repo="+repo, "verify", treeDir); code != 0 {
-		t.Fatalf("verify (second copy): exit %d: %s", code, out)
-	}
-	// This fixture's own config carries neither sources.root nor
-	// pack.capacity (commit and pack were given SOURCE and --capacity on
-	// the command line instead), so status must say the config needs
-	// them, not claim there is nothing left to do.
-	lines = statusLines(t, repo)
-	want := "next: put sources.root and pack.capacity into the config before commit or pack can run"
-	if got := lines[len(lines)-1]; got != want {
-		t.Fatalf("next line after the second verify = %q, want %q", got, want)
+	if got := lines[len(lines)-1]; got != "next: nothing to do" {
+		t.Fatalf("next line after the verify = %q, want next: nothing to do", got)
 	}
 	if !strings.Contains(lines[1], "verified") || strings.Contains(lines[1], "/") {
-		t.Fatalf("disc line after the second verify = %q, want the plain word verified", lines[1])
+		t.Fatalf("disc line after the verify = %q, want the plain word verified", lines[1])
 	}
 }
 
@@ -190,10 +174,7 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 	if m[3] != "on disc only" {
 		t.Fatalf("disc state = %q, want \"on disc only\"", m[3])
 	}
-	// commit needs sources.root and pack needs pack.capacity; recover's
-	// rebuilt config carries neither, so status must say so, not claim
-	// there is nothing left to do.
-	want := "next: put sources.root and pack.capacity into the config before commit or pack can run"
+	want := "next: nothing to do"
 	if lines[len(lines)-1] != want {
 		t.Fatalf("next line = %q, want %q", lines[len(lines)-1], want)
 	}

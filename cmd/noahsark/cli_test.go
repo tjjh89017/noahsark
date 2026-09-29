@@ -334,13 +334,12 @@ func TestRepoFromEnvironment(t *testing.T) {
 	repo, src := initAndCommit(t)
 	te := newTestEnv(t.TempDir())
 	te.vars["NOAHSARK_REPO"] = repo
-	appendConfigLine(t, repo, "sources.root = "+src)
-	appendConfigLine(t, repo, "pack.capacity = 64MiB")
+	appendConfig(t, repo, "sources:\n  root: "+src+"\n")
 
 	if code, out := te.run("commit"); code != 0 {
 		t.Fatalf("commit with no flag: exit %d: %s", code, out)
 	}
-	if code, out := te.run("pack"); code != 0 {
+	if code, out := te.run("pack", "--capacity=64MiB"); code != 0 {
 		t.Fatalf("pack with no flag: exit %d: %s", code, out)
 	}
 	code, out := te.run("status")
