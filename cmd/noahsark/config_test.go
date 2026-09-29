@@ -180,26 +180,67 @@ func TestReadConfigRefusesABadFile(t *testing.T) {
 	}
 }
 
-// TestConfigFaultExitsTwo runs commands on a repository whose config has
-// an unknown key. Each command exits with code 2 and names the key.
-func TestConfigFaultExitsTwo(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
+// TestConfigExitCodes runs each command that reads the config on two
+// repositories. In the first, the config has an unknown key: each
+// command exits with code 2 and names the key. In the second, config.yaml
+// is a directory, thus the read fails: each command exits with code 1.
+func TestConfigExitCodes(t *testing.T) {
+	work := t.TempDir()
+	faulty := filepath.Join(work, "faulty")
+	unreadable := filepath.Join(work, "unreadable")
+	for _, repo := range []string{faulty, unreadable} {
+		if code, out := runIn(t, repo, "init"); code != 0 {
+			t.Fatalf("init: exit %d: %s", code, out)
+		}
 	}
 	// init writes the pack section last, so this line adds a key to it.
-	appendConfig(t, repo, "  capacity: bd25\n")
+	appendConfig(t, faulty, "  capacity: bd25\n")
+	if err := os.Remove(configPath(unreadable)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(configPath(unreadable), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	for _, args := range [][]string{
+	src := writeFixtureSource(t)
+	root := filepath.Join(work, "disc")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commands := [][]string{
 		{"status"},
+		{"gc"},
 		{"gc", "--dry-run"},
 		{"pack", "--capacity=64MiB"},
-		{"commit", writeFixtureSource(t)},
+		{"pack", "--undo", "0"},
+		{"commit", src},
 		{"disc", "burned", "0"},
+		{"disc", "burned", "--undo", "0"},
+		{"disc", "verified", "0"},
+		{"disc", "lost", "0"},
+		{"disc", "lost", "--undo", "0"},
+		{"verify", root},
+		{"verify", "--no-mark", root},
+		{"verify", "--undo", "0"},
+		{"image", "build", "0"},
+		{"ls", "x"},
+		{"log"},
+		{"recover", "--source=" + src, "--disc=" + root},
+		{"restore", "--disc=" + root, "x", filepath.Join(work, "dest")},
+	}
+	for _, c := range []struct {
+		repo string
+		code int
+		text string
+	}{
+		{faulty, 2, "unknown key pack.capacity"},
+		{unreadable, 1, "config.yaml"},
 	} {
-		code, out := runCmd(t, append([]string{"--repo=" + repo}, args...)...)
-		if code != 2 || !strings.Contains(out, "unknown key pack.capacity") {
-			t.Fatalf("%v: exit %d: %s, want exit 2 and the unknown key", args, code, out)
+		for _, args := range commands {
+			code, out := runCmd(t, append([]string{"--repo=" + c.repo}, args...)...)
+			if code != c.code || !strings.Contains(out, c.text) {
+				t.Errorf("%s %v: exit %d: %s, want exit %d and %q", filepath.Base(c.repo), args, code, out, c.code, c.text)
+			}
 		}
 	}
 }

@@ -71,7 +71,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 2
+		return configExitCode(err)
 	}
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {

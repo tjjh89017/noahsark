@@ -69,7 +69,7 @@ func (o *commitOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
-		return 2
+		return configExitCode(err)
 	}
 
 	lk, code, ok := lockRepo("commit", repoDir, stderr)

@@ -321,8 +321,10 @@ func recordRecoveredDisc(e *env, layout repoLayout, logs *stage.Logs, rr *image.
 }
 
 // recoverRefs writes the ref records of a disc into the ref ledger and
-// refs.txt. A name that the disc carries takes the value of the newest
-// record of the ledger. A name of refs.txt that no record carries stays.
+// refs.txt. In refs.txt, only a name that the disc carries changes: it
+// takes the snapshot of the newest record of the disc for the name. A
+// line of refs.txt that is newer than that record stays, as the line
+// that a later commit wrote. localRefRecord gives the time of a line.
 func recoverRefs(layout repoLayout, repoUUID [16]byte, records []format.RefRecord) error {
 	ledger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
 	if err != nil {
@@ -336,10 +338,22 @@ func recoverRefs(layout repoLayout, repoUUID [16]byte, records []format.RefRecor
 	if err != nil {
 		return err
 	}
-	if refs == nil {
-		refs = make(map[string]string)
+	c, err := catalog.Open(layout.repo)
+	if err != nil {
+		return err
 	}
-	maps.Copy(refs, newestRefs(all))
+	newest := make(map[string]format.RefRecord, len(records))
+	for _, rec := range records {
+		catalog.MergeRef(newest, rec)
+	}
+	for name, rec := range newest {
+		if text, ok := refs[name]; ok {
+			if id, err := parseSnapshotID(text); err == nil && !format.NewerRef(rec, localRefRecord(c, name, id)) {
+				continue
+			}
+		}
+		refs[name] = object.ID(rec.SnapshotID).TextForm()
+	}
 	return writeRefs(layout.refsFile(), refs)
 }
 
@@ -494,20 +508,6 @@ func mergeRefRecords(existing, records []format.RefRecord) []format.RefRecord {
 		if !slices.Contains(out, rec) {
 			out = append(out, rec)
 		}
-	}
-	return out
-}
-
-// newestRefs maps each ref name of records to the text id of the
-// snapshot of its newest record.
-func newestRefs(records []format.RefRecord) map[string]string {
-	best := make(map[string]format.RefRecord, len(records))
-	for _, rec := range records {
-		catalog.MergeRef(best, rec)
-	}
-	out := make(map[string]string, len(best))
-	for name, rec := range best {
-		out[name] = object.ID(rec.SnapshotID).TextForm()
 	}
 	return out
 }

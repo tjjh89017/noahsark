@@ -85,7 +85,7 @@ func (o *initOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(absRepoPath))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
-		return 1
+		return configExitCode(err)
 	}
 	if err := makeRepoLayout(layoutOf(absRepoPath, cfg)); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
@@ -84,6 +86,19 @@ func readRefs(path string) (map[string]string, error) {
 		refs[fields[0]] = fields[1]
 	}
 	return refs, sc.Err()
+}
+
+// localRefRecord gives the ref record of the line name, id of refs.txt.
+// The line has no time of its own: the record takes the time of the
+// snapshot, or no time when the catalog c does not hold the snapshot.
+// The caller checks that name fits a ref record.
+func localRefRecord(c *catalog.Catalog, name string, id object.ID) format.RefRecord {
+	rec := format.RefRecord{SnapshotID: id, NameLen: uint16(len(name))}
+	copy(rec.Name[:], name)
+	if snap, err := c.ReadSnapshot(id); err == nil {
+		rec.TimeSec, rec.TimeNsec = snap.TimeSec, snap.TimeNsec
+	}
+	return rec
 }
 
 // parseSnapshotID parses a snapshot id in the text form object.ID.TextForm

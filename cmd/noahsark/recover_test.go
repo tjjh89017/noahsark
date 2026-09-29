@@ -559,6 +559,60 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 	}
 }
 
+// TestRecoverKeepsANewerCommittedRef packs two discs that carry the ref
+// R, rebuilds the repository from the first disc, and commits again: R
+// moves to a new snapshot. Then recover reads the second disc, which the
+// repository does not know. Its record of R is older than the commit,
+// thus R still names the new snapshot.
+func TestRecoverKeepsANewerCommittedRef(t *testing.T) {
+	clock := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
+	setFakeNow(t, func() time.Time {
+		clock = clock.Add(time.Minute)
+		return clock
+	})
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	firstSrc := writeRefsCarryFixture(t, "first")
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=R", firstSrc); code != 0 {
+		t.Fatalf("commit 1: exit %d: %s", code, out)
+	}
+	disc0 := filepath.Join(work, "disc0")
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+disc0); code != 0 {
+		t.Fatalf("pack 1: exit %d: %s", code, out)
+	}
+	secondSrc := writeRefsCarryFixture(t, "second")
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=R", secondSrc); code != 0 {
+		t.Fatalf("commit 2: exit %d: %s", code, out)
+	}
+	disc1 := filepath.Join(work, "disc1")
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+disc1); code != 0 {
+		t.Fatalf("pack 2: exit %d: %s", code, out)
+	}
+
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := recoverDisc(t, repo, firstSrc, disc0); code != 0 {
+		t.Fatalf("recover disc 0: exit %d: %s", code, out)
+	}
+	thirdSrc := writeRefsCarryFixture(t, "third")
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=R", thirdSrc)
+	if code != 0 {
+		t.Fatalf("commit 3: exit %d: %s", code, out)
+	}
+	want := snapshotIDFromCommit(t, out)
+
+	if code, out := recoverDisc(t, repo, firstSrc, disc1); code != 0 {
+		t.Fatalf("recover disc 1: exit %d: %s", code, out)
+	}
+	if id, err := resolveRef(testLayout(t, repo).refsFile(), "R"); err != nil || id.TextForm() != want {
+		t.Fatalf("resolveRef(R) = %v, %v after recover, want the committed snapshot %s", id, err, want)
+	}
+}
+
 // TestConfigStagingDirSurvivesRepositoryRename reproduces renaming a
 // repository directory out of the way before rebuilding a fresh one at
 // its old path: "mv repo repo.lost", then "recover" into a new

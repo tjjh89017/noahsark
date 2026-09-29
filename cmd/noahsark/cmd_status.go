@@ -56,7 +56,7 @@ func cmdStatus(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 2
+		return configExitCode(err)
 	}
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)

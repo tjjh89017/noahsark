@@ -113,6 +113,37 @@ func TestLogValueOfADash(t *testing.T) {
 	}
 }
 
+// TestLogCommaInsideAValue commits a source path and a ref name that
+// hold ",". In the refs and the source path fields, a "," inside a value
+// prints as `\x2c`, thus each "," separates two values. The message
+// field holds one value and keeps its ",".
+func TestLogCommaInsideAValue(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := filepath.Join(t.TempDir(), "a,b")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=x,y", "-m", "m,n", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	appendRef(t, repo, "z", fullSnapshotID(t, repo))
+	code, out, errOut := runLs(t, repo, "log")
+	if code != 0 {
+		t.Fatalf("log: exit %d: %s", code, errOut)
+	}
+	f := strings.Split(strings.TrimSuffix(out, "\n"), "\t")
+	wantSource := strings.ReplaceAll(src, ",", `\x2c`)
+	if len(f) != 5 || f[2] != `x\x2cy,z` || f[3] != wantSource || f[4] != "m,n" {
+		t.Fatalf("log line %q, want the refs `x\\x2cy,z`, the source %q and the message m,n", out, wantSource)
+	}
+}
+
 // TestLogRefToASnapshotNotHeld checks the line of a ref whose snapshot
 // object the catalog does not hold: "-" in the time, the source path and
 // the message fields.

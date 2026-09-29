@@ -67,12 +67,7 @@ func (s *catalogSource) Refs() (*format.RefsTable, error) {
 		if err != nil || len(name) > format.RefNameLen {
 			continue
 		}
-		rec := format.RefRecord{SnapshotID: id, NameLen: uint16(len(name))}
-		copy(rec.Name[:], name)
-		if snap, err := s.c.ReadSnapshot(id); err == nil {
-			rec.TimeSec, rec.TimeNsec = snap.TimeSec, snap.TimeNsec
-		}
-		catalog.MergeRef(newest, rec)
+		catalog.MergeRef(newest, localRefRecord(s.c, name, id))
 	}
 	names := slices.Sorted(maps.Keys(newest))
 	merged := &format.RefsTable{RecordCount: uint64(len(names)), Records: make([]format.RefRecord, 0, len(names))}
