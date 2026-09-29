@@ -35,7 +35,23 @@ func outDirSetup(holdsFile bool) func(*testing.T, *discFixture) {
 			t.Fatal(err)
 		}
 		fx.set("{OUT}", out)
+		fx.cell("DIR", out)
 	}
+}
+
+// nextDiscCells gives the cells the number and the label of the disc
+// that the next pack writes: disc 1 with the ref of today. Its uuid is
+// not known before the pack.
+func nextDiscCells(_ *testing.T, fx *discFixture) {
+	fx.cell("SEQ", "1")
+	fx.cell("LABEL", defaultRefName()+" disc 1")
+	fx.cell("UUID", "")
+}
+
+// newDiscUUID is the uuid of the disc that the uuid line of pack names.
+func newDiscUUID(t *testing.T, _ *discFixture, stdout string) string {
+	t.Helper()
+	return packedDiscUUID(t, stdout)
 }
 
 // newDiscIsPacked is a check: the uuid line of pack names a new disc,
@@ -67,54 +83,60 @@ func init() {
 	registerStateCases(
 		stateCase{
 			row: "5", name: "pack of staged items",
-			start: stage.DiscUndone, args: []string{"pack", "--capacity=64MiB"},
-			stdout: []string{`packed disc 1 "{REF} disc 1": `, " item(s), ", " bytes\nuuid: "}, next: true,
-			end: stage.DiscUndone, check: newDiscIsPacked,
+			start: stage.DiscUndone, setup: nextDiscCells,
+			args:    []string{"pack", "--capacity=64MiB"},
+			exact:   true,
+			subject: newDiscUUID,
+			end:     stage.DiscUndone, check: newDiscIsPacked,
 		},
 		stateCase{
 			row: "6", name: "pack with no --capacity",
 			start: stage.DiscUndone, args: []string{"pack"},
-			exit: 2, stderr: []string{"pack needs --capacity"}, noEvent: true,
-			end: stage.DiscUndone,
+			noEvent: true,
+			end:     stage.DiscUndone,
 		},
 		stateCase{
 			row: "7", name: "pack with a capacity that holds not one item",
 			start: stage.DiscUndone, args: []string{"pack", "--capacity=50KiB"},
-			exit: 2, stderr: []string{"capacity ", " holds not one item"}, noEvent: true,
-			absent: []string{"internal error"},
-			end:    stage.DiscUndone,
+			noEvent: true,
+			absent:  []string{"internal error"},
+			end:     stage.DiscUndone,
 		},
 		stateCase{
 			row: "8", name: "pack with nothing staged",
 			start: stage.DiscPacked, args: []string{"pack", "--capacity=64MiB"},
-			stdout: []string{"pack: nothing staged\n"}, exact: true, next: true, noEvent: true,
+			exact: true, noEvent: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
 		stateCase{
 			row: "9", name: "pack while another disc is packed",
-			start: stage.DiscPacked, setup: addFileSetup,
-			args:   []string{"pack", "--capacity=64MiB"},
-			stdout: []string{`packed disc 1 "{REF} disc 1": `, " item(s), ", " bytes\nuuid: "}, next: true,
-			end: stage.DiscPacked, word: stage.WordPacked, check: newDiscIsPacked,
+			start: stage.DiscPacked,
+			setup: func(t *testing.T, fx *discFixture) {
+				addFileSetup(t, fx)
+				nextDiscCells(t, fx)
+			},
+			args:  []string{"pack", "--capacity=64MiB"},
+			exact: true,
+			end:   stage.DiscPacked, word: stage.WordPacked, check: newDiscIsPacked,
 		},
 		stateCase{
 			row: "10a", name: "dry run with nothing staged",
 			start: stage.DiscPacked, args: []string{"pack", "--capacity=64MiB", "--dry-run"},
-			stdout: []string{"pack: nothing staged\n"}, exact: true, noEvent: true, sameCatalog: true,
+			exact: true, noEvent: true, sameCatalog: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
 		stateCase{
 			row: "10b", name: "dry run of staged items",
 			start: stage.DiscUndone, args: []string{"pack", "--capacity=64MiB", "--dry-run"},
-			stdout:  []string{"disc 1: ", " items, ", " bytes\n", "total: 1 discs, ", " items, ", " bytes\n"},
+			cells:   map[string]string{"N": "1", "D": "1"},
+			exact:   true,
 			noEvent: true, sameCatalog: true,
 			end: stage.DiscUndone, check: onlyTheFixtureDisc,
 		},
 		stateCase{
 			row: "10c", name: "pack --out of a directory that holds files",
 			start: stage.DiscUndone, setup: outDirSetup(true),
-			args: []string{"pack", "--capacity=64MiB", "--out={OUT}"},
-			exit: 2, stderr: []string{"--out={OUT} holds files; give an empty or absent directory\n"},
+			args:    []string{"pack", "--capacity=64MiB", "--out={OUT}"},
 			noEvent: true, sameCatalog: true,
 			end: stage.DiscUndone,
 			check: func(t *testing.T, fx *discFixture, _, _ string) {
@@ -126,8 +148,7 @@ func init() {
 		stateCase{
 			row: "10d", name: "pack --out of a file",
 			start: stage.DiscUndone, setup: outDirSetup(false),
-			args: []string{"pack", "--capacity=64MiB", "--out={OUT}"},
-			exit: 2, stderr: []string{"--out={OUT} is not a directory\n"},
+			args:    []string{"pack", "--capacity=64MiB", "--out={OUT}"},
 			noEvent: true, sameCatalog: true,
 			end: stage.DiscUndone,
 		},

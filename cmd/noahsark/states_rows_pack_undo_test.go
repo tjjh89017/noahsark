@@ -14,24 +14,11 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// packUndoWarning is the warning of "pack --undo" in rows 11, 11a, 80
-// and 81.
-var packUndoWarning = []string{
-	`warning: {DISC} ({UUID}): packed -> undone`,
-	"the items return to staged; the disc number {SEQ} is not used again",
-}
-
-// packUndoDone is the line of a pack --undo that returned the items of
-// the one disc of the fixture.
-const packUndoDone = `{DISC}: pack undone, `
-
 func init() {
-	refused := func(row, name string, start stage.DiscState, reason string, word stage.ItemWord) stateCase {
+	refused := func(row, name string, start stage.DiscState, word stage.ItemWord) stateCase {
 		return stateCase{
 			row: row, name: name,
 			start: start, args: []string{"--yes", "pack", "--undo", "{SEQ}"},
-			exit:   1,
-			stderr: []string{"disc {SEQ} " + reason + "; pack cannot be undone"},
 			absent: []string{confirmQuestion, "warning:"},
 			end:    start, word: word,
 		}
@@ -39,20 +26,17 @@ func init() {
 	registerStateCases(
 		stateCase{
 			row: "11", name: "pack undone, answer yes",
-			start: stage.DiscPacked, args: []string{"pack", "--undo", "{SEQ}"},
+			start: stage.DiscPacked, setup: countItemsSetup,
+			args:   []string{"pack", "--undo", "{SEQ}"},
 			stdin:  stdinYes,
-			stderr: append(slices.Clone(packUndoWarning), confirmQuestion),
-			stdout: []string{packUndoDone, "item(s) returned to staged"}, next: true,
 			absent: []string{"disc root"},
 			end:    stage.DiscUndone,
 		},
 		stateCase{
 			row: "11a", name: "pack undo, answer no",
 			start: stage.DiscPacked, args: []string{"pack", "--undo", "{SEQ}"},
-			stdin: stdinNo, exit: 1,
-			stderr: append(slices.Clone(packUndoWarning), confirmQuestion),
-			stdout: []string{"nothing changed"},
-			end:    stage.DiscPacked, word: stage.WordPacked,
+			stdin: stdinNo,
+			end:   stage.DiscPacked, word: stage.WordPacked,
 		},
 		// Row 12: a later disc exists. After the undo of the later disc,
 		// the older disc is the newest again.
@@ -60,8 +44,6 @@ func init() {
 			row: "12", name: "pack undo of an older disc",
 			start: stage.DiscPacked, setup: secondDiscSetup,
 			args:   []string{"--yes", "pack", "--undo", "0"},
-			exit:   1,
-			stderr: []string{"disc 0 is not the newest disc; pack cannot be undone\n"},
 			absent: []string{"warning:"},
 			end:    stage.DiscPacked, word: stage.WordPacked,
 			check: func(t *testing.T, fx *discFixture, _, _ string) {
@@ -75,31 +57,25 @@ func init() {
 				}
 			},
 		},
-		refused("13", "pack undo of a burned disc", stage.DiscBurned, "has a burn record", stage.WordBurned),
-		refused("14", "pack undo of a verified disc", stage.DiscVerified, "is no longer packed", stage.WordClean),
-		refused("14", "pack undo of an on disc only disc", stage.DiscOnDiscOnly, "is no longer packed", stage.WordOnDisc),
-		refused("14", "pack undo of a lost disc", stage.DiscLost, "is no longer packed", ""),
-		refused("14", "pack undo of a missing disc", stage.DiscMissing, "is no longer packed", ""),
+		refused("13", "pack undo of a burned disc", stage.DiscBurned, stage.WordBurned),
+		refused("14", "pack undo of a verified disc", stage.DiscVerified, stage.WordClean),
+		refused("14", "pack undo of an on disc only disc", stage.DiscOnDiscOnly, stage.WordOnDisc),
+		refused("14", "pack undo of a lost disc", stage.DiscLost, ""),
+		refused("14", "pack undo of a missing disc", stage.DiscMissing, ""),
 		stateCase{
-			row: "80", name: "pack undo with --yes",
+			row: "80", name: "pack undo with --yes", like: "11",
 			start: stage.DiscPacked, args: []string{"--yes", "pack", "--undo", "{SEQ}"},
-			stderr: packUndoWarning, absent: []string{confirmQuestion},
-			stdout: []string{packUndoDone}, next: true,
 			end: stage.DiscUndone,
 		},
 		stateCase{
-			row: "80", name: "pack undo with --force-yes",
+			row: "80", name: "pack undo with --force-yes", like: "11",
 			start: stage.DiscPacked, args: []string{"--force-yes", "pack", "--undo", "{SEQ}"},
-			stderr: packUndoWarning, absent: []string{confirmQuestion},
-			stdout: []string{packUndoDone}, next: true,
 			end: stage.DiscUndone,
 		},
 		stateCase{
-			row: "81", name: "pack undo with no terminal and no answer flag",
+			row: "81", name: "pack undo with no terminal and no answer flag", like: "11",
 			start: stage.DiscPacked, args: []string{"pack", "--undo", "{SEQ}"},
-			exit:   1,
-			stderr: packUndoWarning, absent: []string{confirmQuestion},
-			stdout: []string{"nothing changed"},
+			absent: []string{confirmQuestion},
 			end:    stage.DiscPacked, word: stage.WordPacked,
 		},
 	)

@@ -703,6 +703,18 @@ type discFixture struct {
 	root string
 	// vars maps more placeholders of a state case to their text.
 	vars map[string]string
+	// cells maps placeholders of the cells of the state x event table,
+	// such as N, to the value that the event prints.
+	cells map[string]string
+}
+
+// cell makes the placeholder name of the cells stand for value. An
+// empty value matches the placeholder by its kind.
+func (fx *discFixture) cell(name, value string) {
+	if fx.cells == nil {
+		fx.cells = map[string]string{}
+	}
+	fx.cells[name] = value
 }
 
 // name is the disc name of a message that reports a change:

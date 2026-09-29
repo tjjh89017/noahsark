@@ -1,11 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"os"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -28,23 +29,32 @@ const (
 )
 
 // stateCase is one case of a row of the state x event table in
-// docs/states.md. The text of args, stdout, stderr and absent can hold
-// these placeholders: {DISC} is `disc SEQ "LABEL"`, {SEQ}, {LABEL},
-// {UUID}, {ROOT} is the disc root that the event reads, {SRC} is the
-// source of the commit, {REPO} is the repository, {REF} is the ref name
-// of a commit today, and each key that setup puts into the vars of the
+// docs/states.md. The harness takes the exit code, the lines of the
+// output, the next line and the disc state after the event from the
+// cells of the row. The text of args, also and absent can hold these
+// placeholders: {DISC} is `disc SEQ "LABEL"`, {SEQ}, {LABEL}, {UUID},
+// {ROOT} is the disc root that the event reads, {SRC} is the source of
+// the commit, {REPO} is the repository, {REF} is the ref name of a
+// commit today, and each key that setup puts into the vars of the
 // fixture.
 type stateCase struct {
 	// row is the row number of the table, for example "24a".
 	row  string
 	name string
+	// like is the answer-yes row whose warning and message a row of the
+	// answer rules names, for example "24" for a case of row 80.
+	like string
 	// start is the state of the one disc of the repository that
 	// repoWithDisc builds.
 	start stage.DiscState
 	// setup changes the fixture after repoWithDisc and before the event.
 	// It can damage the disc root, point {ROOT} to another disc root,
-	// add a disc, set the fake clock, or set a placeholder.
+	// add a disc, set the fake clock, set a placeholder, or give the
+	// value of a placeholder of the cells with fx.cell.
 	setup func(t *testing.T, fx *discFixture)
+	// cells gives the values of placeholders of the cells, for example
+	// "N": "1".
+	cells map[string]string
 	// noRepo runs the event with no --repo, in an empty working
 	// directory.
 	noRepo bool
@@ -52,24 +62,28 @@ type stateCase struct {
 	root  bool
 	args  []string
 	stdin stateStdin
-	exit  int
-	// stdout and stderr are texts that the output must hold, in order.
-	stdout []string
-	stderr []string
-	// exact is true when standard output must be exactly the stdout
-	// texts, then the next line when next is true.
-	exact bool
+	// omit are spans of the Message cell that this case does not print,
+	// as the cell writes them. The output must not hold them. An omitted
+	// span of an alternative drops that alternative.
+	omit []string
+	// also are texts that the output, standard output and then standard
+	// error, must hold in order, beyond the lines of the cells.
+	also []string
+	// exact is true when each line of standard output is a line of the
+	// cell or the next line. exactStderr is the same for standard error.
+	exact       bool
+	exactStderr bool
 	// absent are texts that neither output may hold.
 	absent []string
-	// next is true when the last line of standard output must be the
-	// next line. When next is false, no output may hold the next line.
-	next bool
 	// noEvent is true when the event must not write the disc state log.
 	noEvent bool
 	// sameCatalog is true when the event must not add, remove or rename
 	// a file of the catalog.
 	sameCatalog bool
-	// end is the disc state after the event.
+	// subject returns the uuid of the disc whose state the Result cell
+	// names. nil names the disc of the fixture.
+	subject func(t *testing.T, fx *discFixture, stdout string) string
+	// end is the disc state of the disc of the fixture after the event.
 	end stage.DiscState
 	// word is the item word of every item of the disc after the event.
 	// An empty word skips the check.
@@ -86,35 +100,6 @@ var stateCases []stateCase
 // registerStateCases adds cs to the cases that TestStatesTable runs.
 func registerStateCases(cs ...stateCase) {
 	stateCases = append(stateCases, cs...)
-}
-
-// stateRowRe matches a row of the state x event table and captures the
-// row number.
-var stateRowRe = regexp.MustCompile(`^\| (\d+[a-z]?) \|`)
-
-// stateTableRows returns the row numbers of the state x event table in
-// docs/states.md.
-func stateTableRows(t *testing.T) map[string]bool {
-	t.Helper()
-	f, err := os.Open("../../docs/states.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	rows := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if m := stateRowRe.FindStringSubmatch(sc.Text()); m != nil {
-			rows[m[1]] = true
-		}
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) == 0 {
-		t.Fatal("docs/states.md holds no row of the state x event table")
-	}
-	return rows
 }
 
 // sortedRows returns the keys of rows in the order of the row number,
@@ -138,20 +123,20 @@ func sortedRows(rows map[string]bool) []string {
 }
 
 // TestStatesTableIsComplete fails when a row of the state x event table
-// has no registered case, and when a case names a row that the table
-// does not have.
+// has no registered case, when a case names a row that the table does
+// not have, and when knownDisagreements names no case.
 func TestStatesTableIsComplete(t *testing.T) {
-	rows := stateTableRows(t)
+	tb := loadStateTable(t)
 	covered := map[string]bool{}
 	unknown := map[string]bool{}
 	for _, c := range stateCases {
 		covered[c.row] = true
-		if !rows[c.row] {
+		if tb.rows[c.row] == nil {
 			unknown[c.row] = true
 		}
 	}
 	var missing []string
-	for _, id := range sortedRows(rows) {
+	for _, id := range tb.ids {
 		if !covered[id] {
 			missing = append(missing, id)
 		}
@@ -162,19 +147,26 @@ func TestStatesTableIsComplete(t *testing.T) {
 	if len(unknown) > 0 {
 		t.Errorf("registered cases name rows that docs/states.md does not have: %s", strings.Join(sortedRows(unknown), ", "))
 	}
+	for key := range knownDisagreements {
+		row, name, _ := strings.Cut(key, "/")
+		if !slices.ContainsFunc(stateCases, func(c stateCase) bool { return c.row == row && (name == "" || c.name == name) }) {
+			t.Errorf("knownDisagreements names %q, which is no case", key)
+		}
+	}
 }
 
 // TestStatesTable runs each registered case: it builds the repository
-// with the start state, runs the event, and checks the exit code, the
-// messages, the next line, the disc state and the item words.
+// with the start state, runs the event, and compares the exit code, the
+// messages, the next line and the disc state with the cells of the row.
+// It also makes the extra checks of the case.
 func TestStatesTable(t *testing.T) {
-	rows := stateTableRows(t)
+	tb := loadStateTable(t)
 	for _, c := range stateCases {
 		t.Run("row "+c.row+"/"+c.name, func(t *testing.T) {
-			if !rows[c.row] {
+			if tb.rows[c.row] == nil {
 				t.Fatalf("docs/states.md has no row %s", c.row)
 			}
-			runStateCase(t, c)
+			runStateCase(t, tb, c)
 		})
 	}
 }
@@ -187,14 +179,19 @@ func (r *readSpy) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// runStateCase runs one state case.
-func runStateCase(t *testing.T, c stateCase) {
+// runStateCase runs one state case and compares it with the cells of
+// its row.
+func runStateCase(t *testing.T, tb *stateTable, c stateCase) {
 	t.Helper()
 	fx := repoWithDisc(t, c.start)
+	for k, v := range c.cells {
+		fx.cell(k, v)
+	}
 	if c.setup != nil {
 		c.setup(t, fx)
 	}
 	fill := fx.filler()
+	before := discStateIfRepo(t, fx.repo, fx.uuid)
 
 	spy := &readSpy{}
 	switch c.stdin {
@@ -230,38 +227,35 @@ func runStateCase(t *testing.T, c stateCase) {
 	te.euid = func() int { return uid }
 	code, _ := te.run(args...)
 	stdout, stderr := te.out.String(), te.errOut.String()
-	if code != c.exit {
-		t.Fatalf("%v: exit %d, want %d\nstdout: %s\nstderr: %s", args, code, c.exit, stdout, stderr)
+
+	cellErrs := compareWithCells(t, tb, c, fx, before, code, stdout, stderr)
+	key := c.row + "/" + c.name
+	reason, known := knownDisagreements[key]
+	if !known {
+		reason, known = knownDisagreements[c.row]
 	}
+	switch {
+	case known && len(cellErrs) == 0:
+		t.Errorf("knownDisagreements names %s (%s), but the case agrees with the cells", key, reason)
+	case known:
+		for _, e := range cellErrs {
+			t.Logf("known disagreement of row %s (%s): %s", c.row, reason, e)
+		}
+	case len(cellErrs) > 0:
+		for _, e := range cellErrs {
+			t.Errorf("row %s: %s", c.row, e)
+		}
+		t.Logf("%v: exit %d\nstdout: %s\nstderr: %s", args, code, stdout, stderr)
+	}
+
 	if spy.read {
 		t.Error("the command read standard input with no terminal")
 	}
-	wantInOrder(t, "stdout", stdout, c.stdout, fill)
-	wantInOrder(t, "stderr", stderr, c.stderr, fill)
-	if c.exact {
-		var want strings.Builder
-		for _, s := range c.stdout {
-			want.WriteString(fill(s))
-		}
-		if c.next {
-			want.WriteString(nextStatusLine + "\n")
-		}
-		if stdout != want.String() {
-			t.Errorf("stdout %q, want exactly %q\nstderr: %s", stdout, want.String(), stderr)
-		}
-	}
+	wantInOrder(t, "output", stdout+stderr, c.also, fill)
 	for _, a := range c.absent {
 		if text := fill(a); strings.Contains(stdout, text) || strings.Contains(stderr, text) {
 			t.Errorf("output holds %q\nstdout: %s\nstderr: %s", text, stdout, stderr)
 		}
-	}
-	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if c.next {
-		if last := lines[len(lines)-1]; last != nextStatusLine {
-			t.Errorf("last stdout line %q, want %q", last, nextStatusLine)
-		}
-	} else if strings.Contains(stdout+stderr, nextStatusLine) {
-		t.Errorf("output holds the next line, want none\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if c.noEvent && !bytes.Equal(discLogBytes(t, fx.repo), logBefore) {
 		t.Error("the event wrote the disc state log")
@@ -284,6 +278,105 @@ func runStateCase(t *testing.T, c stateCase) {
 	}
 }
 
+// compareWithCells compares the exit code, the output, the next line
+// and the disc state after the event with the cells of the row of c.
+// before is the state of the disc of the fixture before the event. It
+// returns the differences.
+func compareWithCells(t *testing.T, tb *stateTable, c stateCase, fx *discFixture, before stage.DiscState, code int, stdout, stderr string) []string {
+	t.Helper()
+	var diffs []string
+	diff := func(format string, a ...any) { diffs = append(diffs, fmt.Sprintf(format, a...)) }
+
+	want, err := tb.exitCode(c.row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != want {
+		diff("Exit: exit %d, the cell says %d", code, want)
+	}
+
+	values := map[string]string{
+		"SEQ":   strconv.FormatUint(fx.seq, 10),
+		"LABEL": fx.label,
+		"UUID":  fx.uuid,
+		"REPO":  fx.repo,
+	}
+	if before != stage.DiscUnknown {
+		values["STATE"] = before.String()
+	}
+	maps.Copy(values, fx.cells)
+	out, errOut := newOutputLines(stdout), newOutputLines(stderr)
+	msg, err := tb.message(c.row, c.like)
+	switch {
+	case errors.Is(err, errIrregular) && irregularMessageRows[c.row] != "":
+		t.Logf("row %s: no Message check: %s", c.row, irregularMessageRows[c.row])
+	case err != nil:
+		t.Fatalf("row %s: Message: %v", c.row, err)
+	default:
+		spans := tb.spansOf(c.row)
+		for _, o := range c.omit {
+			if !slices.Contains(spans, o) {
+				t.Fatalf("omit names %q, which is not a span of the Message cell of row %s", o, c.row)
+			}
+		}
+		mc := messageCheck{msg: msg, values: values, flags: c.args, omit: c.omit}
+		for _, p := range mc.run(out, errOut) {
+			diff("Message: %s", p)
+		}
+	}
+
+	// The document prints no next line for a --dry-run run.
+	if msg.next && !slices.Contains(c.args, "--dry-run") {
+		if n := len(out.lines); n == 0 || out.lines[n-1] != nextStatusLine {
+			diff("Message: the last line of stdout is not %q", nextStatusLine)
+		} else {
+			out.used[n-1] = true
+		}
+	} else if strings.Contains(stdout+stderr, nextStatusLine) {
+		diff("Message: the output holds %q, and the cell does not name it", nextStatusLine)
+	}
+	if c.exact {
+		for i, used := range out.used {
+			if !used {
+				diff("Message: stdout line %q is not a line of the cell", out.lines[i])
+			}
+		}
+	}
+	if c.exactStderr {
+		for i, used := range errOut.used {
+			if !used {
+				diff("Message: stderr line %q is not a line of the cell", errOut.lines[i])
+			}
+		}
+	}
+
+	kind, wantState, err := tb.result(c.row, c.like)
+	if err != nil {
+		t.Fatalf("row %s: Result: %v", c.row, err)
+	}
+	subject := fx.uuid
+	if c.subject != nil {
+		subject = c.subject(t, fx, stdout)
+	}
+	switch got := discState(t, fx.repo, subject).State; {
+	case kind == resultUnchanged && subject == fx.uuid && got != before:
+		diff("Result: disc state %s, the cell says unchanged from %s", got, before)
+	case kind == resultState && got != wantState:
+		diff("Result: disc state %s, the cell says %s", got, wantState)
+	}
+	return diffs
+}
+
+// discStateIfRepo returns the state of the disc uuidText in repo, or
+// unknown when repo has no config.
+func discStateIfRepo(t *testing.T, repo, uuidText string) stage.DiscState {
+	t.Helper()
+	if _, err := os.Stat(configPath(repo)); err != nil {
+		return stage.DiscUnknown
+	}
+	return discState(t, repo, uuidText).State
+}
+
 // wantInOrder checks that out holds each of want, after fill, in order.
 func wantInOrder(t *testing.T, name, out string, want []string, fill func(string) string) {
 	t.Helper()
@@ -296,16 +389,6 @@ func wantInOrder(t *testing.T, name, out string, want []string, fill func(string
 			return
 		}
 		rest = rest[i+len(text):]
-	}
-}
-
-// stderrIs is a check: standard error is exactly text.
-func stderrIs(text string) func(*testing.T, *discFixture, string, string) {
-	return func(t *testing.T, fx *discFixture, _, stderr string) {
-		t.Helper()
-		if want := fx.filler()(text); stderr != want {
-			t.Errorf("stderr %q, want %q", stderr, want)
-		}
 	}
 }
 
@@ -335,13 +418,11 @@ func init() {
 		stateCase{
 			row: "2", name: "commit refused while a disc is missing",
 			start: stage.DiscMissing, args: []string{"commit", "{SRC}"},
-			exit: 1, stderr: []string{`{DISC} is missing`},
 			end: stage.DiscMissing,
 		},
 		stateCase{
 			row: "10", name: "pack refused while a disc is missing",
 			start: stage.DiscMissing, args: []string{"pack", "--capacity=64MiB"},
-			exit: 1, stderr: []string{`{DISC} is missing`},
 			end: stage.DiscMissing,
 		},
 	)

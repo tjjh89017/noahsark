@@ -18,15 +18,15 @@ func init() {
 	registerStateCases(stateCase{
 		row: "69", name: "missing disc given",
 		start: stage.DiscMissing, args: []string{"recover", "--source={SRC}", "--disc={ROOT}"},
-		stdout: []string{"recover: ok\n"}, next: true,
-		end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+		exact: true,
+		end:   stage.DiscOnDiscOnly, word: stage.WordOnDisc,
 	})
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscBurned, stage.DiscVerified, stage.DiscOnDiscOnly, stage.DiscLost} {
 		registerStateCases(stateCase{
 			row: "70c", name: s.String() + " disc given",
 			start: s, args: []string{"recover", "--source={SRC}", "--disc={ROOT}"},
-			stdout: []string{"recover: ok; {DISC} already known\n"}, next: true,
-			end: s,
+			exact: true,
+			end:   s,
 		})
 	}
 }
@@ -142,13 +142,26 @@ func catalogStateEnds(mark string) func(*testing.T, *discFixture, string, string
 }
 
 // damageSetup removes the repository of fx and damages the first object
-// of kind in its disc root. {BAD} is the full text id of that object.
+// of kind in its disc root.
 func damageSetup(kind format.ObjectKind) func(*testing.T, *discFixture) {
 	return func(t *testing.T, fx *discFixture) {
 		t.Helper()
 		removeRepoSetup(t, fx)
 		indexObjects(t, fx)
-		fx.set("{BAD}", damageObject(t, fx.root, kind).TextForm())
+		damageOneSetup(kind)(t, fx)
+	}
+}
+
+// damageOneSetup damages the first object of kind in the disc root of
+// fx. {BAD} and the placeholder ID of the cells are the full text id of
+// that object. N, the count of damaged items, is 1.
+func damageOneSetup(kind format.ObjectKind) func(*testing.T, *discFixture) {
+	return func(t *testing.T, fx *discFixture) {
+		t.Helper()
+		bad := damageObject(t, fx.root, kind).TextForm()
+		fx.set("{BAD}", bad)
+		fx.cell("ID", bad)
+		fx.cell("N", "1")
 	}
 }
 
@@ -165,9 +178,10 @@ func badHasNoRecord(t *testing.T, fx *discFixture, _, _ string) {
 	}
 }
 
-// recoverDamaged is the output of a recover of a disc root with the one
-// damaged object {BAD}.
-var recoverDamaged = []string{"recover: damaged: {BAD}\n", "recover: 1 item(s) damaged on {DISC}\n"}
+// secondDiscUUID is the uuid of disc 1 of secondDiscCopySetup.
+func secondDiscUUID(_ *testing.T, fx *discFixture, _ string) string {
+	return fx.vars["{UUID1}"]
+}
 
 func init() {
 	recoverArgs := []string{"recover", "--source={SRC}", "--disc={ROOT}"}
@@ -180,9 +194,9 @@ func init() {
 				removeRepoSetup(t, fx)
 				indexObjects(t, fx)
 			},
-			args:   recoverArgs,
-			stdout: []string{"recover: ok\n"}, exact: true, next: true,
-			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			args:  recoverArgs,
+			exact: true,
+			end:   stage.DiscOnDiscOnly, word: stage.WordOnDisc,
 			check: allChecks(
 				lastCheckIs(stage.CheckResultNone),
 				countIs(stage.OnDisc, "{OBJECTS}", 0),
@@ -213,15 +227,10 @@ func init() {
 		stateCase{
 			row: "68", name: "no repository, the second of two discs",
 			start: stage.DiscPacked, setup: secondDiscCopySetup,
-			args:   []string{"recover", "--source={SRC}", "--disc={ROOT1}"},
-			exit:   1,
-			stdout: []string{`recover: {DISC} ({UUID}) named by another disc, not yet given` + "\n"}, exact: true, next: true,
-			end: stage.DiscMissing,
-			check: func(t *testing.T, fx *discFixture, _, _ string) {
-				if got := discState(t, fx.repo, fx.vars["{UUID1}"]).State; got != stage.DiscOnDiscOnly {
-					t.Errorf("second disc %s, want on disc only", got)
-				}
-			},
+			args:    []string{"recover", "--source={SRC}", "--disc={ROOT1}"},
+			exact:   true,
+			subject: secondDiscUUID,
+			end:     stage.DiscMissing,
 		},
 		// Row 70: recover of a disc that the repository does not know
 		// into an existing repository. An item that the repository staged
@@ -239,17 +248,11 @@ func init() {
 				}
 				fx.set("{STAGED}", strconv.Itoa(staged))
 			},
-			args:   []string{"recover", "--source={SRC}", "--disc={ROOT1}"},
-			stdout: []string{"recover: ok\n"}, exact: true, next: true,
-			end: stage.DiscOnDiscOnly,
-			check: allChecks(
-				countIs(stage.Staged, "{STAGED}", 0),
-				func(t *testing.T, fx *discFixture, _, _ string) {
-					if got := discState(t, fx.repo, fx.vars["{UUID1}"]).State; got != stage.DiscOnDiscOnly {
-						t.Errorf("second disc %s, want on disc only", got)
-					}
-				},
-			),
+			args:    []string{"recover", "--source={SRC}", "--disc={ROOT1}"},
+			exact:   true,
+			subject: secondDiscUUID,
+			end:     stage.DiscOnDiscOnly,
+			check:   countIs(stage.Staged, "{STAGED}", 0),
 		},
 		// Row 70b: a disc of another repository is refused.
 		stateCase{
@@ -265,20 +268,14 @@ func init() {
 				if err != nil {
 					t.Fatal(err)
 				}
-				fx.set("{OTHER}", other.uuid)
-				fx.set("{OTHERREPO}", uuidText(otherRepo))
+				fx.cell("UUID", other.uuid)
+				fx.cell("RUUID", uuidText(otherRepo))
 				fx.root = other.root
 			},
-			args:   recoverArgs,
-			exit:   1,
-			stderr: []string{"disc {OTHER} belongs to repository {OTHERREPO}, not to this repository\n"},
-			exact:  true, noEvent: true,
+			args:  recoverArgs,
+			exact: true, noEvent: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
-			check: func(t *testing.T, fx *discFixture, _, stderr string) {
-				want := fx.filler()("disc {OTHER} belongs to repository {OTHERREPO}, not to this repository\n")
-				if !strings.HasSuffix(stderr, want) {
-					t.Errorf("stderr %q, want the suffix %q", stderr, want)
-				}
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
 				if n := len(readDiscLog(t, fx.repo).Discs()); n != 1 {
 					t.Errorf("the disc state log knows %d disc(s), want 1", n)
 				}
@@ -288,13 +285,9 @@ func init() {
 		// recover writes no event.
 		stateCase{
 			row: "70d", name: "a damaged copy of a verified disc",
-			start: stage.DiscVerified,
-			setup: func(t *testing.T, fx *discFixture) {
-				fx.set("{BAD}", damageObject(t, fx.root, format.ObjectKindChunk).TextForm())
-			},
-			args:   recoverArgs,
-			exit:   1,
-			stdout: recoverDamaged, exact: true, next: true, noEvent: true,
+			start: stage.DiscVerified, setup: damageOneSetup(format.ObjectKindChunk),
+			args:  recoverArgs,
+			exact: true, noEvent: true,
 			end: stage.DiscVerified, word: stage.WordClean,
 		},
 	)
@@ -308,10 +301,9 @@ func init() {
 		registerStateCases(stateCase{
 			row: "70a", name: fmt.Sprintf("no repository, a damaged object of kind %d", damaged.kind),
 			start: stage.DiscPacked, setup: damageSetup(damaged.kind),
-			args:   recoverArgs,
-			exit:   1,
-			stdout: recoverDamaged, exact: true, next: true,
-			end: stage.DiscOnDiscOnly,
+			args:  recoverArgs,
+			exact: true,
+			end:   stage.DiscOnDiscOnly,
 			check: allChecks(
 				lastCheckIs(stage.CheckResultFailed),
 				badHasNoRecord,
