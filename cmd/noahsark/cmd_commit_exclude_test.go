@@ -43,7 +43,7 @@ func mustWriteCmd(t *testing.T, path, content string) {
 func packAndLs(t *testing.T, repo, snapID string) string {
 	t.Helper()
 	treeDir := filepath.Join(t.TempDir(), "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "ls", "--recursive", treeDir, snapID)
@@ -56,11 +56,11 @@ func packAndLs(t *testing.T, repo, snapID string) string {
 func TestCommitExcludeFlag(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeExcludeFixture(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, "--exclude=node_modules/", "--exclude=*.tmp", "--exclude=/build/out", src)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--exclude=node_modules/", "--exclude=*.tmp", "--exclude=/build/out", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -87,11 +87,11 @@ func TestCommitExcludeFlag(t *testing.T) {
 func TestCommitExcludeBadFlagPatternIsUsageError(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeExcludeFixture(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, "--exclude=!keep.txt", src)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--exclude=!keep.txt", src)
 	if code != 2 {
 		t.Fatalf("commit: exit %d, want 2: %s", code, out)
 	}
@@ -105,10 +105,10 @@ func TestCommitNoahsarkIgnoreFile(t *testing.T) {
 	src := writeExcludeFixture(t)
 	mustWriteCmd(t, filepath.Join(src, ignoreFileName), "# comment\n\nnode_modules/\n*.tmp\n/build/out\n")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -126,10 +126,10 @@ func TestCommitNoahsarkIgnoreBadPatternIsConfigError(t *testing.T) {
 	src := writeExcludeFixture(t)
 	mustWriteCmd(t, filepath.Join(src, ignoreFileName), "!negated\n")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 2 {
 		t.Fatalf("commit: exit %d, want 2: %s", code, out)
 	}
@@ -145,10 +145,10 @@ func TestCommitOneFileSystemFlagExists(t *testing.T) {
 	// a normal, single-filesystem commit still succeeds with it set.
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, "--one-file-system", src)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--one-file-system", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}

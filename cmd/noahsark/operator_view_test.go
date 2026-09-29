@@ -18,10 +18,10 @@ func initAndCommit(t *testing.T) (repo, src string) {
 	t.Helper()
 	repo = filepath.Join(t.TempDir(), "repo")
 	src = writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	return repo, src
@@ -35,7 +35,7 @@ func TestCapacityRefusesABareNumber(t *testing.T) {
 	repo, _ := initAndCommit(t)
 
 	for _, arg := range []string{"--capacity=7500000"} {
-		args := []string{"pack", "--repo=" + repo, arg}
+		args := []string{"--repo=" + repo, "pack", arg}
 		code, out := runCmd(t, args...)
 		if code != 2 {
 			t.Fatalf("pack %s: exit %d, want 2: %s", arg, code, out)
@@ -48,7 +48,7 @@ func TestCapacityRefusesABareNumber(t *testing.T) {
 	}
 
 	appendConfigLine(t, repo, "pack.capacity = 7500000")
-	code, out := runCmd(t, "pack", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "pack")
 	if code != 2 {
 		t.Fatalf("pack with a bare pack.capacity: exit %d, want 2: %s", code, out)
 	}
@@ -75,14 +75,14 @@ func TestPackPartialPackLeavesTheRestStaged(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=10MB", "--out="+filepath.Join(t.TempDir(), "tree"))
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=10MB", "--out="+filepath.Join(t.TempDir(), "tree"))
 	if code != 0 {
 		t.Fatalf("partial pack: exit %d, want 0: %s", code, out)
 	}
@@ -99,7 +99,7 @@ func TestPackPartialPackLeavesTheRestStaged(t *testing.T) {
 // size of all the staged data.
 func TestPackTooSmallNamesTheSmallestObject(t *testing.T) {
 	repo, _ := initAndCommit(t)
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=50KiB", "--out="+filepath.Join(t.TempDir(), "tree"))
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=50KiB", "--out="+filepath.Join(t.TempDir(), "tree"))
 	if code != 2 {
 		t.Fatalf("pack: exit %d, want 2: %s", code, out)
 	}
@@ -117,7 +117,7 @@ func TestPackTooSmallNamesTheSmallestObject(t *testing.T) {
 func TestImageBuildReadsCapacityFromTheTree(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	treeDir := filepath.Join(t.TempDir(), "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=8MB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=8MB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -170,11 +170,11 @@ func TestCommitWarnsAboutASpecialFile(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Skipf("mkfifo is not available here: %v", err)
 	}
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d, want 0 for a special file alone: %s", code, out)
 	}
@@ -198,7 +198,7 @@ func TestPackNamesADamagedStagedObject(t *testing.T) {
 	}
 
 	damaged := truncateOneStagedTree(t, cfg.StagingDir)
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+filepath.Join(t.TempDir(), "tree"))
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+filepath.Join(t.TempDir(), "tree"))
 	if code == 0 {
 		t.Fatalf("pack over a damaged staged object: exit 0, want a failure: %s", out)
 	}
@@ -243,7 +243,7 @@ func TestPackCapacityFromConfig(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	appendConfigLine(t, repo, "pack.capacity = 64MiB")
 
-	code, out := runCmd(t, "pack", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "pack")
 	if code != 0 {
 		t.Fatalf("pack with pack.capacity: exit %d: %s", code, out)
 	}
@@ -257,13 +257,13 @@ func TestPackCapacityFromConfig(t *testing.T) {
 func TestPackDefaultLabelNamesTheRefAndTheDisc(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-21", src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-21", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
@@ -276,24 +276,25 @@ func TestPackDefaultLabelNamesTheRefAndTheDisc(t *testing.T) {
 // with no --repo at all.
 func TestRepoFromEnvironment(t *testing.T) {
 	repo, src := initAndCommit(t)
-	t.Setenv("NOAHSARK_REPO", repo)
+	te := newTestEnv(t.TempDir())
+	te.vars["NOAHSARK_REPO"] = repo
 	appendConfigLine(t, repo, "sources.root = "+src)
 	appendConfigLine(t, repo, "pack.capacity = 64MiB")
 
-	if code, out := runCmd(t, "commit"); code != 0 {
+	if code, out := te.run("commit"); code != 0 {
 		t.Fatalf("commit with no flag: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "pack"); code != 0 {
+	if code, out := te.run("pack"); code != 0 {
 		t.Fatalf("pack with no flag: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "status")
+	code, out := te.run("status")
 	if code != 0 {
 		t.Fatalf("status with no flag: exit %d: %s", code, out)
 	}
 	if !strings.Contains(out, "next: burn disc 0") {
 		t.Fatalf("status output %q does not name the burn", out)
 	}
-	if code, out := runCmd(t, "disc", "burned", "0"); code != 0 {
+	if code, out := te.run("disc", "burned", "0"); code != 0 {
 		t.Fatalf("disc burned 0 with no flag: exit %d: %s", code, out)
 	}
 }

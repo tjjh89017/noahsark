@@ -1,8 +1,8 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
@@ -34,26 +34,28 @@ type discSummary struct {
 	MinCopies      int
 }
 
+func init() {
+	register(&command{
+		name:    "status",
+		usage:   "status",
+		summary: "Show what is staged, the state of every disc, and what to do next.",
+		flags:   func(*flag.FlagSet) runFunc { return cmdStatus },
+	})
+}
+
 // cmdStatus implements "noahsark status": what waits for a pack, the
 // state of every disc in one word, and the one action to take next. It
 // replaces the counter list "disc list" printed. A counter answers a
 // question the operator did not ask; the state word and the next line
 // answer the one they did.
-func cmdStatus(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark status", "Show what is staged, the state of every disc, and what to do next.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("status", fs, stderr) {
-		return 2
-	}
-	if fs.NArg() != 0 {
+func cmdStatus(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	if len(args) != 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark status")
 		return 2
 	}
 
-	repoDir, err := discoverRepo(*repoFlag)
+	repoDir, err := e.findRepo()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 2

@@ -53,13 +53,13 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	packAndVerifyDisc(t, work, repo, src)
 
-	setGCStdin(t, strings.NewReader("y\n"))
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0d")
+	setFakeStdin(t, strings.NewReader("y\n"))
+	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d")
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
@@ -73,7 +73,7 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	// A commit of the same, unchanged source must find every chunk,
 	// blob and tree already on the disc gc just freed, and must not
 	// write any of them back into staging.
-	code, out = runCmd(t, "commit", "--repo="+repo, src)
+	code, out = runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("re-commit: exit %d: %s", code, out)
 	}

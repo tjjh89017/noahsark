@@ -18,7 +18,7 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	packAndVerifyDisc(t, work, repo, src)
@@ -34,10 +34,10 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "new.txt"), []byte("one new line"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("second commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("second pack: exit %d: %s", code, packOut)
 	}
@@ -62,20 +62,20 @@ func TestPackWithNoRefCarriesEveryPendingDateRef(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-21", src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-21", src); code != 0 {
 		t.Fatalf("commit 1: exit %d: %s", code, out)
 	}
 	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("more content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-22", src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-22", src); code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack with no --ref: exit %d: %s", code, out)
 	}
@@ -91,23 +91,23 @@ func TestDiscBurnedUndoFlagBeforeUUID(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	discUUID := packedDiscUUID(t, packOut)
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "disc", "burned", "--undo", "--repo="+repo, discUUID)
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "--undo", discUUID)
 	if code != 0 {
 		t.Fatalf("disc burned --undo UUID: exit %d: %s", code, out)
 	}
@@ -124,23 +124,23 @@ func TestDiscBurnedAlreadyBurnedReportsZero(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	discUUID := packedDiscUUID(t, packOut)
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID)
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID)
 	if code != 0 {
 		t.Fatalf("disc burned (again): exit %d, want 0: %s", code, out)
 	}

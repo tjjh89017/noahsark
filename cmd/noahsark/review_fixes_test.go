@@ -26,7 +26,7 @@ func readFile(path string) (string, error) {
 func TestGlobalFlagBeforeCommand(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "-q", "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "-q", "init"); code != 0 {
 		t.Fatalf("-q init: exit %d: %s", code, out)
 	}
 }
@@ -67,10 +67,10 @@ func TestCommitMessageFlag(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "-m", "hello world", src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "-m", "hello world", src); code != 0 {
 		t.Fatalf("commit -m: exit %d: %s", code, out)
 	}
 }
@@ -102,17 +102,17 @@ func TestRestoreOverwrite(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -155,17 +155,17 @@ func buildAndPackWithSymlink(t *testing.T, work, repo string) (treeDir, src, sna
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID = snapshotIDFromCommit(t, out)
 
 	treeDir = filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	return treeDir, src, snapID

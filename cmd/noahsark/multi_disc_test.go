@@ -53,10 +53,10 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -70,7 +70,7 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 		// pack exits 0 whether or not objects stay STAGED for the next
 		// disc: leftover staged data is not a failure, the disc was
 		// packed correctly.
-		code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir)
+		code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir)
 		if code != 0 {
 			t.Fatalf("pack %d: exit %d, want 0: %s", i, code, out)
 		}
@@ -98,10 +98,10 @@ func TestMultiDiscRestorePositionalDiscRoots(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -111,7 +111,7 @@ func TestMultiDiscRestorePositionalDiscRoots(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 {
 			t.Fatalf("pack %d: exit %d, want 0: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -135,10 +135,10 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -150,7 +150,7 @@ func TestMultiDiscRestoreMissingDiscNamesIt(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(discsDir, fmt.Sprintf("disc%d", i))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
 			// exit 1 is expected for the first two, checked above; this
 			// branch only guards against a hard failure (exit 2).
 			if code == 2 {

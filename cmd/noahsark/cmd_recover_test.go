@@ -22,17 +22,17 @@ func TestRecoverFromDiscRestoresState(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, "--ref=BASE", src)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=BASE", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID := snapshotIDFromCommit(t, out)
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -46,7 +46,7 @@ func TestRecoverFromDiscRestoresState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out = runCmd(t, "recover", "--repo="+repo, treeDir)
+	code, out = runCmd(t, "--repo="+repo, "recover", treeDir)
 	if code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
@@ -75,21 +75,21 @@ func TestRecoverIsIdempotent(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover #1: exit %d: %s", code, out)
 	}
 	cfg, err := readConfig(configPath(repo))
@@ -102,7 +102,7 @@ func TestRecoverIsIdempotent(t *testing.T) {
 	}
 	count1 := log1.CountState(stage.Packed)
 
-	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover #2: exit %d: %s", code, out)
 	}
 	log2, err := stage.Open(cfg.StagingDir)
@@ -126,27 +126,27 @@ func TestRecoverWordingDoesNotClaimClean(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	treeDir := packedTreeDir(t, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", treeDir); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "recover", "--repo="+repo, treeDir)
+	code, out := runCmd(t, "--repo="+repo, "recover", treeDir)
 	if code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
@@ -169,10 +169,10 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
@@ -180,7 +180,7 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, "disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -199,7 +199,7 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "recover", "--repo="+repo, discRoots[len(discRoots)-1])
+	code, out := runCmd(t, "--repo="+repo, "recover", discRoots[len(discRoots)-1])
 	if code != 1 {
 		t.Fatalf("recover: exit %d, want 1: %s", code, out)
 	}
@@ -224,10 +224,10 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
@@ -243,7 +243,7 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 			dir = filepath.Join(work, "newest")
 		}
 		treeDir := filepath.Join(dir, "fed-disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -256,7 +256,7 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	// Feed only the newest disc: its own DISCS table names the earlier
 	// two, but neither was itself read. The rebuild must be partial.
 	newest := discRoots[len(discRoots)-1]
-	code, out := runCmd(t, "recover", "--repo="+repo, newest)
+	code, out := runCmd(t, "--repo="+repo, "recover", newest)
 	if code != 1 {
 		t.Fatalf("recover (newest only): exit %d, want 1: %s", code, out)
 	}
@@ -270,7 +270,7 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	// A disc the ledger names but recover never read holds no known
 	// object. status must call it "not fed", never "packed", and must
 	// name recover as the next step.
-	code, out = runCmd(t, "status", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "status")
 	if code != 0 {
 		t.Fatalf("status (partial): exit %d: %s", code, out)
 	}
@@ -286,7 +286,7 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 
 	// Feed the remaining two discs: now every disc named in DISCS has
 	// itself been fed, and the rebuild must say ok.
-	code, out = runCmd(t, "recover", "--repo="+repo, discRoots[0], discRoots[1])
+	code, out = runCmd(t, "--repo="+repo, "recover", discRoots[0], discRoots[1])
 	if code != 0 {
 		t.Fatalf("recover (remaining two): exit %d, want 0: %s", code, out)
 	}
@@ -305,7 +305,7 @@ func TestRecoverNoUsableDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "recover", "--repo="+repo, empty)
+	code, out := runCmd(t, "--repo="+repo, "recover", empty)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1: %s", code, out)
 	}
@@ -348,26 +348,26 @@ func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
 		return w
 	}
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("second commit: exit %d: %s", code, out)
 	}
@@ -394,10 +394,10 @@ func TestRecoverOneDiscAtATimeMergesLedger(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
@@ -405,7 +405,7 @@ func TestRecoverOneDiscAtATimeMergesLedger(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
 			if code == 2 {
 				t.Fatalf("pack %d: exit %d: %s", i, code, out)
 			}
@@ -428,7 +428,7 @@ func TestRecoverOneDiscAtATimeMergesLedger(t *testing.T) {
 			var lastCode int
 			var lastOut string
 			for _, i := range order.seq {
-				lastCode, lastOut = runCmd(t, "recover", "--repo="+repo, discRoots[i])
+				lastCode, lastOut = runCmd(t, "--repo="+repo, "recover", discRoots[i])
 			}
 			if lastCode != 0 {
 				t.Fatalf("last recover call: exit %d, want 0: %s", lastCode, lastOut)
@@ -443,11 +443,11 @@ func TestRecoverOneDiscAtATimeMergesLedger(t *testing.T) {
 
 			// The next pack must take the next free disc_seq, not
 			// reuse one already in the ledger.
-			if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+			if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 				t.Fatalf("re-commit: exit %d: %s", code, out)
 			}
 			fourthDir := filepath.Join(t.TempDir(), "disc3")
-			if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+packSectors(10_000_000), "--out="+fourthDir); code != 0 {
+			if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+packSectors(10_000_000), "--out="+fourthDir); code != 0 {
 				t.Fatalf("fourth pack: exit %d: %s", code, out)
 			}
 			if got := discListUUIDCount(t, repo); got != 4 {
@@ -466,25 +466,25 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
 	baseSrc := writeRefsCarryFixture(t, "base")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=BASE", baseSrc); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=BASE", baseSrc); code != 0 {
 		t.Fatalf("commit BASE: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack BASE: exit %d: %s", code, out)
 	}
 
 	xSrc := writeRefsCarryFixture(t, "x")
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=X", xSrc); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=X", xSrc); code != 0 {
 		t.Fatalf("commit X: exit %d: %s", code, out)
 	}
 
-	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -493,7 +493,7 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 	}
 
 	secondTree := filepath.Join(work, "tree2")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+secondTree); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+secondTree); code != 0 {
 		t.Fatalf("pack X: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "log", secondTree)
@@ -517,15 +517,15 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -534,7 +534,7 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -542,8 +542,8 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 	// under repo.lost/staging, the directory that moved with it, not
 	// under the freshly rebuilt repo's own staging directory.
 	src2 := writeFixtureSource(t)
-	if code, out := runCmd(t, "commit", "--repo="+lost, src2); code != 0 {
-		t.Fatalf("commit --repo=%s: exit %d: %s", lost, code, out)
+	if code, out := runCmd(t, "--repo="+lost, "commit", src2); code != 0 {
+		t.Fatalf("--repo=%s commit: exit %d: %s", lost, code, out)
 	}
 	if entries, err := os.ReadDir(filepath.Join(lost, "staging", "objects")); err != nil {
 		t.Fatalf("read %s/staging/objects: %v", lost, err)
@@ -576,16 +576,16 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src1 := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src1)
+	code, out := runCmd(t, "--repo="+repo, "commit", src1)
 	if code != 0 {
 		t.Fatalf("commit 1: exit %d: %s", code, out)
 	}
 	snap1 := snapshotIDFromCommit(t, out)
 	discOne := filepath.Join(work, "discs", "disc-one")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=one", "--out="+discOne); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=one", "--out="+discOne); code != 0 {
 		t.Fatalf("pack 1: exit %d: %s", code, out)
 	}
 
@@ -593,13 +593,13 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src2, "two.txt"), []byte("content of the second source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "commit", "--repo="+repo, src2)
+	code, out = runCmd(t, "--repo="+repo, "commit", src2)
 	if code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
 	snap2 := snapshotIDFromCommit(t, out)
 	discTwoLost := filepath.Join(work, "discs", "disc-two-lost")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=two", "--out="+discTwoLost); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=two", "--out="+discTwoLost); code != 0 {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
 	}
 
@@ -607,7 +607,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "recover", "--repo="+repo, discOne); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", discOne); code != 0 {
 		t.Fatalf("recover (disc one only): exit %d: %s", code, out)
 	}
 
@@ -615,19 +615,19 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src3, "three.txt"), []byte("content of the third source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "commit", "--repo="+repo, src3)
+	code, out = runCmd(t, "--repo="+repo, "commit", src3)
 	if code != 0 {
 		t.Fatalf("commit 3: exit %d: %s", code, out)
 	}
 	snap3 := snapshotIDFromCommit(t, out)
 	discThree := filepath.Join(work, "discs", "disc-three")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=three", "--out="+discThree); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=three", "--out="+discThree); code != 0 {
 		t.Fatalf("pack 3: exit %d: %s", code, out)
 	}
 
 	// The "lost" second disc turns up after all. Its numbers are the
 	// third disc's numbers; the feed must still be accepted.
-	code, out = runCmd(t, "recover", "--repo="+repo, discTwoLost)
+	code, out = runCmd(t, "--repo="+repo, "recover", discTwoLost)
 	if code != 0 {
 		t.Fatalf("recover (reintroduced disc two): exit %d, want 0: %s", code, out)
 	}
@@ -641,7 +641,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		t.Fatalf("disc two seq %d and disc three seq %d differ; the test needs the shared number", shared, other)
 	}
 
-	code, out = runCmd(t, "disc", "burned", "--repo="+repo, fmt.Sprint(shared))
+	code, out = runCmd(t, "--repo="+repo, "disc", "burned", fmt.Sprint(shared))
 	if code != 2 {
 		t.Fatalf("disc burned %d: exit %d, want 2: %s", shared, code, out)
 	}
@@ -650,7 +650,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	}
 
 	for _, d := range discs {
-		if code, out := runCmd(t, "disc", "burned", "--repo="+repo, d.UUID[:8]); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "disc", "burned", d.UUID[:8]); code != 0 {
 			t.Fatalf("disc burned %s: exit %d: %s", d.UUID[:8], code, out)
 		}
 	}
@@ -667,7 +667,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		}
 	}
 	verified := discs[byLabel(t, discs, "three")]
-	if code, out := runCmd(t, "verify", "--repo="+repo, roots["three"]); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", roots["three"]); code != 0 {
 		t.Fatalf("verify disc three: exit %d: %s", code, out)
 	}
 	for _, d := range discListRows(t, repo) {
@@ -686,7 +686,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		if d.UUID == verified.UUID {
 			continue
 		}
-		if code, out := runCmd(t, "verify", "--repo="+repo, roots[d.Label]); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "verify", roots[d.Label]); code != 0 {
 			t.Fatalf("verify disc %s: exit %d: %s", d.Label, code, out)
 		}
 	}
@@ -734,36 +734,36 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=BASE", src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=BASE", src); code != 0 {
 		t.Fatalf("commit BASE: exit %d: %s", code, out)
 	}
 	discsDir := filepath.Join(work, "discs")
 	tree1 := filepath.Join(discsDir, "tree1")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+tree1); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+tree1); code != 0 {
 		t.Fatalf("pack 1: exit %d: %s", code, out)
 	}
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "recover", "--repo="+repo, tree1); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", tree1); code != 0 {
 		t.Fatalf("recover (disc 1 alone): exit %d: %s", code, out)
 	}
 
 	if err := os.WriteFile(filepath.Join(src, "c.txt"), []byte("content of c, added for NEXT"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, "--ref=NEXT", src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=NEXT", src); code != 0 {
 		t.Fatalf("commit NEXT: exit %d: %s", code, out)
 	}
 	tree2 := filepath.Join(discsDir, "tree2")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+tree2); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+tree2); code != 0 {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "recover", "--repo="+repo, tree1, tree2)
+	code, out := runCmd(t, "--repo="+repo, "recover", tree1, tree2)
 	if code != 0 {
 		t.Fatalf("recover (2-disc #1): exit %d: %s", code, out)
 	}
@@ -771,7 +771,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 		t.Fatalf("2-disc #1 output %q does not say ok", out)
 	}
 
-	code, out = runCmd(t, "recover", "--repo="+repo, tree1, tree2)
+	code, out = runCmd(t, "--repo="+repo, "recover", tree1, tree2)
 	if code != 0 {
 		t.Fatalf("recover (2-disc #2, repeat): exit %d: %s", code, out)
 	}

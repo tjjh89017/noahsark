@@ -20,10 +20,10 @@ func multiDiscPlanFixture(t *testing.T) (repo, snapID, includePath string, discR
 	repo = filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -32,7 +32,7 @@ func multiDiscPlanFixture(t *testing.T) (repo, snapID, includePath string, discR
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, "disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -45,7 +45,7 @@ func multiDiscPlanFixture(t *testing.T) (repo, snapID, includePath string, discR
 // OUT-DIR arguments, and returns its exit code and output.
 func runRestoreDryRun(t *testing.T, repo, snapID string, extraFlags ...string) (int, string) {
 	t.Helper()
-	args := append([]string{"restore", "--repo=" + repo}, extraFlags...)
+	args := append([]string{"--repo=" + repo, "restore"}, extraFlags...)
 	args = append(args, "--mount="+t.TempDir(), "--dry-run", snapID, filepath.Join(t.TempDir(), "out"))
 	return runCmd(t, args...)
 }
@@ -189,7 +189,7 @@ func firstCachedDiscUUID(t *testing.T, cacheDir string) string {
 func TestRestoreDryRunEmptyCacheNamesTheFix(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 

@@ -18,7 +18,7 @@ var statusDiscLineRe = regexp.MustCompile(`^disc (\d+) "([^"]*)"  ([a-z0-9 /]+) 
 // statusLines runs status and returns its lines.
 func statusLines(t *testing.T, repo string) []string {
 	t.Helper()
-	code, out := runCmd(t, "status", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "status")
 	if code != 0 {
 		t.Fatalf("status: exit %d: %s", code, out)
 	}
@@ -33,14 +33,14 @@ func TestStatusReportsPackedDisc(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir, "--label=my disc"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir, "--label=my disc"); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -71,14 +71,14 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -87,10 +87,10 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 		t.Fatalf("next line after pack = %q", got)
 	}
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, "0"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", "0"); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", treeDir); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 	lines = statusLines(t, repo)
@@ -101,7 +101,7 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 		t.Fatalf("disc line after the first verify = %q, want verified 1/2", lines[1])
 	}
 
-	if code, out := runCmd(t, "verify", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", treeDir); code != 0 {
 		t.Fatalf("verify (second copy): exit %d: %s", code, out)
 	}
 	// This fixture's own config carries neither sources.root nor
@@ -126,14 +126,14 @@ func TestStatusDiscsKeepsExactNumbers(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir, "--label=json disc"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir, "--label=json disc"); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -166,20 +166,20 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "recover", "--repo="+repo, treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -206,11 +206,11 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 func TestStatusEmptyRepository(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "status", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "status")
 	if code != 0 {
 		t.Fatalf("status: exit %d: %s", code, out)
 	}
@@ -226,10 +226,10 @@ func TestStatusAfterCommitAsksForAPack(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 

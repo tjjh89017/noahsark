@@ -10,9 +10,8 @@ import (
 // ioctl every terminal driver answers and every non-terminal file,
 // including /dev/null, refuses. A character device is not enough by
 // itself: /dev/null is a character device but never a terminal, so a
-// mode-bit check alone misreads it as one. This is the one seam both
-// gc's --force-after confirmation and main's progress-on-terminal check
-// go through.
+// mode-bit check alone misreads it as one. realEnv uses it to set the
+// terminal fields of the env.
 func isTerminal(f *os.File) bool {
 	var t syscall.Termios
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&t)))

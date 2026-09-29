@@ -124,7 +124,7 @@ chain_pack_one() {
 	set +e
 	# pack takes every pending ref; it names none of its own.
 	# shellcheck disable=SC2086 # packflags is a list of --capacity[=...] words
-	"$BIN" pack --repo="$repo" $packflags --out="$tree" >"$logf" 2>&1
+	"$BIN" --repo="$repo" pack $packflags --out="$tree" >"$logf" 2>&1
 	code=$?
 	set -e
 	cat "$logf"
@@ -220,7 +220,7 @@ chain_commit_fixture() {
 
 	t0=$(date +%s)
 	local commit_out
-	commit_out="$("$BIN" commit --repo="$repo" --ref="$name" "$src")"
+	commit_out="$("$BIN" --repo="$repo" commit --ref="$name" "$src")"
 	t1=$(date +%s)
 	echo "$commit_out"
 	CHAIN_SNAP="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
@@ -256,7 +256,7 @@ chain_run() {
 	log "$label: disk before fixture generation"
 	df -h
 
-	"$BIN" init --repo="$repo"
+	(mkdir -p "$repo" && cd "$repo" && "$BIN" init)
 
 	local snapA srcA sampleA fullA snapB srcB sampleB fullB
 	chain_commit_fixture "$label" "$work" "$repo" A "$half" "$CHAIN_SEED"

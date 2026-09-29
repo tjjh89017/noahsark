@@ -1,0 +1,93 @@
+package main
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fakeNow is the clock of every fake env. A test that needs a fixed time
+// replaces it, and puts the old value back when it ends.
+var fakeNow = time.Now
+
+// fakeStdin is the standard input of every fake env. A test replaces it
+// with setFakeStdin. nil gives an empty standard input.
+var fakeStdin io.Reader
+
+// setFakeStdin makes r the standard input of every fake env until the
+// test ends.
+func setFakeStdin(t *testing.T, r io.Reader) {
+	t.Helper()
+	old := fakeStdin
+	fakeStdin = r
+	t.Cleanup(func() { fakeStdin = old })
+}
+
+// defaultRefName is the ref a commit moves with no --ref under the fake
+// clock: the local date of today, as YYYY-MM-DD.
+func defaultRefName() string {
+	return fakeNow().Format("2006-01-02")
+}
+
+// testEnv is a fake env and the buffers that collect its output.
+type testEnv struct {
+	*env
+	out    bytes.Buffer
+	errOut bytes.Buffer
+	vars   map[string]string
+}
+
+// newTestEnv returns a fake env whose working directory is dir. It has
+// no terminal, no environment variables, the clock fakeNow and the
+// standard input fakeStdin.
+func newTestEnv(dir string) *testEnv {
+	te := &testEnv{vars: map[string]string{}}
+	stdin := fakeStdin
+	if stdin == nil {
+		stdin = strings.NewReader("")
+	}
+	te.env = &env{
+		stdout:    &te.out,
+		stderr:    &te.errOut,
+		stdin:     stdin,
+		getwd:     func() (string, error) { return dir, nil },
+		getenv:    func(k string) string { return te.vars[k] },
+		now:       func() time.Time { return fakeNow() },
+		euid:      os.Geteuid,
+		mountinfo: func() (io.ReadCloser, error) { return nil, errors.New("no mount table in a test") },
+	}
+	return te
+}
+
+// run runs the CLI with args in the fake env. It returns the exit code
+// and the text of standard output and then standard error of this run.
+func (te *testEnv) run(args ...string) (int, string) {
+	te.out.Reset()
+	te.errOut.Reset()
+	te.global = globalOptions{}
+	code := run(te.env, args)
+	return code, te.out.String() + te.errOut.String()
+}
+
+// runIn runs the CLI with args in a fake env whose working directory is
+// dir. It creates dir first. It returns the exit code and the text of
+// standard output and then standard error.
+func runIn(t *testing.T, dir string, args ...string) (int, string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return newTestEnv(dir).run(args...)
+}
+
+// runCmd runs the CLI with args in a fake env whose working directory is
+// a new empty directory. It returns the exit code and the text of
+// standard output and then standard error.
+func runCmd(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	return newTestEnv(t.TempDir()).run(args...)
+}

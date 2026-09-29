@@ -15,16 +15,16 @@ import (
 // verify count itself.
 func packBurnDisc(t *testing.T, work, repo, src string) string {
 	t.Helper()
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	mounted := filepath.Join(work, filepath.Base(t.TempDir()))
 	copyTree(t, packedTreeDir(t, packOut), mounted)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, packedDiscUUID(t, packOut)); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", packedDiscUUID(t, packOut)); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 	return mounted
@@ -37,12 +37,12 @@ func TestSecondVerifyRaisesTheVerifyCount(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	mounted := packBurnDisc(t, work, repo, src)
 
-	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify copy 1: exit %d: %s", code, out)
 	}
@@ -57,7 +57,7 @@ func TestSecondVerifyRaisesTheVerifyCount(t *testing.T) {
 		t.Fatalf("status verified = %q after the first verify, want 1/2", verifiedAfterFirst)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify copy 2: exit %d: %s", code, out)
 	}
@@ -90,23 +90,23 @@ func discListCounts(t *testing.T, repo string) (clean int, verified string) {
 // names the disc it holds objects back for. The second verify frees
 // them.
 func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	before := time.Now()
 	mounted := packBurnDisc(t, work, repo, src)
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify copy 1: exit %d: %s", code, out)
 	}
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
 
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d, want 0: %s", code, out)
 	}
@@ -125,7 +125,7 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "gc", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc: exit %d, want 0 (nothing eligible): %s", code, out)
 	}
@@ -140,10 +140,10 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 		t.Fatalf("staging/objects has %d files after the held gc, had %d; want no delete", stillStaged, staged)
 	}
 
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify copy 2: exit %d: %s", code, out)
 	}
-	code, out = runCmd(t, "gc", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc after the second verify: exit %d: %s", code, out)
 	}
@@ -166,20 +166,20 @@ func TestGCHoldsObjectsUntilTheSecondVerify(t *testing.T) {
 // keeps one copy: with gc.min_verified_copies = 1, one verify frees the
 // objects once the retention period has passed.
 func TestGCMinVerifiedCopiesOne(t *testing.T) {
-	oldClock := gcClock
-	defer func() { gcClock = oldClock }()
+	oldClock := fakeNow
+	defer func() { fakeNow = oldClock }()
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "gc.min_verified_copies = 1")
 
 	before := time.Now()
 	mounted := packBurnDisc(t, work, repo, src)
-	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
@@ -187,8 +187,8 @@ func TestGCMinVerifiedCopiesOne(t *testing.T) {
 		t.Fatalf("verify output %q, want the 1 of 1 line", out)
 	}
 
-	gcClock = func() time.Time { return before.Add(8 * 24 * time.Hour) }
-	code, out = runCmd(t, "gc", "--repo="+repo)
+	fakeNow = func() time.Time { return before.Add(8 * 24 * time.Hour) }
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
@@ -204,11 +204,11 @@ func TestGCForceAfterDoesNotBypassTheVerifyCount(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	mounted := packBurnDisc(t, work, repo, src)
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 
@@ -217,8 +217,8 @@ func TestGCForceAfterDoesNotBypassTheVerifyCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setGCStdin(t, strings.NewReader("y\n"))
-	code, out := runCmd(t, "gc", "--repo="+repo, "--force-after=0s")
+	setFakeStdin(t, strings.NewReader("y\n"))
+	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0s")
 	if code != 0 {
 		t.Fatalf("gc --force-after=0s: exit %d, want 0 (nothing eligible): %s", code, out)
 	}
@@ -239,12 +239,12 @@ func TestGCForceAfterDoesNotBypassTheVerifyCount(t *testing.T) {
 func TestConfigRefusesMinVerifiedCopiesBelowOne(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	appendConfigLine(t, repo, "gc.min_verified_copies = 0")
 
-	code, out := runCmd(t, "gc", "--repo="+repo, "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 2 {
 		t.Fatalf("gc with gc.min_verified_copies = 0: exit %d, want 2: %s", code, out)
 	}

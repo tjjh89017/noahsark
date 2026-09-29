@@ -14,7 +14,7 @@ import (
 func TestUsageErrorsExitTwo(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -25,21 +25,21 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 		{"no args", nil},
 		{"unknown top-level command", []string{"bogus"}},
 		{"commit: unknown flag", []string{"commit", "--no-such-flag", "/nowhere"}},
-		{"init: repository already exists", []string{"init", "--repo=" + repo}},
-		{"pack: missing --capacity", []string{"pack", "--repo=" + repo}},
-		{"pack: unknown flag", []string{"pack", "--repo=" + repo, "--capacity=64MiB", "--no-such-flag"}},
-		{"gc: unexpected positional argument", []string{"gc", "--repo=" + repo, "extra"}},
-		{"ls: missing SNAPSHOT", []string{"ls", "--repo=" + repo}},
-		{"log: unknown flag", []string{"log", "--repo=" + repo, "--no-such-flag"}},
-		{"verify: missing DISC-ROOT", []string{"verify", "--repo=" + repo}},
-		{"restore: unknown flag", []string{"restore", "--repo=" + repo, "--no-such-flag"}},
-		{"restore: --dry-run without --mount", []string{"restore", "--repo=" + repo, "--dry-run", defaultRefName(), filepath.Join(work, "out")}},
+		{"init: --repo given", []string{"--repo=" + repo, "init"}},
+		{"pack: missing --capacity", []string{"--repo=" + repo, "pack"}},
+		{"pack: unknown flag", []string{"--repo=" + repo, "pack", "--capacity=64MiB", "--no-such-flag"}},
+		{"gc: unexpected positional argument", []string{"--repo=" + repo, "gc", "extra"}},
+		{"ls: missing SNAPSHOT", []string{"--repo=" + repo, "ls"}},
+		{"log: unknown flag", []string{"--repo=" + repo, "log", "--no-such-flag"}},
+		{"verify: missing DISC-ROOT", []string{"--repo=" + repo, "verify"}},
+		{"restore: unknown flag", []string{"--repo=" + repo, "restore", "--no-such-flag"}},
+		{"restore: --dry-run without --mount", []string{"--repo=" + repo, "restore", "--dry-run", defaultRefName(), filepath.Join(work, "out")}},
 		{"disc: unknown subcommand", []string{"disc", "bogus"}},
-		{"disc burned: missing DISC", []string{"disc", "burned", "--repo=" + repo}},
-		{"recover: unknown flag", []string{"recover", "--repo=" + repo, "--no-such-flag"}},
+		{"disc burned: missing DISC", []string{"--repo=" + repo, "disc", "burned"}},
+		{"recover: unknown flag", []string{"--repo=" + repo, "recover", "--no-such-flag"}},
 		{"image build: missing --out", []string{"image", "build", work}},
-		{"status: unexpected positional argument", []string{"status", "--repo=" + repo, "extra"}},
-		{"pack: capacity without a unit", []string{"pack", "--repo=" + repo, "--capacity=7500000"}},
+		{"status: unexpected positional argument", []string{"--repo=" + repo, "status", "extra"}},
+		{"pack: capacity without a unit", []string{"--repo=" + repo, "pack", "--capacity=7500000"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

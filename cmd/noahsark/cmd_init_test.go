@@ -13,7 +13,7 @@ import (
 // --capacity.
 func TestReadConfigRefusesUnknownKey(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
@@ -48,7 +48,7 @@ func TestReadConfigRefusesRemovedKeys(t *testing.T) {
 	} {
 		t.Run(key, func(t *testing.T) {
 			repo := filepath.Join(t.TempDir(), "repo")
-			if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+			if code, out := runIn(t, repo, "init"); code != 0 {
 				t.Fatalf("init: exit %d: %s", code, out)
 			}
 			configFile := configPath(repo)

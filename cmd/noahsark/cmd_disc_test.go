@@ -5,31 +5,20 @@ import (
 	"testing"
 )
 
-// TestDiscFlagBeforeSubcommandNamesTheFix checks that a flag given
-// before disc's subcommand ("disc --repo=X burned") is reported with the
-// corrected command line, not as an unknown subcommand.
-func TestDiscFlagBeforeSubcommandNamesTheFix(t *testing.T) {
+// TestDiscGlobalOptionBeforeSubcommandNamesTheFix checks that a global
+// option between disc and its subcommand ("disc --repo=X burned") is
+// reported with the corrected command line, not as an unknown
+// subcommand.
+func TestDiscGlobalOptionBeforeSubcommandNamesTheFix(t *testing.T) {
 	code, out := runCmd(t, "disc", "--repo=X", "burned")
 	if code != 2 {
 		t.Fatalf("disc --repo=X burned: exit %d, want 2: %s", code, out)
 	}
-	if !strings.Contains(out, "flags come after the subcommand: noahsark disc burned --repo=X") {
-		t.Fatalf("disc --repo=X burned: output %q, want the flags-come-after-the-subcommand fix", out)
+	if !strings.Contains(out, "--repo is a global option; give it before the command name: noahsark --repo=X disc burned") {
+		t.Fatalf("disc --repo=X burned: output %q, want the corrected command line", out)
 	}
 	if strings.Contains(out, "unknown subcommand") {
 		t.Fatalf("disc --repo=X burned: output %q, want no unknown-subcommand wording", out)
-	}
-}
-
-// TestDiscListPointsAtStatus checks that the old "disc list" name is
-// refused and names the command that replaced it.
-func TestDiscListPointsAtStatus(t *testing.T) {
-	code, out := runCmd(t, "disc", "list")
-	if code != 2 {
-		t.Fatalf("disc list: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "noahsark status") {
-		t.Fatalf("disc list: output %q, want the status command named", out)
 	}
 }
 

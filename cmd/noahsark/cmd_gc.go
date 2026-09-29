@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -20,44 +21,46 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// gcClock is the source of the current time gc measures retention
-// against. Tests replace it with a fake clock to check the retention
-// rules without waiting.
-var gcClock = time.Now
-
-// gcStdin is where gc's --force-after confirmation reads the operator's
-// answer from. Tests replace it with a pipe, and a script answers it
-// with a pipe too.
-var gcStdin io.Reader = os.Stdin
-
 // gcRemove unlinks one staged file. Tests replace it to fail the unlink
 // after the durable record, and so to check that the next gc run frees
 // the orphan the crash left behind.
 var gcRemove = os.Remove
 
-// cmdGC implements "noahsark gc". It frees the staging bytes of an
-// object that two verified copies already hold, and nothing else: the
-// local cache is never trimmed. See docs/decisions.md, "Staging and
-// gc".
-func cmdGC(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark gc [--dry-run] [--force-after=DURATION]",
-		"Delete the staged files of objects that verified discs hold.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	dryRun := fs.Bool("dry-run", false, "print what would be deleted, and free nothing")
-	forceAfter := fs.String("force-after", "", "shorten the 7-day retention to this duration for this run only; it does not pass by gc.min_verified_copies; requires confirmation")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("gc", fs, stderr) {
-		return 2
-	}
-	if fs.NArg() != 0 {
+func init() {
+	register(&command{
+		name:    "gc",
+		usage:   "gc [--dry-run] [--force-after=DURATION]",
+		summary: "Delete the staged files of objects that verified discs hold.",
+		flags:   gcFlags,
+	})
+}
+
+// gcOptions holds the command options of gc.
+type gcOptions struct {
+	dryRun     bool
+	forceAfter string
+}
+
+func gcFlags(fs *flag.FlagSet) runFunc {
+	o := &gcOptions{}
+	fs.BoolVar(&o.dryRun, "dry-run", false, "print what would be deleted, and free nothing")
+	fs.StringVar(&o.forceAfter, "force-after", "", "shorten the 7-day retention to this duration for this run only; it does not pass by gc.min_verified_copies; requires confirmation")
+	return o.run
+}
+
+// run implements "noahsark gc". It frees the staging bytes of an object
+// that two verified copies already hold, and nothing else: the local
+// cache is never trimmed. See docs/decisions.md, "Staging and gc".
+func (o *gcOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	dryRun := o.dryRun
+	if len(args) != 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--force-after=DURATION]")
 		return 2
 	}
 	retainAfterCleanOverride := time.Duration(-1)
-	if *forceAfter != "" {
-		d, err := parseRetentionDuration(*forceAfter)
+	if o.forceAfter != "" {
+		d, err := parseRetentionDuration(o.forceAfter)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after:", err)
 			return 2
@@ -65,7 +68,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 		retainAfterCleanOverride = d
 	}
 
-	repoDir, err := discoverRepo(*repoFlag)
+	repoDir, err := e.findRepo()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 2
@@ -110,25 +113,25 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 
 	discNames := discNamesFromLedger(cfg.StagingDir, repoUUID)
-	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, cfg.MinVerifiedCopies, gcClock())
+	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
 	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
-	if retainAfterCleanOverride >= 0 && !*dryRun && len(candidates) > 0 {
-		if code, ok := confirmForceAfter(candidates, stdout, stderr); !ok {
+	if retainAfterCleanOverride >= 0 && !dryRun && len(candidates) > 0 {
+		if code, ok := confirmForceAfter(e.stdin, candidates, stdout, stderr); !ok {
 			return code
 		}
 	}
 	planDirs := gcPlanDirs(stageLog, cfg.StagingDir, candidates)
-	objDeleted, objBytes, failures := gcApplyStagingObjects(stageLog, candidates, *dryRun)
-	dirDeleted, dirBytes, dirFailures := gcApplyPlanDirs(planDirs, *dryRun)
+	objDeleted, objBytes, failures := gcApplyStagingObjects(stageLog, candidates, dryRun)
+	dirDeleted, dirBytes, dirFailures := gcApplyPlanDirs(planDirs, dryRun)
 	failures = append(failures, dirFailures...)
 
 	verb := "deleted"
-	if *dryRun {
+	if dryRun {
 		verb = "would delete"
 	}
 	_, _ = fmt.Fprintf(stdout, "gc: staging: %s %d staged object(s), %d bytes\n", verb, objDeleted, objBytes)
 	_, _ = fmt.Fprintf(stdout, "gc: plans: %s %d disc plan directory(ies), %d bytes\n", verb, dirDeleted, dirBytes)
-	if *dryRun {
+	if dryRun {
 		printDryRunGroupSummary(candidates, discNames, stdout)
 		for _, d := range planDirs {
 			_, _ = fmt.Fprintf(stdout, "would delete: %s: plan directory %s, %d bytes\n", discNameOf(discNames, d.discUUID), d.path, d.bytes)
@@ -150,7 +153,7 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if objDeleted == 0 && dirDeleted == 0 && uncached == 0 {
-		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, cfg.MinVerifiedCopies)
+		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
 	}
 	// Nothing eligible, whether reported by --dry-run or found true by a
 	// real run, is success: gc did everything the repository's state
@@ -162,8 +165,8 @@ func cmdGC(args []string, stdout, stderr io.Writer) int {
 // where nothing is eligible for deletion yet, naming the earliest date
 // a CLEAN object reaches retainAfterClean and becomes eligible, when the
 // staging log holds a CLEAN object to measure that from.
-func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration, minCopies int) {
-	when, ok := earliestEligibleAt(l, retainAfterClean, minCopies, gcClock())
+func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) {
+	when, ok := earliestEligibleAt(l, retainAfterClean, minCopies, now)
 	if !ok {
 		_, _ = fmt.Fprintln(stdout, "gc: nothing is eligible yet")
 		return
@@ -423,14 +426,14 @@ func gcTotalBytes(objs []gcObj) uint64 {
 }
 
 // confirmForceAfter asks the operator to confirm a --force-after delete
-// on stderr, and reads the answer from gcStdin. A closed or empty stdin
+// on stderr, and reads the answer from stdin. A closed or empty stdin
 // answers no, thus a killed session never deletes under a shortened
 // retention. A script answers with a pipe: "echo y | noahsark gc
 // --force-after=1h". It reports ok=false, with the exit code to return,
 // when the run must stop instead of deleting.
-func confirmForceAfter(objs []gcObj, stdout, stderr io.Writer) (exitCode int, ok bool) {
+func confirmForceAfter(stdin io.Reader, objs []gcObj, stdout, stderr io.Writer) (exitCode int, ok bool) {
 	_, _ = fmt.Fprintf(stderr, "delete %d object(s), %d bytes? [y/N] ", len(objs), gcTotalBytes(objs))
-	scanner := bufio.NewScanner(gcStdin)
+	scanner := bufio.NewScanner(stdin)
 	answer := ""
 	if scanner.Scan() {
 		answer = strings.TrimSpace(strings.ToLower(scanner.Text()))

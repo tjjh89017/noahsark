@@ -14,17 +14,17 @@ func snapshotArgFixture(t *testing.T) (repo, treeDir, snapID string) {
 	repo = filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID = snapshotIDFromCommit(t, out)
 
 	treeDir = filepath.Join(work, "tree")
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--out="+treeDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	return repo, treeDir, snapID
@@ -50,7 +50,7 @@ func firstColumn(t *testing.T, out string) string {
 func TestSnapshotArgFormsFromLog(t *testing.T) {
 	repo, treeDir, snapID := snapshotArgFixture(t)
 
-	code, out := runCmd(t, "log", "--repo="+repo)
+	code, out := runCmd(t, "--repo="+repo, "log")
 	if code != 0 {
 		t.Fatalf("log: exit %d: %s", code, out)
 	}
@@ -70,10 +70,10 @@ func TestSnapshotArgFormsFromLog(t *testing.T) {
 		if code, out := runCmd(t, "ls", treeDir, arg); code != 0 {
 			t.Fatalf("ls %q: exit %d, want 0: %s", arg, code, out)
 		}
-		if code, out := runCmd(t, "restore", "--repo="+repo, "--mount="+mountDir, "--dry-run", arg, filepath.Join(outRoot, "dry-run")); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--dry-run", arg, filepath.Join(outRoot, "dry-run")); code != 0 {
 			t.Fatalf("restore --dry-run %q: exit %d, want 0: %s", arg, code, out)
 		}
-		if code, out := runCmd(t, "log", "--repo="+repo, arg); code != 0 {
+		if code, out := runCmd(t, "--repo="+repo, "log", arg); code != 0 {
 			t.Fatalf("log %q: exit %d, want 0: %s", arg, code, out)
 		}
 	}
@@ -89,9 +89,9 @@ func TestSnapshotArgEmptyNamesItself(t *testing.T) {
 	cases := [][]string{
 		{"restore", treeDir, "", filepath.Join(t.TempDir(), "out")},
 		{"ls", treeDir, ""},
-		{"ls", "--repo=" + repo, ""},
-		{"restore", "--repo=" + repo, "--mount=" + t.TempDir(), "--dry-run", "", filepath.Join(t.TempDir(), "out")},
-		{"log", "--repo=" + repo, ""},
+		{"--repo=" + repo, "ls", ""},
+		{"--repo=" + repo, "restore", "--mount=" + t.TempDir(), "--dry-run", "", filepath.Join(t.TempDir(), "out")},
+		{"--repo=" + repo, "log", ""},
 	}
 	for _, args := range cases {
 		code, out := runCmd(t, args...)

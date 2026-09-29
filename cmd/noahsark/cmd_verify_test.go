@@ -58,13 +58,13 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -73,7 +73,7 @@ func TestVerifyLeavesObjectsPackedBeforeDiscBurned(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify (unburned): exit %d: %s", code, out)
 	}
@@ -98,13 +98,13 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -114,7 +114,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID)
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID)
 	if code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
@@ -122,7 +122,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 		t.Fatalf("disc burned output %q did not mark objects burned", out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify (burned): exit %d: %s", code, out)
 	}
@@ -136,7 +136,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	// A second verify of the same disc is idempotent: every object is
 	// already CLEAN, so nothing more is marked, and the CLEAN line does
 	// not print at all, since no object was BURNED this time.
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify (mounted, second pass): exit %d: %s", code, out)
 	}
@@ -153,13 +153,13 @@ func TestDiscBurnedUndo(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -169,11 +169,11 @@ func TestDiscBurnedUndo(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "disc", "burned", "--undo", "--repo="+repo, discUUID)
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "--undo", discUUID)
 	if code != 0 {
 		t.Fatalf("disc burned --undo: exit %d: %s", code, out)
 	}
@@ -181,7 +181,7 @@ func TestDiscBurnedUndo(t *testing.T) {
 		t.Fatalf("disc burned --undo output %q did not return objects to packed", out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify (after undo): exit %d: %s", code, out)
 	}
@@ -198,13 +198,13 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -214,14 +214,14 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "disc", "burned", "--undo", "--repo="+repo, discUUID)
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "--undo", discUUID)
 	if code != 1 {
 		t.Fatalf("disc burned --undo (verified disc): exit %d, want 1: %s", code, out)
 	}
@@ -231,7 +231,7 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 
 	// Nothing changed: a following verify still reports every object
 	// CLEAN, not reset to PACKED.
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify (after refused undo): exit %d: %s", code, out)
 	}
@@ -247,17 +247,17 @@ func TestDiscBurnedBySeqAndLabel(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB", "--label=spare-1"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=spare-1"); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "disc", "burned", "--repo="+repo, "0")
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "0")
 	if code != 0 {
 		t.Fatalf("disc burned 0 (by seq): exit %d: %s", code, out)
 	}
@@ -265,7 +265,7 @@ func TestDiscBurnedBySeqAndLabel(t *testing.T) {
 		t.Fatalf("disc burned 0 output %q did not mark objects burned", out)
 	}
 
-	code, out = runCmd(t, "disc", "burned", "--undo", "--repo="+repo, defaultDiscLabel(t, repo, 0))
+	code, out = runCmd(t, "--repo="+repo, "disc", "burned", "--undo", defaultDiscLabel(t, repo, 0))
 	if code != 0 {
 		t.Fatalf("disc burned --undo (by label): exit %d: %s", code, out)
 	}
@@ -341,13 +341,13 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -357,7 +357,7 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 
@@ -368,7 +368,7 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 	chunkPath := findAChunkFile(t, base)
 	flipByte(t, chunkPath, 70) // inside the payload, past the header
 
-	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 1 {
 		t.Fatalf("verify (corrupt): exit %d, want 1: %s", code, out)
 	}
@@ -387,11 +387,11 @@ func TestVerifyFailureReturnsBurnedToPacked(t *testing.T) {
 
 	flipByte(t, chunkPath, 70) // undo the corruption
 
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, discUUID); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned (again): exit %d: %s", code, out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify (repaired): exit %d: %s", code, out)
 	}
@@ -410,14 +410,14 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	src := writeFixtureSource(t)
 
 	for _, repo := range []string{repoA, repoB} {
-		if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+		if code, out := runIn(t, repo, "init"); code != 0 {
 			t.Fatalf("init %s: exit %d: %s", repo, code, out)
 		}
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repoB, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repoB, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repoB, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repoB, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -427,7 +427,7 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 
 	// repoA's ledger has never seen this disc uuid: verify refuses
 	// rather than silently reporting ok against the wrong repository.
-	code, out := runCmd(t, "verify", "--repo="+repoA, mounted)
+	code, out := runCmd(t, "--repo="+repoA, "verify", mounted)
 	if code != 1 {
 		t.Fatalf("verify: exit %d, want 1: %s", code, out)
 	}
@@ -449,13 +449,13 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
@@ -463,7 +463,7 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, stagedTree, mounted)
 
-	code, out := runCmd(t, "verify", "--repo="+repo, mounted)
+	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
 		t.Fatalf("verify DISC-ROOT: exit %d: %s", code, out)
 	}
@@ -471,7 +471,7 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 		t.Fatalf("verify DISC-ROOT output %q missing the disc line with ok", out)
 	}
 
-	code, out = runCmd(t, "verify", "--repo="+repo, mounted, mounted)
+	code, out = runCmd(t, "--repo="+repo, "verify", mounted, mounted)
 	if code != 2 {
 		t.Fatalf("verify with two DISC-ROOT arguments: exit %d, want 2: %s", code, out)
 	}
@@ -484,25 +484,25 @@ func TestVerifyThirdCopyPrintsVerified(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "commit", "--repo="+repo, src); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	code, packOut := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB")
+	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	mounted := filepath.Join(work, "mounted")
 	copyTree(t, packedTreeDir(t, packOut), mounted)
-	if code, out := runCmd(t, "disc", "burned", "--repo="+repo, packedDiscUUID(t, packOut)); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", packedDiscUUID(t, packOut)); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
 
 	var out string
 	for copyNumber := 1; copyNumber <= 3; copyNumber++ {
-		if code, o := runCmd(t, "verify", "--repo="+repo, mounted); code != 0 {
+		if code, o := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 			t.Fatalf("verify %d: exit %d: %s", copyNumber, code, o)
 		} else {
 			out = o

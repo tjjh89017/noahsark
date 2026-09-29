@@ -20,7 +20,7 @@ func TestLsFromCacheWithNoDisc(t *testing.T) {
 		t.Fatalf("ls (disc): exit %d: %s", discCode, discOut)
 	}
 
-	cacheCode, cacheOut := runCmd(t, "ls", "--repo="+repo, snapID)
+	cacheCode, cacheOut := runCmd(t, "--repo="+repo, "ls", snapID)
 	if cacheCode != 0 {
 		t.Fatalf("ls (cache): exit %d: %s", cacheCode, cacheOut)
 	}
@@ -40,7 +40,7 @@ func TestLogFromCacheWithNoDisc(t *testing.T) {
 	if discCode != 0 {
 		t.Fatalf("log (disc): exit %d: %s", discCode, discOut)
 	}
-	cacheCode, cacheOut := runCmd(t, "log", "--repo="+repo, snapID)
+	cacheCode, cacheOut := runCmd(t, "--repo="+repo, "log", snapID)
 	if cacheCode != 0 {
 		t.Fatalf("log (cache): exit %d: %s", cacheCode, cacheOut)
 	}
@@ -48,10 +48,10 @@ func TestLogFromCacheWithNoDisc(t *testing.T) {
 		t.Fatalf("log from cache = %q, want %q (same as disc)", cacheOut, discOut)
 	}
 
-	if code, out := runCmd(t, "log", "--repo="+repo); code != 0 {
-		t.Fatalf("log --repo (list all): exit %d: %s", code, out)
+	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 {
+		t.Fatalf("--repo log (list all): exit %d: %s", code, out)
 	} else if !strings.Contains(out, snapID) {
-		t.Fatalf("log --repo listing = %q, does not name %s", out, snapID)
+		t.Fatalf("--repo log listing = %q, does not name %s", out, snapID)
 	}
 }
 
@@ -65,10 +65,10 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, src)
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -80,7 +80,7 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	capacities := []string{packSectors(7_000_000), packSectors(7_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, "disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity="+cap, "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -97,11 +97,11 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 
 	lastDisc := discRoots[len(discRoots)-1]
-	if code, out := runCmd(t, "recover", "--repo="+repo, lastDisc); code == 2 {
+	if code, out := runCmd(t, "--repo="+repo, "recover", lastDisc); code == 2 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	code, out = runCmd(t, "ls", "--repo="+repo, "--recursive", snapID)
+	code, out = runCmd(t, "--repo="+repo, "ls", "--recursive", snapID)
 	if code != 1 {
 		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}
@@ -115,14 +115,14 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 // for the listing form and for the one-snapshot form alike.
 func TestLsAndLogAgreeOnAnEmptyCache(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
 	cases := [][]string{
-		{"ls", "--repo=" + repo, "latest"},
-		{"log", "--repo=" + repo, "latest"},
-		{"log", "--repo=" + repo},
+		{"--repo=" + repo, "ls", "latest"},
+		{"--repo=" + repo, "log", "latest"},
+		{"--repo=" + repo, "log"},
 	}
 	for _, args := range cases {
 		code, out := runCmd(t, args...)
@@ -177,22 +177,22 @@ func TestLsAndLogBeforeTheFirstPack(t *testing.T) {
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
 
-	if code, out := runCmd(t, "init", "--repo="+repo); code != 0 {
+	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-21", src)
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-21", src)
 	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	snapID := snapshotIDFromCommit(t, out)
 
-	if code, out := runCmd(t, "log", "--repo="+repo); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 {
 		t.Fatalf("log: exit %d, want 0: %s", code, out)
 	} else if !strings.Contains(out, snapID) || !strings.Contains(out, "2026-09-21") {
 		t.Fatalf("log output %q, want the staged snapshot and its ref", out)
 	}
 
-	if code, out := runCmd(t, "ls", "--repo="+repo, "--recursive", "2026-09-21"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "ls", "--recursive", "2026-09-21"); code != 0 {
 		t.Fatalf("ls -r: exit %d, want 0: %s", code, out)
 	} else if !strings.Contains(out, "a.txt") || !strings.Contains(out, "b.txt") {
 		t.Fatalf("ls -r output %q, want the committed files", out)
@@ -200,26 +200,26 @@ func TestLsAndLogBeforeTheFirstPack(t *testing.T) {
 
 	// A second commit with a pack in between: the first snapshot comes
 	// from the cache, the second one from staging, and log lists both.
-	if code, out := runCmd(t, "pack", "--repo="+repo, "--capacity=64MiB"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	if err := os.WriteFile(filepath.Join(src, "c.txt"), []byte("content of c"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, out = runCmd(t, "commit", "--repo="+repo, "--ref=2026-09-22", src)
+	code, out = runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-22", src)
 	if code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
 	snapID2 := snapshotIDFromCommit(t, out)
 
-	code, out = runCmd(t, "log", "--repo="+repo)
+	code, out = runCmd(t, "--repo="+repo, "log")
 	if code != 0 {
 		t.Fatalf("log (after the second commit): exit %d: %s", code, out)
 	}
 	if !strings.Contains(out, snapID) || !strings.Contains(out, snapID2) {
 		t.Fatalf("log output %q, want both snapshots", out)
 	}
-	if code, out := runCmd(t, "ls", "--repo="+repo, "--recursive", "2026-09-22"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "ls", "--recursive", "2026-09-22"); code != 0 {
 		t.Fatalf("ls -r (second): exit %d: %s", code, out)
 	} else if !strings.Contains(out, "c.txt") {
 		t.Fatalf("ls -r output %q, want the new file", out)

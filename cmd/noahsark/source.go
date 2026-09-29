@@ -220,12 +220,12 @@ func (e *refNotFoundError) Error() string {
 	return fmt.Sprintf("%q is neither a snapshot id nor a known ref name", e.arg)
 }
 
-// openCacheSource opens the local cache for the repository repoFlag
-// names, or the usual discovery order when repoFlag is empty, and
+// openCacheSource opens the local cache of the repository that e
+// finds, and
 // returns it wrapped as a snapshotSource plus the *cache.Cache itself,
 // so a caller can also call CheckComplete on it.
-func openCacheSource(repoFlag string) (*cacheSource, *cache.Cache, error) {
-	repoDir, err := discoverRepo(repoFlag)
+func openCacheSource(e *env) (*cacheSource, *cache.Cache, error) {
+	repoDir, err := e.findRepo()
 	if err != nil {
 		return nil, nil, err
 	}

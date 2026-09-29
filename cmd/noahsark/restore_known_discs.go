@@ -7,7 +7,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// knownDiscsForRepo names every disc repoFlag's repository has ever
+// knownDiscsForRepo names every disc the repository of e has ever
 // recorded, uuid to its number and label, so a missing-disc hint can list a candidate
 // disc packed after every provided disc, not only one an earlier disc's
 // own DISCS table happens to mention. It tries the local disc ledger
@@ -15,8 +15,8 @@ import (
 // falls back to the cache when the repository carries no ledger yet. A
 // repository that cannot be found or read at all yields no candidates,
 // never an error: the hint is best-effort.
-func knownDiscsForRepo(repoFlag string) map[[16]byte]restore.DiscName {
-	repoDir, err := discoverRepo(repoFlag)
+func knownDiscsForRepo(e *env) map[[16]byte]restore.DiscName {
+	repoDir, err := e.findRepo()
 	if err != nil {
 		return nil
 	}

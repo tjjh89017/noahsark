@@ -1,76 +1,53 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"io"
-	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// cmdDisc implements "noahsark disc". "noahsark status" lists the
-// discs, so "disc" carries the burn mark and its undo alone.
-//
 // The operator burns with growisofs by hand. "disc burned" is how the
 // staging state machine learns that a disc was burned: no on-disc
 // structure records that moment. See docs/decisions.md, "Burning and
 // disc lifecycle".
-func cmdDisc(args []string, stdout, stderr io.Writer) int {
-	const discUsage = "usage: noahsark disc burned [--undo] DISC [DISC...]"
-
-	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, discUsage)
-		return 2
-	}
-	if args[0] == "-h" || args[0] == "--help" {
-		_, _ = fmt.Fprintln(stdout, discUsage)
-		return 0
-	}
-	sub := args[0]
-	rest := args[1:]
-
-	if strings.HasPrefix(sub, "-") {
-		_, _ = fmt.Fprintf(stderr, "noahsark: disc: flags come after the subcommand: noahsark disc burned %s\n", sub)
-		return 2
-	}
-
-	switch sub {
-	case "list":
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc list: renamed: run noahsark status")
-		return 2
-	case "burned":
-		return cmdDiscBurned(rest, stdout, stderr)
-	default:
-		_, _ = fmt.Fprintf(stderr, "noahsark: disc: unknown subcommand %q\n", sub)
-		return 2
-	}
+func init() {
+	register(&command{
+		name:    "burned",
+		group:   "disc",
+		usage:   "disc burned [--undo] DISC [DISC...]",
+		summary: "Mark a disc burned, moving its PACKED objects to BURNED.",
+		flags:   discBurnedFlags,
+	})
 }
 
-// cmdDiscBurned implements "noahsark disc burned [--undo] DISC [DISC...]".
-// It moves every PACKED object of each named disc's runs to BURNED,
+// discBurnedOptions holds the command options of disc burned.
+type discBurnedOptions struct {
+	undo bool
+}
+
+func discBurnedFlags(fs *flag.FlagSet) runFunc {
+	o := &discBurnedOptions{}
+	fs.BoolVar(&o.undo, "undo", false, "undo: move BURNED objects back to PACKED, for a burn that turned out bad")
+	return o.run
+}
+
+// run implements "noahsark disc burned [--undo] DISC [DISC...]". It
+// moves every PACKED object of each named disc's runs to BURNED,
 // standing in for the missing `burn` command: the operator runs it
 // right after burning both twins by hand. --undo reverses that, for a
 // burn that turned out bad, moving BURNED objects back to PACKED with
 // the burn-failed reason.
-func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("noahsark disc burned [--undo] DISC [DISC...]",
-		"Mark a disc burned, moving its PACKED objects to BURNED.", stderr)
-	repoFlag := fs.String("repo", "", "repository root")
-	undo := fs.Bool("undo", false, "undo: move BURNED objects back to PACKED, for a burn that turned out bad")
-	if err := fs.Parse(args); err != nil {
-		return exitForFlagParse(err)
-	}
-	if checkPositionalsForFlags("disc burned", fs, stderr) {
-		return 2
-	}
-	if fs.NArg() == 0 {
+func (o *discBurnedOptions) run(e *env, args []string) int {
+	stdout, stderr := e.stdout, e.stderr
+	if len(args) == 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned [--undo] DISC [DISC...]")
 		return 2
 	}
 
-	repoDir, err := discoverRepo(*repoFlag)
+	repoDir, err := e.findRepo()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 		return 2
@@ -103,7 +80,7 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 	}
 	warnIfTruncated("disc burned", stageLog, stderr)
 
-	for _, arg := range fs.Args() {
+	for _, arg := range args {
 		discUUID, err := resolveDiscArg(ledger.Rows, arg)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
@@ -112,7 +89,7 @@ func cmdDiscBurned(args []string, stdout, stderr io.Writer) int {
 		row := newestDiscRow(ledger.Rows, discUUID)
 		label := labelText(row.Label[:row.LabelLen])
 
-		if *undo {
+		if o.undo {
 			if n := countInState(stageLog, stage.Clean, discUUID); n > 0 {
 				_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: %s is verified and cannot be returned to packed\n", discNameShort(row.DiscSeq, label))
 				return 1
