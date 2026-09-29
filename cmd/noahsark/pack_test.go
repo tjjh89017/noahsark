@@ -1335,6 +1335,11 @@ func TestPackFinishesAnInterruptedPack(t *testing.T) {
 	}
 	truncateBy(t, layout.stateLogFile(), int64(items)*70)
 	truncateBy(t, layout.discLogFile(), 54)
+	// A crash leaves no sequence mark above the logs: the mark follows
+	// each durable append.
+	if err := os.Remove(filepath.Join(layout.stagingDir(), stage.MarkFileName)); err != nil {
+		t.Fatal(err)
+	}
 	if _, known := readDiscLog(t, fx.repo).Disc(fx.uuidBytes(t)); known {
 		t.Fatal("the disc state log still knows the disc after the cut")
 	}

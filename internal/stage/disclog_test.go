@@ -131,7 +131,7 @@ func discEvent(id [16]byte, e DiscEvent, sec int64) DiscRecord {
 		rec.DiscSeq = 3
 		rec.RunSeq = 5
 	case EventRecovered:
-		rec.Flags = FlagClose
+		rec.Flags = FlagFEC
 	}
 	return rec
 }
@@ -244,6 +244,10 @@ func TestDiscLogReplayDamage(t *testing.T) {
 			{DiscUUID: testDiscA, Event: EventBurnRecorded, Flags: FlagClose},
 			discEvent(testDiscA, EventBurnRemoved, 3),
 		}, "BurnRecorded carries flags"},
+		{"close bit in Recovered", []DiscRecord{
+			{DiscUUID: testDiscA, Event: EventRecovered, Flags: FlagClose | FlagFEC},
+			discEvent(testDiscA, EventCheckOK, 2),
+		}, "Recovered carries flags 0x01"},
 		{"unknown flag bit", []DiscRecord{
 			{DiscUUID: testDiscA, Event: EventPacked, Flags: 0x04},
 			discEvent(testDiscA, EventPackUndone, 2),
@@ -469,7 +473,7 @@ func TestDiscInfoRecovered(t *testing.T) {
 	}
 	appendEvents(t, l, testDiscA, 100, EventNamedMissing, EventRecovered)
 	d, _ := l.Disc(testDiscA)
-	if d.State != DiscOnDiscOnly || !d.Close || d.FEC || d.DiscSeq != 0 || d.LastCheck != CheckResultNone || !d.VerifiedTime.IsZero() {
+	if d.State != DiscOnDiscOnly || d.Close || !d.FEC || d.DiscSeq != 0 || d.LastCheck != CheckResultNone || !d.VerifiedTime.IsZero() {
 		t.Fatalf("after Recovered: %+v", d)
 	}
 }

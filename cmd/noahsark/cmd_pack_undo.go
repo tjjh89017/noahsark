@@ -94,15 +94,16 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	// The item records go first. The PackUndone event then takes the disc
-	// out of the repository. A stop after the event leaves only files
-	// that removeUndoneDisc removes, and the next pack finishes that.
-	items := logs.Items.ItemsOfDiscInState(discUUID, stage.Packed)
-	if err := logs.Items.MarkPackUndone(items...); err != nil {
+	// The PackUndone event goes first: it takes the disc out of the
+	// repository. The item records follow it. A stop after the event
+	// leaves item records that the next command with the lock writes, and
+	// files that the next pack removes.
+	if err := logs.Discs.Append(discEvent(e.now(), discUUID, stage.EventPackUndone)); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	if err := logs.Discs.Append(discEvent(e.now(), discUUID, stage.EventPackUndone)); err != nil {
+	items, err := logs.CompleteDisc(discUUID, nil)
+	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
@@ -114,7 +115,7 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "%s: pack undone, %d item(s) returned to staged\n", disc.name(), len(items))
+	_, _ = fmt.Fprintf(stdout, "%s: pack undone, %d item(s) returned to staged\n", disc.name(), items)
 	if keptRoot != "" {
 		_, _ = fmt.Fprintf(stdout, "disc root %s kept; delete it yourself\n", keptRoot)
 	}
@@ -198,8 +199,8 @@ func removeUndoneDisc(layout repoLayout, c *catalog.Catalog, repoUUID, discUUID 
 }
 
 // finishUndonePacks finishes each pack --undo that stopped before it
-// removed all the records of its disc. For each undone disc, it returns
-// the items that are still Packed on the disc to Staged, then removes
+// removed the files of its disc. openLogs already wrote the item records
+// of each undone disc. For each undone disc, finishUndonePacks removes
 // the files that removeUndoneDisc removes. pack calls it before it
 // writes a disc, thus the DISCS table of a new disc never names an
 // undone disc.
@@ -209,13 +210,9 @@ func finishUndonePacks(layout repoLayout, c *catalog.Catalog, repoUUID [16]byte,
 		return err
 	}
 	for _, d := range logs.Discs.InState(stage.DiscUndone) {
-		items := logs.Items.ItemsOfDiscInState(d.UUID, stage.Packed)
 		inLedger := slices.ContainsFunc(ledger.Rows, func(r format.DiscsRow) bool { return r.DiscUUID == d.UUID })
-		if len(items) == 0 && !inLedger && !exists(filepath.Join(c.Dir(), "discs", uuidText(d.UUID))) && !exists(layout.planDir(d.UUID)) {
+		if !inLedger && !exists(filepath.Join(c.Dir(), "discs", uuidText(d.UUID))) && !exists(layout.planDir(d.UUID)) {
 			continue
-		}
-		if err := logs.Items.MarkPackUndone(items...); err != nil {
-			return err
 		}
 		keptRoot, err := removeUndoneDisc(layout, c, repoUUID, d.UUID)
 		if err != nil {

@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/image"
-	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -103,9 +101,10 @@ func (r *discLostRun) fail(cmd string, err error) int {
 }
 
 // markLost implements "disc lost DISC". After a critical confirmation, it
-// returns the Packed items of the disc to Staged, marks its OnDisc items
-// Lost, appends the Lost event, and removes the plan directory of the
-// disc. It keeps the catalog data of the disc.
+// appends the Lost event, then returns the Packed items of the disc to
+// Staged and marks its OnDisc items Lost, then removes the plan directory
+// of the disc. It keeps the catalog data of the disc. A stop after the
+// event leaves item records that the next command with the lock writes.
 func (r *discLostRun) markLost() int {
 	const cmd = "disc lost"
 	e, disc := r.e, r.disc
@@ -123,17 +122,12 @@ func (r *discLostRun) markLost() int {
 		return 1
 	}
 
-	items := r.logs.Items
 	u := disc.info.UUID
-	staged := items.ItemsOfDiscInState(u, stage.Packed)
-	if err := items.MarkStaged(stage.ReasonDiscLost, staged...); err != nil {
-		return r.fail(cmd, err)
-	}
-	lost := items.ItemsOfDiscInState(u, stage.OnDisc)
-	if err := items.MarkLost(lost...); err != nil {
-		return r.fail(cmd, err)
-	}
 	if err := r.logs.Discs.Append(discEvent(e.now(), u, stage.EventLost)); err != nil {
+		return r.fail(cmd, err)
+	}
+	n, err := r.logs.CompleteDisc(u, nil)
+	if err != nil {
 		return r.fail(cmd, err)
 	}
 	// RemoveAll does not follow the tree symlink of a pack --out disc: the
@@ -144,19 +138,20 @@ func (r *discLostRun) markLost() int {
 
 	switch disc.info.State {
 	case stage.DiscOnDiscOnly:
-		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) need a new commit\n", disc.name(), len(lost))
+		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) need a new commit\n", disc.name(), n)
 	case stage.DiscMissing:
 		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; its items are not known; a new commit stages what the source still holds\n", disc.name())
 	default:
-		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) returned to staged\n", disc.name(), len(staged))
+		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) returned to staged\n", disc.name(), n)
 	}
 	_, _ = fmt.Fprintln(e.stdout, nextStatusLine)
 	return 0
 }
 
 // undo implements "disc lost --undo DISC". After an ordinary
-// confirmation, it gives the items back to the found disc and appends
-// the LostUndone event.
+// confirmation, it appends the LostUndone event, then gives the items
+// back to the found disc. A stop after the event leaves item records
+// that the next command with the lock writes.
 func (r *discLostRun) undo() int {
 	const cmd = "disc lost"
 	e, disc := r.e, r.disc
@@ -178,25 +173,20 @@ func (r *discLostRun) undo() int {
 	}
 
 	u := disc.info.UUID
-	var back int
-	switch disc.info.BeforeLost {
-	case stage.DiscVerified:
-		ids, runSeq, err := r.stagedItemsOnDisc()
-		if err != nil {
+	index := catalogIndexItems(r.layout.repo)
+	// A Staged record names no disc, thus the INDEX that disc lost kept
+	// is the only list of the items of a disc that was verified. The
+	// INDEX must be readable before the event.
+	if disc.info.BeforeLost == stage.DiscVerified {
+		if _, _, err := index(u); err != nil {
 			return r.fail(cmd, err)
 		}
-		if err := r.logs.Items.ReturnToDisc(runSeq, u, ids...); err != nil {
-			return r.fail(cmd, err)
-		}
-		back = len(ids)
-	case stage.DiscOnDiscOnly:
-		ids := r.logs.Items.ItemsOfDiscInState(u, stage.Lost)
-		if err := r.logs.Items.MarkLostUndone(ids...); err != nil {
-			return r.fail(cmd, err)
-		}
-		back = len(ids)
 	}
 	if err := r.logs.Discs.Append(discEvent(e.now(), u, stage.EventLostUndone)); err != nil {
+		return r.fail(cmd, err)
+	}
+	back, err := r.logs.CompleteDisc(u, index)
+	if err != nil {
 		return r.fail(cmd, err)
 	}
 
@@ -207,28 +197,4 @@ func (r *discLostRun) undo() int {
 	}
 	_, _ = fmt.Fprintln(e.stdout, nextStatusLine)
 	return 0
-}
-
-// stagedItemsOnDisc returns the Staged items that the catalog INDEX of
-// the disc lists, and the run number of that INDEX. A Staged record names
-// no disc, so the INDEX that disc lost kept is the only list of the items
-// of the disc. An item that a later pack took is Packed, not Staged, and
-// stays on its new disc.
-func (r *discLostRun) stagedItemsOnDisc() ([]object.ID, uint64, error) {
-	c, err := catalog.Open(r.layout.repo)
-	if err != nil {
-		return nil, 0, err
-	}
-	idx, err := c.IndexForDisc(r.disc.info.UUID)
-	if err != nil {
-		return nil, 0, err
-	}
-	var ids []object.ID
-	for _, row := range idx.Objects {
-		id := object.ID(row.ContentID)
-		if rec, ok := r.logs.Items.Get(id); ok && rec.State == stage.Staged {
-			ids = append(ids, id)
-		}
-	}
-	return ids, idx.RunSeq, nil
 }
