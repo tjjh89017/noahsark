@@ -11,12 +11,34 @@ import (
 )
 
 // mountEnv returns an env whose mount table is text and whose working
-// directory is wd.
+// directory is wd. The device of a path is the device of the deepest
+// mount point of text that holds the path, the last entry of that mount
+// point, else 8:1.
 func mountEnv(wd, text string) *env {
 	return &env{
 		getwd:     func() (string, error) { return wd, nil },
 		mountinfo: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(text)), nil },
+		deviceOf:  func(path string) (devNum, error) { return tableDevice(text, path) },
 	}
+}
+
+// tableDevice returns the device of path in the mount table text, as
+// mountEnv states. It fails as a stat does for a missing path.
+func tableDevice(text, path string) (devNum, error) {
+	if _, err := os.Stat(path); err != nil {
+		return devNum{}, err
+	}
+	dev, depth := devNum{major: 8, minor: 1}, -1
+	for line := range strings.Lines(text) {
+		entry, err := parseMountLine(line)
+		if err != nil {
+			continue
+		}
+		if isWithin(path, entry.mountPoint) && len(entry.mountPoint) >= depth {
+			dev, depth = entry.device, len(entry.mountPoint)
+		}
+	}
+	return dev, nil
 }
 
 // escapeMountPoint writes a path as the kernel writes it in mountinfo.
@@ -24,11 +46,12 @@ func escapeMountPoint(p string) string {
 	return strings.NewReplacer(`\`, `\134`, " ", `\040`, "\t", `\011`, "\n", `\012`).Replace(p)
 }
 
-// mountLine returns one mountinfo line for the mount point p.
+// mountLine returns one mountinfo line for a loop mount of a UDF image at
+// the mount point p. The loop device is 7:id.
 func mountLine(id int, p, opts, superOpts string) string {
 	return strings.Join([]string{
-		strconv.Itoa(id), "1", "7:0", "/", escapeMountPoint(p), opts, "shared:1", "-",
-		"udf", "/dev/loop0", superOpts,
+		strconv.Itoa(id), "1", "7:" + strconv.Itoa(id), "/", escapeMountPoint(p), opts, "shared:1", "-",
+		"udf", "/dev/loop" + strconv.Itoa(id), superOpts,
 	}, " ") + "\n"
 }
 

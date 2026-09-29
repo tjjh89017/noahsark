@@ -18,16 +18,37 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// fakeMounts is the fake mount table of every fake env: the mount
-// point, and true for a read-only mount.
+// fakeMount is one entry of the fake mount table. An empty root is "/",
+// and an empty fsType is "udf".
+type fakeMount struct {
+	readOnly bool
+	device   devNum
+	root     string
+	fsType   string
+}
+
+// fakeRootDevice is the device of the fake root filesystem: every path
+// that is not under a fake mount is on it.
+var fakeRootDevice = devNum{major: 8, minor: 1}
+
+// fakeMounts is the fake mount table of every fake env, by mount point.
+// Each entry has a loop device of its own.
 var (
-	fakeMountsMu sync.Mutex
-	fakeMounts   = map[string]bool{}
+	fakeMountsMu  sync.Mutex
+	fakeMounts    = map[string]fakeMount{}
+	fakeNextMinor uint32
 )
 
 // addFakeMount lists dir in the fake mount table until the test ends. A
 // loop mount of an image stands behind each entry.
 func addFakeMount(t *testing.T, dir string, readOnly bool) {
+	t.Helper()
+	addFakeMountEntry(t, dir, fakeMount{readOnly: readOnly})
+}
+
+// addFakeMountEntry lists dir in the fake mount table with the fields of
+// m until the test ends. It gives the entry a loop device of its own.
+func addFakeMountEntry(t *testing.T, dir string, m fakeMount) {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -35,7 +56,15 @@ func addFakeMount(t *testing.T, dir string, readOnly bool) {
 	}
 	fakeMountsMu.Lock()
 	defer fakeMountsMu.Unlock()
-	fakeMounts[resolved] = readOnly
+	fakeNextMinor++
+	m.device = devNum{major: 7, minor: fakeNextMinor}
+	if m.root == "" {
+		m.root = "/"
+	}
+	if m.fsType == "" {
+		m.fsType = "udf"
+	}
+	fakeMounts[resolved] = m
 	t.Cleanup(func() {
 		fakeMountsMu.Lock()
 		defer fakeMountsMu.Unlock()
@@ -49,18 +78,37 @@ func fakeMountinfo() (io.ReadCloser, error) {
 	fakeMountsMu.Lock()
 	defer fakeMountsMu.Unlock()
 	var b strings.Builder
-	b.WriteString("22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n")
+	fmt.Fprintf(&b, "22 1 %s / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n", fakeRootDevice)
 	id := 100
-	for dir, readOnly := range fakeMounts {
+	for dir, m := range fakeMounts {
 		opt := "rw"
-		if readOnly {
+		if m.readOnly {
 			opt = "ro"
 		}
-		fmt.Fprintf(&b, "%d 22 7:%d / %s %s,relatime shared:%d - udf /dev/loop%d %s\n",
-			id, id, strings.ReplaceAll(dir, " ", `\040`), opt, id, id, opt)
+		fmt.Fprintf(&b, "%d 22 %s %s %s %s,relatime shared:%d - %s /dev/loop%d %s\n",
+			id, m.device, m.root, strings.ReplaceAll(dir, " ", `\040`), opt, id, m.fsType, m.device.minor, opt)
 		id++
 	}
 	return io.NopCloser(strings.NewReader(b.String())), nil
+}
+
+// fakeDeviceOf returns the device of path in the fake mount table: the
+// device of the deepest fake mount that holds path, else the device of
+// the fake root filesystem. It fails as a stat does for a missing path.
+func fakeDeviceOf(path string) (devNum, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return devNum{}, err
+	}
+	fakeMountsMu.Lock()
+	defer fakeMountsMu.Unlock()
+	dev, depth := fakeRootDevice, -1
+	for dir, m := range fakeMounts {
+		if isWithin(resolved, dir) && len(dir) > depth {
+			dev, depth = m.device, len(dir)
+		}
+	}
+	return dev, nil
 }
 
 // discLogBytes returns the bytes of the disc state log of repo.

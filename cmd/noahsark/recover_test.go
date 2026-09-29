@@ -538,7 +538,11 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 		t.Fatalf("commit X: exit %d: %s", code, out)
 	}
 
-	if code, out := recoverDisc(t, repo, baseSrc, treeDir); code != 0 {
+	// The pack --out tree of a disc of this repository is not a counted
+	// mount. A copy of it stands for the disc.
+	disc := filepath.Join(work, "disc")
+	copyTree(t, treeDir, disc)
+	if code, out := recoverDisc(t, repo, baseSrc, disc); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -754,7 +758,11 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	// Discs one and two came back from their own discs: they are on disc
 	// only, so disc burned refuses them. Disc three was packed here, and
 	// disc burned records its burn.
-	roots := map[string]string{"one disc 0": discOne, "two disc 1": discTwoLost, "three disc 1": discThree}
+	// The pack --out tree of disc three is not a counted mount. A copy
+	// of it stands for the disc.
+	discThreeCopy := filepath.Join(work, "discs", "disc-three-copy")
+	copyTree(t, discThree, discThreeCopy)
+	roots := map[string]string{"one disc 0": discOne, "two disc 1": discTwoLost, "three disc 1": discThreeCopy}
 	for _, root := range roots {
 		addFakeMount(t, root, true)
 	}
@@ -866,8 +874,12 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
 	}
 
+	// The pack --out tree of disc 2 is not a counted mount. A copy of it
+	// stands for the disc.
+	disc2 := filepath.Join(discsDir, "disc2")
+	copyTree(t, tree2, disc2)
 	for round := range 2 {
-		for _, tree := range []string{tree1, tree2} {
+		for _, tree := range []string{tree1, disc2} {
 			code, out := recoverDisc(t, repo, src, tree)
 			if code != 0 {
 				t.Fatalf("recover %s, round %d: exit %d: %s", tree, round, code, out)
@@ -904,7 +916,9 @@ func TestRebuildCatalogFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := recoverDisc(t, repo, src, treeDir)
+	disc := filepath.Join(work, "disc")
+	copyTree(t, treeDir, disc)
+	code, out := recoverDisc(t, repo, src, disc)
 	if code != 1 {
 		t.Fatalf("recover while locked: exit %d, want 1: %s", code, out)
 	}

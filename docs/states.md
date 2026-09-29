@@ -15,7 +15,9 @@ next free number at the end of the table, or a letter suffix after the
 row that it extends (`11a`).
 
 A counted mount is a read-only mount, outside the repository, whose path
-is itself a mount point. The tool does not check the source of a mount,
+is itself a mount point of the root of a filesystem that can hold a
+disc. OPERATIONS.md, "Transition rules", gives each rule and the
+`REASON` of each refusal. The tool does not check the source of a mount,
 so a loop mount of an image counts as a real disc. CI uses read-only
 loop mounts (row 32). The operator is responsible for the use of a real
 disc.
@@ -273,7 +275,8 @@ items are staged again, so the next `pack` takes them.
   only when `DISC-ROOT` is a counted mount and a repository exists. A
   verify of a disc root that is not a counted mount (the packed tree
   under `staging/`, a `pack --out` DIR, a healed DIR, a read-write
-  mount, or a directory that is not a mount point) checks every byte
+  mount, a directory that is not a mount point, or a mount that is not
+  a disc) checks every byte
   and fails on damage. But it never records a burn and never records a
   verified disc. Staging and the disc are not independent: the loss of
   the repository loses both at once.
@@ -373,9 +376,9 @@ lists that last line where a row prints it.
 | 35 | on disc only | verify ok | unchanged, a verify log event added | `disc SEQ "LABEL": N items, ok`, then `check logged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 36 | packed | verify --no-mark ok | unchanged. Nothing is written. | `disc SEQ "LABEL": N items, ok`, then `not marked; to record this burn, run: noahsark disc burned SEQ` | 0 | that line, or `verify` without `--no-mark` |
 | 37 | burned, verified, or on disc only | verify --no-mark ok | unchanged. Nothing is written. | `disc SEQ "LABEL": N items, ok`, then `not marked` | 0 | `noahsark status` |
-| 38 | packed, burned, or verified | verify ok (a disc root that is not a counted mount: the packed tree, a `pack --out` DIR, a healed DIR, a read-write mount, or a directory that is not a mount point) | unchanged. Nothing is written. | `disc SEQ "LABEL": N items, ok`, then `not counted: this is not a disc` | 0 | `noahsark status` |
+| 38 | packed, burned, or verified | verify ok (a disc root that is not a counted mount: the packed tree, a `pack --out` DIR, a healed DIR, a read-write mount, a directory that is not a mount point, or a mount that is not a disc) | unchanged. Nothing is written. | `disc SEQ "LABEL": N items, ok`, then `not counted: this is not a disc` | 0 | `noahsark status` |
 | 38a | (no repository) | verify ok | unchanged. Nothing is written. | `disc UUID "LABEL": N items, ok`, then `not counted: no repository` | 0 | nothing |
-| 38b | packed, burned, verified, or on disc only | verify fail (a disc root that is not a counted mount: the packed tree, a `pack --out` DIR, a healed DIR, a read-write mount, or a directory that is not a mount point) | unchanged. No record is removed and no verify log event is added. | `disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc` | 1 | discard this copy and check the disc itself, or see row 39 for a packed tree |
+| 38b | packed, burned, verified, or on disc only | verify fail (a disc root that is not a counted mount: the packed tree, a `pack --out` DIR, a healed DIR, a read-write mount, a directory that is not a mount point, or a mount that is not a disc) | unchanged. No record is removed and no verify log event is added. | `disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc` | 1 | discard this copy and check the disc itself, or see row 39 for a packed tree |
 | 38c | (no repository) | verify fail | unchanged. Nothing is written. | `disc UUID "LABEL": bad; REASON`, then `not counted: no repository` | 1 | nothing |
 | 39 | packed | verify fail (packed tree) | unchanged | as row 38b, with the reason `the packed tree is damaged` | 1 | the newest disc: `noahsark pack --undo SEQ`, then `noahsark status`. Another disc: `noahsark disc lost SEQ`, then `noahsark status`. |
 | 40 | packed | verify fail | unchanged, a failed verify log event added | `disc SEQ "LABEL": bad; this disc is bad; no record to remove`, then the last line `next: noahsark status` | 1 | discard the disc, then `noahsark status`: its block burns a new disc from the kept disc root |

@@ -231,9 +231,32 @@ machines to the files of the repository.
    anything else.
 4. Only these write a verified record: a good `verify` of a counted mount, and
    `disc verified`.
-5. A counted mount is a read-only mount, outside the repository, whose path is
-   itself a mount point. A loop mount counts. `verify` of any other disc root
-   checks every byte and records nothing.
+5. A counted mount is a disc root that meets each rule below, after the tool
+   resolves its symlinks. The tool reads the mount table of the process
+   (`/proc/self/mountinfo`) and the device (`st_dev`) of each path. It needs
+   no root. The tool checks the rules in this order, and the first rule that
+   fails gives the `REASON` of the refusal:
+
+   | Rule | `REASON` when the rule fails |
+   |---|---|
+   | The path is outside the repository. | `inside the repository` |
+   | The path is outside the staging store. | `inside the staging store` |
+   | The path is not the packed tree of a disc: `staging/plans/<disc-uuid>/tree`, the `pack --out` DIR that it links to, or the same directory at another path, such as a bind mount. | `the packed tree of a disc` |
+   | The path is itself a mount point. | `not a mount point` |
+   | The device of the path is the device of its mount table entry. A later mount on the path or on a parent hides the entry. | `hidden by another mount` |
+   | The mount shows the root of its filesystem (the root field of the entry is `/`), not a directory of it. | `a bind mount of a directory` |
+   | The filesystem type can hold a disc or a disc image. The tool refuses the union and overlay filesystems (`overlay`), the memory filesystems (`tmpfs`, `ramfs`), the network filesystems (such as `nfs`, `nfs4`, `cifs`, `9p`, `fuse.sshfs`) and the kernel pseudo filesystems (such as `proc`, `sysfs`). | `not a disc filesystem` |
+   | The mount is read-only. | `not a read-only mount` |
+   | The device of the path is not the device of the repository. When the repository directory does not exist yet, its nearest parent that exists gives the device. | `on the device of the repository` |
+   | The device of the path is not the device of the staging store. | `on the device of the staging store` |
+
+   The tool does not check the source of a mount. A loop mount of an image
+   counts, also of an image file inside the repository, such as the image
+   that `image build` writes: the mount shows the loop device. The format
+   does not fix the filesystem type of a disc (FORMAT.md, "Filesystem
+   requirements"), thus the tool refuses a list of types and does not
+   accept a list of types. `verify` of any other disc root checks every
+   byte and records nothing.
 6. A change of a disc state writes one event to the disc state log. There are
    two exceptions. A good counted `verify` of a `packed` disc writes
    `BurnRecorded`, then `CheckOK`. `recover` of a damaged disc writes
@@ -741,13 +764,19 @@ FEC, it checks the checksum column and the parity too.
    with code 1.
 4. With a repository, and with no `--heal`: whether `DISC-ROOT` is a
    counted mount. This check refuses nothing. It fails only when `verify`
-   cannot resolve the path or read the mount table, with exit code 1.
+   cannot resolve the path, read the mount table, or read the device of a
+   path, with exit code 1.
 5. With a repository: the state of the disc. `verify`, also with `--heal`,
    refuses a disc whose uuid the disc state log does not hold, an undone
    disc, a `lost` disc and a `missing` disc, with exit code 1.
 6. With `--heal`: the FEC of the disc, as the heal sources below give.
 
-Then `verify` reads every object. When
+Then `verify` reads every object. After the read, and with a repository,
+`verify` compares the disc uuid of the full read with the disc uuid of
+step 3. After a failed read, it reads `DISC.bin` again for the uuid. When
+the two uuids differ, it prints `noahsark: verify: DISC-ROOT: the disc
+changed during the check: disc UUID before, disc UUID after; nothing is
+recorded`, records nothing, and exits with code 1. When
 `DISC-ROOT` is a counted mount ("Transition rules") and `--no-mark` is not
 given:
 
@@ -758,7 +787,9 @@ given:
   `docs/states.md`, "Disc records", states.
 
 When `DISC-ROOT` is not a counted mount, `verify` checks every byte, records
-nothing, and prints `not counted: this is not a disc`. With no repository, it
+nothing, and prints `not counted: this is not a disc`. It prints `noahsark:
+verify: DISC-ROOT is not counted: REASON` to standard error, with the `REASON`
+of "Transition rules". With no repository, it
 prints `not counted: no repository`. A failed check of such a root prints
 `disc SEQ "LABEL": bad; REASON` first, then the same `not counted` line, and
 exits with code 1. It removes no record and logs nothing. `--no-mark` writes nothing: no record, no
@@ -1446,8 +1477,8 @@ catalog or a record, with exit code 1:
 
 - `--disc=DIR` is not a counted mount ("Transition rules"). It prints
   `DIR is not counted: REASON; recover reads only a read-only mount point
-  outside the repository`. `REASON` is `not a mount point`, `not a read-only
-  mount`, `inside the repository` or `inside the staging store`.
+  outside the repository`. `REASON` is one of the texts of "Transition
+  rules".
 - The disc cannot be read: `NOAHSARK`, `DISC.bin`, `RUN.bin` or `INDEX.bin`
   is missing or does not pass its check. It prints `DIR: cannot read the
   disc: ERROR`.

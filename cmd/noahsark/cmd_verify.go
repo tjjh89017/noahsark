@@ -173,6 +173,10 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 	}
 
 	rr, checkErr := image.ReadWithProgress(root, e.progress())
+	if changed := discChangedRefusal(root, ident, rr); changed != "" {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, changed)
+		return 1
+	}
 	if !record {
 		c.reason = reasonDiscRootDamaged
 		if isPackedTree(e, layout, root, ident.DiscUUID) {
@@ -181,6 +185,7 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 		switch {
 		case verdict != mountCounted:
 			c.note = notCountedDisc
+			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is not counted: %s\n", cmd, root, verdict)
 		case disc.State == stage.DiscPacked && checkErr == nil:
 			c.note = fmt.Sprintf("%s; to record this burn, run: noahsark disc burned %d", notMarked, ident.DiscSeq)
 		default:
@@ -236,6 +241,24 @@ func verifyRefusal(disc stage.DiscInfo, known bool, ident discIdentity) string {
 		return fmt.Sprintf("disc %d is missing; give it to recover", ident.DiscSeq)
 	}
 	return ""
+}
+
+// discChangedRefusal returns the refusal of a check whose disc is not the
+// disc of ident, or an empty string. The disc uuid after the check comes
+// from rr, or from a new read of DISC.bin when the check failed. A disc
+// root whose DISC.bin cannot be read again is not refused here.
+func discChangedRefusal(root string, ident discIdentity, rr *image.ReadResult) string {
+	after := ident.DiscUUID
+	if rr != nil {
+		after = rr.Disc.DiscUUID
+	} else if again, err := readDiscIdentity(root); err == nil {
+		after = again.DiscUUID
+	}
+	if after == ident.DiscUUID {
+		return ""
+	}
+	return fmt.Sprintf("%s: the disc changed during the check: disc %s before, disc %s after; nothing is recorded",
+		root, uuidText(ident.DiscUUID), uuidText(after))
 }
 
 // verifyCheck prints the lines of a check that records nothing.
