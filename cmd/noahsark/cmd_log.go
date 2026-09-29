@@ -197,11 +197,13 @@ func logValue(s string) string {
 	return escapeField(s)
 }
 
-// joinLogValues gives the print form of each value, separated by ",".
+// joinLogValues gives the print form of each value, separated by ",". A
+// "," inside a value prints as `\x2c`, thus each "," of the field
+// separates two values.
 func joinLogValues(values []string) string {
 	escaped := make([]string, len(values))
 	for i, v := range values {
-		escaped[i] = logValue(v)
+		escaped[i] = strings.ReplaceAll(logValue(v), ",", `\x2c`)
 	}
 	return strings.Join(escaped, ",")
 }

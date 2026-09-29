@@ -72,7 +72,7 @@ func (o *packOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 2
+		return configExitCode(err)
 	}
 	if o.capacity == "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack needs --capacity")

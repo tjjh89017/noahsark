@@ -44,7 +44,7 @@ func runDiscVerified(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 2
+		return configExitCode(err)
 	}
 	lk, code, ok := lockRepo(cmd, repoDir, stderr)
 	if !ok {

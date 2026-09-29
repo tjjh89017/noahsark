@@ -168,7 +168,7 @@ the state of the item's disc, as `docs/states.md`, "Item states", defines.
 
 `<repo>/state/refs.txt` is a text file. Each line holds a ref name, one space,
 and a snapshot id in text form. `commit` replaces the line of the ref that it
-moves. `recover` writes the file from the REFS tables of the discs.
+moves. `recover` writes the names that the REFS table of its disc carries.
 
 ### 3.3 Ledgers
 
@@ -305,8 +305,10 @@ snapshot. No ref name is reserved.
 3. `restore`, `ls` and `log` resolve a ref name from `refs.txt` and from the
    catalog REFS tables. The newest record of a name wins, as FORMAT.md's
    "Ref" states.
-4. `recover` writes every ref that the given disc carries into `refs.txt` and
-   into the ref ledger.
+4. `recover` writes every ref record that the given disc carries into the
+   ref ledger. In `refs.txt`, it changes only the names that the disc
+   carries, and it never moves a name back to an older snapshot ("Command
+   notes" gives the rule).
 
 A `SNAPSHOT` argument is a ref name, a full snapshot id, or a prefix of the
 digest part of a snapshot id. "Commands and global options" gives the rules
@@ -1375,11 +1377,13 @@ A repeat of the call reads the disc again and writes each step again. Each
 step merges, thus the repeat gives the same result as one call.
 
 `recover` adds the ref records of the disc to the ref ledger. Then, for each
-name of the ref ledger, it writes the snapshot of the newest record of the
-name into `refs.txt` ("Ref" in FORMAT.md gives the rule). That value
-replaces the value that `refs.txt` held for the name, also when a later
-`commit` moved the name. A name of `refs.txt` that no ledger record carries
-stays as it is.
+name that the disc carries, it takes the newest record of the name on the
+disc ("Ref" in FORMAT.md gives the rule). A line of `refs.txt` has no time
+of its own: it takes the time of its snapshot, as `restore`, `ls` and `log`
+do. When the record is newer than the line of the name, `recover` writes
+the snapshot of the record into `refs.txt`. Else the line stays, thus a
+name that a later `commit` moved keeps its newer snapshot. A name that the
+disc does not carry stays as it is.
 
 A damaged file that is not an object, for example `README.txt`, `RUN2.bin`
 or an FEC file, gives the line `noahsark: recover: damaged file: FILE:
@@ -1448,6 +1452,9 @@ path, separated by `,`. The source path field is `-` when the catalog does
 not hold the root tree. The ref names, the source
 path and the message are escaped as an `ls` path is. A value that is
 exactly `-` prints as `\x2d`, thus a field of `-` always means no value.
+In the ref names field and the source path field, a `,` inside a value
+prints as `\x2c`, thus each `,` of these fields separates two values. The
+message field keeps a `,` as it is.
 `log` sorts the lines by the snapshot time, with its nanoseconds, newest
 first. The lines of snapshots whose object the catalog does not hold come
 last. Lines of the same time are in the order of the snapshot id bytes. When `refs.txt` or a

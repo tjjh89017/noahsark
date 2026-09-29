@@ -318,7 +318,7 @@ func openRepoCatalog(e *env, cmd string) (*repoCatalog, int) {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
-		return nil, 2
+		return nil, configExitCode(err)
 	}
 	c, err := catalog.OpenReadOnly(repoDir)
 	if err != nil {

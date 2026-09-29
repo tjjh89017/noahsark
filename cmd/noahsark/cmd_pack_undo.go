@@ -46,7 +46,7 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 2
+		return configExitCode(err)
 	}
 	lk, code, ok := lockRepo("pack", repoDir, stderr)
 	if !ok {

@@ -77,7 +77,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 2
+		return configExitCode(err)
 	}
 
 	if !o.dryRun {
