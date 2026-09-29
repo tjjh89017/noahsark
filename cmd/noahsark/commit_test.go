@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -639,5 +643,207 @@ func TestCommitSkipsANameTheTreeFormatForbids(t *testing.T) {
 	}
 	if !strings.Contains(ls, "a.txt") {
 		t.Fatalf("ls -R output %q does not list a.txt", ls)
+	}
+}
+
+// TestCommitSyncsEveryDirectoryBeforeTheStateLog checks the durable order
+// of commit: each directory that got an object file is synced before
+// the state log gets a record. A crash after the log write then finds
+// each object that the log names.
+func TestCommitSyncsEveryDirectoryBeforeTheStateLog(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	stateLog := testLayout(t, repo).stateLogFile()
+	logSize := func() int64 {
+		fi, err := os.Stat(stateLog)
+		if os.IsNotExist(err) {
+			return 0
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	before := logSize()
+
+	oldNewWriter := newWriter
+	defer func() { newWriter = oldNewWriter }()
+	synced := map[string]bool{}
+	newWriter = func(chunkPath, metaPath object.PathFunc) *object.Writer {
+		w := object.NewWriter(chunkPath, metaPath)
+		w.SyncDir = func(dir string) error {
+			if n := logSize(); n != before {
+				t.Errorf("directory %s synced after the state log grew from %d to %d bytes", dir, before, n)
+			}
+			synced[dir] = true
+			return object.SyncDir(dir)
+		}
+		return w
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	if logSize() == before {
+		t.Fatal("commit wrote no state log record")
+	}
+	layout := testLayout(t, repo)
+	for _, root := range []string{layout.chunksDir(), layout.catalogDir()} {
+		for _, rel := range listFilesUnder(t, root) {
+			if dir := filepath.Dir(filepath.Join(root, rel)); !synced[dir] {
+				t.Errorf("directory %s holds a new object, but commit did not sync it", dir)
+			}
+		}
+	}
+}
+
+// TestCommitStagesOnlyWhatTheSnapshotReaches gives a file other content
+// on its first read, as a file that changes during the read. The first
+// read gets no Staged record, and one pack takes every Staged item.
+func TestCommitStagesOnlyWhatTheSnapshotReaches(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := filepath.Join(work, "src")
+	mustMkdirCmd(t, src)
+	target := filepath.Join(src, "f.bin")
+	data := make([]byte, 600_000)
+	rand.New(rand.NewSource(7)).Read(data)
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	oldNewWriter := newWriter
+	defer func() { newWriter = oldNewWriter }()
+	opens, stats := 0, 0
+	newWriter = func(chunkPath, metaPath object.PathFunc) *object.Writer {
+		w := object.NewWriter(chunkPath, metaPath)
+		w.Open = func(path string) (io.ReadCloser, error) {
+			if path == target {
+				opens++
+				if opens == 1 {
+					other := make([]byte, 600_000)
+					rand.New(rand.NewSource(8)).Read(other)
+					return io.NopCloser(bytes.NewReader(other)), nil
+				}
+			}
+			return os.Open(path)
+		}
+		w.Stat = func(path string) (os.FileInfo, error) {
+			real, err := os.Lstat(path)
+			if err != nil || path != target {
+				return real, err
+			}
+			stats++
+			if stats >= 2 {
+				return fakeStatInfo{FileInfo: real, size: real.Size() + 1}, nil
+			}
+			return real, nil
+		}
+		return w
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	newWriter = oldNewWriter
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	// The snapshot, two trees, one blob and one chunk.
+	if !strings.Contains(out, "staged: 5 items,") {
+		t.Fatalf("commit output %q, want staged: 5 items", out)
+	}
+	if n := countByState(t, repo, stage.Staged); n != 5 {
+		t.Fatalf("Staged items = %d, want 5", n)
+	}
+	if files := listFilesUnder(t, testLayout(t, repo).chunksDir()); len(files) != 1 {
+		t.Fatalf("chunk files = %v, want the one chunk of the second read", files)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=bd25", "--out="+filepath.Join(work, "d0")); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	if n := countByState(t, repo, stage.Staged); n != 0 {
+		t.Fatalf("Staged items after pack = %d, want 0", n)
+	}
+}
+
+// TestCommitLeavesTheRepositoryOutOfTheSource puts the repository, a
+// staging store outside the repository, and a pack --out directory in
+// the source. commit leaves each out, names each on one line, and exits
+// 0. A later commit of the same source adds no chunk file.
+func TestCommitLeavesTheRepositoryOutOfTheSource(t *testing.T) {
+	src := writeSeededSource(t, 42, 2)
+	repo := filepath.Join(src, "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	cfgText, err := os.ReadFile(configPath(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgText = []byte(strings.Replace(string(cfgText), "dir: staging", "dir: "+filepath.Join(src, "stage"), 1))
+	if err := os.WriteFile(configPath(repo), cfgText, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The repository through a symlink: the walk compares device and
+	// inode, not the path text.
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(src, alias); err != nil {
+		t.Fatal(err)
+	}
+	repoArg := "--repo=" + filepath.Join(alias, "repo")
+
+	code, out := runCmd(t, repoArg, "commit", src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	for _, want := range []string{"excluded repo: the repository\n", "excluded stage: the staging store\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("commit output %q, want line %q", out, want)
+		}
+	}
+	chunks := listFilesUnder(t, testLayout(t, repo).chunksDir())
+	if len(chunks) != 2 {
+		t.Fatalf("chunk files after the first commit = %v, want the 2 chunks of the source", chunks)
+	}
+
+	if code, out := runCmd(t, repoArg, "pack", "--capacity=bd25", "--out="+filepath.Join(src, "out")); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	for i := range 2 {
+		code, out = runCmd(t, repoArg, "commit", src)
+		if code != 0 {
+			t.Fatalf("commit %d: exit %d: %s", i+2, code, out)
+		}
+		if !strings.Contains(out, "excluded out: the disc root of a pack --out\n") {
+			t.Fatalf("commit output %q, want the pack --out line", out)
+		}
+		if got := listFilesUnder(t, testLayout(t, repo).chunksDir()); !slices.Equal(got, chunks) {
+			t.Fatalf("chunk files after commit %d = %v, want the %v of the source only", i+2, got, chunks)
+		}
+	}
+}
+
+// TestCommitRefusesASymlinkSourceRoot checks that commit refuses a
+// source root that is a symlink, and names the directory to give.
+func TestCommitRefusesASymlinkSourceRoot(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeFixtureSource(t)
+	link := filepath.Join(work, "link")
+	if err := os.Symlink(src, link); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", link)
+	if code != 1 {
+		t.Fatalf("commit: exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, link+" is a symlink") || !strings.Contains(out, "give the directory that it points to: "+src) {
+		t.Fatalf("commit output %q, want the symlink refusal that names %s", out, src)
 	}
 }

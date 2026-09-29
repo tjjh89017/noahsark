@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -96,6 +98,16 @@ func (o *commitOptions) run(e *env, args []string) int {
 	}
 
 	layout := layoutOf(repoDir, cfg)
+	// The staging store exists before the walk, thus the walk can leave
+	// it out when it is inside the source.
+	err = ensureRepoDirs(layout)
+	if err == nil {
+		err = mkdirDurable(layout.chunksDir())
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+		return 1
+	}
 	logs, err := openLogs("commit", layout, true, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
@@ -133,6 +145,11 @@ func (o *commitOptions) run(e *env, args []string) int {
 		rec, ok := commitStageLog.Get(id)
 		return ok && (rec.State == stage.Packed || rec.State == stage.OnDisc)
 	}
+	w.HasRecord = func(id object.ID) bool {
+		_, ok := commitStageLog.Get(id)
+		return ok
+	}
+	w.OwnDirs = ownDirs(layout)
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
@@ -171,6 +188,9 @@ func (o *commitOptions) run(e *env, args []string) int {
 	for _, p := range sum.MountPoints {
 		_, _ = fmt.Fprintf(stdout, "mount point %s: not crossed, recorded as an empty directory\n", p)
 	}
+	for _, d := range sum.OwnDirs {
+		_, _ = fmt.Fprintf(stdout, "excluded %s: %s\n", d.Path, d.What)
+	}
 	printSpecialWarnings(stdout, sum.Special)
 	if sum.Excluded > 0 {
 		_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
@@ -190,6 +210,24 @@ func (o *commitOptions) run(e *env, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// ownDirs names the directories of the repository that commit never
+// walks: the repository, the staging store, and the pack --out directory
+// that each plan symlink names. A plan tree that is not a symlink is
+// inside the staging store.
+func ownDirs(l repoLayout) []object.OwnDir {
+	dirs := []object.OwnDir{
+		{Path: l.repo, What: "the repository"},
+		{Path: l.stagingDir(), What: "the staging store"},
+	}
+	trees, _ := filepath.Glob(filepath.Join(l.plansDir(), "*", planTreeName))
+	for _, tree := range trees {
+		if fi, err := os.Lstat(tree); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			dirs = append(dirs, object.OwnDir{Path: tree, What: "the disc root of a pack --out"})
+		}
+	}
+	return dirs
 }
 
 // maxSpecialWarnings bounds how many special-file warning lines one

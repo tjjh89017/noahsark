@@ -30,7 +30,8 @@ func updateRef(path, name string, id object.ID) error {
 // writeRefs replaces the ref file at path with exactly the
 // name-to-id-text pairs in refs. recover uses this to restore every ref
 // a disc's REFS table names in one write, instead of one updateRef call
-// per name.
+// per name. A crash during the write leaves the old file or the new
+// file, never a part of one.
 func writeRefs(path string, refs map[string]string) error {
 	names := make([]string, 0, len(refs))
 	for n := range refs {
@@ -42,7 +43,7 @@ func writeRefs(path string, refs map[string]string) error {
 	for _, n := range names {
 		_, _ = fmt.Fprintf(&b, "%s %s\n", n, refs[n])
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return object.ReplaceFile(path, []byte(b.String()))
 }
 
 // resolveRef returns the snapshot id name points at in the ref file at
