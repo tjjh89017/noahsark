@@ -22,6 +22,13 @@ type ReachableObject struct {
 	ByteLen uint64
 }
 
+// ObjectPathFunc gives the file path of one object from its kind and
+// id. Pack and Build read every object through it.
+type ObjectPathFunc func(kind format.ObjectKind, id object.ID) string
+
+// SnapshotIDsFunc lists the id of every snapshot a pack covers.
+type SnapshotIDsFunc func() ([]object.ID, error)
+
 // stagedObjectPath returns the path of id's object file under a staging
 // directory. Both a snapshot and a non-snapshot object share the same
 // two-level fan-out scheme; the caller picks the right root.
@@ -38,6 +45,14 @@ func StagedPath(stagingDir string, id object.ID, kind format.ObjectKind) string 
 	return stagedObjectPath(filepath.Join(stagingDir, "objects"), id)
 }
 
+// StagedPathFunc returns the ObjectPathFunc for the staging directory
+// stagingDir. It is the default when a caller gives no function.
+func StagedPathFunc(stagingDir string) ObjectPathFunc {
+	return func(kind format.ObjectKind, id object.ID) string {
+		return StagedPath(stagingDir, id, kind)
+	}
+}
+
 // readObjectFile reads and returns the whole bytes of an object file at
 // path, an object.ID computed from the staging directory's own layout.
 func readObjectFile(path string) ([]byte, error) {
@@ -49,6 +64,20 @@ func readObjectFile(path string) ([]byte, error) {
 // store: the snapshot objects themselves, and every tree, blob and chunk
 // object reachable from their root trees. Objects are deduplicated by id.
 func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableObject, error) {
+	cache := NewNameCache()
+	objectsRoot := cache.Join(stagingDir, "objects")
+	snapshotsRoot := cache.Join(stagingDir, "snapshots")
+	return CollectReachableFrom(func(kind format.ObjectKind, id object.ID) string {
+		if kind == format.ObjectKindSnapshot {
+			return filepath.Join(snapshotsRoot, id.TextForm())
+		}
+		return stagedObjectPath(objectsRoot, id)
+	}, snapshotIDs)
+}
+
+// CollectReachableFrom does the work of CollectReachable. It finds each
+// object file through objectPath.
+func CollectReachableFrom(objectPath ObjectPathFunc, snapshotIDs []object.ID) ([]ReachableObject, error) {
 	seen := make(map[object.ID]bool)
 	var out []ReachableObject
 
@@ -60,16 +89,12 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 		out = append(out, ReachableObject{ID: id, Kind: kind, Bytes: data, ByteLen: byteLen})
 	}
 
-	cache := NewNameCache()
-	objectsRoot := cache.Join(stagingDir, "objects")
-	snapshotsRoot := cache.Join(stagingDir, "snapshots")
-
 	var walkTree func(id object.ID) error
 	walkTree = func(id object.ID) error {
 		if seen[id] {
 			return nil
 		}
-		data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
+		data, err := readObjectFile(objectPath(format.ObjectKindTree, id))
 		if err != nil {
 			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 		}
@@ -85,7 +110,7 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 					return err
 				}
 			case format.EntryTypeRegular:
-				if err := walkBlob(objectsRoot, object.ID(entry.ContentID), add); err != nil {
+				if err := walkBlob(objectPath, object.ID(entry.ContentID), add); err != nil {
 					return err
 				}
 			}
@@ -94,7 +119,7 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 	}
 
 	for _, snapID := range snapshotIDs {
-		data, err := readObjectFile(filepath.Join(snapshotsRoot, snapID.TextForm()))
+		data, err := readObjectFile(objectPath(format.ObjectKindSnapshot, snapID))
 		if err != nil {
 			return nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
 		}
@@ -114,8 +139,8 @@ func CollectReachable(stagingDir string, snapshotIDs []object.ID) ([]ReachableOb
 // lists. A chunk's own bytes are never read here: only its staged file
 // size, from a stat, so a chunk's payload never enters memory during the
 // walk.
-func walkBlob(objectsRoot string, id object.ID, add func(object.ID, format.ObjectKind, []byte, uint64)) error {
-	data, err := readObjectFile(stagedObjectPath(objectsRoot, id))
+func walkBlob(objectPath ObjectPathFunc, id object.ID, add func(object.ID, format.ObjectKind, []byte, uint64)) error {
+	data, err := readObjectFile(objectPath(format.ObjectKindBlob, id))
 	if err != nil {
 		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 	}
@@ -126,7 +151,7 @@ func walkBlob(objectsRoot string, id object.ID, add func(object.ID, format.Objec
 	add(id, format.ObjectKindBlob, data, uint64(len(data)))
 	for _, e := range blob.Entries {
 		chunkID := object.ID(e.ContentID)
-		fi, err := os.Stat(stagedObjectPath(objectsRoot, chunkID))
+		fi, err := os.Stat(objectPath(format.ObjectKindChunk, chunkID))
 		if err != nil {
 			return fmt.Errorf("chunk %s: %w", chunkID.TextForm(), err)
 		}
