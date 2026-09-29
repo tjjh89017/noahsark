@@ -167,7 +167,7 @@ func TestInitCommitPackUseTheLayout(t *testing.T) {
 	}
 	for _, rel := range listFilesUnder(t, l.stagingDir()) {
 		top, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
-		if top != chunksDirName && top != plansDirName {
+		if top != chunksDirName && top != plansDirName && rel != stage.MarkFileName {
 			t.Errorf("staging file %s is outside chunks and plans", rel)
 		}
 	}
@@ -281,8 +281,8 @@ func TestGCFreesChunksAndKeepsTheCatalog(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
-	if files := listFilesUnder(t, l.stagingDir()); len(files) != 0 {
-		t.Fatalf("staging after gc holds %v, want no file", files)
+	if files := listFilesUnder(t, l.stagingDir()); !slices.Equal(files, []string{stage.MarkFileName}) {
+		t.Fatalf("staging after gc holds %v, want only the sequence mark", files)
 	}
 	if after := listFilesUnder(t, l.catalogDir()); !slices.Equal(catalogBefore, after) {
 		t.Fatalf("catalog after gc = %v, want %v", after, catalogBefore)

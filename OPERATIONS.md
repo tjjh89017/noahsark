@@ -67,10 +67,47 @@ The `state/` directory holds these files:
 | `catalog-state.txt` | The completeness of each snapshot in the catalog ("Catalog layout"). |
 
 The tracked part is permanent: the operator can keep it in a version control
-system. The ignored part holds only what `gc` frees. The tool never runs
-`git`. The operator must not use `git`, or any other tool, to put a file of
-`state/` or `catalog/` back to an old version. The state logs are append-only
-histories; an old version forgets events that the discs already carry.
+system. The ignored part holds only what `gc` frees, and the sequence mark.
+The tool never runs `git`. The operator must not use `git`, or any other tool,
+to put a file of `state/` or `catalog/` back to an old version. The state logs
+are append-only histories; an old version forgets events that the discs
+already carry.
+
+The tool detects such a roll back. `staging/state-seq.txt` is the sequence
+mark: it holds the `sequence` of the last record of `state.db` and of
+`discstate.db`. Git does not track it, thus it does not go back with
+`state/`. Each command that holds the repository lock writes the mark after
+each append to a log, and when it opens the logs. It writes a temporary file,
+syncs it, renames it over the mark, and syncs the directory. The file has two
+lines, `state.db N` and `discstate.db N`, with `N` in decimal. When a command
+opens the logs, a log whose last `sequence` is below the mark went back:
+
+- A command that holds the lock refuses, before it writes a file, and exits
+  with code 1: `noahsark: CMD: state/ went back to an older version: the
+  state log ends at record N, but MARK names record M; put state/ and
+  catalog/ forward again with git, or run recover with each disc into a new
+  repository`. There is one `the LOG ends at record N, but MARK names record
+  M` part for each log that went back.
+- A command that takes no lock (`status`, `restore`, `ls`, `log`) prints the
+  same text on standard error as `noahsark: CMD: warning: TEXT; this command
+  changes no file`, and goes on. It never writes the mark.
+
+A log above the mark is not a roll back: a crash between an append and the
+write of the mark leaves it. The next command with the lock writes the mark
+again.
+
+A staging directory with no mark is not a roll back: a new clone on a second
+computer, or a staging directory that the operator deleted. The first command
+with the lock writes the mark. The chunk files of the Staged items are not
+there. `status` and `pack` then fail on the first missing chunk file. A
+`commit` of the same source writes each missing chunk file again, and `pack`
+then works. The disc root of a `packed` disc is gone too: its `next:` block
+gives `disc lost` ("State to `next:` block" in `docs/states.md`).
+
+Thus git is safe for these uses: a commit of `state/` and `catalog/` after
+each command, a push to a remote as a copy, and a clone to read the history.
+Do not check out an old commit into the repository, and do not pull changes
+that two computers made on their own.
 
 Every disc carries the `repo_uuid`. `recover` makes a lost repository again
 from its discs. The repository is the source of truth only for the items that
@@ -99,11 +136,12 @@ staging/
     chunks/ab/<id>              chunk files that wait for gc
     plans/<disc-uuid>/tree      the disc root that pack writes, or a symlink to the pack --out directory
     plans/<disc-uuid>/tree.img  the image that image build writes
+    state-seq.txt               the sequence mark ("The repository directory")
 ```
 
 `ab` is the first two hex digits of the digest of `<id>`. `<disc-uuid>` is the
 uuid in the hyphenated form, in lower case: `8-4-4-4-12` hex digits. Staging holds chunk
-data only. It holds no state and no metadata object: the loss of `staging/`
+data and the sequence mark only. It holds no state and no metadata object: the loss of `staging/`
 loses the chunk data of the items that no disc holds yet, and nothing else.
 Keep staging on a local filesystem.
 
@@ -207,7 +245,7 @@ number of fixed-width records, each 54 bytes:
 | 8 | 8 | i64 | `time_sec` | Unix time of the event. |
 | 16 | 16 | u8[16] | `disc_uuid` | The disc. |
 | 32 | 1 | u8 | `event` | The event code (table below). |
-| 33 | 1 | u8 | `flags` | Bit 0 `close`, bit 1 `fec`. Set in `Packed` only, except that `Recovered` sets the `fec` bit; 0 in every other event. The other bits are 0. |
+| 33 | 1 | u8 | `flags` | Bit 0 `close`, bit 1 `fec`. Set in `Packed` only, except that `Recovered` sets the `fec` bit; 0 in every other event. The other bits are 0. A record with a bit that its event does not permit is damage. |
 | 34 | 8 | u64 | `disc_seq` | The disc number. Set in `Packed` only; 0 otherwise. |
 | 42 | 8 | u64 | `run_seq` | The run number. Set in `Packed` only; 0 otherwise. |
 | 50 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 49. |
@@ -297,7 +335,13 @@ command that takes no lock ignores the torn tail, never changes the file, and
 prints the same warning on stderr with the word `ignored` in place of `cut
 off`: `noahsark: CMD: the disc state log's tail was truncated; N byte(s) after
 the last valid record were ignored, matching a crash during an earlier append`.
-It prints nothing on stdout.
+It prints nothing on stdout. A command that takes no lock can also read a
+part of the record that another command appends at this time. Thus, when it
+finds a torn tail, it tries a shared lock on the lock file, with no wait, and
+lets go of it at once. It never creates the lock file. When another command
+holds the lock, the warning is `noahsark: CMD: the disc state log ends in a
+part of a record; N byte(s) after the last valid record were ignored; another
+noahsark command writes the log at this time`.
 
 A bad record anywhere else is damage. So is a `sequence` that does not grow,
 and a disc event that the replay does not permit. The tool reports an error,
@@ -308,6 +352,29 @@ the directory when the append created the file. A command can append several
 records as one batch. It writes all records of the batch, then syncs the file
 one time, before the next step that depends on the records. An error from a
 write, a sync or a close stops the command.
+
+A command that changes the state of a disc and the records of its items
+(`disc lost`, `disc lost --undo`, `pack --undo`) writes the disc event first,
+as one synced append. Then it writes the item records that the new state of
+the disc asks for, as one synced batch. The event is the intent. A command
+that stops between the two leaves a disc whose items do not follow its
+state. The item records that each disc state asks for:
+
+| Disc state | Item records |
+|---|---|
+| `lost` | Each Packed item of the disc returns to Staged, and each OnDisc item of the disc is Lost, both with reason 2. |
+| `undone` | Each Packed item of the disc returns to Staged, with reason 1. |
+| `on disc only` | Each Packed item of the disc is OnDisc, with reason 0. Each Lost item of the disc is OnDisc, with reason 3. |
+| `burned`, when its newest event is `LostUndone` and no item is Packed on the disc | Each Staged item that the catalog INDEX of the disc lists is Packed on the disc, with the run number of that INDEX and reason 3. |
+
+Each command that holds the repository lock completes these records when it
+opens the logs, before it does its own work: one batch for each disc. It
+prints one note on standard error for each disc: `noahsark: CMD: disc SEQ
+"LABEL": an earlier COMMAND stopped before it wrote the records of its items;
+N item record(s) now written`. `COMMAND` is the command that wrote the event.
+Thus the operator needs to know no repair command: the next command with the
+lock repairs. `status` takes no lock and writes nothing: it names the repair
+in its `next:` block (`docs/states.md`, "State to `next:` block").
 
 ### 4.4 GC rules
 
@@ -551,7 +618,8 @@ disc is `packed`. The newest disc is the disc with the highest `disc_seq` among
 the rows of the disc ledger and the `Packed` events whose disc is not undone. It asks an ordinary confirmation. After a yes, it does these
 steps in this order:
 
-1. Append the Staged records with reason 1, and the `PackUndone` event.
+1. Append the `PackUndone` event, then the Staged records with reason 1
+   ("State log replay").
 2. Remove the disc row from the disc ledger.
 3. Remove `catalog/discs/<disc-uuid>/`.
 4. Remove `staging/plans/<disc-uuid>/`. For a `pack --out=DIR` disc, it
@@ -564,10 +632,11 @@ removes them` to standard error. The disc is undone all the same, thus it
 prints the `next:` line as the last line of standard output, and exits with
 code 1.
 
-A `pack` without `--dry-run` completes each `pack --undo` that stopped after
-the `PackUndone` event. It does this after the check for a `missing` disc and
-before it writes a disc root. For each undone disc, it records the items that
-are still Packed on the disc as Staged with reason 1. Then it removes the
+A `pack --undo` that stops after the `PackUndone` event and before the item
+records leaves item records that each command with the lock writes ("State
+log replay"). A `pack` without `--dry-run` completes each `pack --undo` that
+stopped after the item records. It does this after the check for a `missing`
+disc and before it writes a disc root. For each undone disc, it removes the
 ledger row, the catalog tables and the plan directory that remain, in the
 order of the steps above. It prints one note on standard error: `noahsark:
 pack: disc SEQ: an earlier pack --undo stopped before it removed the records
@@ -1427,12 +1496,16 @@ lost` ask a critical confirmation. `disc burned --undo` and `disc lost
 --undo` ask an ordinary confirmation. `disc lost` removes
 `staging/plans/<disc-uuid>/` (for a `pack --out` disc, the symlink only), and
 keeps the catalog data of the disc. It does these steps in this order: it
-appends the item records (Packed items to Staged, OnDisc items to Lost),
-then the `Lost` event, then it removes the plan directory. `disc lost
---undo` of a disc that was `verified` finds the items of the disc in the
-catalog INDEX of the disc: a Staged record names no disc. It gives back
-each item that the INDEX lists and that is Staged. For a disc that was `on
-disc only`, it takes the Lost items whose record names the disc.
+appends the `Lost` event, then the item records as one batch (Packed items
+to Staged, OnDisc items to Lost), then it removes the plan directory.
+`disc lost --undo` appends the `LostUndone` event, then the item records as
+one batch. For a disc that was `verified`, it finds the items of the disc
+in the catalog INDEX of the disc: a Staged record names no disc. It reads
+the INDEX before the event, and refuses with exit code 1 when it cannot. It
+gives back each item that the INDEX lists and that is Staged. For a disc
+that was `on disc only`, it takes the Lost items whose record names the
+disc. "State log replay" gives the item records, and the repair after a stop
+between the event and the item records.
 
 **`verify`** prints `disc SEQ "LABEL": N items, ok` or `disc SEQ "LABEL":
 bad; REASON`, then one line that names what changed, as `docs/states.md`,
@@ -1758,7 +1831,7 @@ Every command uses exactly these three codes.
 | 8 | The repository directory is lost | `noahsark --repo=<new> recover --source=PATH --disc=DIR`, one time for each disc, in any order. Do not run `init` first. |
 | 9 | `recover: disc SEQ "LABEL" (UUID) named by another disc, not yet given` | Run `recover` with that disc. When it is gone for good, run `disc lost DISC`. |
 | 10 | `recover: damaged: ID` | The disc is `on disc only` with a failed check. Copy it now, or use the second copy, and run `recover` with the copy. |
-| 11 | `the state log's tail was truncated; ...` | A crash left a torn tail. Run the interrupted command again. For a bad record in the middle of a log, run `recover` into a new repository. Do not put an old version of a log back. |
+| 11 | `the state log's tail was truncated; ...` | A crash left a torn tail. Run the interrupted command again. When it refuses because the disc already has the new state, its event was written, and the command with the lock wrote the rest (row 28). For a bad record in the middle of a log, run `recover` into a new repository. Do not put an old version of a log back (row 29). |
 | 12 | `repository lock PATH is held; another noahsark command runs on this repository` | Wait for the other command. |
 | 13 | `pack` stops: a staged item fails its check, or a sync error occurs | `pack` records nothing. Run `commit` again, then `pack` again. |
 | 14 | `pack`: `capacity ... holds not one item` | Give a larger `--capacity`. |
@@ -1774,6 +1847,9 @@ Every command uses exactly these three codes.
 | 24 | An unknown format version on a disc | The tool refuses the disc. Use a newer tool. |
 | 25 | `no repository; run noahsark init, or give --repo` | Run `init` in the directory of the repository, or give `--repo` or set `NOAHSARK_REPO`. |
 | 26 | `snapshot ID is partial; run recover with more discs` | Run `recover` with each disc that you still hold, then run the command again. |
+| 27 | `the state log ends in a part of a record; ...; another noahsark command writes the log at this time` | Nothing is wrong. Wait for the other command, then run the command again. |
+| 28 | `disc SEQ "LABEL": an earlier COMMAND stopped before it wrote the records of its items; N item record(s) now written` | Nothing to do. The command that printed the note wrote the records, then did its own work. When `status` names such a disc, run the command that its `next:` block gives. Do not run the stopped command again: its disc event is written. |
+| 29 | `state/ went back to an older version: ...` | `state/` is older than the staging directory, for example after a `git checkout` of an old commit. Put `state/` and `catalog/` forward again to the newest commit with git. When the newest version is gone, run `noahsark --repo=<new> recover --source=PATH --disc=DIR` with each disc, into a new repository. Commands that take no lock warn and go on. |
 
 ## 20. Test list
 
@@ -1792,7 +1868,9 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
 - `internal/stage`: the golden state log record and the golden disc state log
   record; replay of both logs; each disc event against the replay table of
   `docs/states.md`; a refused event; the torn tail; a bad record in the
-  middle; a close error.
+  middle; a close error; the flag bits of each event; the item records of
+  each disc state after a stop between an event and its item records; the
+  sequence mark and a roll back.
 - `internal/image`: packing order, the capacity budget, FEC on and off, the
   dry run, the ledgers, `README.txt` and `FORMAT.txt` against the golden text,
   bounded memory, the UDF image build.

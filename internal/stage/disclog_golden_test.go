@@ -65,7 +65,13 @@ func TestDiscRecordGolden(t *testing.T) {
 		if gotRec := decodeDiscRecord(buf); gotRec != wantRec {
 			t.Fatalf("record %d: decoded %+v, want %+v", i+1, gotRec, wantRec)
 		}
-		if err := wantRec.check(); err != nil {
+		// The golden Recovered record carries the close bit, which the
+		// record check refuses: only the fec bit is valid in Recovered.
+		err := wantRec.check()
+		switch {
+		case wantRec.Event == EventRecovered && err == nil:
+			t.Fatalf("record %d: check accepts the close bit in Recovered", i+1)
+		case wantRec.Event != EventRecovered && err != nil:
 			t.Fatalf("record %d: check: %v", i+1, err)
 		}
 	}

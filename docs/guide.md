@@ -121,6 +121,12 @@ or any other tool, to put a file of `state/` or `catalog/` back to an old
 version. The state logs are histories. An old version forgets events that
 your discs already carry.
 
+These uses of git are safe: commit `state/` and `catalog/` after a
+command, push them to a remote as a copy, and clone them to read the
+history. Do not check out an old commit in the repository. When `state/`
+goes back, each command that changes state refuses with `state/ went back
+to an older version`. Then check out the newest commit again.
+
 ## The normal cycle
 
 ### Commit

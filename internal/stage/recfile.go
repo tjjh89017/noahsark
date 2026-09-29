@@ -1,6 +1,7 @@
 package stage
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -90,6 +91,8 @@ type recFile struct {
 	// tornBytes is the size of the torn tail that the open found. A
 	// writable open cut these bytes. A read-only open ignored them.
 	tornBytes int64
+	// afterAppend runs after each durable append.
+	afterAppend func()
 }
 
 // openRecFile reads path and calls apply for each good record, in file
@@ -108,18 +111,30 @@ type recFile struct {
 // Only a holder of the repository lock opens the file writable.
 func openRecFile(path string, width int, writable bool, apply func(rec []byte) error) (*recFile, error) {
 	f := &recFile{path: path, width: width, writable: writable}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return f, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("stage: %w", err)
 	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stage: %w", err)
+	}
 
-	full := len(data) / width
-	good := 0
+	// The records stream through one buffer, thus the peak memory of a
+	// replay does not grow with the size of the file.
+	size := info.Size()
+	full := size / int64(width)
+	r := bufio.NewReaderSize(file, 1<<16)
+	rec := make([]byte, width)
+	var good int64
 	for i := range full {
-		rec := data[i*width : (i+1)*width]
+		if _, err := io.ReadFull(r, rec); err != nil {
+			return nil, fmt.Errorf("stage: %s: %w", path, err)
+		}
 		if !recordIntact(rec) {
 			if i == full-1 {
 				break
@@ -137,8 +152,8 @@ func openRecFile(path string, width int, writable bool, apply func(rec []byte) e
 		good++
 	}
 
-	goodLen := int64(good * width)
-	f.tornBytes = int64(len(data)) - goodLen
+	goodLen := good * int64(width)
+	f.tornBytes = size - goodLen
 	if f.tornBytes > 0 && writable {
 		if err := os.Truncate(path, goodLen); err != nil {
 			return nil, fmt.Errorf("stage: %w", err)
@@ -195,5 +210,8 @@ func (f *recFile) appendBatch(batch []byte) error {
 		}
 	}
 	f.lastSeq = recordSequence(batch[len(batch)-f.width:])
+	if f.afterAppend != nil {
+		f.afterAppend()
+	}
 	return nil
 }

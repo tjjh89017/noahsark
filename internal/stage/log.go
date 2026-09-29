@@ -252,9 +252,9 @@ func (l *Log) EnsureStaged(ids ...object.ID) error {
 	})
 }
 
-// MarkStaged records each id as Staged with reason: the items of a pack
-// that pack --undo removes (ReasonPackUndone), and the Packed items of a
-// disc that disc lost marks (ReasonDiscLost). Each id must be Packed.
+// MarkStaged records each id as Staged with reason: ReasonPackUndone for
+// the items of an undone pack, and ReasonDiscLost for the Packed items of
+// a lost disc. Each id must be Packed.
 func (l *Log) MarkStaged(reason Reason, ids ...object.ID) error {
 	return l.change(ids, []State{Packed}, false, func(cur Record) Record {
 		return Record{ContentID: cur.ContentID, State: Staged, Reason: reason}
@@ -299,8 +299,7 @@ func (l *Log) EnsureOnDisc(runSeq uint64, discUUID [16]byte, ids ...object.ID) e
 }
 
 // MarkLost records each id as Lost, with ReasonDiscLost, on the disc of
-// its OnDisc record. disc lost calls it for the items of an on disc only
-// disc. Each id must be OnDisc.
+// its OnDisc record. Each id must be OnDisc.
 func (l *Log) MarkLost(ids ...object.ID) error {
 	return l.change(ids, []State{OnDisc}, false, func(cur Record) Record {
 		return Record{ContentID: cur.ContentID, State: Lost, RunSeq: cur.RunSeq, DiscUUID: cur.DiscUUID, Reason: ReasonDiscLost}
@@ -308,8 +307,7 @@ func (l *Log) MarkLost(ids ...object.ID) error {
 }
 
 // MarkLostUndone records each id as OnDisc, with ReasonLostUndone, on
-// the disc of its Lost record. disc lost --undo calls it for a disc that
-// was on disc only. Each id must be Lost.
+// the disc of its Lost record. Each id must be Lost.
 func (l *Log) MarkLostUndone(ids ...object.ID) error {
 	return l.change(ids, []State{Lost}, false, func(cur Record) Record {
 		return Record{ContentID: cur.ContentID, State: OnDisc, RunSeq: cur.RunSeq, DiscUUID: cur.DiscUUID, Reason: ReasonLostUndone}
@@ -317,9 +315,7 @@ func (l *Log) MarkLostUndone(ids ...object.ID) error {
 }
 
 // ReturnToDisc records each id as Packed, with ReasonLostUndone, on the
-// disc discUUID with the run runSeq. disc lost --undo calls it for the
-// staged items that no later pack took, of a disc that was verified.
-// Each id must be Staged.
+// disc discUUID with the run runSeq. Each id must be Staged.
 func (l *Log) ReturnToDisc(runSeq uint64, discUUID [16]byte, ids ...object.ID) error {
 	return l.change(ids, []State{Staged}, false, func(cur Record) Record {
 		return Record{ContentID: cur.ContentID, State: Packed, RunSeq: runSeq, DiscUUID: discUUID, Reason: ReasonLostUndone}

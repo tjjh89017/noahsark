@@ -99,6 +99,15 @@ damage of an `on disc only` disc whose last check failed writes `CheckOK`.
 | `Recovered` | `recover` | `unknown` or `missing` -> `on disc only`. It carries the `fec` flag when the disc has FEC. It never carries the `close` flag, because no disc byte records it. |
 | `NamedMissing` | `recover` | `unknown` -> `missing`. |
 
+An event can ask for item records. `disc lost`, `disc lost --undo` and
+`pack --undo` write the event first, then the item records of the disc as
+one batch. The event is the intent. When the command stops between the two,
+the disc has its new state, and its items do not follow it yet. Each
+command that holds the repository lock writes the missing item records when
+it opens the logs, and prints one note on standard error. `status` names
+the repair in its `next:` block. OPERATIONS.md, "State log replay", gives
+the item records of each disc state and the note.
+
 The verified time of a disc is the time of the `CheckOK` or
 `MarkedVerified` event that moved it to `verified`. The 7-day wait of
 `gc` counts from it. The last check of a disc is its newest `CheckOK`,
@@ -546,22 +555,26 @@ block in the shell where `status` found the repository.
 When two or more discs need an action, `status` takes the first match
 in this order, and inside one step the lowest number:
 
-1. a `missing` disc;
-2. an `on disc only` disc whose last check failed;
-3. a `packed` disc, or a `burned` disc;
-4. data that `gc` can free now;
-5. staged data that no disc holds;
-6. a `verified` disc that waits for the 7 days;
-7. nothing.
+1. a disc whose item records do not follow its state: a command stopped
+   after its disc event ("Replay of the disc state log");
+2. a `missing` disc;
+3. an `on disc only` disc whose last check failed;
+4. a `packed` disc, or a `burned` disc;
+5. data that `gc` can free now;
+6. staged data that no disc holds;
+7. a `verified` disc that waits for the 7 days;
+8. nothing.
 
-A repository with no commit and no disc matches step 7: `status` prints
-`next: nothing to do`.
+A repository with no commit and no disc matches step 8: `status` prints
+`next: nothing to do`. `status` never prints `next: nothing to do` while a
+disc matches step 1.
 
 The rest of a snapshot that is packed in parts ("Item states") is staged
-data that no disc holds. It matches step 5, and gets no block of its own.
+data that no disc holds. It matches step 6, and gets no block of its own.
 
 | State | `next:` block |
 |---|---|
+| any state, the item records do not follow it (step 1) | `next: disc SEQ: an earlier COMMAND stopped before it wrote the records of its items; run:` then `noahsark gc`. `COMMAND` is `disc lost`, `disc lost --undo`, `pack --undo`, or `gc`. `gc` takes the lock, thus it writes the item records first; any other command that takes the lock does the same. |
 | `packed` | `next: load a blank disc, then run:` then `sudo noahsark --repo=REPO image build SEQ &&` (only when `IMG` does not exist), `growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z DEV=IMG &&`, `eject DEV && eject -t DEV && sleep 5 &&`, `sudo mkdir -p /mnt/ark && sudo mount -o ro DEV /mnt/ark &&`, `noahsark verify /mnt/ark &&`, `sudo umount /mnt/ark && eject DEV`. For a disc packed with `--close`, the `growisofs` line is `growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z DEV=IMG &&`. The `close` flag of the `Packed` event holds that choice. After the block, one line that is not part of it: `or burn the folder directly; see the guide, "Burn the folder directly"`. |
 | `burned`, last check failed | the `packed` block: the disc is bad, and a new disc gets the kept disc root |
 | `packed`, or `burned` with a failed last check, and `TREE` does not exist (a disc that `disc lost --undo` gave back) | `next: disc SEQ has no disc root; no new disc can be burned from it. Discard the disc, then run:` then `noahsark disc lost SEQ`. Its items return to staged, and the next `pack` takes them. |

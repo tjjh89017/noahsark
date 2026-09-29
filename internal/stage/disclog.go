@@ -154,9 +154,21 @@ func decodeDiscRecord(buf []byte) DiscRecord {
 	}
 }
 
+// eventFlags returns the flag bits that event e can carry: close and
+// fec in Packed, fec in Recovered, and none in every other event.
+func eventFlags(e DiscEvent) DiscFlags {
+	switch e {
+	case EventPacked:
+		return FlagClose | FlagFEC
+	case EventRecovered:
+		return FlagFEC
+	}
+	return 0
+}
+
 // check returns an error when the fields of r break the rules of the
-// record: a known event, a disc uuid that is not zero, flags only in
-// Packed and Recovered, and numbers only in Packed.
+// record: a known event, a disc uuid that is not zero, only the flag bits
+// of eventFlags, and numbers only in Packed.
 func (r *DiscRecord) check() error {
 	if _, ok := discEventNames[r.Event]; !ok {
 		return fmt.Errorf("unknown event code %d", uint8(r.Event))
@@ -167,8 +179,8 @@ func (r *DiscRecord) check() error {
 	if r.Flags&^discFlagsKnown != 0 {
 		return fmt.Errorf("unknown flag bits 0x%02x", uint8(r.Flags&^discFlagsKnown))
 	}
-	if r.Flags != 0 && r.Event != EventPacked && r.Event != EventRecovered {
-		return fmt.Errorf("%s carries flags", r.Event)
+	if extra := r.Flags &^ eventFlags(r.Event); extra != 0 {
+		return fmt.Errorf("%s carries flags 0x%02x", r.Event, uint8(extra))
 	}
 	if (r.DiscSeq != 0 || r.RunSeq != 0) && r.Event != EventPacked {
 		return fmt.Errorf("%s carries a disc or run number", r.Event)
@@ -289,6 +301,8 @@ type DiscInfo struct {
 	// MarkedVerified event, and LastCheckTime its time.
 	LastCheck     CheckResult
 	LastCheckTime time.Time
+	// LastEvent is the newest event of the disc.
+	LastEvent DiscEvent
 }
 
 // apply returns d after the event of rec, or an error when the replay
@@ -327,6 +341,7 @@ func (d DiscInfo) apply(rec DiscRecord) (DiscInfo, error) {
 	}
 	d.UUID = rec.DiscUUID
 	d.State = next
+	d.LastEvent = rec.Event
 	return d, nil
 }
 
