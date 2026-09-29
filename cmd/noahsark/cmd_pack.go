@@ -229,9 +229,6 @@ func (o *packOptions) run(e *env, args []string) int {
 	return 0
 }
 
-// nextStatusLine is the last line of a command that changed state.
-const nextStatusLine = "next: noahsark status"
-
 // packedEvent is the Packed event of the disc that result describes.
 func packedEvent(now time.Time, discUUID [16]byte, result *image.PackResult, closeDisc, fec bool) stage.DiscRecord {
 	var flags stage.DiscFlags

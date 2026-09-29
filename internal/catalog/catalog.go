@@ -68,13 +68,24 @@ func StatePath(repoDir string) string {
 // catalog directory when it does not exist. It reads the completeness
 // file when that file exists.
 func Open(repoDir string) (*Catalog, error) {
+	c, err := OpenReadOnly(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+		return nil, fmt.Errorf("catalog: %w", err)
+	}
+	return c, nil
+}
+
+// OpenReadOnly opens the catalog of the repository at repoDir, and
+// changes no file or directory. A missing catalog directory reads as an
+// empty catalog. A caller that writes the catalog uses Open.
+func OpenReadOnly(repoDir string) (*Catalog, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("catalog: repository directory is required")
 	}
 	c := &Catalog{dir: Dir(repoDir), statePath: StatePath(repoDir)}
-	if err := os.MkdirAll(c.dir, 0o755); err != nil {
-		return nil, fmt.Errorf("catalog: %w", err)
-	}
 	state, err := loadState(c.statePath)
 	if err != nil {
 		return nil, fmt.Errorf("catalog: %w", err)

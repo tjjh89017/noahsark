@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -35,9 +37,9 @@ func init() {
 	})
 }
 
-// cmdStatus implements "noahsark status": what waits for a pack, the
-// state of every disc in one word, and the one action to take next.
-// status takes no lock and changes no log.
+// cmdStatus implements "noahsark status": the staged total, one line
+// for each disc, and the one next block of the repository. status takes
+// no lock and changes no file.
 func cmdStatus(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "status"
@@ -77,53 +79,97 @@ func cmdStatus(e *env, args []string) int {
 
 	discs := summarizeDiscs(ledger.Rows, logs)
 
-	c, err := catalog.Open(repoDir)
+	c, err := catalog.OpenReadOnly(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
-	stagedObjects, stagedBytes, err := image.StagedTotals(layout.objectPath(c), logs.Items)
+	stagedItems, stagedBytes, err := image.StagedTotals(layout.objectPath(c), logs.Items)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
 
-	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
+	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "disc %d %q  %s  %s\n", d.Seq, d.Label, d.Info.State, d.UUID)
+		_, _ = fmt.Fprintln(stdout, statusDiscLine(d))
 	}
-	_, _ = fmt.Fprintln(stdout, nextStepLine(discs, stagedObjects))
+	r := nextRepo{
+		repo:   repoDir,
+		device: cfg.PackDevice,
+		source: cfg.SourceRoot,
+		staged: stagedItems,
+		now:    e.now(),
+		discs:  nextDiscs(layout, discs),
+	}
+	for _, line := range nextBlock(r) {
+		_, _ = fmt.Fprintln(stdout, line)
+	}
 	return 0
 }
 
-// nextStepLine names the one action to take next, in the order of the
-// disc cycle: give a missing disc to recover, burn, verify, pack,
-// commit.
-func nextStepLine(discs []discSummary, stagedObjects int) string {
-	first := func(state stage.DiscState) (discSummary, bool) {
-		for _, d := range discs {
-			if d.Info.State == state {
-				return d, true
-			}
+// statusDiscLine is the line of one disc:
+// disc SEQ "LABEL"  STATE  [fec  ]UUID.
+func statusDiscLine(d discSummary) string {
+	fec := ""
+	if d.Info.FEC {
+		fec = "fec  "
+	}
+	return fmt.Sprintf("%s  %s  %s%s", discNameShort(d.Seq, d.Label), statusStateWord(d.Info), fec, d.UUID)
+}
+
+// statusStateWord is the state word of a disc with the suffix of its
+// last check. A verified or on disc only disc shows its last check. A
+// packed or burned disc shows only a failed last check.
+func statusStateWord(info stage.DiscInfo) string {
+	word := info.State.String()
+	switch info.State {
+	case stage.DiscVerified, stage.DiscOnDiscOnly:
+		switch info.LastCheck {
+		case stage.CheckResultOK:
+			return word + ", last check " + statusDate(info.LastCheckTime)
+		case stage.CheckResultFailed:
+			return word + ", last check failed " + statusDate(info.LastCheckTime)
+		case stage.CheckResultNotChecked:
+			return word + ", not checked"
 		}
-		return discSummary{}, false
+	case stage.DiscPacked, stage.DiscBurned:
+		if info.LastCheck == stage.CheckResultFailed {
+			return word + ", last check failed " + statusDate(info.LastCheckTime)
+		}
 	}
-	if d, ok := first(stage.DiscMissing); ok {
-		return fmt.Sprintf("next: mount disc %d, then run: noahsark recover <MOUNT>", d.Seq)
+	return word
+}
+
+// nextDiscs gives the next block the discs of status. It names a disc
+// by its number, or by its full uuid when another disc has the same
+// number. It reads whether the disc root and the image exist. The stat
+// follows a symlink, so the tree of a pack --out disc exists only while
+// its target exists.
+func nextDiscs(layout repoLayout, discs []discSummary) []nextDisc {
+	seqCount := make(map[uint64]int)
+	for _, d := range discs {
+		seqCount[d.Seq]++
 	}
-	if d, ok := first(stage.DiscPacked); ok {
-		return fmt.Sprintf("next: burn disc %d, then run: noahsark disc burned %d", d.Seq, d.Seq)
+	out := make([]nextDisc, 0, len(discs))
+	for _, d := range discs {
+		arg := strconv.FormatUint(d.Seq, 10)
+		if seqCount[d.Seq] > 1 {
+			arg = d.UUID
+		}
+		img := layout.planImage(d.Info.UUID)
+		_, treeErr := os.Stat(layout.planTree(d.Info.UUID))
+		_, imgErr := os.Stat(img)
+		out = append(out, nextDisc{
+			arg:         arg,
+			label:       d.Label,
+			info:        d.Info,
+			image:       img,
+			treeExists:  treeErr == nil,
+			imageExists: imgErr == nil,
+		})
 	}
-	if d, ok := first(stage.DiscBurned); ok {
-		return fmt.Sprintf("next: mount disc %d, then run: noahsark verify <MOUNT>", d.Seq)
-	}
-	if stagedObjects > 0 {
-		return "next: pack a disc, run: noahsark pack"
-	}
-	if len(discs) == 0 {
-		return "next: commit your files, run: noahsark commit <SOURCE>"
-	}
-	return "next: nothing to do"
+	return out
 }
 
 // summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
