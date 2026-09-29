@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -364,6 +365,35 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	}
 	setFakeNow(t, func() time.Time { return before.Add(16 * 24 * time.Hour) })
 
+	// A sparse image, as image build leaves it, frees its allocated
+	// blocks only, never its apparent size.
+	const sparseSize = 1 << 30
+	img, err := os.Create(filepath.Join(planDir, "tree.img"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := img.WriteAt([]byte("image head"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := img.Truncate(sparseSize); err != nil {
+		t.Fatal(err)
+	}
+	if err := img.Close(); err != nil {
+		t.Fatal(err)
+	}
+	u, err := decodeUUID(strings.ReplaceAll(discUUID, "-", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want uint64
+	for _, id := range readLogs(t, repo).Items.ItemsOfDiscInState(u, stage.Packed) {
+		want += allocatedBytesUnder(t, testLayout(t, repo).chunkFile(id))
+	}
+	want += allocatedBytesUnder(t, planDir)
+	if want >= sparseSize {
+		t.Fatalf("the files to free hold %d bytes of disk space; want less than the sparse image size %d", want, sparseSize)
+	}
+
 	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
@@ -371,12 +401,19 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if strings.HasPrefix(out, "gc: would free 0 ") {
 		t.Fatalf("gc --dry-run output %q, want items to free", out)
 	}
+	if got := gcLineBytes(t, out); got != want {
+		t.Fatalf("gc --dry-run output %q: %d bytes, want the %d allocated bytes", out, got, want)
+	}
 	if _, err := os.Stat(planDir); err != nil {
 		t.Fatalf("gc --dry-run removed the plan directory: %v", err)
 	}
 
-	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
+	code, out = runCmd(t, "--repo="+repo, "gc")
+	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
+	}
+	if got := gcLineBytes(t, out); got != want {
+		t.Fatalf("gc output %q: %d bytes, want the %d allocated bytes", out, got, want)
 	}
 	if _, err := os.Stat(planDir); !os.IsNotExist(err) {
 		t.Fatalf("gc kept the plan directory of an ON-DISC disc: %v", err)
@@ -605,4 +642,19 @@ func TestGCUsageErrorsExitTwo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// gcLineBytes returns B of the first line of gc output: the freed line.
+func gcLineBytes(t *testing.T, out string) uint64 {
+	t.Helper()
+	line, _, _ := strings.Cut(out, "\n")
+	_, rest, ok := strings.Cut(line, " item(s), ")
+	if !ok {
+		t.Fatalf("gc output %q has no freed line", out)
+	}
+	n, err := strconv.ParseUint(strings.TrimSuffix(rest, " bytes"), 10, 64)
+	if err != nil {
+		t.Fatalf("gc freed line %q: %v", line, err)
+	}
+	return n
 }

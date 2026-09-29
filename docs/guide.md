@@ -129,13 +129,17 @@ Make the first commit right after `init`:
 
 ```
 $ noahsark commit
-snapshot 1b03c7e2a9f4
-ref 2026-09-14 -> 1b03c7e2a9f4
+snapshot 12201b03c7e2a9f483ca68be6227af2feb15f227485ed18aff8ecae99416a4bd6df3
+ref 2026-09-14 -> 12201b03c7e2a9f483ca68be6227af2feb15f227485ed18aff8ecae99416a4bd6df3
 new items: 8, existing items: 0
 unstable: 0, skipped: 0
 staged: 8 items, 3001350 bytes
 next: noahsark status
 ```
+
+`commit` prints the full snapshot id, so that a script can read it. The
+other commands print a short id: the 12 characters after `1220`, as
+`1b03c7e2a9f4`.
 
 `commit` reads every file of the source and stages the new data. With no
 `--ref`, it moves the ref named by the date of today. Give `--ref` for a
@@ -427,16 +431,18 @@ frees nothing:
 
 ```
 $ noahsark gc --dry-run
-gc: would free 8 item(s), 25031375790 bytes
+gc: would free 8 item(s), 9441280 bytes
 ```
 
-The bytes count the staged data, the disc root and the image.
+The bytes count the disk space of the staged data, the disc root and the
+image. The image is a sparse file: it counts the blocks that it uses, not
+the capacity of the disc.
 
 Then run `gc`. It asks no question.
 
 ```
 $ noahsark gc
-gc: freed 8 item(s), 25031375790 bytes
+gc: freed 8 item(s), 9441280 bytes
 next: noahsark status
 ```
 
@@ -751,6 +757,8 @@ repository, not a directory. Thus burn `/srv/healed` to a new disc with the
 `growisofs` line of "Burn the folder directly", then run a plain `verify` of
 the new disc. The new disc has the same uuid as the damaged disc: write the
 same number and uuid on its sleeve. `--heal` refuses a disc without FEC.
+The parity cannot heal every damage that its size suggests, thus a second
+copy is the main redundancy and the parity is only an aid.
 
 **Close.** `pack --close` makes the `growisofs` line of `status` seal the
 disc with `-dvd-compat`. A sealed disc can take no more data. The choice

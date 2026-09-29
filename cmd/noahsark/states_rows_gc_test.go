@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -214,20 +217,45 @@ func chunkFilesKept(t *testing.T, fx *discFixture, _, _ string) {
 	}
 }
 
-// gcFreeableBytes sums the chunk files of the Packed items of the disc
-// of fx and the files of its plan directory: the bytes that row 52
-// frees.
+// gcFreeableBytes sums the allocated blocks of the chunk files of the
+// Packed items of the disc of fx and of the regular files of its plan
+// directory: the bytes that row 52 frees.
 func gcFreeableBytes(t *testing.T, fx *discFixture) (items int, bytes uint64) {
 	t.Helper()
 	layout := testLayout(t, fx.repo)
 	for _, id := range readLogs(t, fx.repo).Items.ItemsOfDiscInState(fx.uuidBytes(t), stage.Packed) {
 		items++
-		if fi, err := os.Stat(layout.chunkFile(id)); err == nil {
-			bytes += uint64(fi.Size())
-		}
+		bytes += allocatedBytesUnder(t, layout.chunkFile(id))
 	}
-	dir, _ := dirBytes(layout.planDir(fx.uuidBytes(t)))
-	return items, bytes + dir
+	return items, bytes + allocatedBytesUnder(t, layout.planDir(fx.uuidBytes(t)))
+}
+
+// allocatedBytesUnder sums st_blocks * 512 of every regular file at or
+// below path. It does not follow a symlink. A missing path counts 0.
+func allocatedBytesUnder(t *testing.T, path string) uint64 {
+	t.Helper()
+	var total uint64
+	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		var st syscall.Stat_t
+		if err := syscall.Lstat(p, &st); err != nil {
+			return err
+		}
+		total += uint64(st.Blocks) * 512
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return total
 }
 
 // TestStatesRow52PackOutRemovesTheSymlinkOnly frees a pack --out disc. gc
