@@ -601,3 +601,43 @@ func TestCommitUsageErrorsExitTwo(t *testing.T) {
 		})
 	}
 }
+
+// TestCommitSkipsANameTheTreeFormatForbids gives the source a file and a
+// directory whose names hold a backslash. commit skips both, names each
+// in the skipped list and exits 1. The snapshot decodes, and ls lists it.
+func TestCommitSkipsANameTheTreeFormatForbids(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
+	mustWriteCmd(t, filepath.Join(src, `back\slash.txt`), "forbidden name")
+	mustMkdirCmd(t, filepath.Join(src, `dir\name`))
+	mustWriteCmd(t, filepath.Join(src, `dir\name`, "inner.txt"), "inner")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	if code != 1 {
+		t.Fatalf("commit: exit %d, want 1: %s", code, out)
+	}
+	for _, want := range []string{
+		"unstable: 0, skipped: 2\n",
+		`skipped back\slash.txt: the name holds a \, which a tree entry name must not hold` + "\n",
+		`skipped dir\name: the name holds a \, which a tree entry name must not hold` + "\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("commit output %q has no line %q", out, want)
+		}
+	}
+
+	snap := snapshotIDFromCommit(t, out)
+	lsCode, ls, errOut := runLs(t, repo, "ls", "-R", snap)
+	if lsCode != 0 {
+		t.Fatalf("ls -R: exit %d: %s", lsCode, errOut)
+	}
+	if strings.Contains(ls, "slash") || strings.Contains(ls, "inner.txt") {
+		t.Fatalf("ls -R output %q lists a skipped path", ls)
+	}
+	if !strings.Contains(ls, "a.txt") {
+		t.Fatalf("ls -R output %q does not list a.txt", ls)
+	}
+}

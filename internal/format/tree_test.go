@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func testTreeEntries() []TreeEntry {
 	var dirID, fileID [32]byte
@@ -217,15 +220,32 @@ func TestTreeEntryDecodeRejectsBadName(t *testing.T) {
 	e := TreeEntry{
 		EntryType: EntryTypeRegular,
 		Mode:      0o644,
-		Name:      []byte(".."),
+		Name:      []byte("ab"),
 	}
 	buf := make([]byte, e.EncodedLen())
 	if _, err := e.Encode(buf); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	var got TreeEntry
-	if _, err := got.Decode(buf); err != ErrBadField {
-		t.Fatalf("decode name '..': got %v, want %v", err, ErrBadField)
+	for _, bad := range []string{"..", "a/", "a\\", "a\x00"} {
+		copy(buf[TreeEntryHeaderLen:], bad)
+		var got TreeEntry
+		if _, err := got.Decode(buf); err != ErrBadField {
+			t.Fatalf("decode name %q: got %v, want %v", bad, err, ErrBadField)
+		}
+	}
+}
+
+func TestTreeEntryEncodeRejectsBadName(t *testing.T) {
+	for _, bad := range []string{"", ".", "..", "a/b", "a\\b", "a\x00b", strings.Repeat("n", 4096)} {
+		e := TreeEntry{
+			EntryType: EntryTypeRegular,
+			Mode:      0o644,
+			Name:      []byte(bad),
+		}
+		buf := make([]byte, e.EncodedLen())
+		if _, err := e.Encode(buf); err != ErrBadField {
+			t.Fatalf("encode name %q: got %v, want %v", bad, err, ErrBadField)
+		}
 	}
 }
 

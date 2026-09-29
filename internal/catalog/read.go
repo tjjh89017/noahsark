@@ -197,9 +197,7 @@ func (c *Catalog) ReadTree(id object.ID) (*format.Tree, error) {
 }
 
 // ReadBlob reads and decodes one catalog blob object. A blob not yet in
-// the catalog reports the plain os.ErrNotExist-wrapped error, since a
-// blob's absence does not by itself mean the catalog is incomplete: only
-// tree reachability counts toward Complete and CheckComplete.
+// the catalog reports the plain os.ErrNotExist-wrapped error.
 func (c *Catalog) ReadBlob(id object.ID) (*format.Blob, error) {
 	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindBlob, id))
 	if err != nil {

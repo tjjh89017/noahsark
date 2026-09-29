@@ -163,30 +163,45 @@ func sortLogRecords(records []logRecord) {
 	})
 }
 
+// noLogValue is the log field of a value that is absent.
+const noLogValue = "-"
+
 // line gives the log line: the 12-character id, the time, the refs, the
 // source path and the message, separated by a tab. A field with no value
-// is "-". More than one source root gives the paths separated by ",".
+// is noLogValue. More than one ref or source root gives the values
+// separated by ",".
 func (r logRecord) line() string {
-	fields := []string{shortID(r.id), "-", "-", "-", "-"}
+	fields := []string{shortID(r.id), noLogValue, noLogValue, noLogValue, noLogValue}
 	if len(r.refs) > 0 {
-		escaped := make([]string, len(r.refs))
-		for i, name := range r.refs {
-			escaped[i] = escapeField(name)
-		}
-		fields[2] = strings.Join(escaped, ",")
+		fields[2] = joinLogValues(r.refs)
 	}
 	if r.held {
 		fields[1] = utcTime(r.sec)
 		if len(r.sources) > 0 {
-			escaped := make([]string, len(r.sources))
-			for i, p := range r.sources {
-				escaped[i] = escapeField(p)
-			}
-			fields[3] = strings.Join(escaped, ",")
+			fields[3] = joinLogValues(r.sources)
 		}
 		if r.message != "" {
-			fields[4] = escapeField(r.message)
+			fields[4] = logValue(r.message)
 		}
 	}
 	return strings.Join(fields, "\t")
+}
+
+// logValue gives the print form of one value of a log field. A value
+// that is exactly noLogValue prints as `\x2d`, thus a field of noLogValue
+// always means no value.
+func logValue(s string) string {
+	if s == noLogValue {
+		return `\x2d`
+	}
+	return escapeField(s)
+}
+
+// joinLogValues gives the print form of each value, separated by ",".
+func joinLogValues(values []string) string {
+	escaped := make([]string, len(values))
+	for i, v := range values {
+		escaped[i] = logValue(v)
+	}
+	return strings.Join(escaped, ",")
 }

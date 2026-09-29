@@ -93,7 +93,7 @@ writes no event.
 | `Freed` | `gc` | `verified` -> `on disc only`. |
 | `Lost` | `disc lost` | `packed`, `burned`, `verified`, `on disc only`, or `missing` -> `lost`. The tool keeps the state before the event. |
 | `LostUndone` | `disc lost --undo` | `lost` -> `burned` when the state before `Lost` was `verified`; -> `on disc only` or `missing` when it was that state. |
-| `Recovered` | `recover` | `unknown` or `missing` -> `on disc only`. It carries the `close` and `fec` flags that the disc records. |
+| `Recovered` | `recover` | `unknown` or `missing` -> `on disc only`. It carries the `fec` flag when the disc has FEC. It never carries the `close` flag, because no disc byte records it. |
 | `NamedMissing` | `recover` | `unknown` -> `missing`. |
 
 The verified time of a disc is the time of the `CheckOK` or

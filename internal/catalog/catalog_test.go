@@ -206,14 +206,53 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	if partial.Snapshot != snapID {
 		t.Fatalf("PartialError.Snapshot = %s, want %s", partial.Snapshot.TextForm(), snapID.TextForm())
 	}
-	if partial.MissingTree != missingID {
-		t.Fatalf("PartialError.MissingTree = %s, want %s", partial.MissingTree.TextForm(), missingID.TextForm())
+	if partial.MissingObject != missingID {
+		t.Fatalf("PartialError.MissingObject = %s, want %s", partial.MissingObject.TextForm(), missingID.TextForm())
 	}
 	if partial.HasDiscUUID {
 		t.Fatalf("PartialError resolved a disc it should not have: %+v", partial)
 	}
 	if c.Complete(snapID) {
 		t.Fatal("Complete = true, want false")
+	}
+}
+
+// TestCheckCompleteReportsMissingBlob builds a catalog that holds a
+// snapshot and its root tree, but not the blob of a file of the tree.
+// The snapshot is partial, and CheckComplete names the blob.
+func TestCheckCompleteReportsMissingBlob(t *testing.T) {
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missingID := object.ComputeID(format.ObjectKindBlob, []byte("a blob that is never written to the catalog"))
+	rootTree := encodeTestTree(t, format.TreeEntry{
+		EntryType: format.EntryTypeRegular,
+		Name:      []byte("file"),
+		ContentID: missingID,
+	})
+	rootID := object.ComputeID(format.ObjectKindTree, rootTree)
+	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
+		t.Fatal(err)
+	}
+	snapID := object.ComputeID(format.ObjectKindSnapshot, []byte("snapshot with a missing blob"))
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, encodeTestSnapshot(t, rootID)); err != nil {
+		t.Fatal(err)
+	}
+
+	partial, ok := c.CheckComplete(snapID).(*catalog.PartialError)
+	if !ok {
+		t.Fatal("CheckComplete did not return a *catalog.PartialError")
+	}
+	if partial.MissingObject != missingID {
+		t.Fatalf("PartialError.MissingObject = %s, want %s", partial.MissingObject.TextForm(), missingID.TextForm())
+	}
+	if err := c.RefreshComplete(snapID); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Partial(snapID) {
+		t.Fatal("Partial = false after RefreshComplete, want true")
 	}
 }
 

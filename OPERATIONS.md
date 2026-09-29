@@ -192,7 +192,7 @@ number of fixed-width records, each 54 bytes:
 | 8 | 8 | i64 | `time_sec` | Unix time of the event. |
 | 16 | 16 | u8[16] | `disc_uuid` | The disc. |
 | 32 | 1 | u8 | `event` | The event code (table below). |
-| 33 | 1 | u8 | `flags` | Bit 0 `close`, bit 1 `fec`. Set in `Packed` and `Recovered` only; 0 in every other event. The other bits are 0. |
+| 33 | 1 | u8 | `flags` | Bit 0 `close`, bit 1 `fec`. Set in `Packed` only, except that `Recovered` sets the `fec` bit; 0 in every other event. The other bits are 0. |
 | 34 | 8 | u64 | `disc_seq` | The disc number. Set in `Packed` only; 0 otherwise. |
 | 42 | 8 | u64 | `run_seq` | The run number. Set in `Packed` only; 0 otherwise. |
 | 50 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 49. |
@@ -385,6 +385,7 @@ scheduler and no daemon.
 | Symlinks | Never followed. The link itself is stored. |
 | FIFO, socket, device node | Recorded by type, with no content. `commit` warns about each one. |
 | Unreadable or vanished file | Skipped and reported. The snapshot is still written. Exit code 1. |
+| Name that a tree entry cannot hold | A name that FORMAT.md's "Name validation" or the name limit of FORMAT.md's "Limits" refuses. On a POSIX source this is a name that holds `\`. Skipped like an unreadable file: `commit` prints `skipped PATH: REASON` and counts the path in `skipped: N`. A directory with such a name is not walked. The snapshot is still written. Exit code 1. |
 | Mount points | Crossed by default. With `--one-file-system`, a directory on another device stays in the tree as an empty directory, and `commit` prints one line for it. |
 | Owner | The build records mode, mtime, uid and gid, and the user name and the group name TLVs when the host names the ids. |
 
@@ -496,7 +497,9 @@ steps in this order:
 
 When a step after the `PackUndone` event fails, `pack --undo` prints
 `noahsark: pack: disc SEQ is undone, but its files stay: ERROR; the next pack
-removes them` to standard error and exits with code 1. The disc is undone all the same.
+removes them` to standard error. The disc is undone all the same, thus it
+prints the `next:` line as the last line of standard output, and exits with
+code 1.
 
 A `pack` without `--dry-run` completes each `pack --undo` that stopped after
 the `PackUndone` event. It does this after the check for a `missing` disc and
@@ -566,15 +569,24 @@ makes. `image build DISC [--force]` does these steps.
 
 1. Resolve `DISC` through the repository. It reads `config.yaml`,
    `state/discs.bin` and `state/discstate.db`, and writes no file of them.
-   It refuses a disc that is `on disc only`, `lost` or `missing`, with exit
-   code 1. The state check comes first.
+   It reads no other file of `state/` and no file of `catalog/`. It refuses
+   a disc that is `on disc only`, `lost` or `missing` with `no disc root at
+   DIR`, and a disc with no record in the disc state log, with exit code 1.
+   The state check comes first.
 2. Check the `mkudffs` version ("Tool version check"). This check comes after
    the state check and before the check for root.
 3. Refuse to go on when it is not root, with exit code 1. It prints the exact
-   `sudo noahsark --repo=REPO image build SEQ` line to run.
+   `sudo noahsark --repo=REPO image build SEQ` line to run. `REPO` is the
+   absolute path of the repository. It is in single quotes when it holds a
+   character other than an ASCII letter, a digit, or one of
+   `_ . / : = @ % + , -`. `SEQ` is the disc number, or the full
+   uuid when another disc that is not undone has the same number. With
+   `--force`, the line is `sudo noahsark --repo=REPO image build --force
+   SEQ`.
 4. Refuse to go on when the disc root does not exist, with exit code 1.
 5. Refuse to go on when `staging/plans/<disc-uuid>/tree.img` exists, with exit
-   code 1. With `--force`, it removes the old image first.
+   code 1. With `--force`, it removes the old image first. A build that then
+   fails leaves no image.
 6. Read the capacity from the `DISC.bin` of the disc root. Make a sparse image
    file of that length at `staging/plans/<disc-uuid>/tree.img`.
 7. Run `mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 --uid=0
@@ -652,9 +664,18 @@ again before the verify, so that the read comes from the medium.
 | `dvd+rw-mediainfo` | dvd+rw-tools | as `growisofs` |
 | `mkudffs` | udftools | 2.3 or newer |
 
-`image build` reads the `mkudffs` version and refuses an older one. The tool
-never runs `growisofs` or `dvd+rw-mediainfo`, thus the operator checks that
-version before the first burn. "Burning-host command reference" gives the
+`image build` reads the `mkudffs` version and refuses an older one. It runs
+`mkudffs` with no argument and reads the version from the `udftools X.Y`
+text that `mkudffs` prints. Each refusal exits with code 1:
+
+| Case | Message |
+|---|---|
+| `mkudffs` does not run | `noahsark: image build: mkudffs: ERROR` |
+| The output holds no version | `noahsark: image build: could not parse mkudffs version from: OUTPUT` |
+| The version is older than 2.3 | `noahsark: image build: mkudffs is from udftools X.Y; image build needs udftools 2.3 or newer` |
+
+The tool never runs `growisofs` or `dvd+rw-mediainfo`, thus the operator
+checks that version before the first burn. "Burning-host command reference" gives the
 commands.
 
 ## 12. Disc lifecycle and closing
@@ -1209,7 +1230,10 @@ repository` and exits with code 1. It reads and checks every object of the disc,
 `verify` does. It writes the catalog objects and tables that it can read, the
 disc ledger rows of the disc and of each disc that the disc names, the refs,
 the OnDisc records of the items that pass their check, and a `Recovered`
-event with the `close` and `fec` flags that the disc records. For a disc that
+event. `Recovered` carries the `fec` flag when the `fec_scheme` of the disc
+is not 0. It never carries the `close` flag: no disc byte records the close
+choice. The flag changes only the burn line of `status`, and `status` never
+prints a burn line for an `on disc only` disc. For a disc that
 the repository already knows and that is not `missing`, it writes only the
 catalog entries, and prints `recover: ok; disc SEQ "LABEL" already known`.
 It still checks every object of that disc. It writes no event. When an object
@@ -1234,6 +1258,47 @@ disc SEQ "LABEL" (UUID) named by another disc, not yet given` line for each
 noahsark status`, unless `recover` refused the disc. Do not run `disc burned` or
 `verify` for a recovered disc to raise its state: it is `on disc only`.
 
+`recover` stores `--source` as an absolute path: a relative path is taken
+from the working directory. It refuses these cases before it writes the
+catalog or a record, with exit code 1:
+
+- `--disc=DIR` is not a counted mount ("Transition rules"). It prints
+  `DIR is not counted: REASON; recover reads only a read-only mount point
+  outside the repository`. `REASON` is `not a mount point`, `not a read-only
+  mount`, `inside the repository` or `inside the staging store`.
+- The disc cannot be read: `NOAHSARK`, `DISC.bin`, `RUN.bin` or `INDEX.bin`
+  is missing or does not pass its check. It prints `DIR: cannot read the
+  disc: ERROR`.
+- The disc log records the disc as undone by `pack --undo`. It prints `disc
+  UUID was undone by pack --undo; it is not in this repository`.
+
+`recover` writes in this order: the catalog objects, the catalog tables and
+`catalog-state.txt`; the disc ledger and the ref ledger, then `refs.txt`; the
+item records; the disc events. A `recover` that stops before the events
+leaves a disc that the repository does not know, or that is still `missing`.
+A repeat of the call reads the disc again and writes each step again. Each
+step merges, thus the repeat gives the same result as one call.
+
+`recover` adds the ref records of the disc to the ref ledger. Then, for each
+name of the ref ledger, it writes the snapshot of the newest record of the
+name into `refs.txt` ("Ref" in FORMAT.md gives the rule). That value
+replaces the value that `refs.txt` held for the name, also when a later
+`commit` moved the name. A name of `refs.txt` that no ledger record carries
+stays as it is.
+
+A damaged file that is not an object, for example `README.txt`, `RUN2.bin`
+or an FEC file, gives the line `noahsark: recover: damaged file: FILE:
+REASON` on standard error and no `damaged:` line. The count line does not
+count it. The disc still gets `CheckFailed`, and `recover` exits with code 1.
+When `REFS.bin` or `DISCS.bin` is damaged, `recover` writes none of the
+INDEX, REFS and DISCS tables of the disc into the catalog. A damaged
+`REFS.bin` gives no ref. A damaged `DISCS.bin` gives no disc ledger row and
+no `NamedMissing` event.
+
+The `named by another disc` lines name each `missing` disc of the
+repository, not only the discs that this disc names. They are sorted by the
+disc number, then by the uuid.
+
 **`ls`** lists the entries of a snapshot below `PATH`, or below the source
 root, from the catalog. For a `partial` snapshot ("Catalog layout"), it
 prints `snapshot ID is partial; run recover with more discs` and exits with
@@ -1243,25 +1308,54 @@ on each line. The fields are separated by one tab, in this order:
 | Field | Form |
 |---|---|
 | mode | The permission bits and the setuid, setgid and sticky bits, as 4 octal digits, for example `0644`. |
-| type | `file`, `dir`, `symlink`, `fifo`, `socket`, `chardev` or `blockdev`. |
+| type | `file`, `dir`, `symlink`, `fifo`, `socket`, `chardev` or `blockdev`. An `entry_type` with no word prints as `typeN`, with `N` in decimal. The tree decoder refuses such a type, thus a catalog tree never gives it. |
 | size | The content size in bytes, as a decimal number. 0 for a directory and a special file. The target length for a symlink. |
 | time | The mtime as RFC 3339 in UTC, to the second, for example `2026-09-14T08:30:00Z`. |
 | path | The path relative to the source root, with no leading `/` and no trailing `/`. |
 
 In a path, the tool writes a backslash as `\\`, a tab as `\t`, a newline as
 `\n`, each other byte below 0x20, the byte 0x7F, and each byte that is not
-part of valid UTF-8 as `\xHH`. Every other byte prints as it is. `ls` sorts
+part of valid UTF-8 as `\xHH`, with two lower-case hexadecimal digits. Every
+other byte prints as it is. `ls` sorts
 the entries in the canonical order of FORMAT.md's "Canonical ordering",
 depth first. A path that `ls` prints goes into a `restore` line unchanged,
 when it holds no escaped byte.
+
+`ls` splits `PATH` at each `/`. It ignores a leading `/`, a trailing `/` and
+an empty segment. A `PATH` with no segment lists the source root. It compares
+each segment with the raw bytes of an entry name, not with the escaped form.
+When the root tree holds more than one source root, the first segments of
+`PATH` are the segments of a source root path. A `PATH` that names a
+directory lists the entries of that directory. A `PATH` that names another
+entry prints the line of that entry only. A `PATH` that the snapshot does not
+hold is a usage error: `ls` prints `PATH is not in snapshot ID`, with `PATH`
+escaped, and exits with code 2.
+
+`ls` and `log` treat a snapshot as partial in these cases:
+`catalog-state.txt` marks it `partial`; the catalog does not hold its
+snapshot object, and a ref or `catalog-state.txt` names it; or `ls` reads a
+tree that the catalog does not hold or that does not decode. In the last
+case `ls` has already printed the lines before that tree. The partial line
+goes to standard error, and the exit code is 1. A full snapshot id that no
+catalog object, no ref and no line of `catalog-state.txt` names matches no
+snapshot, with exit code 2. In a repository with no snapshot, every
+`SNAPSHOT` argument matches no snapshot, and `log` with no argument prints
+nothing and exits with code 0.
 
 **`log`** lists every snapshot of the catalog, newest first. With a `REF` or a
 `SNAPSHOT`, it prints the line of that one only. It prints one snapshot on
 each line. The fields are separated by one tab, in this order: the snapshot
 id (12 characters), the time as RFC 3339 in UTC, the ref names separated by
 `,` or `-` when there is none, the source path, and the message or `-` when
-there is none. The source
-path and the message are escaped as an `ls` path is. When `refs.txt` or a
+there is none. The ref names are sorted by their bytes. When the root tree
+holds more than one source root, the source path field holds each root
+path, separated by `,`. The source path field is `-` when the catalog does
+not hold the root tree. The ref names, the source
+path and the message are escaped as an `ls` path is. A value that is
+exactly `-` prints as `\x2d`, thus a field of `-` always means no value.
+`log` sorts the lines by the snapshot time, with its nanoseconds, newest
+first. The lines of snapshots whose object the catalog does not hold come
+last. Lines of the same time are in the order of the snapshot id bytes. When `refs.txt` or a
 catalog REFS table names a snapshot whose object the catalog does not hold,
 `log` prints a line for it with `-` in the time, the source path and the
 message fields. The time is in UTC, not in local time. When a line names a
