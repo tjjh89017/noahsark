@@ -17,7 +17,8 @@ import (
 // overwrite, the restore leaves it as it is. A chunk whose bytes a part
 // file already holds, checked by its content id, needs nothing either.
 // A file whose blob is not in the catalog, or does not have the size of
-// the tree entry, needs nothing, because the restore cannot write it. need can get one chunk more than one time.
+// the tree entry, needs nothing, because the restore cannot write it.
+// need can get one chunk more than one time.
 //
 // The walk holds one file at a time: the blob entries of that file and
 // one chunk buffer. It keeps no list of chunks.
@@ -30,7 +31,6 @@ type pendingScan struct {
 	c         *catalog.Catalog
 	overwrite bool
 	need      func(object.ID)
-	buf       []byte
 }
 
 // Dir joins names below parent. Without overwrite, a name that stands in
@@ -61,14 +61,11 @@ func (s *pendingScan) Other(string, format.TreeEntry) error { return nil }
 // File calls need for each chunk of one regular file that the
 // destination does not hold.
 func (s *pendingScan) File(dest, part string, e format.TreeEntry) error {
-	blob, err := s.c.ReadBlob(object.ID(e.ContentID))
+	blob, err := s.c.ReadFileBlob(e)
 	if err != nil {
 		return nil
 	}
 	entries := placeChunks(blob.Entries)
-	if blobSize(entries) != e.Size {
-		return nil
-	}
 	if !s.overwrite {
 		if _, found := existingFileStatus(dest, e, entries); found {
 			return nil
@@ -83,10 +80,7 @@ func (s *pendingScan) File(dest, part string, e format.TreeEntry) error {
 	}
 	defer func() { _ = f.Close() }()
 	for _, be := range entries {
-		if uint64(cap(s.buf)) < be.Length {
-			s.buf = make([]byte, be.Length)
-		}
-		if !chunkAt(f, be, s.buf[:be.Length]) {
+		if !chunkAt(f, be) {
 			s.need(object.ID(be.ContentID))
 		}
 	}

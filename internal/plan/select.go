@@ -1,7 +1,9 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -230,9 +232,16 @@ func (s *Selection) visit(dir, name string, e format.TreeEntry, taken map[string
 	}
 }
 
-// treeError reports a tree that the catalog cannot give.
+// treeError reports a tree that the catalog cannot give. A damaged tree
+// already names the tree and the cause.
 func treeError(id object.ID, err error) error {
-	return fmt.Errorf("tree %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("tree %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
+	}
+	if _, damaged := errors.AsType[*catalog.DamagedObjectError](err); damaged {
+		return err
+	}
+	return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 }
 
 // PartName returns the name of the part file of a file called name, in a

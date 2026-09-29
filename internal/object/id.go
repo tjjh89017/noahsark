@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 )
@@ -25,6 +26,18 @@ func ComputeID(kind format.ObjectKind, payload []byte) ID {
 	var id ID
 	copy(id[:], h.Sum(nil))
 	return id
+}
+
+// ReaderID returns the content id of an object of kind kind whose
+// uncompressed payload bytes are the bytes of r, and the number of bytes
+// that it read. It holds no copy of the payload.
+func ReaderID(kind format.ObjectKind, r io.Reader) (ID, int64, error) {
+	h := sha256.New()
+	h.Write([]byte{byte(kind)})
+	n, err := io.Copy(h, r)
+	var id ID
+	copy(id[:], h.Sum(nil))
+	return id, n, err
 }
 
 // multihashSHA256Code and multihashDigestLen are the two multihash varint

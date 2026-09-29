@@ -56,10 +56,11 @@ func TestHealRepairsDamagedParity(t *testing.T) {
 			}
 
 			outDir := filepath.Join(t.TempDir(), "healed")
-			reports, err := Heal(treeDir, outDir)
+			res, err := Heal(treeDir, outDir)
 			if err != nil {
 				t.Fatalf("Heal: %v", err)
 			}
+			reports := res.Stripes
 			if len(reports) != 1 || reports[0].Stripe != 0 {
 				t.Fatalf("reports %+v, want one report for stripe 0", reports)
 			}

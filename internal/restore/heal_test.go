@@ -39,10 +39,11 @@ func TestHealRepairsCorruptedStripes(t *testing.T) {
 	}
 	corruptParityBlock(t, treeDir, 1, 2)
 
-	reports, err := Heal(treeDir, "")
+	res, err := Heal(treeDir, "")
 	if err != nil {
 		t.Fatalf("Heal: %v", err)
 	}
+	reports := res.Stripes
 	touched := map[uint64]bool{}
 	for _, r := range reports {
 		touched[r.Stripe] = true
@@ -85,7 +86,7 @@ func TestHealFailsOnTooManyErasures(t *testing.T) {
 		corruptDataBlockAt(t, paths, sizes, layout, col, badStripe)
 	}
 
-	reports, err := Heal(treeDir, "")
+	res, err := Heal(treeDir, "")
 	if err == nil {
 		t.Fatal("expected Heal to fail on a stripe with more than m bad blocks")
 	}
@@ -94,12 +95,12 @@ func TestHealFailsOnTooManyErasures(t *testing.T) {
 		t.Fatalf("expected the error to name %q, got: %v", wantMsg, err)
 	}
 	found := false
-	for _, r := range reports {
+	for _, r := range res.Stripes {
 		if r.Stripe == 0 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected stripe 0 to be healed before the failure, got %+v", reports)
+		t.Fatalf("expected stripe 0 to be healed before the failure, got %+v", res.Stripes)
 	}
 }
