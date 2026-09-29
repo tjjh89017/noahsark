@@ -80,7 +80,8 @@ A change of a disc state writes one event. There are two exceptions: a good
 counted `verify` of a `packed` disc writes `BurnRecorded`, then `CheckOK`,
 and `recover` of a damaged disc writes `Recovered`, then `CheckFailed`.
 `recover` of a disc that the repository knows, and that is not `missing`,
-writes no event.
+writes no event. The one exception is row 70e: `recover` of a copy with no
+damage of an `on disc only` disc whose last check failed writes `CheckOK`.
 
 | Event | Written by | Effect |
 |---|---|---|
@@ -88,7 +89,7 @@ writes no event.
 | `PackUndone` | `pack --undo` | `packed` -> `undone`. An `undone` disc is out of the repository. |
 | `BurnRecorded` | `disc burned`; a good counted `verify` of a `packed` disc, before its `CheckOK` | `packed` -> `burned`. |
 | `BurnRemoved` | `disc burned --undo` | `burned` -> `packed`. |
-| `CheckOK` | a good counted `verify` | `burned` -> `verified`. `verified` and `on disc only` do not change. |
+| `CheckOK` | a good counted `verify`; `recover` of a copy with no damage of an `on disc only` disc whose last check failed | `burned` -> `verified`. `verified` and `on disc only` do not change. |
 | `CheckFailed` | a failed counted `verify`; `recover` of a damaged disc, after its `Recovered` | `verified` -> `burned`. `burned` -> `packed`. `packed` and `on disc only` do not change. |
 | `MarkedVerified` | `disc verified` | `burned` -> `verified`. |
 | `VerifyUndone` | `verify --undo` | `verified` -> `burned`. |
@@ -417,8 +418,9 @@ lists that last line where a row prints it.
 | 70 | an existing repository | recover, a disc that the repository does not know | on disc only. Known items keep their state. Unknown items become on-disc. | `recover: ok`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 70a | (no repository), or an existing repository and a disc that the repository does not know, or a `missing` disc | recover, a disc with damaged objects | on disc only, with a failed check. Each object that passes its check is recorded. A damaged object gets no record. | `recover: damaged: ID` for each damaged object, then `recover: N item(s) damaged on disc SEQ "LABEL"`, then the last line `next: noahsark status` | 1 | `noahsark status`: its block gives the `on disc only, last check failed` lines |
 | 70b | an existing repository | recover, a disc of another repository | refused | `disc UUID belongs to repository RUUID, not to this repository` | 1 | give a disc of this repository |
-| 70c | an existing repository | recover, a disc that the repository knows, and that is not `missing` | unchanged. The catalog entries of the disc are written. No event is written. | `recover: ok; disc SEQ "LABEL" already known`, then the last line `next: noahsark status` | 0 | `noahsark status` |
+| 70c | an existing repository | recover, a disc that the repository knows, and that is not `missing`, and not an `on disc only` disc whose last check failed | unchanged. The catalog entries of the disc are written. No event is written. | `recover: ok; disc SEQ "LABEL" already known`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 70d | an existing repository | recover, a disc that the repository knows, and that is not `missing`, with damaged objects | unchanged. The catalog entries of the objects that pass are written. No event is written. | `recover: damaged: ID` for each damaged object, then `recover: N item(s) damaged on disc SEQ "LABEL"`, then the last line `next: noahsark status` | 1 | copy the disc now, or use the second copy, then `noahsark recover` with the copy |
+| 70e | on disc only, last check failed | recover, a copy of that disc with no damaged object | unchanged, a verify log event added. Each item of the disc that has no record, or that is `lost`, becomes on-disc. | `recover: ok; disc SEQ "LABEL" already known; check logged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 71 | any | status | unchanged | `staged: N items, B bytes`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the full `next:` block for the whole repository. STATE is the disc word, with the suffix that "Disc states" defines. A disc with FEC has the word `fec` and two spaces between STATE and UUID. | 0 | the `next:` block |
 | 71a | (no repository) | a command other than `init`, `recover`, `verify`, `restore`, `ls`, and `log` | refused, usage error | `no repository; run noahsark init, or give --repo` | 2 | `noahsark init` in the directory of the repository, or the same line with `--repo=PATH` |
 | 72 | any | a global option after the command name, for example `noahsark status --repo=PATH` | refused, usage error | `--repo is a global option; give it before the command name: noahsark --repo=PATH status` | 2 | the same line with the option before the command name |

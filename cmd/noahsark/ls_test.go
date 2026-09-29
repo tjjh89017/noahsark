@@ -429,12 +429,13 @@ func removeTree(t *testing.T, repo, name string) {
 }
 
 // addSourceRoot adds a second root entry, a copy of the first one with
-// the source root path path, to the root tree file of the one snapshot
-// of repo. The catalog reader does not check the content id, thus the
-// file keeps its name.
+// the source root path path, to the root tree of the one snapshot of
+// repo. The catalog checks the content id of each object, thus the
+// changed root tree and its snapshot get new ids, and the default ref
+// moves to the new snapshot.
 func addSourceRoot(t *testing.T, repo, path string) {
 	t.Helper()
-	c, rootID, root := rootTreeOf(t, repo)
+	c, _, root := rootTreeOf(t, repo)
 	oldLen := uint64(root.EncodedLen())
 	extra := root.Entries[0]
 	extra.Name = []byte(format.EncodeRootName(path))
@@ -450,7 +451,30 @@ func addSourceRoot(t *testing.T, repo, path string) {
 	if _, err := root.Encode(buf); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(c.MetaPath(format.ObjectKindTree, rootID), buf, 0o644); err != nil {
+	const headLen = format.CommonHeaderLen + format.ObjectHeaderLen
+	rootID := object.ComputeID(format.ObjectKindTree, buf[headLen:])
+	if err := c.WriteObject(format.ObjectKindTree, rootID, buf); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSnap, err := object.ParseID(fullSnapshotID(t, repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := c.ReadSnapshot(oldSnap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.RootTree = rootID
+	snapBuf := make([]byte, snap.EncodedLen())
+	if _, err := snap.Encode(snapBuf); err != nil {
+		t.Fatal(err)
+	}
+	snapID := object.ComputeID(format.ObjectKindSnapshot, snapBuf[headLen:])
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, snapBuf); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRef(testLayout(t, repo).refsFile(), defaultRefName(), snapID); err != nil {
 		t.Fatal(err)
 	}
 }

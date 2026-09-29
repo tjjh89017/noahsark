@@ -99,3 +99,30 @@ func TestRefName(t *testing.T) {
 		t.Fatalf("RefName = %q", got)
 	}
 }
+
+// TestMergedRefsSkipsADamagedTable checks that a REFS table that does
+// not decode leaves the records of the other tables, and that the error
+// names the disc of the damaged table.
+func TestMergedRefsSkipsADamagedTable(t *testing.T) {
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDiscRefs(t, c, [16]byte{1}, refRecord("daily", 0xbb, 200, 0))
+	bad := [16]byte{2}
+	if err := c.WriteDisc(bad, []byte("index"), []byte("not a REFS table"), []byte("discs")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.MergedRefs()
+	damaged, ok := errors.AsType[*catalog.DamagedRefsError](err)
+	if !ok {
+		t.Fatalf("MergedRefs: err %v, want a *catalog.DamagedRefsError", err)
+	}
+	if len(damaged.Discs) != 1 || damaged.Discs[0] != bad {
+		t.Fatalf("damaged tables %v, want the disc %v", damaged.Discs, bad)
+	}
+	if got["daily"].SnapshotID[0] != 0xbb {
+		t.Fatalf("MergedRefs lost the record of the good table: %v", got)
+	}
+}

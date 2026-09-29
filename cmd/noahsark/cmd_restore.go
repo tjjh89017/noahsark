@@ -93,7 +93,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
-	src := &catalogSource{c: c, refsPath: layout.refsFile()}
+	src := &catalogSource{c: c, refsPath: layout.refsFile(), stderr: stderr, cmd: "restore"}
 	snapID, err := src.ParseSnapshotArg(snapArg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)

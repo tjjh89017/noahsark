@@ -1,6 +1,7 @@
 package catalog_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -168,6 +169,48 @@ func TestWriteFromRootIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestWriteFromRootRepairsADamagedObject flips one bit of the size of
+// a tree entry in the catalog. The file keeps its size. A read of the
+// tree reports the damage, and a second copy of the run repairs it.
+func TestWriteFromRootRepairsADamagedObject(t *testing.T) {
+	runRoot, snapID := buildFixtureRun(t)
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.WriteFromRoot(c, runRoot); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := c.ReadSnapshot(snapID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID := object.ID(snap.RootTree)
+	path := c.MetaPath(format.ObjectKindTree, rootID)
+	good, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := bytes.Clone(good)
+	bad[len(bad)-1] ^= 0x01
+	if err := os.WriteFile(path, bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReadTree(rootID); err == nil {
+		t.Fatal("ReadTree of a damaged tree = nil, want an error")
+	}
+
+	if _, err := catalog.WriteFromRoot(c, runRoot); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); !bytes.Equal(got, good) {
+		t.Fatal("WriteFromRoot kept the damaged tree")
+	}
+	if _, err := c.ReadTree(rootID); err != nil {
+		t.Fatalf("ReadTree after the repair: %v", err)
+	}
+}
+
 // TestCheckCompleteReportsMissingTree builds a catalog holding a
 // snapshot whose root tree references a child tree the catalog never
 // received, and checks CheckComplete reports an *PartialError
@@ -179,18 +222,16 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	}
 
 	missingID := object.ComputeID(format.ObjectKindChunk, []byte("a tree that is never written to the catalog"))
-	rootTree := encodeTestTree(t, format.TreeEntry{
+	rootTree, rootID := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Name:      []byte("child"),
 		ContentID: missingID,
 	})
-	rootID := object.ComputeID(format.ObjectKindChunk, rootTree)
 	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
 
-	snapID := object.ComputeID(format.ObjectKindChunk, []byte("snapshot payload"))
-	snapBuf := encodeTestSnapshot(t, rootID)
+	snapBuf, snapID := encodeTestSnapshot(t, rootID)
 	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, snapBuf); err != nil {
 		t.Fatal(err)
 	}
@@ -227,17 +268,16 @@ func TestCheckCompleteReportsMissingBlob(t *testing.T) {
 	}
 
 	missingID := object.ComputeID(format.ObjectKindBlob, []byte("a blob that is never written to the catalog"))
-	rootTree := encodeTestTree(t, format.TreeEntry{
+	rootTree, rootID := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeRegular,
 		Name:      []byte("file"),
 		ContentID: missingID,
 	})
-	rootID := object.ComputeID(format.ObjectKindTree, rootTree)
 	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
-	snapID := object.ComputeID(format.ObjectKindSnapshot, []byte("snapshot with a missing blob"))
-	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, encodeTestSnapshot(t, rootID)); err != nil {
+	snapBuf, snapID := encodeTestSnapshot(t, rootID)
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, snapBuf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,17 +306,16 @@ func TestCheckCompleteResolvesDisc(t *testing.T) {
 	}
 
 	missingID := object.ComputeID(format.ObjectKindChunk, []byte("a tree only another disc stores"))
-	rootTree := encodeTestTree(t, format.TreeEntry{
+	rootTree, rootID := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Name:      []byte("child"),
 		ContentID: missingID,
 	})
-	rootID := object.ComputeID(format.ObjectKindChunk, rootTree)
 	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
-	snapID := object.ComputeID(format.ObjectKindChunk, []byte("snapshot payload 2"))
-	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, encodeTestSnapshot(t, rootID)); err != nil {
+	snapBuf, snapID := encodeTestSnapshot(t, rootID)
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, snapBuf); err != nil {
 		t.Fatal(err)
 	}
 
@@ -413,35 +452,72 @@ func encodeTestRefs(t *testing.T) []byte {
 	return buf
 }
 
-// encodeTestTree builds a minimal, valid Tree object with one entry,
-// encoded ready for catalog.WriteObject.
-func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
+// objectFile finishes the object header of the object that encode
+// writes, and returns the object file and its content id.
+func objectFile(t *testing.T, kind format.ObjectKind, encode func(oh format.ObjectHeader) []byte) ([]byte, object.ID) {
 	t.Helper()
-	tree := &format.Tree{
-		Header:     format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicTree, VersionMajor: 1, HeaderLen: format.TreeHeaderLen},
-		EntryCount: 1,
-		Entries:    []format.TreeEntry{entry},
-	}
-	buf := make([]byte, tree.EncodedLen())
-	if _, err := tree.Encode(buf); err != nil {
-		t.Fatal(err)
-	}
-	return buf
+	const headLen = format.CommonHeaderLen + format.ObjectHeaderLen
+	oh := format.ObjectHeader{Kind: kind, HashAlgo: format.HashAlgoSHA256}
+	payloadLen := uint64(len(encode(oh)) - headLen)
+	oh.PayloadLen, oh.StoredLen = payloadLen, payloadLen
+	raw := encode(oh)
+	return raw, object.ComputeID(kind, raw[headLen:])
 }
 
-// encodeTestSnapshot builds a minimal, valid Snapshot object pointing
-// at rootTree, encoded ready for catalog.WriteObject.
-func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
+// encodeTestTree builds a valid tree object file with entries, and
+// returns it with its content id.
+func encodeTestTree(t *testing.T, entries ...format.TreeEntry) ([]byte, object.ID) {
 	t.Helper()
-	snap := &format.Snapshot{
-		Common:   format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicSnapshot, VersionMajor: 1, HeaderLen: format.SnapshotHeaderLen},
-		RootTree: [32]byte(rootTree),
-	}
-	buf := make([]byte, snap.EncodedLen())
-	if _, err := snap.Encode(buf); err != nil {
-		t.Fatal(err)
-	}
-	return buf
+	return objectFile(t, format.ObjectKindTree, func(oh format.ObjectHeader) []byte {
+		tree := &format.Tree{
+			Header:       format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicTree, VersionMajor: 1, HeaderLen: format.TreeHeaderLen},
+			ObjectHeader: oh,
+			EntryCount:   uint32(len(entries)),
+			Entries:      entries,
+		}
+		buf := make([]byte, tree.EncodedLen())
+		if _, err := tree.Encode(buf); err != nil {
+			t.Fatal(err)
+		}
+		return buf
+	})
+}
+
+// encodeTestBlob builds a valid blob object file with entries, and
+// returns it with its content id.
+func encodeTestBlob(t *testing.T, entries ...format.BlobEntry) ([]byte, object.ID) {
+	t.Helper()
+	return objectFile(t, format.ObjectKindBlob, func(oh format.ObjectHeader) []byte {
+		blob := &format.Blob{
+			Header:       format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicBlob, VersionMajor: 1, HeaderLen: format.BlobHeaderLen},
+			ObjectHeader: oh,
+			EntryCount:   uint64(len(entries)),
+			Entries:      entries,
+		}
+		buf := make([]byte, blob.EncodedLen())
+		if _, err := blob.Encode(buf); err != nil {
+			t.Fatal(err)
+		}
+		return buf
+	})
+}
+
+// encodeTestSnapshot builds a valid snapshot object file that points at
+// rootTree, and returns it with its content id.
+func encodeTestSnapshot(t *testing.T, rootTree object.ID) ([]byte, object.ID) {
+	t.Helper()
+	return objectFile(t, format.ObjectKindSnapshot, func(oh format.ObjectHeader) []byte {
+		snap := &format.Snapshot{
+			Common:   format.CommonHeader{MagicProject: format.ProjectMagic, MagicKind: format.MagicSnapshot, VersionMajor: 1, HeaderLen: format.SnapshotHeaderLen},
+			Object:   oh,
+			RootTree: [32]byte(rootTree),
+		}
+		buf := make([]byte, snap.EncodedLen())
+		if _, err := snap.Encode(buf); err != nil {
+			t.Fatal(err)
+		}
+		return buf
+	})
 }
 
 // TestNewestCatalogDiscBreaksATie writes two discs that one second holds

@@ -314,6 +314,57 @@ func init() {
 	}
 }
 
+// goodCopyAfterDamageSetup copies the disc root of fx as a second, good
+// copy, removes the repository, and recovers it from the disc root with
+// one damaged chunk. The disc is then on disc only with a failed check,
+// and the damaged chunk has no record. {ROOT} becomes the good copy.
+func goodCopyAfterDamageSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	good := filepath.Join(fx.work, "good-copy")
+	copyTree(t, fx.root, good)
+	removeRepoSetup(t, fx)
+	indexObjects(t, fx)
+	damageOneSetup(format.ObjectKindChunk)(t, fx)
+	if code, out := fx.run(t, "recover", "--source="+fx.src, "--disc="+fx.root); code != 1 {
+		t.Fatalf("recover of the damaged copy: exit %d, want 1: %s", code, out)
+	}
+	info := discState(t, fx.repo, fx.uuid)
+	if info.State != stage.DiscOnDiscOnly || info.LastCheck != stage.CheckResultFailed {
+		t.Fatalf("after the damaged copy: state %s, last check %d", info.State, info.LastCheck)
+	}
+	fx.root = good
+}
+
+// badHasOnDiscRecord is a check: the object {BAD}, damaged on the first
+// copy, is on-disc.
+func badHasOnDiscRecord(t *testing.T, fx *discFixture, _, _ string) {
+	t.Helper()
+	bad, err := object.ParseID(fx.vars["{BAD}"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok := openTestLog(t, fx.repo).Get(bad); !ok || rec.State != stage.OnDisc {
+		t.Errorf("the object damaged on the first copy has the record %+v (%v), want on-disc", rec, ok)
+	}
+}
+
+func init() {
+	// Row 70e: a good copy of a disc whose recover found damage records
+	// the items that had no record and logs a good check.
+	registerStateCases(stateCase{
+		row: "70e", name: "a good copy after a damaged copy",
+		start: stage.DiscPacked, setup: goodCopyAfterDamageSetup,
+		args:  []string{"recover", "--source={SRC}", "--disc={ROOT}"},
+		exact: true,
+		end:   stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+		check: allChecks(
+			lastCheckIs(stage.CheckResultOK),
+			badHasOnDiscRecord,
+			countIs(stage.OnDisc, "{OBJECTS}", 0),
+		),
+	})
+}
+
 // TestRecoverRefusals checks a disc root that is not a counted mount,
 // and a disc that pack --undo removed. Each changes nothing and prints
 // no next line.

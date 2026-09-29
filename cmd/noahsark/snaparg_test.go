@@ -82,6 +82,36 @@ func mustResolve(t *testing.T, s *catalogSource, arg string, want object.ID) {
 	}
 }
 
+// TestSnapshotArgWithADamagedRefsTable writes one good and one damaged
+// REFS table into the catalog. A ref name of the good table, a full id
+// and a prefix resolve. The warning names the damaged table one time.
+func TestSnapshotArgWithADamagedRefsTable(t *testing.T) {
+	a, b := testSnapID(t, "aa11"), testSnapID(t, "bb22")
+	s := snapArgFixture(t, a, b)
+	var warn strings.Builder
+	s.stderr, s.cmd = &warn, "ls"
+	addDiscRefs(t, s, [16]byte{1}, refRec("daily", a, 100))
+	bad := [16]byte{2}
+	if err := s.c.WriteDisc(bad, []byte("index"), []byte("not a REFS table"), []byte("discs")); err != nil {
+		t.Fatal(err)
+	}
+
+	mustResolve(t, s, "daily", a)
+	mustResolve(t, s, b.TextForm(), b)
+	mustResolve(t, s, "bb2", b)
+	if n := strings.Count(warn.String(), "\n"); n != 1 {
+		t.Fatalf("stderr %q holds %d line(s), want one warning", warn.String(), n)
+	}
+	for _, want := range []string{"noahsark: ls: warning:", uuidText(bad), "run recover, or verify, with that disc"} {
+		if !strings.Contains(warn.String(), want) {
+			t.Fatalf("warning %q does not hold %q", warn.String(), want)
+		}
+	}
+	if !s.refsDamaged {
+		t.Fatal("refsDamaged is false after a damaged table")
+	}
+}
+
 func TestShortID(t *testing.T) {
 	id := testSnapID(t, "0123456789abcdef")
 	if got := shortID(id); got != "0123456789ab" {

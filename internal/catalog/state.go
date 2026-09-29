@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -86,12 +87,6 @@ func (c *Catalog) MarkComplete(id object.ID) error {
 	return c.setComplete(id, true)
 }
 
-// MarkPartial records that the catalog does not hold every object that
-// snapshot id reaches.
-func (c *Catalog) MarkPartial(id object.ID) error {
-	return c.setComplete(id, false)
-}
-
 // Complete reports whether the completeness file marks id complete. An
 // id that the file does not list reports false.
 func (c *Catalog) Complete(id object.ID) bool {
@@ -164,14 +159,17 @@ func (c *Catalog) CheckComplete(id object.ID) error {
 // root tree, using only objects already present in the catalog. It
 // returns the first object id it could not find and false, or a zero id
 // and true when every reachable object is present. A tree that does not
-// decode counts as missing. A snapshot id the catalog has never seen at
-// all is reported as missing, id itself, rather than a hard error: a
-// pack or a recover that never saw this snapshot's disc leaves exactly
-// that gap, and CheckComplete resolves it the same way it resolves a
-// missing tree.
+// give its id or does not decode counts as missing. A blob counts as
+// present when its headers pass their CRC and its file has the length
+// that they give; the walk does not read the payload of a blob, and a
+// read of the blob checks its id. A snapshot that the catalog does not
+// hold, or whose object is damaged, is reported as missing, id itself,
+// rather than a hard error: a pack or a recover that never saw this
+// snapshot's disc leaves exactly that gap, and CheckComplete resolves it
+// the same way it resolves a missing tree.
 func (c *Catalog) walkObjects(id object.ID) (missing object.ID, complete bool, err error) {
 	snap, err := c.ReadSnapshot(id)
-	if os.IsNotExist(err) {
+	if _, damaged := errors.AsType[*DamagedObjectError](err); damaged || os.IsNotExist(err) {
 		return id, false, nil
 	}
 	if err != nil {
@@ -196,12 +194,12 @@ func (c *Catalog) walkObjects(id object.ID) (missing object.ID, complete bool, e
 				pending = append(pending, object.ID(e.ContentID))
 			case format.EntryTypeRegular:
 				blobID := object.ID(e.ContentID)
-				_, err := os.Stat(c.MetaPath(format.ObjectKindBlob, blobID))
-				if os.IsNotExist(err) {
-					return blobID, false, nil
-				}
+				whole, err := checkObjectHead(format.ObjectKindBlob, c.MetaPath(format.ObjectKindBlob, blobID))
 				if err != nil {
 					return object.ID{}, false, err
+				}
+				if !whole {
+					return blobID, false, nil
 				}
 			}
 		}
