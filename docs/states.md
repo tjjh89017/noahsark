@@ -128,8 +128,8 @@ standard error, and reads one line from standard input.
   confirmation. With an answer flag, the command prints the warning,
   does not ask, and continues.
 - With no terminal on standard input and no answer flag that covers the
-  confirmation, the answer is no. The command reads nothing, prints
-  `nothing changed`, and exits 1. For a critical confirmation and
+  confirmation, the answer is no. The command prints the warning and
+  does not ask. It reads nothing, prints `nothing changed`, and exits 1. For a critical confirmation and
   `--yes`, the line is `nothing changed; COMMAND needs --force-yes`.
 - A refused case prints the refusal and does not ask.
 
@@ -286,8 +286,9 @@ a repository. `verify (any)` means each `verify` event except `verify
 --undo`, and it includes `verify --heal`. "Answer yes" is `y` or `yes` (any letter case) on a terminal, or an answer flag
 that covers the confirmation. "Answer no" is any other answer, an empty
 line, an end of input, or no terminal and no covering answer flag. See
-"Confirmations". Rows 80 to 84 test the answer rules once for all
-asking commands.
+"Confirmations". With no terminal, the command does not ask: rows 28a,
+59b, and 81 give that case. Rows 80 to 84 test the answer rules once
+for all asking commands.
 
 A message that reports a change names the disc as `disc SEQ "LABEL"`.
 A refusal and a `next:` line can name it as `disc SEQ`. A message can
@@ -317,10 +318,10 @@ lists that last line where a row prints it.
 | 1 | (none) or staged | commit | staged | `staged: N items, B bytes`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 2 | a disc is `missing` | commit | refused | `disc SEQ "LABEL" is missing` | 1 | `noahsark status`: its block gives `recover` or `disc lost` |
 | 3 | lost | commit, the source still has the data | staged (new record) | `staged: N items, B bytes` (includes the re-staged items), then the last line `next: noahsark status` | 0 | `noahsark status` |
-| 4 | lost | commit, the source no longer has the data | lost (unchanged) | commit succeeds. No line names the item: `commit` reads the source, not the log, then the last line `next: noahsark status` | 0 | nothing. The data that only this disc held is gone. |
+| 4 | lost | commit, the source no longer has the data | lost (unchanged) | `staged: N items, B bytes`, then the last line `next: noahsark status`. No line names a lost item: `commit` reads the source, not the log. | 0 | `noahsark status`. The data that only this disc held is gone. |
 | 5 | staged | pack --capacity | packed | `packed disc SEQ "LABEL": N item(s), B bytes`, then `uuid: UUID`, then the last line `next: noahsark status`. The label is the newest ref and ` disc SEQ`, or `disc SEQ` with no ref. | 0 | `noahsark status` |
 | 6 | staged | pack, no `--capacity` | refused, usage error | `pack needs --capacity` | 2 | `noahsark status`: its block gives the `pack` line |
-| 7 | staged | pack, the capacity holds not one item | refused, usage error | `capacity ... holds not one item` | 2 | give a larger `--capacity` |
+| 7 | staged | pack, the capacity holds not one item | refused, usage error | `capacity CAP (B bytes) holds not one item; the smallest staged item is KIND ID, B bytes`, then `use a capacity of B bytes or more`. CAP is the `--capacity` value. KIND is `chunk`, `blob`, `tree`, or `snapshot`. | 2 | give a larger `--capacity` |
 | 8 | nothing staged | pack | unchanged | `pack: nothing staged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 9 | staged, another disc is `packed` | pack --capacity | packed, a new disc with the next number | as row 5, then the last line `next: noahsark status` | 0 | `noahsark status`: it handles the lowest number first |
 | 10 | a disc is `missing` | pack | refused | `disc SEQ "LABEL" is missing` | 1 | `noahsark status` |
@@ -349,6 +350,7 @@ lists that last line where a row prints it.
 | 26 | verified, on disc only, lost, or missing | disc burned --undo SEQ | refused, no question | `disc SEQ is not burned` | 1 | nothing to undo. A verified record is physical evidence. |
 | 27 | burned | disc verified SEQ, answer yes (a terminal, or `--force-yes`) | verified. The verified record is added. The tool reads no disc. A verify log event with the result `not checked` is added. | `warning: disc SEQ "LABEL" (UUID): burned -> verified`, then `the tool did not read this disc; gc frees the repository copy of its data after the wait time; if the disc is bad, that data is lost`, then `Continue? [y/N]` (no question with `--force-yes`), then `disc SEQ "LABEL": verified record added; not checked`, then the last line `next: noahsark status` | 0 | `noahsark status`. A later good `verify` of the disc acts as row 34 and replaces `not checked` with `last check DATE`. `verify --undo SEQ` removes the record (row 47). |
 | 28 | burned | disc verified SEQ, answer no | unchanged | the warning and the question of row 27, then `nothing changed` | 1 | `noahsark status` |
+| 28a | burned | disc verified SEQ, no terminal on standard input, no answer flag | unchanged. Standard input is not read. | the warning, then `nothing changed` | 1 | the same line with `--force-yes` before the command name |
 | 29 | packed | disc verified SEQ | refused, no question | `disc SEQ has no burn record; run: noahsark disc burned SEQ, or verify the disc` | 1 | `noahsark disc burned SEQ`, or `noahsark status`: its block verifies the disc |
 | 30 | verified, on disc only, lost, or missing | disc verified SEQ | refused, no question | `disc SEQ is already verified`, `disc SEQ is marked lost`, or `disc SEQ is missing` | 1 | nothing to record, or `noahsark status` |
 | 31 | packed | verify ok | verified. The burn record and the verified record are added. | `disc SEQ "LABEL": N items, ok`, then `burn recorded; verified`, then the last line `next: noahsark status` | 0 | `noahsark status` |
@@ -385,6 +387,7 @@ lists that last line where a row prints it.
 | 58 | on disc only | disc lost SEQ, answer yes | lost. Its freed items are `lost`. | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; N item(s) need a new commit`, then the last line `next: noahsark status` | 0 | `noahsark commit` |
 | 59 | missing | disc lost SEQ, answer yes | lost | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; its items are not known; a new commit stages what the source still holds`, then the last line `next: noahsark status` | 0 | `noahsark commit` |
 | 59a | packed, burned, verified, on disc only, or missing | disc lost SEQ, answer no | unchanged | the warning and the question of row 57, then `nothing changed` | 1 | `noahsark status` |
+| 59b | packed, burned, verified, on disc only, or missing | disc lost SEQ, no terminal on standard input, no answer flag | unchanged. Standard input is not read. | the warning, then `nothing changed` | 1 | the same line with `--force-yes` before the command name |
 | 60 | lost | disc lost SEQ | refused, no question | `disc SEQ is already marked lost` | 1 | nothing to do |
 | 61 | lost, `verified` when marked lost | disc lost --undo SEQ, answer yes | burned. The lost mark and the verified record are removed. The burn record stays. Each item of the disc that is `staged` and that no later pack took is `burned`. An item that a later pack took stays on its new disc. `gc` frees nothing of this disc until a good `verify`. | `warning: disc SEQ "LABEL" (UUID): lost -> burned`, then `the tool trusts this disc again only after a good check; you must run verify on it`, then `Continue? [y/N]` (no question with an answer flag), then `disc SEQ "LABEL": lost mark removed; N item(s) back on this disc; verify it now`, then the last line `next: noahsark status` | 0 | `noahsark status`: its `burned` block has the verify lines. A good verify acts as row 33. A failed verify acts as row 41, and the block for a disc with no disc root follows. |
 | 62 | lost, `on disc only` when marked lost | disc lost --undo SEQ, answer yes | on disc only. The lost mark is removed. Each `lost` item is `on-disc`. An item that a later `commit` staged again stays `staged`, and the next `pack` takes it. | the warning and the question of row 61, with `lost -> on disc only`, then `disc SEQ "LABEL": lost mark removed; N item(s) back on this disc; verify it now`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block verifies the disc, a check that changes no state. A good verify acts as row 35. A failed verify acts as row 43. |
@@ -400,7 +403,7 @@ lists that last line where a row prints it.
 | 70b | an existing repository | recover, a disc of another repository | refused | `disc UUID belongs to repository RUUID, not to this repository` | 1 | give a disc of this repository |
 | 70c | an existing repository | recover, a disc that the repository knows, and that is not `missing` | unchanged. The catalog entries of the disc are written. No event is written. | `recover: ok; disc SEQ "LABEL" already known`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 70d | an existing repository | recover, a disc that the repository knows, and that is not `missing`, with damaged objects | unchanged. The catalog entries of the objects that pass are written. No event is written. | `recover: damaged: ID` for each damaged object, then `recover: N item(s) damaged on disc SEQ "LABEL"`, then the last line `next: noahsark status` | 1 | copy the disc now, or use the second copy, then `noahsark recover` with the copy |
-| 71 | any | status | unchanged | `staged: N items, B bytes`, one `disc SEQ "LABEL"  STATE  [fec  ]UUID` line for each disc, with `, last check DATE`, `, last check failed DATE`, or `, not checked` as "Disc states" defines, and `fec` when the disc has FEC, then the full `next:` block for the whole repository | 0 | the `next:` block |
+| 71 | any | status | unchanged | `staged: N items, B bytes`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the full `next:` block for the whole repository. STATE is the disc word, with the suffix that "Disc states" defines. A disc with FEC has the word `fec` and two spaces between STATE and UUID. | 0 | the `next:` block |
 | 71a | (no repository) | a command other than `init`, `recover`, `verify`, `restore`, `ls`, and `log` | refused, usage error | `no repository; run noahsark init, or give --repo` | 2 | `noahsark init` in the directory of the repository, or the same line with `--repo=PATH` |
 | 72 | any | a global option after the command name, for example `noahsark status --repo=PATH` | refused, usage error | `--repo is a global option; give it before the command name: noahsark --repo=PATH status` | 2 | the same line with the option before the command name |
 | 73 | any | a command option before the command name, or between a group and its subcommand, for example `noahsark --undo disc burned 0` or `noahsark disc --undo burned 0` | refused, usage error | `--undo is an option of disc burned; give it after the last subcommand word: noahsark disc burned --undo 0; see: noahsark disc burned -h` | 2 | the same line with the option after the last subcommand word. `-h` is the one exception to the position rule: `noahsark COMMAND -h` is not a usage error. |
@@ -422,10 +425,10 @@ lists that last line where a row prints it.
 | 85a | a needed chunk has no known disc: no catalog INDEX lists it, for example after a `missing` disc is marked lost | restore | the files that need such a chunk are not restored. Every other file is restored. `restore` does not stop before it reads a disc. | the plan with the line `restore: N item(s) have no disc known to the catalog; run recover with more discs`, the problem lines, then `restored snapshot ID into DEST` | 1 | `noahsark recover` with each disc that the operator still holds, then the same `restore` again. When no other disc exists, the data is gone. |
 | 86 | the plan names discs, the disc at `--disc=DIR` is the expected disc | restore | the chunks of this disc are written into `DEST`. When the plan names more discs, `restore` asks for the next one, as OPERATIONS.md, "Disc swap, one drive", states. | `disc SEQ "LABEL": found`, then, after the last disc, `restored snapshot ID into DEST` | 0 | `noahsark status` |
 | 87 | the plan names discs, no terminal on standard input, the disc at `--disc=DIR` is not the expected disc | restore | the chunks of each disc read so far stay in their part files | `restore: insert disc SEQ "LABEL" (UUID) into DIR and run restore again` | 1 | mount that disc at `DIR`, then run the same `restore` again. It resumes. |
-| 88 | any | restore --dry-run | unchanged | the plan: one `disc SEQ "LABEL" (UUID): N items, B bytes` line for each disc, with ` (lost)` after a lost disc, the `restore: N item(s) have no disc known to the catalog; ...` line when row 85a applies, then `totals: D discs, N items, B bytes` (a fixed plural form, also for 1, because a program parses it). No `next:` line. | 0 | the same line without `--dry-run` |
+| 88 | any | restore --dry-run | unchanged | the plan: one `disc SEQ "LABEL" (UUID): N items, B bytes` line for each disc, then `totals: D discs, N items, B bytes` (a fixed plural form, also for 1, because a program parses it). The line of a lost disc ends with ` (lost)`. When row 85a applies, the `restore: N item(s) have no disc known to the catalog; ...` line comes before the totals line. No `next:` line. | 0 | the same line without `--dry-run` |
 | 89 | (no repository) | restore, ls, or log | refused, usage error | `no repository; run recover first, one time for each disc` | 2 | `noahsark --repo=PATH recover --source=SOURCE --disc=DIR` |
 | 89a | the snapshot is `partial` in `catalog-state.txt` | restore or ls | refused. No disc is read. | `snapshot ID is partial; run recover with more discs` | 1 | `noahsark recover` with each disc that the operator still holds, then the same command again |
-| 89b | a snapshot is `partial` in `catalog-state.txt` | log | the lines are printed as usual | every line of `log`, then `snapshot ID is partial; run recover with more discs` on standard error for each such snapshot | 1 | `noahsark recover` with each disc that the operator still holds |
+| 89b | a snapshot is `partial` in `catalog-state.txt` | log | the lines are printed as usual | the snapshot lines as usual, then `snapshot ID is partial; run recover with more discs` on standard error for each such snapshot | 1 | `noahsark recover` with each disc that the operator still holds |
 
 No cell is a dead end. The `Next` column of each `refused` row names an
 action that moves the repository forward.

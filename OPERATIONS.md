@@ -1536,7 +1536,8 @@ Six commands ask before they change a record. `pack --undo`, `disc burned
 3. `--yes` answers an ordinary confirmation. `--force-yes` answers both kinds.
    With an answer flag, the command prints the warning and does not ask.
 4. With no terminal on standard input and no answer flag that covers the
-   confirmation, the answer is no. The command reads nothing.
+   confirmation, the answer is no. The command prints the warning, does not
+   ask, and reads nothing.
 5. An answer of no changes nothing. The command prints `nothing changed` and
    exits with code 1. For a critical confirmation with `--yes` and no
    terminal, the line is `nothing changed; COMMAND needs --force-yes`.

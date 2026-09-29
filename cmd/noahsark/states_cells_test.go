@@ -24,19 +24,12 @@ var statesDoc = flag.String("states", "../../docs/states.md", "the document that
 // turn into lines. The harness skips the Message check of these rows and
 // logs the reason. The parse test fails when a listed row parses, so
 // that the entry goes when the cell is fixed.
-var irregularMessageRows = map[string]string{
-	"71": "one clause mixes a line, a per-disc line, suffix alternatives and a flag word, with prose between the spans",
-	"88": "one clause mixes a per-disc line, a suffix, and a conditional line, with prose between the spans",
-}
+var irregularMessageRows = map[string]string{}
 
 // knownDisagreements are the cases, as "ROW" or "ROW/NAME", whose
 // output disagrees with the cells of their row. The harness logs each
 // difference of a listed case, and fails when a listed case agrees.
-var knownDisagreements = map[string]string{
-	"7": "the refusal goes on after the cell text: '; the smallest staged item is ...', and a second line 'use a capacity of N bytes or more'",
-	"28/disc verified with no terminal and no answer flag": "no terminal and no answer flag is an answer no, but the command does not ask; the cell names the question",
-	"59a/disc lost with no terminal and no answer flag":    "no terminal and no answer flag is an answer no, but the command does not ask; the cell names the question",
-}
+var knownDisagreements = map[string]string{}
 
 // stateRow is one row of the state x event table, one text for each
 // column.
@@ -193,7 +186,6 @@ const rowList = `(\d+[a-z]?(?:(?:,\s*or\s+|,\s*|\s+or\s+|\s+and\s+)\d+[a-z]?)*)`
 var (
 	warnQuestionOfRe = regexp.MustCompile(`^the warning and the question of rows? ` + rowList + `(?:, with ` + spanOpen + `(\d+)` + spanClose + `)?$`)
 	asRowsRe         = regexp.MustCompile(`^as rows? ` + rowList + `(?:, with the reason ` + spanOpen + `(\d+)` + spanClose + `)?$`)
-	everyLineOfRe    = regexp.MustCompile(`^every line of ` + spanOpen + `\d+` + spanClose + `$`)
 )
 
 // confirmQuestionSpan is the question as the cells write it.
@@ -331,9 +323,6 @@ func (tb *stateTable) messageDepth(id, like string, depth int) (cellMessage, err
 				step = append(step, alt)
 			}
 			msg.steps = append(msg.steps, step)
-		case everyLineOfRe.MatchString(clause):
-			// The clause names the normal output of a command. It gives
-			// no line.
 		default:
 			step, err := clauseLines(clause, span, lineOf)
 			if err != nil {
@@ -542,8 +531,17 @@ var placeholderPatterns = map[string]string{
 	"ID":           `\S+`,
 	"FULL-TEXT-ID": `\S+`,
 	"ARG":          `\S+`,
+	"CAP":          `\S+`,
+	"KIND":         `(?:chunk|blob|tree|snapshot)`,
 	"REASON":       `.+`,
 	"STATE":        `(?:packed|burned|verified|on disc only|lost|missing)`,
+}
+
+// placeholderSuffixes are the optional texts that can follow a
+// placeholder, also when it has a value. `status` adds the last check to
+// the disc word STATE.
+var placeholderSuffixes = map[string]string{
+	"STATE": `(?:, last check(?: failed)? \d{4}-\d{2}-\d{2}|, not checked)?`,
 }
 
 const uuidPattern = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
@@ -552,7 +550,8 @@ var placeholderRe = regexp.MustCompile(`[A-Z]+(?:-[A-Z]+)*`)
 
 // lineRegexp turns the text of a cell line into the pattern of one
 // output line. A placeholder with a value in values matches that value.
-// Another placeholder matches by its kind. "..." matches any text. The
+// Another placeholder matches by its kind. Then the suffix of
+// placeholderSuffixes can follow. "..." matches any text. The
 // line can start with the "noahsark: COMMAND: " prefix of an error, and
 // can go on after a space.
 func lineRegexp(text string, values map[string]string) *regexp.Regexp {
@@ -579,6 +578,7 @@ func lineRegexp(text string, values map[string]string) *regexp.Regexp {
 		} else {
 			b.WriteString(pattern)
 		}
+		b.WriteString(placeholderSuffixes[name])
 		last = loc[1]
 	}
 	literal(text[last:])
@@ -774,6 +774,9 @@ func TestStatesLineRegexp(t *testing.T) {
 		{confirmQuestionSpan, "Continue? [y/N] ", true},
 		{`gc: disc SEQ: too soon; N item(s) held until DATE`, `gc: disc 3: too soon; 5 item(s) held until 2026-09-29`, true},
 		{`capacity ... holds not one item`, `noahsark: pack: capacity 50KiB holds not one item`, true},
+		{`capacity CAP (B bytes) holds not one item; the smallest staged item is KIND ID, B bytes`, `noahsark: pack: capacity 50KiB (51200 bytes) holds not one item; the smallest staged item is chunk 1220ab, 60000 bytes`, true},
+		{`disc SEQ "LABEL"  STATE  UUID`, `disc 3 "x disc 3"  verified, last check 2026-09-29  0a1b2c3d-0000-4000-8000-00000000000f`, true},
+		{`disc SEQ "LABEL"  STATE  UUID`, `disc 3 "x disc 3"  verified, checked  0a1b2c3d-0000-4000-8000-00000000000f`, false},
 		{`burned`, `  burned    record a burn`, true},
 		{`warning: disc SEQ "LABEL" (UUID): STATE -> lost`, `warning: disc 3 "x disc 3" (0a1b2c3d-0000-4000-8000-00000000000f): on disc only -> lost`, true},
 	} {

@@ -46,11 +46,12 @@ func init() {
 			end:    stage.DiscVerified,
 		},
 		// Row 88: the dry run prints the plan and changes nothing. The
-		// Message cell of row 88 is irregular, thus also names the lines.
+		// cell gives the lost suffix in prose, thus also names it.
 		stateCase{
 			row: "88", name: "dry run with a lost disc",
 			start: stage.DiscLost, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
-			also:   []string{`{DISC} ({UUID}): `, ` bytes (lost)`, "totals: 1 discs, "},
+			cells:  map[string]string{"D": "1"},
+			also:   []string{` bytes (lost)` + "\n"},
 			absent: []string{"restored snapshot", "found"},
 			end:    stage.DiscLost,
 		},
@@ -110,7 +111,7 @@ func init() {
 		registerStateCases(stateCase{
 			row: "88", name: "dry run with a " + s.String() + " disc",
 			start: s, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
-			also:   []string{`{DISC} ({UUID}): `, " items, ", "totals: 1 discs, "},
+			cells:  map[string]string{"D": "1"},
 			absent: []string{"restored snapshot", "(lost)", "found"},
 			end:    s,
 		})
