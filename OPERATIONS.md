@@ -141,6 +141,7 @@ staging/
     chunks/ab/<id>              chunk files that wait for gc
     plans/<disc-uuid>/tree      the disc root that pack writes, or a symlink to the pack --out directory
     plans/<disc-uuid>/tree.img  the image that image build writes
+    plans/<disc-uuid>/close     an empty file: pack --close made the disc
     state-seq.txt               the sequence mark ("The repository directory")
 ```
 
@@ -568,55 +569,101 @@ A matched directory is not walked. `commit` prints `excluded: N path(s)`.
    chunks of a file and the files of a directory stay together. It reads
    chunks from `staging/chunks/`, and blobs, trees and snapshots from
    `catalog/`. The snapshot object comes after each object that it reaches.
-   `pack` walks the snapshots whose snapshot object is Staged in this order:
-   1. First, each snapshot that is packed in parts: one or more items that
-      it reaches are not Staged (Packed, OnDisc or Lost). The oldest
-      snapshot time goes first.
-   2. Then each other snapshot, the oldest snapshot time first.
-   3. Snapshots with equal times go in the order of the bytes of their ids.
-
-   An item that two snapshots reach goes with the first of them in this
-   order. Thus a new snapshot never goes before the rest of an older
-   snapshot. `pack` has no minimum fill: the rest of a snapshot stays Staged
-   until the operator packs it. `status` names each snapshot that is packed
-   in parts ("Command notes").
-4. A prefix is dependency-closed: a child that the prefix does not hold is
+   `pack` walks the snapshots in the order of their snapshot time, the
+   oldest first. Snapshots with equal times go in the order of the bytes of
+   their ids. An item that two snapshots reach goes with the first of them
+   in this order. Thus the rest of an older snapshot always goes before a
+   newer snapshot. `pack` has no minimum fill: the rest of a snapshot stays
+   Staged until the operator packs it. `status` names each snapshot that is
+   not complete on discs ("Command notes").
+4. `pack` takes each Staged item, whatever the state of the items above it.
+   The walk stops at a tree or a blob that a disc holds. When that walk
+   misses a Staged item of the state log, `pack` walks again, and goes down
+   into the trees and blobs that a disc holds, also below a snapshot object
+   that a disc holds, until it finds each such item. `disc lost` of a
+   `packed` or `burned` disc, and a `commit` after `disc lost` of a freed
+   disc, give such items. An item goes with the first snapshot in the
+   order above that reaches it. A Staged item that no snapshot reaches goes
+   last, in the order of the bytes of its id. The disc that takes such
+   items holds them as ordinary objects: a reader finds an object on any
+   disc whose INDEX lists it (FORMAT.md, "INDEX"), and the trees and blobs
+   above it stay on their own discs.
+5. A Staged item that `pack` cannot take stays Staged: a tree, a blob or a
+   snapshot object whose file in `catalog/` is missing or does not verify,
+   and a chunk whose file is missing or fails its check during the copy.
+   The trees above it and its snapshot object stay Staged too. `pack` takes
+   each other item. It prints one warning on standard error for each
+   snapshot that reaches such an item, and one for each such item that no
+   snapshot reaches. When a chunk fails its check during the copy, `pack`
+   removes the part-written disc root and writes it again without the
+   chunk. "Failure and recovery actions" gives the repair.
+6. A prefix is dependency-closed: a child that the prefix does not hold is
    already on an earlier disc. `pack` records that disc in the Prereqs table
    of INDEX.
-5. Every run carries INDEX, REFS, DISCS and the snapshot objects that
+7. Every run carries INDEX, REFS, DISCS and the snapshot objects that
    FORMAT.md's "Catalog contents per run" names. `pack` reads the snapshot
    objects from the catalog. Each disc carries every snapshot object of the
    catalog. The snapshots stay in the catalog after `gc`, thus a disc that is
-   packed after a `gc` carries the old snapshots too.
-6. `pack` refuses a capacity that holds not one item, with exit code 2.
-7. `pack` refuses to run while a disc is `missing`, with exit code 1.
-8. The next `disc_seq` is one more than the highest `disc_seq` of all `Packed`
+   packed after a `gc` carries the old snapshots too. When the catalog file
+   of such a snapshot object is missing or does not verify, `pack` stops
+   with exit code 1, and names `recover` with a disc that holds it.
+8. `pack` refuses a capacity that holds not one item, with exit code 2.
+9. `pack` refuses to run while a disc is `missing`, with exit code 1.
+10. The next `disc_seq` is one more than the highest `disc_seq` of all `Packed`
    events of the disc state log and of all rows of the disc ledger. The next
    `run_seq` follows the same rule. A fresh repository starts at `run_seq` 1
    and `disc_seq` 0. An undone disc number is never used again.
-9. The label of a disc is the name of the newest ref, then ` disc SEQ`, for
+11. The label of a disc is the name of the newest ref, then ` disc SEQ`, for
    example `2026-09-21 disc 0`. With no ref, it is `disc SEQ`.
 
 ### 8.2 Integrity checks and durable recording
 
-`pack` checks the content id of every item that it selects. It checks a chunk
-while it copies the chunk into the disc root. When an item fails, `pack`
-removes the part-written disc root and records nothing. The operator runs
-`commit` again, then `pack` again.
+`pack` checks the content id of every item that it selects. It checks a tree,
+a blob and a snapshot object when it walks them, and a chunk while it copies
+the chunk into the disc root. "Packing rules" gives what `pack` does with an
+item that fails. Another failure while `pack` writes the disc root, such as a
+read error or a sync error, removes the part-written disc root and records
+nothing.
 
 `pack` writes the disc root to `staging/plans/<disc-uuid>/tree`. With
 `--out=DIR`, it writes the disc root into `DIR` and makes
 `staging/plans/<disc-uuid>/tree` a symlink to the absolute path of `DIR`.
 `pack` makes `DIR` absolute. Before it writes, it refuses with exit code 2 a
-`DIR` that holds files (`--out=DIR holds files; give an empty or absent
+`DIR` inside the repository or inside the staging store (`--out=DIR is inside
+the repository or the staging store; give a directory outside them`), a `DIR`
+that holds files (`--out=DIR holds files; give an empty or absent
 directory`) and a path that is not a directory (`--out=DIR is not a
-directory`).
+directory`). The check resolves the symlinks of the part of each path that
+exists. With `--close`, `pack` writes the empty file
+`staging/plans/<disc-uuid>/close` and syncs it before it writes the disc
+root.
 
 `pack` syncs every file and every directory of the disc root after the write.
 It writes the catalog tables of the disc, the disc ledger row, the Packed item
-records and the `Packed` event only after that sync. The `Packed` event
-carries the `close` flag for `--close` and the `fec` flag for `--fec`. An
-interrupted `pack` leaves only a part-written disc root.
+records and the `Packed` event only after that sync, in this order. The
+`Packed` event carries the `close` flag for `--close` and the `fec` flag for
+`--fec`.
+
+A `pack` without `--dry-run` completes what an interrupted `pack` left, after
+it completes the undone packs ("Undo a pack") and before it writes a disc
+root:
+
+- A ledger row with no `Packed` event, whose `staging/plans/<disc-uuid>/tree`
+  exists, belongs to a `pack` that stopped after its ledger row. `pack`
+  records each item that the catalog INDEX of the disc lists and that is
+  Staged or has no record as Packed on that disc. Then it appends the
+  `Packed` event, with the time of the ledger row, the `fec` flag when the
+  INDEX lists a checksum file, and the `close` flag when the file `close` of
+  the plan directory exists. It prints `noahsark: pack: disc SEQ "LABEL": an
+  earlier pack stopped before it recorded the disc; its records are now
+  complete` on standard error.
+- A directory `catalog/discs/<disc-uuid>/` or `staging/plans/<disc-uuid>/`
+  whose uuid neither the disc state log nor the disc ledger names belongs to
+  a `pack` or a `recover` that stopped before its ledger row. `pack` removes
+  it and prints `noahsark: pack: removed PATH: no record names disc UUID; an
+  earlier pack or recover stopped before it recorded the disc` on standard
+  error. For a `pack --out=DIR` disc, it removes the symlink and never
+  touches `DIR`.
 
 ### 8.3 Dry run
 
@@ -1567,9 +1614,24 @@ repository and the text ` disc SEQ`, for example `2026-09-14 disc 0`. With no
 ref, the label is `disc SEQ`. With nothing staged, it prints `pack: nothing
 staged`, then `next: noahsark status`, and exits 0. With nothing staged and
 `--dry-run`, it prints only `pack: nothing staged`. A dry run prints the lines
-of "Dry run" and no `next:` line. Exit: 2 for a missing capacity, an `--out`
-directory that holds files, an `--out` path that is not a directory, or a
-capacity too small for one item. 1 while a disc is `missing`.
+of "Dry run" and no `next:` line. For each item that it cannot take
+("Packing rules"), `pack` and `pack --dry-run` print one warning on standard
+error:
+
+```
+noahsark: pack: warning: snapshot ID: cannot pack all of it: PROBLEM; REPAIR
+noahsark: pack: warning: cannot pack: PROBLEM; REPAIR
+```
+
+The second form names an item that no snapshot reaches. `PROBLEM` is `KIND
+ID is damaged`, `the file of KIND ID is missing`, `KIND ID cannot be read:
+ERROR` or `staged item ID has no file`. `REPAIR` is "Failure and recovery
+actions". After a warning, `pack` still packs the other items and prints its
+lines, then exits 1. When it can take no item at all, it prints no line on
+standard output and exits 1. Exit: 2 for a missing capacity, an `--out` path
+inside the repository or the staging store, an `--out` directory that holds
+files, an `--out` path that is not a directory, or a capacity too small for
+one item. 1 while a disc is `missing`, and after a warning.
 
 **`image build`** is "Disc filesystems and image building". It prints no
 `next:` line.
@@ -1606,28 +1668,34 @@ and heal" gives the order of the checks, the `REASON` texts and the count
 `N`.
 
 **`status`** prints `staged: N items, B bytes`, then one snapshot line for
-each snapshot that is packed in parts, then one disc line for each disc that
-is not undone, then one `next:` block:
+each snapshot that is not complete on discs, then one disc line for each disc
+that is not undone, then one `next:` block:
 
 ```
 snapshot ID: N items staged, not complete on discs; recover cannot find it from the discs alone
+snapshot ID: N items staged, not complete on discs; the discs alone cannot restore all of it
 disc SEQ "LABEL"  STATE  [fec  ]UUID
 ```
 
-A snapshot is packed in parts when its snapshot object is Staged and one or
-more items that it reaches are not Staged. `ID` is the short form of the
-snapshot id ("Refs"). `N` is the number of Staged items that the snapshot
-reaches, its snapshot object included. The plural form `items` is fixed, also
-for 1. The snapshot lines come in the order in which `pack` takes the
-snapshots ("Packing rules"). A snapshot that no disc holds a part of gets no
-line, and a snapshot whose snapshot object is not Staged gets no line. An
-item that an older snapshot put on a disc counts as a part too: a new
-snapshot that shares data with a disc gets a line until `pack` takes its
-snapshot object. The snapshot
-object of a snapshot that is packed in parts goes on a disc only with its
-last part. Until then `recover` from the discs alone cannot find the
-snapshot. The snapshot lines change no `next:` block: the staged items are
-staged data.
+The first form names each snapshot whose snapshot object is Staged. `pack`
+puts the snapshot object on a disc only after each item that it reaches,
+thus `recover` from the discs alone cannot find such a snapshot. The second
+form names a snapshot whose snapshot object a disc holds, while `pack` still
+takes Staged items with it: items of a lost disc ("Packing rules"). `ID` is
+the short form of the snapshot id ("Refs"). `N` is the number of Staged items
+that `pack` takes with the snapshot: the Staged items that it reaches and
+that no snapshot before it in the pack order reaches, its snapshot object
+included when it is Staged. Thus the `N` of all lines add up to the staged
+total, less the Staged items that no snapshot reaches. The plural form
+`items` is fixed, also for 1. The snapshot lines come in the order in which
+`pack` takes the snapshots ("Packing rules"). The snapshot lines change no
+`next:` block: the staged items are staged data.
+
+For each item that `pack` cannot take ("Packing rules"), `status` prints the
+warning of `pack` on standard error, with `status` in place of `pack`. For a
+snapshot object that a disc holds and whose catalog file is missing or does
+not verify, `REPAIR` is `run recover with a disc that holds it`. `status`
+prints all its lines on standard output as usual, then exits 1.
 
 Two spaces separate the fields. `STATE` is the state word, with the suffix
 `, last check DATE`, `, last check failed DATE` or `, not checked` where
@@ -1918,7 +1986,9 @@ Every command uses exactly these three codes.
 | 10 | `recover: damaged: ID` | The disc is `on disc only` with a failed check. Copy it now, or use the second copy, and run `recover` with the copy. |
 | 11 | `the state log's tail was truncated; ...` | A crash left a torn tail. Run the interrupted command again. When it refuses because the disc already has the new state, its event was written, and the command with the lock wrote the rest (row 28). For a bad record in the middle of a log, run `recover` into a new repository. Do not put an old version of a log back (row 29). |
 | 12 | `repository lock PATH is held; another noahsark command runs on this repository` | Wait for the other command. |
-| 13 | `pack` stops: a staged item fails its check, or a sync error occurs | `pack` records nothing. Run `commit` again, then `pack` again. |
+| 13 | `pack` stops: a read error or a sync error occurs while it writes the disc root | `pack` records nothing. Correct the cause, then run `pack` again. |
+| 13a | `pack` or `status`: `warning: snapshot ID: cannot pack all of it: KIND ID is damaged; ...`, or `... the file of KIND ID is missing; ...` | `pack` took the other items. For a tree, a blob or a snapshot object: `commit` the same source again; `commit` writes the object again, then run `pack`. For a damaged chunk: delete the chunk file that the warning names, `commit` the same source again, then run `pack`; for a missing chunk file, `commit` then `pack`. When the source no longer holds the data, the item cannot be packed, and the snapshot stays Staged and not complete on discs. The other snapshots are not affected. No command drops a snapshot. |
+| 13b | `pack`: `snapshot ID: ...; each disc carries it: run recover with a disc that holds it` | The catalog copy of a snapshot object that a disc holds is missing or damaged. Run `recover` with a disc that holds it; `recover` writes the object again. Then run `pack`. |
 | 14 | `pack`: `capacity ... holds not one item` | Give a larger `--capacity`. |
 | 15 | `pack needs --capacity` | Give `--capacity`. |
 | 16 | `image build needs root for the loop mount; run: ...` | Run the printed `sudo` line. |
@@ -1986,7 +2056,7 @@ mounts it again read-only before the tool reads it.
 |---|---|
 | `media/dvd+r` | The full cycle on a DVD+R size image, with the reference decoder. Then the command-line cycle, and a disc root burned as ISO 9660 with the folder burn options (`-R -iso-level 4 -V NOAHSARK`) that `verify` counts and `restore` reads. |
 | `media/bd25-forced-10g` | A 25 GB medium, packed at a 10 GB `--capacity`. |
-| `chain/dvd-bd25-bd10` | Two snapshots of about 22.5 GB each across three discs. `pack` takes the older snapshot first. Data that does not fit stays Staged, and `status` names the snapshot that is packed in parts. A fourth disc takes the rest. The repository is deleted, and `recover` runs one time for each of the four discs. Both snapshots then restore; restore swaps the discs at one mount point. A missing disc is named. |
+| `chain/dvd-bd25-bd10` | Two snapshots of about 22.5 GB each across three discs. `pack` takes the older snapshot first. Data that does not fit stays Staged, and `status` names the snapshot that is not complete on discs. A fourth disc takes the rest. The repository is deleted, and `recover` runs one time for each of the four discs. Both snapshots then restore; restore swaps the discs at one mount point. A missing disc is named. |
 | `lowmem` | The 25 GB flow under a memory limit: peak memory does not grow with the data size. |
 | `incremental` | A second commit packs only the change. Both snapshots restore. |
 | `rebuild` | The repository is deleted. `recover` runs one time for each disc. `log`, `ls` and `restore` then work, and a later `pack` deduplicates against the discs. This proves that the discs alone hold the backup. |

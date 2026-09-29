@@ -146,6 +146,35 @@ func init() {
 			},
 		},
 		stateCase{
+			row: "10e", name: "pack --out inside the repository",
+			start: stage.DiscUndone,
+			setup: func(t *testing.T, fx *discFixture) {
+				out := filepath.Join(fx.repo, "catalog", "x")
+				fx.set("{OUT}", out)
+				fx.cell("DIR", out)
+			},
+			args:    []string{"pack", "--capacity=64MiB", "--out={OUT}"},
+			noEvent: true, sameCatalog: true,
+			end: stage.DiscUndone,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if _, err := os.Stat(fx.vars["{OUT}"]); !os.IsNotExist(err) {
+					t.Errorf("--out inside the repository exists after the refusal: %v", err)
+				}
+			},
+		},
+		stateCase{
+			row: "10f", name: "pack --out inside the staging store",
+			start: stage.DiscUndone,
+			setup: func(t *testing.T, fx *discFixture) {
+				out := filepath.Join(testLayout(t, fx.repo).chunksDir(), "x")
+				fx.set("{OUT}", out)
+				fx.cell("DIR", out)
+			},
+			args:    []string{"pack", "--capacity=64MiB", "--out={OUT}"},
+			noEvent: true, sameCatalog: true,
+			end: stage.DiscUndone,
+		},
+		stateCase{
 			row: "10d", name: "pack --out of a file",
 			start: stage.DiscUndone, setup: outDirSetup(false),
 			args:    []string{"pack", "--capacity=64MiB", "--out={OUT}"},

@@ -330,12 +330,13 @@ func TestPackNothingToPackRefusesEmptyRun(t *testing.T) {
 	}
 }
 
-// TestPackRefusesATruncatedStagedChunk truncates one committed file's
+// TestPackSkipsATruncatedStagedChunk truncates one committed file's
 // chunk object to 0 bytes on staging, standing in for a prior crash
 // that left a staged object file present under the right name but
-// without its real bytes. Pack must refuse to place it: it must fail
-// with an error naming the chunk's id, and it must write no run.
-func TestPackRefusesATruncatedStagedChunk(t *testing.T) {
+// without its real bytes. Pack must not place it, nor the blob, the
+// trees and the snapshot object above it. It reports the chunk by id,
+// and it packs the other file.
+func TestPackSkipsATruncatedStagedChunk(t *testing.T) {
 	stagingDir := t.TempDir()
 	l, err := stage.Open(stagingDir)
 	if err != nil {
@@ -355,24 +356,24 @@ func TestPackRefusesATruncatedStagedChunk(t *testing.T) {
 
 	outDir := t.TempDir()
 	opts := packOpts(stagingDir, snapID, outDir, sectorsFor(50_000_000), 1, l)
-	_, err = Pack(opts)
-	if err == nil {
-		t.Fatal("Pack: expected an error over the truncated chunk, got none")
+	var got []UnreadableItem
+	opts.Unreadable = func(item UnreadableItem) { got = append(got, item) }
+	if _, err = Pack(opts); err != nil {
+		t.Fatalf("Pack: %v", err)
 	}
-	if !strings.Contains(err.Error(), chunkID.TextForm()) {
-		t.Fatalf("Pack error = %q, want it to name the chunk id %s", err, chunkID.TextForm())
+	if len(got) != 1 || got[0].ID != chunkID || got[0].Snapshot != snapID || got[0].Kind != format.ObjectKindChunk {
+		t.Fatalf("Unreadable got %+v, want the chunk %s of snapshot %s", got, chunkID.TextForm(), snapID.TextForm())
 	}
-
-	assertNoRunAndNothingPacked(t, outDir, stagingDir)
+	assertPackedWithout(t, outDir, stagingDir, chunkID, snapID)
 }
 
-// TestPackRefusesAStagedChunkWithAFlippedByte flips one payload byte of
+// TestPackSkipsAStagedChunkWithAFlippedByte flips one payload byte of
 // a committed chunk, leaving its length alone, standing in for silent
 // corruption of the staging store. Nothing before the run's own copy
 // pass reads a chunk's payload, so only that pass can catch this. Pack
-// must refuse the chunk by name, take its part-written run away again,
-// and record nothing.
-func TestPackRefusesAStagedChunkWithAFlippedByte(t *testing.T) {
+// must report the chunk by name, write the run again without it and
+// without the items above it, and pack the other file.
+func TestPackSkipsAStagedChunkWithAFlippedByte(t *testing.T) {
 	stagingDir := t.TempDir()
 	l, err := stage.Open(stagingDir)
 	if err != nil {
@@ -394,34 +395,45 @@ func TestPackRefusesAStagedChunkWithAFlippedByte(t *testing.T) {
 
 	outDir := t.TempDir()
 	opts := packOpts(stagingDir, snapID, outDir, sectorsFor(50_000_000), 1, l)
-	_, err = Pack(opts)
-	if err == nil {
-		t.Fatal("Pack: expected an error over the flipped byte, got none")
+	var got []UnreadableItem
+	opts.Unreadable = func(item UnreadableItem) { got = append(got, item) }
+	if _, err = Pack(opts); err != nil {
+		t.Fatalf("Pack: %v", err)
 	}
-	if !strings.Contains(err.Error(), chunkID.TextForm()) {
-		t.Fatalf("Pack error = %q, want it to name the chunk id %s", err, chunkID.TextForm())
+	if len(got) != 1 || got[0].ID != chunkID || got[0].Missing {
+		t.Fatalf("Unreadable got %+v, want the damaged chunk %s", got, chunkID.TextForm())
 	}
-	if !strings.Contains(err.Error(), "is damaged") || !strings.Contains(err.Error(), "commit again") {
-		t.Fatalf("Pack error = %q, want the one damaged-staged-object text with its cure", err)
+	if want := "delete " + chunkPath; !strings.Contains(got[0].Repair(), want) {
+		t.Fatalf("repair %q, want it to name %q", got[0].Repair(), want)
 	}
-
-	assertNoRunAndNothingPacked(t, outDir, stagingDir)
+	assertPackedWithout(t, outDir, stagingDir, chunkID, snapID)
 }
 
-// assertNoRunAndNothingPacked checks what a refused pack must leave
-// behind: no run under the output directory, and no Packed record in
-// the state log as it replays from disk.
-func assertNoRunAndNothingPacked(t *testing.T, outDir, stagingDir string) {
+// assertPackedWithout checks a pack that skipped a damaged chunk: the
+// run in outDir holds neither the chunk nor the snapshot object, both
+// stay Staged, and the run holds the items of the other file.
+func assertPackedWithout(t *testing.T, outDir, stagingDir string, chunkID, snapID object.ID) {
 	t.Helper()
-	if entries, statErr := os.ReadDir(outDir); statErr == nil && len(entries) != 0 {
-		t.Fatalf("outDir is not empty, a run was written despite the corrupt chunk")
+	rr, err := Read(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rr.Index.Objects) == 0 {
+		t.Fatal("the run holds no object, want the items of the other file")
+	}
+	for _, row := range rr.Index.Objects {
+		if id := object.ID(row.ContentID); id == chunkID || id == snapID {
+			t.Fatalf("the run holds %s, want it left out", id.TextForm())
+		}
 	}
 	replayed, err := stage.Open(stagingDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := replayed.CountState(stage.Packed); n != 0 {
-		t.Fatalf("state log holds %d Packed records after a refused pack, want 0", n)
+	for _, id := range []object.ID{chunkID, snapID} {
+		if rec, _ := replayed.Get(id); rec.State != stage.Staged {
+			t.Fatalf("%s is %v after the pack, want Staged", id.TextForm(), rec.State)
+		}
 	}
 }
 
