@@ -1,375 +1,310 @@
-// Package plan computes a restore plan from the catalog alone, the
-// disc order OPERATIONS.md's restore section states. The
-// "restore" command's disc-swap mode reads objects in plan order as
-// each disc is inserted, and "restore --dry-run" prints the same plan
-// with no disc read.
+// Package plan plans a restore from the catalog alone. Select resolves
+// the PATH arguments of restore to the entries that they name. New
+// counts, for each disc, the items that restore must read from it. The
+// plan keeps counts only, never a list of chunks.
 package plan
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
+	"io/fs"
 	"slices"
-	"sort"
-	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// ObjectEntry is one object a plan assigns to a disc.
+// Disc is one disc of the repository, as restore names it.
+type Disc struct {
+	DiscUUID [16]byte
+	DiscSeq  uint64
+	Label    string
+	Lost     bool
+}
+
+// table is the Objects table of one disc INDEX in the catalog: the
+// content ids in ascending order, and the byte length of each object
+// file.
+type table struct {
+	ids   []object.ID
+	bytes []uint64
+}
+
+// find returns the row of id, or false.
+func (t *table) find(id object.ID) (int, bool) {
+	return slices.BinarySearchFunc(t.ids, id, func(a, b object.ID) int { return bytes.Compare(a[:], b[:]) })
+}
+
+// Plan counts the items that a restore reads from each disc. For each
+// item it takes the first disc in this order that holds it: a disc that
+// is not lost before a lost disc, then the lowest disc_seq, then the
+// lowest uuid. It counts an item one time for each disc.
+type Plan struct {
+	sel     *Selection
+	discs   []Disc
+	tables  []table
+	counted [][]bool
+	items   []int
+	bytes   []uint64
+	byUUID  map[[16]byte]int
+	// noDisc holds the items that no catalog INDEX lists.
+	noDisc map[object.ID]bool
+}
+
+// New prepares an empty plan for sel over discs. It reads the catalog
+// INDEX of each disc. A disc whose INDEX is not in the catalog holds no
+// item of the plan.
+func New(c *catalog.Catalog, sel *Selection, discs []Disc) (*Plan, error) {
+	ordered := slices.Clone(discs)
+	slices.SortStableFunc(ordered, func(a, b Disc) int {
+		if a.Lost != b.Lost {
+			if a.Lost {
+				return 1
+			}
+			return -1
+		}
+		if a.DiscSeq != b.DiscSeq {
+			if a.DiscSeq < b.DiscSeq {
+				return -1
+			}
+			return 1
+		}
+		return bytes.Compare(a.DiscUUID[:], b.DiscUUID[:])
+	})
+	p := &Plan{
+		sel:    sel,
+		discs:  ordered,
+		byUUID: make(map[[16]byte]int, len(ordered)),
+		noDisc: make(map[object.ID]bool),
+	}
+	for i, d := range ordered {
+		t, err := readTable(c, d.DiscUUID)
+		if err != nil {
+			return nil, err
+		}
+		p.tables = append(p.tables, t)
+		p.counted = append(p.counted, make([]bool, len(t.ids)))
+		p.items = append(p.items, 0)
+		p.bytes = append(p.bytes, 0)
+		p.byUUID[d.DiscUUID] = i
+	}
+	return p, nil
+}
+
+// readTable reads the Objects table of the catalog INDEX of one disc.
+func readTable(c *catalog.Catalog, uuid [16]byte) (table, error) {
+	idx, err := c.IndexForDisc(uuid)
+	if errors.Is(err, fs.ErrNotExist) {
+		return table{}, nil
+	}
+	if err != nil {
+		return table{}, err
+	}
+	var lens []uint64
+	for _, f := range idx.Files {
+		if f.Role == format.FileRoleObject {
+			lens = append(lens, f.ByteLen)
+		}
+	}
+	t := table{ids: make([]object.ID, len(idx.Objects)), bytes: make([]uint64, len(idx.Objects))}
+	for i, row := range idx.Objects {
+		t.ids[i] = object.ID(row.ContentID)
+		if i < len(lens) {
+			t.bytes[i] = lens[i]
+		}
+	}
+	if !slices.IsSortedFunc(t.ids, func(a, b object.ID) int { return bytes.Compare(a[:], b[:]) }) {
+		order := make([]int, len(t.ids))
+		for i := range order {
+			order[i] = i
+		}
+		slices.SortFunc(order, func(a, b int) int { return bytes.Compare(t.ids[a][:], t.ids[b][:]) })
+		sorted := table{ids: make([]object.ID, len(order)), bytes: make([]uint64, len(order))}
+		for i, j := range order {
+			sorted.ids[i], sorted.bytes[i] = t.ids[j], t.bytes[j]
+		}
+		t = sorted
+	}
+	return t, nil
+}
+
+// owner returns the disc that supplies id and the row of id in the table
+// of that disc.
+func (p *Plan) owner(id object.ID) (disc, row int, ok bool) {
+	for i := range p.tables {
+		if row, found := p.tables[i].find(id); found {
+			return i, row, true
+		}
+	}
+	return 0, 0, false
+}
+
+// Add counts one item that the restore needs.
+func (p *Plan) Add(id object.ID) {
+	i, row, ok := p.owner(id)
+	if !ok {
+		p.noDisc[id] = true
+		return
+	}
+	if p.counted[i][row] {
+		return
+	}
+	p.counted[i][row] = true
+	p.items[i]++
+	p.bytes[i] += p.tables[i].bytes[row]
+}
+
+// Holds reports whether the catalog INDEX of the disc uuid lists id.
+func (p *Plan) Holds(uuid [16]byte, id object.ID) bool {
+	i, ok := p.byUUID[uuid]
+	if !ok {
+		return false
+	}
+	_, found := p.tables[i].find(id)
+	return found
+}
+
+// NoDisc is the number of needed items that no catalog INDEX lists.
+func (p *Plan) NoDisc() int { return len(p.noDisc) }
+
+// DiscEntry is the share of one disc in a plan.
+type DiscEntry struct {
+	Disc
+	Items int
+	Bytes uint64
+	plan  *Plan
+	index int
+}
+
+// Discs returns each disc that supplies at least one item, in disc_seq
+// order, then in uuid order.
+func (p *Plan) Discs() []DiscEntry {
+	var out []DiscEntry
+	for i, d := range p.discs {
+		if p.items[i] == 0 {
+			continue
+		}
+		out = append(out, DiscEntry{Disc: d, Items: p.items[i], Bytes: p.bytes[i], plan: p, index: i})
+	}
+	slices.SortFunc(out, func(a, b DiscEntry) int {
+		if a.DiscSeq != b.DiscSeq {
+			if a.DiscSeq < b.DiscSeq {
+				return -1
+			}
+			return 1
+		}
+		return bytes.Compare(a.DiscUUID[:], b.DiscUUID[:])
+	})
+	return out
+}
+
+// ObjectEntry is one item that a disc supplies.
 type ObjectEntry struct {
 	ID    object.ID
 	Kind  format.ObjectKind
 	Bytes uint64
 }
 
-// DiscEntry is one disc's share of a plan, in plan order.
-type DiscEntry struct {
-	Order    int
-	DiscSeq  uint64
-	DiscUUID [16]byte
-	Label    string
-	Created  int64
-	Objects  []ObjectEntry
-	Bytes    uint64
-}
+// errStopWalk stops a walk when the consumer of Objects stops.
+var errStopWalk = errors.New("walk stopped")
 
-// MissingEntry is one group of objects a plan could not place: either a
-// resolved disc that no catalog DISCS row describes, or an object no
-// catalog INDEX names at all (HasDisc false).
-type MissingEntry struct {
-	DiscUUID [16]byte
-	HasDisc  bool
-	Objects  int
-}
-
-// Result is the outcome of grouping every needed object by the disc
-// that holds it, in plan order.
-type Result struct {
-	Discs        []DiscEntry
-	Missing      []MissingEntry
-	TotalObjects int
-	TotalBytes   uint64
-}
-
-// MissingObjectCount sums every MissingEntry's object count.
-func (r *Result) MissingObjectCount() int {
+// Objects walks the selection of the plan again, and yields each item
+// that this disc supplies, one time. It does not look at the
+// destination: it yields the items of the whole selection. A catalog
+// read error ends the sequence early.
+func (d DiscEntry) Objects(yield func(int, ObjectEntry) bool) {
+	p := d.plan
+	if p == nil || p.sel == nil {
+		return
+	}
+	seen := make([]bool, len(p.tables[d.index].ids))
 	n := 0
-	for _, m := range r.Missing {
-		n += m.Objects
-	}
-	return n
+	_ = p.sel.Walk(".", &chunkWalk{c: p.sel.c, chunk: func(id object.ID) error {
+		i, row, ok := p.owner(id)
+		if !ok || i != d.index || seen[row] {
+			return nil
+		}
+		seen[row] = true
+		if !yield(n, ObjectEntry{ID: id, Kind: format.ObjectKindChunk, Bytes: p.tables[i].bytes[row]}) {
+			return errStopWalk
+		}
+		n++
+		return nil
+	}})
 }
 
-// Build resolves a restore plan for snap (already read from the catalog
-// under id snapID), restricted to includes (the whole snapshot when
-// includes is empty). It reads only the catalog, never a disc.
-func Build(c *catalog.Catalog, snap *format.Snapshot, snapID object.ID, includes []string) (*Result, error) {
-	return BuildForChunks(c, snap, snapID, includes, nil)
+// Result is a plan of the discs in the catalog.
+type Result struct {
+	Discs []DiscEntry
 }
 
-// BuildForChunks is Build, restricted further to the chunks keep names.
-// A chunk the destination already holds is left out of the plan
-// entirely, so a rerun lists only the discs it still needs. A nil keep
-// plans every chunk. Every tree, blob and snapshot object is resolved
-// whatever keep says, so a missing one is still reported.
-func BuildForChunks(c *catalog.Catalog, snap *format.Snapshot, snapID object.ID, includes []string, keep map[object.ID]bool) (*Result, error) {
-	w, err := collectObjects(c, snap, includes)
+// Build plans the chunks of paths in snap over every disc that the
+// newest DISCS table of the catalog names, with no disc lost. It ignores
+// what a destination holds. paths are relative to the source root, as
+// for Select.
+func Build(c *catalog.Catalog, snap *format.Snapshot, _ object.ID, paths []string) (*Result, error) {
+	sel, err := Select(c, snap, paths)
 	if err != nil {
 		return nil, err
 	}
-	w.add(snapID, format.ObjectKindSnapshot)
-	return group(c, w.needed, w.order, keep), nil
-}
-
-// collectObjects walks the catalog trees under includes (the whole
-// snapshot when includes is empty), starting from snap's root tree, and
-// returns the walker holding every object id a restore of that scope
-// needs, tagged by kind and in discovery order. It never reads a
-// chunk's payload.
-func collectObjects(c *catalog.Catalog, snap *format.Snapshot, includes []string) (*walker, error) {
-	w := &walker{c: c, needed: make(map[object.ID]format.ObjectKind)}
-	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
+	// A catalog with no disc has no DISCS table, and the plan then names
+	// no disc.
+	var rows []format.DiscsRow
+	if table, err := c.Discs(); err == nil {
+		rows = table.Rows
+	}
+	var discs []Disc
+	seen := make(map[[16]byte]bool)
+	for _, row := range rows {
+		if seen[row.DiscUUID] {
+			continue
+		}
+		seen[row.DiscUUID] = true
+		discs = append(discs, Disc{DiscUUID: row.DiscUUID, DiscSeq: row.DiscSeq, Label: labelOf(row)})
+	}
+	p, err := New(c, sel, discs)
 	if err != nil {
 		return nil, err
 	}
-
-	if len(includes) == 0 {
-		for _, e := range rootTree.Entries {
-			if err := w.addEntry(e); err != nil {
-				return nil, err
-			}
-		}
-		return w, nil
+	if err := sel.Walk(".", &chunkWalk{c: c, chunk: func(id object.ID) error { p.Add(id); return nil }}); err != nil {
+		return nil, err
 	}
-
-	for _, inc := range includes {
-		target, _, err := resolvePath(c, rootTree.Entries, inc)
-		if err != nil {
-			return nil, fmt.Errorf("--include=%s: %w", inc, err)
-		}
-		if err := w.addEntry(*target); err != nil {
-			return nil, err
-		}
-	}
-	return w, nil
+	return &Result{Discs: p.Discs()}, nil
 }
 
-// walker collects the object ids one Build call needs, reading trees
-// and blobs from the catalog alone. order records the ids in the order
-// they were first found, a depth-first, file-by-file tree walk: a
-// blob's own chunk ids always sit right after it. group() reads objects
-// off a disc in this order, so a blob's own chunks stay adjacent in the
-// disc's own object list, and a restore reads one file's chunks from
-// one part of the disc.
-type walker struct {
-	c      *catalog.Catalog
-	needed map[object.ID]format.ObjectKind
-	order  []object.ID
+// labelOf trims the fixed-width label field of a DISCS row.
+func labelOf(row format.DiscsRow) string {
+	n := min(int(row.LabelLen), len(row.Label))
+	return string(row.Label[:n])
 }
 
-// add records id, tagged kind, the first time it is seen, preserving
-// w.order's discovery order. It reports whether id was new.
-func (w *walker) add(id object.ID, kind format.ObjectKind) bool {
-	if _, ok := w.needed[id]; ok {
-		return false
-	}
-	w.needed[id] = kind
-	w.order = append(w.order, id)
-	return true
+// chunkWalk is a Visitor that calls chunk for each chunk of each file of
+// a selection. It changes no file. A file whose blob is not in the
+// catalog adds no chunk.
+type chunkWalk struct {
+	c     *catalog.Catalog
+	chunk func(object.ID) error
 }
 
-// addEntry adds e's own object (a tree for a directory, a blob and its
-// chunks for a regular file) and, for a directory, recurses into it.
-// Every other entry type (symlink, device, fifo, socket) stores no
-// object of its own and is skipped.
-func (w *walker) addEntry(e format.TreeEntry) error {
-	switch e.EntryType {
-	case format.EntryTypeDirectory:
-		return w.addTree(object.ID(e.ContentID))
-	case format.EntryTypeRegular:
-		w.addBlob(object.ID(e.ContentID))
-	}
-	return nil
+func (w *chunkWalk) Dir(parent string, names []string) (string, bool, error) {
+	path, err := JoinAll(parent, names)
+	return path, err == nil, err
 }
 
-// addTree adds treeID and recurses into every child a directory entry
-// names. Build's caller already proved every tree the whole snapshot
-// reaches is in the catalog, so a read failure here is a hard error, not an
-// incompleteness to degrade past.
-func (w *walker) addTree(treeID object.ID) error {
-	if !w.add(treeID, format.ObjectKindTree) {
+func (w *chunkWalk) DirDone(string, format.TreeEntry) {}
+
+func (w *chunkWalk) File(_, _ string, e format.TreeEntry) error {
+	blob, err := w.c.ReadBlob(object.ID(e.ContentID))
+	if err != nil {
 		return nil
 	}
-	t, err := w.c.ReadTree(treeID)
-	if err != nil {
-		return err
-	}
-	for _, e := range t.Entries {
-		if err := w.addEntry(e); err != nil {
+	for _, be := range blob.Entries {
+		if err := w.chunk(object.ID(be.ContentID)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// addBlob adds blobID and, when the catalog also holds that blob object,
-// every chunk id it names. A blob the catalog does not hold is still
-// added, at the object level only: the catalog holds blobs only for the
-// snapshots pack or recover have processed since blob caching was
-// added, and its absence is not, by itself, an incomplete catalog.
-func (w *walker) addBlob(blobID object.ID) {
-	if !w.add(blobID, format.ObjectKindBlob) {
-		return
-	}
-	b, err := w.c.ReadBlob(blobID)
-	if err != nil {
-		return
-	}
-	for _, e := range b.Entries {
-		w.add(object.ID(e.ContentID), format.ObjectKindChunk)
-	}
-}
-
-// resolvePath walks rootEntries for pathArg, the same rule ls and
-// --include use: a path either names a root entry directly, or
-// descends from one root entry's own ROOT_PATH into its subtree.
-func resolvePath(c *catalog.Catalog, rootEntries []format.TreeEntry, pathArg string) (*format.TreeEntry, string, error) {
-	segs := splitPathSegs(pathArg)
-	if len(segs) == 0 {
-		return nil, "", fmt.Errorf("empty path")
-	}
-
-	var cur *format.TreeEntry
-	var consumed []string
-	for i := range rootEntries {
-		e := rootEntries[i]
-		rp := splitPathSegs(rootPathOf(e))
-		if len(rp) == 0 || len(rp) > len(segs) || !segsEqual(rp, segs[:len(rp)]) {
-			continue
-		}
-		cur = &e
-		consumed = rp
-		break
-	}
-	if cur == nil {
-		return nil, "", fmt.Errorf("path %q matches no entry", pathArg)
-	}
-
-	curEntry := *cur
-	for _, name := range segs[len(consumed):] {
-		if curEntry.EntryType != format.EntryTypeDirectory {
-			return nil, "", fmt.Errorf("path %q matches no entry", pathArg)
-		}
-		t, err := c.ReadTree(object.ID(curEntry.ContentID))
-		if err != nil {
-			return nil, "", err
-		}
-		found := false
-		for _, e := range t.Entries {
-			if string(e.Name) == name {
-				curEntry = e
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, "", fmt.Errorf("path %q matches no entry", pathArg)
-		}
-		consumed = append(consumed, name)
-	}
-	return &curEntry, strings.Join(consumed, "/"), nil
-}
-
-func segsEqual(a, b []string) bool {
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// splitPathSegs splits a forward-slash path into segments, stripping
-// one leading slash and dropping any empty segment a doubled or
-// trailing slash would otherwise produce.
-func splitPathSegs(p string) []string {
-	p = strings.TrimPrefix(p, "/")
-	if p == "" {
-		return nil
-	}
-	parts := strings.Split(p, "/")
-	out := make([]string, 0, len(parts))
-	for _, s := range parts {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// rootPathOf returns the source root path a root tree entry's name
-// holds, decoded by the root name escape rule. An undecodable name is
-// used as it is.
-func rootPathOf(e format.TreeEntry) string {
-	path, _ := format.DecodeRootName(string(e.Name))
-	return path
-}
-
-// group maps every needed object to a disc through c.LocateObject and
-// c.DiscRow, groups the result by disc, and orders the discs by these
-// tie-breaks: most bytes first, then the newer disc, then the lower
-// disc_seq.
-//
-// Only chunk objects count toward a disc's Objects and Bytes: a
-// disc-swap restore resolves every tree, blob and the snapshot itself
-// from the catalog alone, the same catalog group reads from, and
-// never opens a disc for them. A disc that holds none of the needed
-// chunks is dropped from the result entirely, even when it happens to
-// hold a needed tree or blob, so the discs printed here are exactly
-// the discs a restore of this plan reads, in the order it reads them.
-//
-// Within one disc, objects keep order's relative order: the walk's
-// depth-first, file-by-file discovery order, so a blob's own chunks
-// stay adjacent in each DiscEntry.Objects.
-func group(c *catalog.Catalog, needed map[object.ID]format.ObjectKind, order []object.ID, keep map[object.ID]bool) *Result {
-	byDisc := make(map[[16]byte]*DiscEntry)
-	missingByDisc := make(map[[16]byte]int)
-	missingDiscUnknown := 0
-
-	r := &Result{}
-	for _, id := range order {
-		if keep != nil && needed[id] == format.ObjectKindChunk && !keep[id] {
-			continue
-		}
-		loc, found := c.LocateObject(id)
-		if !found {
-			missingDiscUnknown++
-			continue
-		}
-		row, found := c.DiscRow(loc.DiscUUID)
-		if !found {
-			missingByDisc[loc.DiscUUID]++
-			continue
-		}
-		if needed[id] != format.ObjectKindChunk {
-			// Located, so not missing, but never read from row's disc
-			// by a restore: nothing to add to the plan.
-			continue
-		}
-		e, ok := byDisc[row.DiscUUID]
-		if !ok {
-			e = &DiscEntry{DiscSeq: row.DiscSeq, DiscUUID: row.DiscUUID, Label: discRowLabel(row), Created: row.CreatedSec}
-			byDisc[row.DiscUUID] = e
-		}
-		e.Objects = append(e.Objects, ObjectEntry{ID: id, Kind: needed[id], Bytes: loc.ByteLen})
-		e.Bytes += loc.ByteLen
-		r.TotalObjects++
-		r.TotalBytes += loc.ByteLen
-	}
-
-	discs := make([]DiscEntry, 0, len(byDisc))
-	for _, e := range byDisc {
-		discs = append(discs, *e)
-	}
-	sort.Slice(discs, func(i, j int) bool {
-		a, b := discs[i], discs[j]
-		if a.Bytes != b.Bytes {
-			return a.Bytes > b.Bytes
-		}
-		if a.Created != b.Created {
-			return a.Created > b.Created
-		}
-		return a.DiscSeq < b.DiscSeq
-	})
-	for i := range discs {
-		discs[i].Order = i
-	}
-	r.Discs = discs
-
-	uuids := make([][16]byte, 0, len(missingByDisc))
-	for uuid := range missingByDisc {
-		uuids = append(uuids, uuid)
-	}
-	slices.SortFunc(uuids, func(a, b [16]byte) int { return bytes.Compare(a[:], b[:]) })
-	for _, uuid := range uuids {
-		r.Missing = append(r.Missing, MissingEntry{DiscUUID: uuid, HasDisc: true, Objects: missingByDisc[uuid]})
-	}
-	if missingDiscUnknown > 0 {
-		r.Missing = append(r.Missing, MissingEntry{Objects: missingDiscUnknown})
-	}
-
-	return r
-}
-
-// discRowLabel trims a DISCS row's fixed-width label field.
-func discRowLabel(row format.DiscsRow) string {
-	n := min(int(row.LabelLen), len(row.Label))
-	return string(row.Label[:n])
-}
-
-// UUIDText formats a 16-byte uuid as hyphenated lowercase text.
-func UUIDText(u [16]byte) string {
-	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
-}
+func (w *chunkWalk) Other(string, format.TreeEntry) error { return nil }

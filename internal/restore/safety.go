@@ -7,8 +7,7 @@ import (
 	"syscall"
 
 	"github.com/tjjh89017/noahsark/internal/format"
-	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/progress"
+	"github.com/tjjh89017/noahsark/internal/plan"
 )
 
 // ensureDir makes every component under parent, one level at a time,
@@ -28,7 +27,7 @@ import (
 func ensureDir(parent string, components []string, wp *writePolicy) (path string, ok bool, err error) {
 	path = parent
 	for _, name := range components {
-		child, err := joinSafe(path, name)
+		child, err := plan.JoinSafe(path, name)
 		if err != nil {
 			return "", false, err
 		}
@@ -133,45 +132,4 @@ func symlinkTarget(e format.TreeEntry) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("symlink %q has no target TLV", e.Name)
-}
-
-// writeChunks writes every blob entry's payload into the part file at
-// part, at the entry's own file offset. The part file is created, sized
-// to the file's final size, and closed here; it never carries the final
-// name, so a reader never sees a half-written file under the name the
-// snapshot gives it.
-//
-// fetch reads one chunk payload. It reports ok false for a payload no
-// provided disc holds; writeChunks then leaves that part of the file
-// unwritten and reports complete false, so a caller that restores
-// across discs can carry on.
-func writeChunks(part string, size uint64, entries []placedChunk, prog *progress.Reporter, fetch func(object.ID) (payload []byte, ok bool, err error)) (complete bool, err error) {
-	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = f.Close() }()
-	if err := f.Truncate(int64(size)); err != nil {
-		return false, err
-	}
-	complete = true
-	for _, be := range entries {
-		id := object.ID(be.ContentID)
-		payload, ok, err := fetch(id)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			complete = false
-			continue
-		}
-		if uint64(len(payload)) != be.Length {
-			return false, fmt.Errorf("chunk %s: length %d, blob entry says %d", id.TextForm(), len(payload), be.Length)
-		}
-		if _, err := f.WriteAt(payload, int64(be.Offset)); err != nil {
-			return false, err
-		}
-		prog.Add(int64(len(payload)))
-	}
-	return complete, f.Close()
 }

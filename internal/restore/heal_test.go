@@ -16,6 +16,7 @@ import (
 func TestHealRepairsCorruptedStripes(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	stagingDir, treeDir, snapID := buildFixtureTree(t, srcDir)
+	c := catalogOfTree(t, treeDir)
 
 	paths, sizes, layout := streamLayout(t, treeDir)
 	if layout.StripeCount() < 3 {
@@ -54,7 +55,7 @@ func TestHealRepairsCorruptedStripes(t *testing.T) {
 		t.Fatal(err)
 	}
 	outDir := t.TempDir()
-	if _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := restoreWith(t, c, treeDir, snapID, outDir, false); err != nil {
 		t.Fatalf("Restore after Heal: %v", err)
 	}
 	compareRestoredTree(t, srcDir, outDir)

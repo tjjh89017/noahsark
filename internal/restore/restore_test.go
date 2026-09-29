@@ -7,18 +7,49 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/plan"
 )
 
+// restoreTree restores snapID from the one disc root treeDir into
+// outDir: it builds the catalog of the disc, selects paths, and walks
+// the selection against the disc.
+func restoreTree(t *testing.T, treeDir string, snapID object.ID, outDir string, overwrite bool, paths ...string) (Report, error) {
+	t.Helper()
+	return restoreWith(t, catalogOfTree(t, treeDir), treeDir, snapID, outDir, overwrite, paths...)
+}
+
+// restoreWith is restoreTree with the catalog c, which a test builds
+// before it damages the disc.
+func restoreWith(t *testing.T, c *catalog.Catalog, treeDir string, snapID object.ID, outDir string, overwrite bool, paths ...string) (Report, error) {
+	t.Helper()
+	snap, err := c.ReadSnapshot(snapID)
+	if err != nil {
+		return Report{}, err
+	}
+	sel, err := plan.Select(c, snap, paths)
+	if err != nil {
+		return Report{}, err
+	}
+	a, err := NewAssembler(c, sel, outDir, overwrite)
+	if err != nil {
+		return Report{}, err
+	}
+	if err := a.Disc(&treeDisc{root: treeDir}, nil); err != nil {
+		return a.Report(), err
+	}
+	a.Finish()
+	return a.Report(), nil
+}
+
 // compareRestoredTree compares srcDir, byte for byte including mode bits
-// and symlink targets, against its restored copy under outDir. Restore
-// recreates the source's own absolute path under outDir, so the restored
-// root is outDir+srcDir.
+// and symlink targets, against its restored copy in outDir. The content
+// of the one source root goes directly into outDir.
 func compareRestoredTree(t *testing.T, srcDir, outDir string) {
 	t.Helper()
-	restoredRoot := filepath.Join(outDir, srcDir)
-
 	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -27,7 +58,7 @@ func compareRestoredTree(t *testing.T, srcDir, outDir string) {
 		if err != nil {
 			return err
 		}
-		got := filepath.Join(restoredRoot, rel)
+		got := filepath.Join(outDir, rel)
 		gotInfo, err := os.Lstat(got)
 		if err != nil {
 			t.Errorf("%s: %v", rel, err)
@@ -48,7 +79,7 @@ func compareRestoredTree(t *testing.T, srcDir, outDir string) {
 			}
 			return nil
 		}
-		if info.Mode().Perm() != gotInfo.Mode().Perm() {
+		if rel != "." && info.Mode().Perm() != gotInfo.Mode().Perm() {
 			t.Errorf("%s: mode %o, want %o", rel, gotInfo.Mode().Perm(), info.Mode().Perm())
 		}
 		if info.IsDir() {
@@ -73,9 +104,9 @@ func compareRestoredTree(t *testing.T, srcDir, outDir string) {
 	}
 }
 
-// TestRestoreFromImageAfterStagingDeleted proves Restore needs only the
-// disc tree: it deletes the staging directory before restoring, then
-// compares the result byte for byte with the source fixture.
+// TestRestoreFromImageAfterStagingDeleted proves a restore needs only
+// the catalog and the disc: it deletes the staging directory before it
+// restores, then compares the result byte for byte with the source.
 func TestRestoreFromImageAfterStagingDeleted(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	stagingDir, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -85,15 +116,15 @@ func TestRestoreFromImageAfterStagingDeleted(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	if _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := restoreTree(t, treeDir, snapID, outDir, false); err != nil {
 		t.Fatal(err)
 	}
 	compareRestoredTree(t, srcDir, outDir)
 }
 
 // TestRestoreRejectsCorruptChunk corrupts one chunk's payload bytes and
-// checks that Restore, with no healing, reports the file as not
-// restored, with a content id mismatch, instead of writing bad data.
+// checks that the restore reports the file as not restored, with a
+// content id mismatch, instead of writing bad data.
 func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -102,16 +133,16 @@ func TestRestoreRejectsCorruptChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	chunkPath := findAChunkFile(t, base)
-	flipByte(t, chunkPath, 70) // inside the payload, past the 64-byte header
+	c := catalogOfTree(t, treeDir)
+	flipByte(t, findAChunkFile(t, base), 70) // inside the payload, past the 64-byte header
 
 	outDir := t.TempDir()
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreWith(t, c, treeDir, snapID, outDir, false)
 	if err != nil {
-		t.Fatalf("Restore: %v", err)
+		t.Fatalf("restore: %v", err)
 	}
 	if !rep.Failed() {
-		t.Fatal("expected Restore to report a failure on a corrupted chunk")
+		t.Fatal("expected the restore to report a failure on a corrupted chunk")
 	}
 	failed := problemsOf(rep, KindFile)
 	if len(failed) == 0 {
@@ -159,24 +190,20 @@ func findAChunkFile(t *testing.T, base string) string {
 	return found
 }
 
-// TestRestoreSkipsExistingPathWithoutOverwrite asserts that Restore
-// leaves a pre-existing file alone and counts it skipped when
-// WithOverwrite is not given, and replaces it when WithOverwrite(true)
-// is given.
+// TestRestoreSkipsExistingPathWithoutOverwrite asserts that a restore
+// leaves a file that is already there alone and counts it skipped
+// without overwrite, and replaces it with overwrite.
 func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 
 	outDir := t.TempDir()
-	preexisting := filepath.Join(outDir, srcDir, "small.txt")
-	if err := os.MkdirAll(filepath.Dir(preexisting), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	preexisting := filepath.Join(outDir, "small.txt")
 	if err := os.WriteFile(preexisting, []byte("not the source content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,28 +215,28 @@ func TestRestoreSkipsExistingPathWithoutOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(got) != "not the source content" {
-		t.Fatalf("existing file was modified without WithOverwrite: %q", got)
+		t.Fatalf("existing file was modified without overwrite: %q", got)
 	}
 
-	rep, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
+	rep, err = restoreTree(t, treeDir, snapID, outDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rep.Skipped() != 0 {
-		t.Fatalf("skipped = %d, want 0 with WithOverwrite", rep.Skipped())
+		t.Fatalf("skipped = %d, want 0 with overwrite", rep.Skipped())
 	}
 	got, err = os.ReadFile(preexisting)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) == "not the source content" {
-		t.Fatalf("WithOverwrite did not replace the existing file")
+		t.Fatalf("overwrite did not replace the existing file")
 	}
 }
 
-// TestRestoreDamagedChunkLeavesNoFinalName checks the one write path of
-// every restore mode: a file whose chunk is damaged gets no final name
-// and no part file, while every other file is restored.
+// TestRestoreDamagedChunkLeavesNoFinalName checks that a file whose
+// chunk is damaged gets no final name, while every other file is
+// restored.
 func TestRestoreDamagedChunkLeavesNoFinalName(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -218,21 +245,22 @@ func TestRestoreDamagedChunkLeavesNoFinalName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c := catalogOfTree(t, treeDir)
 	flipByte(t, findAChunkFile(t, base), 70)
 
 	outDir := t.TempDir()
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreWith(t, c, treeDir, snapID, outDir, false)
 	if err != nil {
-		t.Fatalf("Restore: %v", err)
+		t.Fatalf("restore: %v", err)
 	}
 	if !rep.Failed() {
 		t.Fatal("a damaged chunk must fail its file")
 	}
-	assertNoPathOfFailedFiles(t, rep, outDir, srcDir)
+	assertNoFinalNameOfFailedFiles(t, rep, outDir)
 }
 
-// TestRestoreMissingObjectLeavesNoFinalName is the same check for an
-// object that no provided disc holds at all.
+// TestRestoreMissingObjectLeavesNoFinalName is the same check for a
+// chunk that the INDEX of the disc lists and the disc does not hold.
 func TestRestoreMissingObjectLeavesNoFinalName(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -241,25 +269,25 @@ func TestRestoreMissingObjectLeavesNoFinalName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c := catalogOfTree(t, treeDir)
 	if err := os.Remove(findAChunkFile(t, base)); err != nil {
 		t.Fatal(err)
 	}
-
 	outDir := t.TempDir()
-	rep, err := Restore(treeDir, snapID, outDir)
-	if err == nil {
-		t.Fatal("a removed object must report a missing disc")
+	rep, err := restoreWith(t, c, treeDir, snapID, outDir, false)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !rep.Failed() {
 		t.Fatal("a removed object must fail its file")
 	}
-	assertNoPathOfFailedFiles(t, rep, outDir, srcDir)
+	assertNoFinalNameOfFailedFiles(t, rep, outDir)
 }
 
-// assertNoPathOfFailedFiles checks that every failed file is absent
-// under its final name and under its part name, and that at least one
-// other file of the fixture did restore.
-func assertNoPathOfFailedFiles(t *testing.T, rep Report, outDir, srcDir string) {
+// assertNoFinalNameOfFailedFiles checks that every failed file is absent
+// under its final name, and that at least one other file of the fixture
+// did restore.
+func assertNoFinalNameOfFailedFiles(t *testing.T, rep Report, outDir string) {
 	t.Helper()
 	failed := problemsOf(rep, KindFile)
 	if len(failed) == 0 {
@@ -269,13 +297,78 @@ func assertNoPathOfFailedFiles(t *testing.T, rep Report, outDir, srcDir string) 
 		if _, err := os.Lstat(p.Path); err == nil {
 			t.Fatalf("%s: the final name is in place after a failed file", p.Path)
 		}
-		part := filepath.Join(filepath.Dir(p.Path), "."+filepath.Base(p.Path)+partSuffix)
-		if _, err := os.Lstat(part); err == nil {
-			t.Fatalf("%s: a part file is left in the all-discs mode", part)
-		}
 	}
-	good := filepath.Join(outDir, srcDir, "small.txt")
+	good := filepath.Join(outDir, "small.txt")
 	if _, err := os.Lstat(good); err != nil {
 		t.Fatalf("a good file was not restored: %v", err)
+	}
+}
+
+// TestRestorePaths checks the PATH rule: a path without a trailing slash
+// makes the entry in the destination, a path with one puts the content
+// of a directory into the destination, and a path that the snapshot
+// does not hold is a *plan.PathError before anything is written.
+func TestRestorePaths(t *testing.T) {
+	srcDir := buildFixtureSrc(t)
+	_, treeDir, snapID := buildFixtureTree(t, srcDir)
+
+	t.Run("one file", func(t *testing.T) {
+		outDir := t.TempDir()
+		if _, err := restoreTree(t, treeDir, snapID, outDir, false, "sub/big2.bin"); err != nil {
+			t.Fatal(err)
+		}
+		compareFileBytes(t, filepath.Join(outDir, "big2.bin"), filepath.Join(srcDir, "sub", "big2.bin"))
+		mustHoldOnly(t, outDir, "big2.bin")
+	})
+	t.Run("a directory", func(t *testing.T) {
+		outDir := t.TempDir()
+		if _, err := restoreTree(t, treeDir, snapID, outDir, false, "sub"); err != nil {
+			t.Fatal(err)
+		}
+		compareFileBytes(t, filepath.Join(outDir, "sub", "big2.bin"), filepath.Join(srcDir, "sub", "big2.bin"))
+		mustHoldOnly(t, outDir, "sub")
+	})
+	t.Run("the content of a directory", func(t *testing.T) {
+		outDir := t.TempDir()
+		if _, err := restoreTree(t, treeDir, snapID, outDir, false, "sub/"); err != nil {
+			t.Fatal(err)
+		}
+		compareFileBytes(t, filepath.Join(outDir, "big2.bin"), filepath.Join(srcDir, "sub", "big2.bin"))
+		mustHoldOnly(t, outDir, "big2.bin")
+	})
+	t.Run("two paths", func(t *testing.T) {
+		outDir := t.TempDir()
+		if _, err := restoreTree(t, treeDir, snapID, outDir, false, "small.txt", "link-to-small"); err != nil {
+			t.Fatal(err)
+		}
+		mustHoldOnly(t, outDir, "link-to-small", "small.txt")
+	})
+	for _, bad := range []string{"no-such", "sub/no-such", "small.txt/", "small.txt/x", "/"} {
+		t.Run("not held "+bad, func(t *testing.T) {
+			outDir := filepath.Join(t.TempDir(), "out")
+			_, err := restoreTree(t, treeDir, snapID, outDir, false, bad)
+			if _, ok := err.(*plan.PathError); !ok {
+				t.Fatalf("err %v, want a *plan.PathError", err)
+			}
+			if _, err := os.Lstat(outDir); !os.IsNotExist(err) {
+				t.Fatalf("the destination exists after a refused path: %v", err)
+			}
+		})
+	}
+}
+
+// mustHoldOnly fails unless dir holds exactly names.
+func mustHoldOnly(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if strings.Join(got, ",") != strings.Join(names, ",") {
+		t.Fatalf("%s holds %v, want %v", dir, got, names)
 	}
 }

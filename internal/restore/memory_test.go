@@ -11,6 +11,7 @@ import (
 
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/plan"
 )
 
 // memFixtureBytes is the pseudo-random content size the memory
@@ -164,8 +165,12 @@ func TestDiscSwapRestoreMemoryBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sel, err := plan.Select(c, snap, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	outDir := filepath.Join(t.TempDir(), "out")
-	a, err := NewAssembler(c, snap, outDir, nil, false)
+	a, err := NewAssembler(c, sel, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}

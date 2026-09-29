@@ -5,19 +5,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// restoredRootOf is the directory a restore of srcDir writes under
-// outDir: the source's own absolute path, joined below outDir.
-func restoredRootOf(outDir, srcDir string) string {
-	return filepath.Join(outDir, srcDir)
+// restoredRootOf is the directory that a restore of the one source root
+// srcDir writes into: outDir itself.
+func restoredRootOf(outDir, _ string) string {
+	return outDir
 }
 
 // TestRestoreKeepsFileAtSymlinkPath asserts that a plain file at the
-// path of a symlink entry survives a restore without WithOverwrite, and
-// counts as skipped, and that WithOverwrite replaces it with the
+// path of a symlink entry survives a restore without overwrite, and
+// counts as skipped, and that overwrite replaces it with the
 // symlink.
 func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
@@ -32,7 +30,7 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,12 +45,12 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 		t.Fatalf("existing file at the symlink path was replaced: %q", got)
 	}
 
-	if _, err := Restore(treeDir, snapID, outDir, WithOverwrite(true)); err != nil {
+	if _, err := restoreTree(t, treeDir, snapID, outDir, true); err != nil {
 		t.Fatal(err)
 	}
 	target, err := os.Readlink(linkPath)
 	if err != nil {
-		t.Fatalf("WithOverwrite did not create the symlink: %v", err)
+		t.Fatalf("overwrite did not create the symlink: %v", err)
 	}
 	if target != "small.txt" {
 		t.Fatalf("symlink target = %q, want %q", target, "small.txt")
@@ -61,7 +59,7 @@ func TestRestoreKeepsFileAtSymlinkPath(t *testing.T) {
 
 // TestRestoreKeepsDirectoryAtSymlinkPath asserts that a directory tree
 // at the path of a symlink entry is never deleted: without
-// WithOverwrite it counts as skipped, and with WithOverwrite the
+// overwrite it counts as skipped, and with overwrite the
 // restore still leaves it alone, reports it through
 // the report, and does not stop the walk.
 func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
@@ -78,7 +76,7 @@ func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,9 +87,9 @@ func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 		t.Fatalf("the existing directory was deleted: %v", err)
 	}
 
-	rep, err = Restore(treeDir, snapID, outDir, WithOverwrite(true))
+	rep, err = restoreTree(t, treeDir, snapID, outDir, true)
 	if err != nil {
-		t.Fatalf("WithOverwrite: want no error for a non-empty directory in the way, got %v", err)
+		t.Fatalf("overwrite: want no error for a non-empty directory in the way, got %v", err)
 	}
 	if rep.Skipped() != 1 {
 		t.Fatalf("skipped = %d, want 1", rep.Skipped())
@@ -110,7 +108,7 @@ func TestRestoreKeepsDirectoryAtSymlinkPath(t *testing.T) {
 		t.Fatalf("problem = %q, want it to name the non-empty directory", got[0].Err)
 	}
 	if _, err := os.Stat(inside); err != nil {
-		t.Fatalf("WithOverwrite deleted the existing directory: %v", err)
+		t.Fatalf("overwrite deleted the existing directory: %v", err)
 	}
 	// A later entry in the walk still lands: the conflict must not stop
 	// the restore.
@@ -136,9 +134,9 @@ func TestRestoreKeepsDirectoryAtFilePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Restore(treeDir, snapID, outDir, WithOverwrite(true))
+	rep, err := restoreTree(t, treeDir, snapID, outDir, true)
 	if err != nil {
-		t.Fatalf("WithOverwrite: want no error for a non-empty directory in the way, got %v", err)
+		t.Fatalf("overwrite: want no error for a non-empty directory in the way, got %v", err)
 	}
 	if rep.Skipped() != 1 {
 		t.Fatalf("skipped = %d, want 1", rep.Skipped())
@@ -157,7 +155,7 @@ func TestRestoreKeepsDirectoryAtFilePath(t *testing.T) {
 		t.Fatalf("problem = %q, want it to name the non-empty directory", got[0].Err)
 	}
 	if _, err := os.Stat(inside); err != nil {
-		t.Fatalf("WithOverwrite deleted the existing directory: %v", err)
+		t.Fatalf("overwrite deleted the existing directory: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(restoredRootOf(outDir, srcDir), "link-to-small")); err != nil {
 		t.Fatalf("a later entry was not restored past the conflict: %v", err)
@@ -220,7 +218,7 @@ func TestRestoreResumesMatchingSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +231,7 @@ func TestRestoreResumesMatchingSymlink(t *testing.T) {
 }
 
 // TestRestoreDoesNotFollowSymlinkedDirectory asserts that a symlink to
-// a directory outside OUT-DIR, at the path of a directory entry, never
+// a directory outside DEST, at the path of a directory entry, never
 // receives restored files.
 func TestRestoreDoesNotFollowSymlinkedDirectory(t *testing.T) {
 	srcDir := buildFixtureSrc(t)
@@ -249,7 +247,7 @@ func TestRestoreDoesNotFollowSymlinkedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,39 +256,16 @@ func TestRestoreDoesNotFollowSymlinkedDirectory(t *testing.T) {
 	}
 	assertEmptyDir(t, outside)
 	if fi, err := os.Lstat(subPath); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("the symlink was replaced without WithOverwrite: %v", err)
+		t.Fatalf("the symlink was replaced without overwrite: %v", err)
 	}
 
-	if _, err := Restore(treeDir, snapID, outDir, WithOverwrite(true)); err != nil {
+	if _, err := restoreTree(t, treeDir, snapID, outDir, true); err != nil {
 		t.Fatal(err)
 	}
 	assertEmptyDir(t, outside)
 	if _, err := os.Stat(filepath.Join(subPath, "big2.bin")); err != nil {
-		t.Fatalf("WithOverwrite did not restore into a real directory: %v", err)
+		t.Fatalf("overwrite did not restore into a real directory: %v", err)
 	}
-}
-
-// TestRestoreDoesNotFollowSymlinkedRootComponent is the same check for
-// an intermediate component of the root path a restore recreates under
-// OUT-DIR.
-func TestRestoreDoesNotFollowSymlinkedRootComponent(t *testing.T) {
-	srcDir := buildFixtureSrc(t)
-	_, treeDir, snapID := buildFixtureTree(t, srcDir)
-
-	outDir := t.TempDir()
-	outside := t.TempDir()
-	parent := filepath.Join(outDir, filepath.Dir(srcDir))
-	if err := os.MkdirAll(filepath.Dir(parent), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, parent); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Restore(treeDir, snapID, outDir); err != nil {
-		t.Fatal(err)
-	}
-	assertEmptyDir(t, outside)
 }
 
 func assertEmptyDir(t *testing.T, dir string) {
@@ -300,19 +275,6 @@ func assertEmptyDir(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	if len(entries) != 0 {
-		t.Fatalf("%s: %d entries, want none: the restore followed a symlink out of OUT-DIR", dir, len(entries))
-	}
-}
-
-// TestWriteChunksReportsOpenError asserts that the shared chunk writer
-// reports a part file it cannot open instead of dropping the error.
-func TestWriteChunksReportsOpenError(t *testing.T) {
-	part := filepath.Join(t.TempDir(), "part")
-	if err := os.Mkdir(part, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	_, err := writeChunks(part, 0, nil, nil, func(object.ID) ([]byte, bool, error) { return nil, false, nil })
-	if err == nil {
-		t.Fatal("writeChunks: want the open error")
+		t.Fatalf("%s: %d entries, want none: the restore followed a symlink out of DEST", dir, len(entries))
 	}
 }

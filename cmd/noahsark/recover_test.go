@@ -748,11 +748,11 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		src  string
 	}{{snap1, src1}, {snap2, src2}, {snap3, src3}} {
 		outDir := filepath.Join(work, fmt.Sprintf("restored-%d", i))
-		code, out := runCmd(t, "restore", discOne, discTwoLost, discThree, pair.snap, outDir)
+		code, out := restoreFromDiscs(t, repo, pair.snap, outDir, discOne, discTwoLost, discThree)
 		if code != 0 {
 			t.Fatalf("restore %s: exit %d: %s", pair.snap, code, out)
 		}
-		compareTrees(t, filepath.Join(outDir, pair.src), pair.src)
+		compareTrees(t, outDir, pair.src)
 	}
 }
 

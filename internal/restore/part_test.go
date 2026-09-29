@@ -11,6 +11,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/plan"
 )
 
 // treeDisc is one disc of an assembler test, backed by an unpacked
@@ -99,8 +100,12 @@ func TestAssemblerSpansTwoDiscs(t *testing.T) {
 		}
 	}
 
+	sel, err := plan.Select(c, snap, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	outDir := filepath.Join(t.TempDir(), "out")
-	a, err := NewAssembler(c, snap, outDir, nil, false)
+	a, err := NewAssembler(c, sel, outDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +131,8 @@ func TestAssemblerSpansTwoDiscs(t *testing.T) {
 	if left := partsUnder(t, outDir); len(left) > 0 {
 		t.Fatalf("part file(s) left after a complete restore: %v", left)
 	}
-	compareFileBytes(t, filepath.Join(outDir, srcDir, "cross.bin"), filepath.Join(srcDir, "cross.bin"))
-	compareFileBytes(t, filepath.Join(outDir, srcDir, "small.txt"), filepath.Join(srcDir, "small.txt"))
+	compareFileBytes(t, filepath.Join(outDir, "cross.bin"), filepath.Join(srcDir, "cross.bin"))
+	compareFileBytes(t, filepath.Join(outDir, "small.txt"), filepath.Join(srcDir, "small.txt"))
 }
 
 // buildSpanFixtureSrc writes one file of several chunks, so a test can
@@ -150,7 +155,7 @@ func partsUnder(t *testing.T, dir string) []string {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && filepath.Ext(path) == partSuffix {
+		if !d.IsDir() && filepath.Ext(path) == plan.PartSuffix {
 			out = append(out, path)
 		}
 		return nil
@@ -179,15 +184,15 @@ func compareFileBytes(t *testing.T, got, want string) {
 // TestPartNameAvoidsASnapshotName checks that a snapshot which holds a
 // file of the plain part name pushes the restore onto a numbered one.
 func TestPartNameAvoidsASnapshotName(t *testing.T) {
-	taken := map[string]bool{"f.bin": true, ".f.bin" + partSuffix: true}
-	got := partName("f.bin", taken)
-	if got == ".f.bin"+partSuffix {
+	taken := map[string]bool{"f.bin": true, ".f.bin" + plan.PartSuffix: true}
+	got := plan.PartName("f.bin", taken)
+	if got == ".f.bin"+plan.PartSuffix {
 		t.Fatal("the part name collides with a name the snapshot owns")
 	}
-	if want := ".f.bin" + partSuffix + "2"; got != want {
+	if want := ".f.bin" + plan.PartSuffix + "2"; got != want {
 		t.Fatalf("part name %q, want %q", got, want)
 	}
-	if plain := partName("f.bin", map[string]bool{"f.bin": true}); plain != ".f.bin"+partSuffix {
+	if plain := plan.PartName("f.bin", map[string]bool{"f.bin": true}); plain != ".f.bin"+plan.PartSuffix {
 		t.Fatalf("part name %q, want the plain one", plain)
 	}
 }
@@ -196,7 +201,7 @@ func TestPartNameAvoidsASnapshotName(t *testing.T) {
 // linkFile seam: the part file must still become the final name.
 func TestLinkPartFallsBackToRename(t *testing.T) {
 	dir := t.TempDir()
-	part := filepath.Join(dir, ".f.bin"+partSuffix)
+	part := filepath.Join(dir, ".f.bin"+plan.PartSuffix)
 	dest := filepath.Join(dir, "f.bin")
 	if err := os.WriteFile(part, []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)
@@ -222,7 +227,7 @@ func TestLinkPartFallsBackToRename(t *testing.T) {
 // refuses a name that is already there.
 func TestLinkPartFallbackKeepsAnExistingName(t *testing.T) {
 	dir := t.TempDir()
-	part := filepath.Join(dir, ".f.bin"+partSuffix)
+	part := filepath.Join(dir, ".f.bin"+plan.PartSuffix)
 	dest := filepath.Join(dir, "f.bin")
 	if err := os.WriteFile(part, []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)

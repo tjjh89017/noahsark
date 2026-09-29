@@ -35,7 +35,7 @@ func TestRestoreOwnerSkippedWhenUnprivileged(t *testing.T) {
 	}
 
 	restoredDir := filepath.Join(work, "restored")
-	code, out = runCmd(t, "restore", treeDir, snapID, restoredDir)
+	code, out = runCmd(t, "--repo="+repo, "restore", "--disc="+treeDir, snapID, restoredDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d, want 0; output: %s", code, out)
 	}
@@ -45,8 +45,8 @@ func TestRestoreOwnerSkippedWhenUnprivileged(t *testing.T) {
 }
 
 // TestPrintProblemsLineFormat asserts the exact line format of the one
-// print loop: a warning for a metadata field, and a plain failure line
-// for a file the restore could not write.
+// print loop: every problem line has the warning prefix, the file kind
+// too.
 func TestPrintProblemsLineFormat(t *testing.T) {
 	rep := restore.Report{Problems: []restore.Problem{
 		{Path: "/out/a.txt", Kind: restore.KindMetadata, Err: errors.New("mode not applied: permission denied")},
@@ -55,7 +55,7 @@ func TestPrintProblemsLineFormat(t *testing.T) {
 	var stderr bytes.Buffer
 	printProblems(&stderr, rep)
 	want := "noahsark: restore: warning: /out/a.txt: mode not applied: permission denied\n" +
-		"noahsark: restore: /out/b.bin: content id does not verify\n"
+		"noahsark: restore: warning: /out/b.bin: content id does not verify\n"
 	if stderr.String() != want {
 		t.Fatalf("output = %q, want %q", stderr.String(), want)
 	}

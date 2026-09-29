@@ -227,9 +227,9 @@ scenario_cli() {
 	mount_populate "$image" "$tree" "$mnt"
 	assert_listing_matches "$mnt" "$work"
 	"$BIN" verify "$mnt"
-	"$BIN" restore "$mnt" "$snap" "$restored"
-	assert_dirs_equal "$restored$src" "$src"
-	assert_empty_dir_restored "$restored" "$src"
+	"$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$restored"
+	assert_dirs_equal "$restored" "$src"
+	assert_empty_dir_restored "$restored" ""
 	umount_if_mounted "$mnt"
 	log "cli PASS"
 }
@@ -330,8 +330,8 @@ scenario_media() {
 		grep -qE 'capacity 5242880 sectors' <<<"$field_out" \
 			|| fail "media/$media: DISC.bin did not report the packed-for capacity"
 	fi
-	"$BIN" restore "$mnt" "$snap" "$restored"
-	assert_dirs_equal "$restored$small_src" "$small_src"
+	"$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$restored"
+	assert_dirs_equal "$restored" "$small_src"
 	umount_if_mounted "$mnt"
 	log "media/$media PASS"
 }

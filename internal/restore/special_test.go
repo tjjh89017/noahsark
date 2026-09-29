@@ -28,7 +28,7 @@ func TestRestoreContinuesPastUnsupportedEntry(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestRestoreContinuesPastUnsupportedEntry(t *testing.T) {
 		t.Fatal("an unsupported entry alone must not fail the restore")
 	}
 
-	root := filepath.Join(outDir, srcDir)
+	root := outDir
 	for _, name := range []string{"a.txt", "z.txt"} {
 		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
 			t.Fatalf("%s: %v", name, err)

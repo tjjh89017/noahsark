@@ -33,9 +33,9 @@ func TestFullSequence(t *testing.T) {
 	}
 
 	restoredDir := filepath.Join(work, "restored")
-	if code, out := runCmd(t, "restore", treeDir, snapID, restoredDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+treeDir, snapID, restoredDir); code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
 
-	compareTrees(t, filepath.Join(restoredDir, src), src)
+	compareTrees(t, restoredDir, src)
 }
