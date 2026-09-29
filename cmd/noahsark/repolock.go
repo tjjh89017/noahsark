@@ -44,12 +44,24 @@ func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (
 // warnTornTails prints one warning line on stderr for each log whose
 // open found a torn tail: a crash during an earlier append leaves one.
 func warnTornTails(cmd string, logs *stage.Logs, holdsLock bool, stderr io.Writer) {
+	for _, tail := range logs.TornTails() {
+		warnTornTail(cmd, tail, holdsLock, stderr)
+	}
+}
+
+// warnDiscLogTornTail prints the torn-tail warning of a disc state log
+// that a command without the lock opened read-only.
+func warnDiscLogTornTail(cmd string, l *stage.DiscLog, stderr io.Writer) {
+	if n := l.TornBytes(); n > 0 {
+		warnTornTail(cmd, stage.TornTail{Name: "disc state log", Path: l.Path(), Bytes: n}, false, stderr)
+	}
+}
+
+func warnTornTail(cmd string, tail stage.TornTail, holdsLock bool, stderr io.Writer) {
 	verb := "ignored"
 	if holdsLock {
 		verb = "cut off"
 	}
-	for _, tail := range logs.TornTails() {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: the %s's tail was truncated; %d byte(s) after the last valid record were %s, matching a crash during an earlier append\n",
-			cmd, tail.Name, tail.Bytes, verb)
-	}
+	_, _ = fmt.Fprintf(stderr, "noahsark: %s: the %s's tail was truncated; %d byte(s) after the last valid record were %s, matching a crash during an earlier append\n",
+		cmd, tail.Name, tail.Bytes, verb)
 }

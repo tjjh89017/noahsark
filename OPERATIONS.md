@@ -255,7 +255,11 @@ replays each log from the start. The build never compacts a log.
 A partial record at the end of the file, or a last record with a bad CRC, is
 what a crash during an append leaves. A command that holds the repository lock
 cuts the file back to the last good record, prints one warning, and goes on. A
-command that takes no lock ignores the torn tail and never changes the file.
+command that takes no lock ignores the torn tail, never changes the file, and
+prints the same warning on stderr with the word `ignored` in place of `cut
+off`: `noahsark: CMD: the disc state log's tail was truncated; N byte(s) after
+the last valid record were ignored, matching a crash during an earlier append`.
+It prints nothing on stdout.
 
 A bad record anywhere else is damage. So is a `sequence` that does not grow,
 and a disc event that the replay does not permit. The tool reports an error,

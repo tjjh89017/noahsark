@@ -127,7 +127,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
-	discs, err := restoreDiscs(layout, cfg)
+	discs, err := restoreDiscs(layout, cfg, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
@@ -240,7 +240,7 @@ type restoreDiscList struct {
 // restoreDiscs reads the discs of the repository from the disc ledger
 // and their states from the disc state log. It leaves out an undone
 // disc. It reads only.
-func restoreDiscs(layout repoLayout, cfg repoConfig) (restoreDiscList, error) {
+func restoreDiscs(layout repoLayout, cfg repoConfig, stderr io.Writer) (restoreDiscList, error) {
 	out := restoreDiscList{names: make(map[[16]byte]plan.Disc)}
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
@@ -254,6 +254,7 @@ func restoreDiscs(layout repoLayout, cfg repoConfig) (restoreDiscList, error) {
 	if err != nil {
 		return out, err
 	}
+	warnDiscLogTornTail("restore", discLog, stderr)
 	var order [][16]byte
 	for _, row := range ledger.Rows {
 		if _, ok := out.names[row.DiscUUID]; !ok {
