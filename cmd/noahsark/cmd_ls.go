@@ -18,7 +18,7 @@ func init() {
 	register(&command{
 		name:  "ls",
 		usage: "ls [--long] [--recursive] [DISC-ROOT...] SNAPSHOT [PATH]",
-		summary: "List a snapshot's tree. Resolves SNAPSHOT through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead. " +
+		summary: "List a snapshot's tree. Resolves SNAPSHOT through the catalog with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead. " +
 			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.",
 		flags: lsFlags,
 	})
@@ -60,13 +60,13 @@ func (o *lsOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: ls: no such disc root: %s\n", args[0])
 		return 2
 	}
-	cacheMode := !discRootGiven
+	catalogMode := !discRootGiven
 
 	var src snapshotSource
-	var cacheObj *catalog.Catalog
+	var catalogObj *catalog.Catalog
 	var positional []string
 	switch {
-	case cacheMode:
+	case catalogMode:
 		if len(args) < 1 || len(args) > 2 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] SNAPSHOT [PATH]")
 			return 2
@@ -77,7 +77,7 @@ func (o *lsOptions) run(e *env, args []string) int {
 			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
 			return 1
 		}
-		src, cacheObj = cs, c
+		src, catalogObj = cs, c
 	default:
 		positional = args[len(discRootArgs):]
 		if len(positional) < 1 || len(positional) > 2 {
@@ -86,7 +86,7 @@ func (o *lsOptions) run(e *env, args []string) int {
 		}
 	}
 
-	if !cacheMode {
+	if !catalogMode {
 		restoreSrc, err := restore.OpenSource(discRootArgs)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
@@ -107,12 +107,12 @@ func (o *lsOptions) run(e *env, args []string) int {
 
 	snap, err := src.Snapshot(snapID)
 	if err != nil {
-		return reportSourceError("ls", stderr, err, cacheObj, snapID)
+		return reportSourceError("ls", stderr, err, catalogObj, snapID)
 	}
 
 	lister := &lsLister{src: src, stdout: stdout, long: o.long}
 	if err := lister.run(object.ID(snap.RootTree), pathArg, o.recursive); err != nil {
-		return reportSourceError("ls", stderr, err, cacheObj, snapID)
+		return reportSourceError("ls", stderr, err, catalogObj, snapID)
 	}
 	return 0
 }

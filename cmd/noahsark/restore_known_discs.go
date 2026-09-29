@@ -33,7 +33,7 @@ func knownDiscsForRepo(e *env) map[[16]byte]restore.DiscName {
 		return discNamesByUUID(ledger.Rows)
 	}
 
-	c, err := catalog.Open(catalog.Dir(repoDir))
+	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return nil
 	}

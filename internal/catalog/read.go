@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -15,7 +15,7 @@ import (
 // ListSnapshots returns the id of every snapshot object the catalog
 // holds, sorted by text form.
 func (c *Catalog) ListSnapshots() ([]object.ID, error) {
-	entries, err := os.ReadDir(c.snapshotsDir())
+	entries, err := os.ReadDir(filepath.Join(c.dir, snapshotsDirName))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -33,16 +33,15 @@ func (c *Catalog) ListSnapshots() ([]object.ID, error) {
 		}
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
+	slices.SortFunc(ids, func(a, b object.ID) int { return strings.Compare(a.TextForm(), b.TextForm()) })
 	return ids, nil
 }
 
-// cachedDiscs returns the uuid of every disc the catalog holds a
-// discs/<disc-uuid>/ directory for, in uuid text order. A directory
-// name that is not a uuid is not a catalog disc; an older catalog that
-// still holds runs/<seq>/ directories therefore reports no disc, and
-// the caller tells the operator to run pack or recover.
-func (c *Catalog) cachedDiscs() ([][16]byte, error) {
+// catalogDiscs returns the uuid of every disc that has a
+// discs/<disc-uuid>/ directory in the catalog, in uuid order. A
+// directory name that is not a uuid in the hyphenated lower-case form is
+// not a disc of the catalog.
+func (c *Catalog) catalogDiscs() ([][16]byte, error) {
 	entries, err := os.ReadDir(filepath.Join(c.dir, discsDirName))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -65,7 +64,7 @@ func (c *Catalog) cachedDiscs() ([][16]byte, error) {
 	return uuids, nil
 }
 
-// newestCachedDisc returns the uuid of the catalog disc with the highest
+// newestDisc returns the uuid of the catalog disc with the highest
 // created_sec. It takes the time from the disc's own row in the disc's
 // own catalog DISCS table, the only creation time the catalog holds. A
 // disc whose table names no row for itself counts as created at 0.
@@ -74,13 +73,13 @@ func (c *Catalog) cachedDiscs() ([][16]byte, error) {
 // then carries the longer lineage, thus a tie takes the disc whose own
 // DISCS table has more rows. A tie on the row count too takes the
 // higher uuid, so the answer is always the same one.
-func (c *Catalog) newestCachedDisc() ([16]byte, error) {
-	uuids, err := c.cachedDiscs()
+func (c *Catalog) newestDisc() ([16]byte, error) {
+	uuids, err := c.catalogDiscs()
 	if err != nil {
 		return [16]byte{}, err
 	}
 	if len(uuids) == 0 {
-		return [16]byte{}, fmt.Errorf("cache: no disc is cached yet; run pack, or recover, first")
+		return [16]byte{}, fmt.Errorf("catalog: no disc is in the catalog yet; run pack, or recover, first")
 	}
 	var newest [16]byte
 	var newestCreated int64
@@ -96,16 +95,16 @@ func (c *Catalog) newestCachedDisc() ([16]byte, error) {
 				}
 			}
 		}
-		if newestRows < 0 || newerCachedDisc(created, rows, uuid, newestCreated, newestRows, newest) {
+		if newestRows < 0 || newerDisc(created, rows, uuid, newestCreated, newestRows, newest) {
 			newest, newestCreated, newestRows = uuid, created, rows
 		}
 	}
 	return newest, nil
 }
 
-// newerCachedDisc compares two catalog discs by created_sec, then by the
+// newerDisc compares two catalog discs by created_sec, then by the
 // number of rows in the disc's own DISCS table, then by uuid.
-func newerCachedDisc(created int64, rows int, uuid [16]byte, bestCreated int64, bestRows int, best [16]byte) bool {
+func newerDisc(created int64, rows int, uuid [16]byte, bestCreated int64, bestRows int, best [16]byte) bool {
 	if created != bestCreated {
 		return created > bestCreated
 	}
@@ -119,11 +118,11 @@ func newerCachedDisc(created int64, rows int, uuid [16]byte, bestCreated int64, 
 func (c *Catalog) discsTableOf(uuid [16]byte) (*format.DiscsTable, error) {
 	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), DiscsFileName))
 	if err != nil {
-		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
+		return nil, fmt.Errorf("catalog: disc %s: %w", uuidText(uuid), err)
 	}
 	var discs format.DiscsTable
 	if _, err := discs.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: disc %s: DISCS.bin: %w", uuidText(uuid), err)
+		return nil, fmt.Errorf("catalog: disc %s: DISCS.bin: %w", uuidText(uuid), err)
 	}
 	return &discs, nil
 }
@@ -146,11 +145,11 @@ func (c *Catalog) ownDiscRow(uuid [16]byte) (format.DiscsRow, bool) {
 func (c *Catalog) IndexForDisc(uuid [16]byte) (*format.Index, error) {
 	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), IndexFileName))
 	if err != nil {
-		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
+		return nil, fmt.Errorf("catalog: disc %s: %w", uuidText(uuid), err)
 	}
 	var idx format.Index
 	if _, err := idx.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: disc %s: INDEX.bin: %w", uuidText(uuid), err)
+		return nil, fmt.Errorf("catalog: disc %s: INDEX.bin: %w", uuidText(uuid), err)
 	}
 	return &idx, nil
 }
@@ -159,17 +158,17 @@ func (c *Catalog) IndexForDisc(uuid [16]byte) (*format.Index, error) {
 // REFS is replicated in full on every run, so the newest catalog copy
 // names every ref the catalog knows.
 func (c *Catalog) Refs() (*format.RefsTable, error) {
-	uuid, err := c.newestCachedDisc()
+	uuid, err := c.newestDisc()
 	if err != nil {
 		return nil, err
 	}
 	buf, err := os.ReadFile(filepath.Join(c.discDir(uuid), RefsFileName))
 	if err != nil {
-		return nil, fmt.Errorf("cache: disc %s: %w", uuidText(uuid), err)
+		return nil, fmt.Errorf("catalog: disc %s: %w", uuidText(uuid), err)
 	}
 	var refs format.RefsTable
 	if _, err := refs.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: disc %s: REFS.bin: %w", uuidText(uuid), err)
+		return nil, fmt.Errorf("catalog: disc %s: REFS.bin: %w", uuidText(uuid), err)
 	}
 	return &refs, nil
 }
@@ -177,7 +176,7 @@ func (c *Catalog) Refs() (*format.RefsTable, error) {
 // Discs reads and decodes DISCS.bin from the newest disc the catalog
 // holds, the same way Refs resolves REFS.
 func (c *Catalog) Discs() (*format.DiscsTable, error) {
-	uuid, err := c.newestCachedDisc()
+	uuid, err := c.newestDisc()
 	if err != nil {
 		return nil, err
 	}
@@ -186,13 +185,13 @@ func (c *Catalog) Discs() (*format.DiscsTable, error) {
 
 // ReadTree reads and decodes one catalog tree object.
 func (c *Catalog) ReadTree(id object.ID) (*format.Tree, error) {
-	buf, err := os.ReadFile(filepath.Join(c.treesDir(), id.TextForm()))
+	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindTree, id))
 	if err != nil {
 		return nil, err
 	}
 	var t format.Tree
 	if _, err := t.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: tree %s: %w", id.TextForm(), err)
+		return nil, fmt.Errorf("catalog: tree %s: %w", id.TextForm(), err)
 	}
 	return &t, nil
 }
@@ -202,26 +201,49 @@ func (c *Catalog) ReadTree(id object.ID) (*format.Tree, error) {
 // blob's absence does not by itself mean the catalog is incomplete: only
 // tree reachability counts toward Complete and CheckComplete.
 func (c *Catalog) ReadBlob(id object.ID) (*format.Blob, error) {
-	buf, err := os.ReadFile(filepath.Join(c.blobsDir(), id.TextForm()))
+	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindBlob, id))
 	if err != nil {
 		return nil, err
 	}
 	var b format.Blob
 	if _, err := b.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: blob %s: %w", id.TextForm(), err)
+		return nil, fmt.Errorf("catalog: blob %s: %w", id.TextForm(), err)
 	}
 	return &b, nil
 }
 
 // ReadSnapshot reads and decodes one catalog snapshot object.
 func (c *Catalog) ReadSnapshot(id object.ID) (*format.Snapshot, error) {
-	buf, err := os.ReadFile(filepath.Join(c.snapshotsDir(), id.TextForm()))
+	buf, err := os.ReadFile(c.MetaPath(format.ObjectKindSnapshot, id))
 	if err != nil {
 		return nil, err
 	}
 	var s format.Snapshot
 	if _, err := s.Decode(buf); err != nil {
-		return nil, fmt.Errorf("cache: snapshot %s: %w", id.TextForm(), err)
+		return nil, fmt.Errorf("catalog: snapshot %s: %w", id.TextForm(), err)
 	}
 	return &s, nil
+}
+
+// DiscsHolding returns the uuid of every disc whose INDEX in the catalog
+// lists id in its Objects table, in uuid order. A disc whose INDEX
+// cannot be read is left out.
+func (c *Catalog) DiscsHolding(id object.ID) ([][16]byte, error) {
+	uuids, err := c.catalogDiscs()
+	if err != nil {
+		return nil, fmt.Errorf("catalog: %w", err)
+	}
+	var holders [][16]byte
+	for _, uuid := range uuids {
+		idx, err := c.IndexForDisc(uuid)
+		if err != nil {
+			continue
+		}
+		if slices.ContainsFunc(idx.Objects, func(row format.IndexObjectRecord) bool {
+			return object.ID(row.ContentID) == id
+		}) {
+			holders = append(holders, uuid)
+		}
+	}
+	return holders, nil
 }

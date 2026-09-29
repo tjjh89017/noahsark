@@ -238,7 +238,7 @@ func writeRefsCarryFixture(t *testing.T, tag string) string {
 // actually prompt for.
 func chunkDiscSeqs(t *testing.T, repo, snapID, include string) []int {
 	t.Helper()
-	c, err := catalog.Open(repoCatalogDir(t, repo))
+	c, err := catalog.Open(repo)
 	if err != nil {
 		t.Fatal(err)
 	}

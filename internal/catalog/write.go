@@ -15,40 +15,40 @@ import (
 func (c *Catalog) WriteDisc(uuid [16]byte, indexBuf, refsBuf, discsBuf []byte) error {
 	dir := c.discDir(uuid)
 	if err := atomicWriteFile(filepath.Join(dir, IndexFileName), indexBuf); err != nil {
-		return fmt.Errorf("cache: disc %s: INDEX.bin: %w", uuidText(uuid), err)
+		return fmt.Errorf("catalog: disc %s: INDEX.bin: %w", uuidText(uuid), err)
 	}
 	if err := atomicWriteFile(filepath.Join(dir, RefsFileName), refsBuf); err != nil {
-		return fmt.Errorf("cache: disc %s: REFS.bin: %w", uuidText(uuid), err)
+		return fmt.Errorf("catalog: disc %s: REFS.bin: %w", uuidText(uuid), err)
 	}
 	if err := atomicWriteFile(filepath.Join(dir, DiscsFileName), discsBuf); err != nil {
-		return fmt.Errorf("cache: disc %s: DISCS.bin: %w", uuidText(uuid), err)
+		return fmt.Errorf("catalog: disc %s: DISCS.bin: %w", uuidText(uuid), err)
 	}
 	return nil
 }
 
-// WriteSnapshot copies one snapshot object's whole encoded bytes into
-// the catalog.
-func (c *Catalog) WriteSnapshot(id object.ID, raw []byte) error {
-	if err := atomicWriteFile(filepath.Join(c.snapshotsDir(), id.TextForm()), raw); err != nil {
-		return fmt.Errorf("cache: snapshot %s: %w", id.TextForm(), err)
+// RemoveDisc removes the tables of one disc, the directory
+// discs/<disc-uuid>/. It does nothing when the directory is absent.
+func (c *Catalog) RemoveDisc(uuid [16]byte) error {
+	if err := os.RemoveAll(c.discDir(uuid)); err != nil {
+		return fmt.Errorf("catalog: disc %s: %w", uuidText(uuid), err)
 	}
 	return nil
 }
 
-// WriteTree copies one tree object's whole encoded bytes into the
-// catalog.
-func (c *Catalog) WriteTree(id object.ID, raw []byte) error {
-	if err := atomicWriteFile(filepath.Join(c.treesDir(), id.TextForm()), raw); err != nil {
-		return fmt.Errorf("cache: tree %s: %w", id.TextForm(), err)
+// WriteObject writes the encoded bytes of one snapshot, tree or blob
+// object to its path in the catalog, with an atomic replace. It does not
+// write when the file exists with the same size: the id names the
+// content.
+func (c *Catalog) WriteObject(kind format.ObjectKind, id object.ID, raw []byte) error {
+	path := c.MetaPath(kind, id)
+	if path == "" {
+		return fmt.Errorf("catalog: object %s: kind %d is not a metadata object", id.TextForm(), kind)
 	}
-	return nil
-}
-
-// WriteBlob copies one blob object's whole encoded bytes into the
-// catalog.
-func (c *Catalog) WriteBlob(id object.ID, raw []byte) error {
-	if err := atomicWriteFile(filepath.Join(c.blobsDir(), id.TextForm()), raw); err != nil {
-		return fmt.Errorf("cache: blob %s: %w", id.TextForm(), err)
+	if info, err := os.Stat(path); err == nil && info.Size() == int64(len(raw)) {
+		return nil
+	}
+	if err := replaceFile(path, raw); err != nil {
+		return fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
 	}
 	return nil
 }
@@ -64,31 +64,31 @@ func (c *Catalog) WriteBlob(id object.ID, raw []byte) error {
 func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
 	rr, err := image.Read(root)
 	if err != nil {
-		return nil, fmt.Errorf("cache: %s: %w", root, err)
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 
 	names := image.NewNameCache()
 	base, err := image.FindNoahsark(root, names)
 	if err != nil {
-		return nil, fmt.Errorf("cache: %s: %w", root, err)
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
 	if err != nil {
-		return nil, fmt.Errorf("cache: %s: %w", root, err)
+		return nil, fmt.Errorf("catalog: %s: %w", root, err)
 	}
 	catalogDir := names.Join(runDir, "catalog")
 
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "INDEX.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
+		return nil, fmt.Errorf("catalog: %w", err)
 	}
 	refsBuf, err := os.ReadFile(filepath.Join(catalogDir, names.Resolve(catalogDir, "REFS.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
+		return nil, fmt.Errorf("catalog: %w", err)
 	}
 	discsBuf, err := os.ReadFile(filepath.Join(catalogDir, names.Resolve(catalogDir, "DISCS.bin")))
 	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
+		return nil, fmt.Errorf("catalog: %w", err)
 	}
 	if err := c.WriteDisc(rr.Disc.DiscUUID, indexBuf, refsBuf, discsBuf); err != nil {
 		return nil, err
@@ -103,9 +103,9 @@ func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
 		id := object.ID(row.ContentID)
 		raw, err := os.ReadFile(filepath.Join(snapshotsDir, names.Resolve(snapshotsDir, id.TextForm())))
 		if err != nil {
-			return nil, fmt.Errorf("cache: snapshot %s: %w", id.TextForm(), err)
+			return nil, fmt.Errorf("catalog: snapshot %s: %w", id.TextForm(), err)
 		}
-		if err := c.WriteSnapshot(id, raw); err != nil {
+		if err := c.WriteObject(format.ObjectKindSnapshot, id, raw); err != nil {
 			return nil, err
 		}
 		snapIDs = append(snapIDs, id)
@@ -120,16 +120,10 @@ func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
 		objDir := names.Join(objectsDir, id.FanoutByte())
 		raw, err := os.ReadFile(filepath.Join(objDir, names.Resolve(objDir, id.TextForm())))
 		if err != nil {
-			return nil, fmt.Errorf("cache: object %s: %w", id.TextForm(), err)
+			return nil, fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
 		}
-		if row.Kind == format.ObjectKindTree {
-			if err := c.WriteTree(id, raw); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := c.WriteBlob(id, raw); err != nil {
-				return nil, err
-			}
+		if err := c.WriteObject(row.Kind, id, raw); err != nil {
+			return nil, err
 		}
 	}
 

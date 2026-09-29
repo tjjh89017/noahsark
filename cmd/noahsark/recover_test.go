@@ -15,10 +15,10 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// TestRebuildCacheRestoresCacheContent deletes the whole catalog pack
+// TestRebuildCatalogRestoresCatalogContent deletes the whole catalog pack
 // left behind, along with the repository, and checks recover
 // from the packed tree alone puts back an equally complete catalog.
-func TestRebuildCacheRestoresCatalogContent(t *testing.T) {
+func TestRebuildCatalogRestoresCatalogContent(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -41,7 +41,7 @@ func TestRebuildCacheRestoresCatalogContent(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	beforeTrees, err := os.ReadDir(filepath.Join(repoCatalogDir(t, repo), "trees"))
+	beforeTrees, err := filepath.Glob(filepath.Join(repoCatalogDir(t, repo), "trees", "*", "*"))
 	if err != nil {
 		t.Fatalf("read trees before: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRebuildCacheRestoresCatalogContent(t *testing.T) {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	c, err := catalog.Open(repoCatalogDir(t, repo))
+	c, err := catalog.Open(repo)
 	if err != nil {
 		t.Fatalf("catalog.Open: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestRebuildCacheRestoresCatalogContent(t *testing.T) {
 		t.Fatalf("Complete(%s) = false, want true", snapID.TextForm())
 	}
 
-	afterTrees, err := os.ReadDir(filepath.Join(repoCatalogDir(t, repo), "trees"))
+	afterTrees, err := filepath.Glob(filepath.Join(repoCatalogDir(t, repo), "trees", "*", "*"))
 	if err != nil {
 		t.Fatalf("read trees after: %v", err)
 	}
@@ -393,7 +393,7 @@ func newObjectsFromCommit(t *testing.T, output string) int {
 	return -1
 }
 
-// TestCommitAfterRebuildCacheReportsNoNewObjects packs a commit, rebuilds
+// TestCommitAfterRebuildCatalogReportsNoNewObjects packs a commit, rebuilds
 // the repository from that disc alone, then commits the same source
 // again: every object the disc already carries must count as existing,
 // not new, even though recover never restored the staging bytes
@@ -851,7 +851,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 	}
 }
 
-// TestRebuildCacheFailsFastWhenRepoLockHeld checks that recover
+// TestRebuildCatalogFailsFastWhenRepoLockHeld checks that recover
 // takes the repository's exclusive lock: recover writes the state
 // log and the disc and ref ledgers, so it must not run alongside
 // another state-writing command, or another recover.

@@ -18,7 +18,7 @@ func init() {
 	register(&command{
 		name:    "log",
 		usage:   "log [DISC-ROOT...] [REF|SNAPSHOT]",
-		summary: "Print a snapshot's history. Resolves through the local cache with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead.",
+		summary: "Print a snapshot's history. Resolves through the catalog with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead.",
 		flags:   func(*flag.FlagSet) runFunc { return cmdLog },
 	})
 }
@@ -45,13 +45,13 @@ func cmdLog(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: log: no such disc root: %s\n", args[0])
 		return 2
 	}
-	cacheMode := !discRootGiven
+	catalogMode := !discRootGiven
 
 	var src snapshotSource
-	var cacheObj *catalog.Catalog
+	var catalogObj *catalog.Catalog
 	var positional []string
 	switch {
-	case cacheMode:
+	case catalogMode:
 		if len(args) > 1 {
 			_, _ = fmt.Fprintln(stderr, "usage: noahsark log [REF|SNAPSHOT]")
 			return 2
@@ -62,7 +62,7 @@ func cmdLog(e *env, args []string) int {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
 			return 1
 		}
-		src, cacheObj = cs, c
+		src, catalogObj = cs, c
 	default:
 		positional = args[len(discRootArgs):]
 		if len(positional) > 1 {
@@ -71,7 +71,7 @@ func cmdLog(e *env, args []string) int {
 		}
 	}
 
-	if !cacheMode {
+	if !catalogMode {
 		restoreSrc, err := restore.OpenSource(discRootArgs)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
@@ -81,7 +81,7 @@ func cmdLog(e *env, args []string) int {
 	}
 
 	if len(positional) == 1 {
-		return logOne(src, cacheObj, positional[0], stdout, stderr)
+		return logOne(src, catalogObj, positional[0], stdout, stderr)
 	}
 	return logAll(src, stdout, stderr)
 }
@@ -180,7 +180,7 @@ func printRefsOnAnotherDisc(stdout io.Writer, ids []object.ID, refs *format.Refs
 }
 
 // logOne prints one snapshot's own details.
-func logOne(src snapshotSource, cacheObj *catalog.Catalog, arg string, stdout, stderr io.Writer) int {
+func logOne(src snapshotSource, catalogObj *catalog.Catalog, arg string, stdout, stderr io.Writer) int {
 	id, err := src.ParseSnapshotArg(arg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
@@ -188,7 +188,7 @@ func logOne(src snapshotSource, cacheObj *catalog.Catalog, arg string, stdout, s
 	}
 	snap, err := src.Snapshot(id)
 	if err != nil {
-		return reportSourceError("log", stderr, err, cacheObj, id)
+		return reportSourceError("log", stderr, err, catalogObj, id)
 	}
 	refs, err := src.Refs()
 	if err != nil {

@@ -207,7 +207,7 @@ func (o *packOptions) run(e *env, args []string) int {
 		// The catalog is only an accelerator: a failure to populate it
 		// never fails the pack, since every command must still work
 		// with the catalog absent or stale.
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack: cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 	}
 
 	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d object(s) on the disc, %d bytes\n",
@@ -518,7 +518,7 @@ func addPendingRefs(repoDir, stagingDir string, repoUUID [16]byte, named []image
 // snapshot, and every tree it reaches, into the catalog, so a
 // later ls or plan can run with no disc present.
 func populateCatalog(repoDir, runRoot string) error {
-	c, err := catalog.Open(catalog.Dir(repoDir))
+	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return err
 	}

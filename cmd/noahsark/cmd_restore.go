@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -60,7 +61,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 	includeFlags, overwrite, mountFlag, dryRun := o.includes, o.overwrite, o.mount, o.dryRun
 
 	if dryRun && mountFlag == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --dry-run needs --mount; the disc list comes from the local cache, and the all-discs-at-once mode reads every disc together with no such list to preview")
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --dry-run needs --mount; the disc list comes from the catalog, and the all-discs-at-once mode reads every disc together with no such list to preview")
 		return 2
 	}
 	// Two positional arguments, with --mount given, are the disc-swap
@@ -215,8 +216,8 @@ func cmdRestoreDiscSwap(e *env, includes stringList, overwrite bool, mountDir st
 // includes are known.
 func cmdRestoreDiscSwapRun(stdin io.Reader, c *catalog.Catalog, snapID object.ID, includes []string, overwrite bool, mountDir string, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if err := c.CheckComplete(snapID); err != nil {
-		if ie, ok := err.(*catalog.IncompleteError); ok {
-			_, _ = fmt.Fprintln(stderr, formatIncompleteError("restore", ie))
+		if pe, ok := errors.AsType[*catalog.PartialError](err); ok {
+			_, _ = fmt.Fprintln(stderr, formatPartialError("restore", pe))
 			return 1
 		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
@@ -247,7 +248,7 @@ func cmdRestoreDiscSwapRun(stdin io.Reader, c *catalog.Catalog, snapID object.ID
 	}
 	printPlanText(stdout, discs, result)
 	if len(result.Missing) > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d object(s) have no run known to the cache; run recover with more discs\n", result.MissingObjectCount())
+		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d item(s) have no disc known to the catalog; run recover with more discs\n", result.MissingObjectCount())
 		return 1
 	}
 	if dryRun {
@@ -359,7 +360,7 @@ func printPlanText(stdout io.Writer, discs []plan.DiscEntry, r *plan.Result) {
 			_, _ = fmt.Fprintf(stdout, "missing: %d object(s), disc unknown\n", m.Objects)
 			continue
 		}
-		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on disc %s, no cached DISCS row names it\n",
+		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on disc %s, no DISCS row in the catalog names it\n",
 			m.Objects, plan.UUIDText(m.DiscUUID))
 	}
 	_, _ = fmt.Fprintf(stdout, "totals: %d discs, %d objects, %d bytes\n",

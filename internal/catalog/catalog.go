@@ -1,23 +1,16 @@
-// Package catalog implements the catalog OPERATIONS.md describes in
-// its catalog layout section. Everything the catalog holds is derived
-// from a disc or from staging and is rebuildable; a command must behave
-// the same, apart from speed, with the catalog deleted. The catalog never
-// holds anything whose loss loses archive data.
+// Package catalog implements the catalog of a repository, as the
+// "Catalog layout" section of OPERATIONS.md gives it. The catalog is the
+// permanent history of the repository. It holds a byte copy of each
+// snapshot, tree and blob object, and a byte copy of the INDEX, REFS and
+// DISCS tables of each disc. It holds no chunk data. No command trims it.
 //
-// One structure, INDEX, carries a run's index and its catalog. This
-// package stores that file, byte for byte, as
-// "discs/<disc-uuid>/INDEX.bin", beside that disc's own copy of
-// REFS.bin and DISCS.bin. One disc holds one run, thus the disc uuid
-// identifies the run too. The key is never run_seq: the host assigns
-// that number from local state, and after a lost repository two discs
-// can carry the same number.
+// The key of the tables of a disc is the disc uuid, never run_seq: the
+// host assigns that number from local state, and after a lost repository
+// two discs can carry the same number.
 //
-// The catalog also holds every blob object reachable from a stored
-// snapshot, under "blobs/<id>", alongside "trees/<id>": a blob is small,
-// tree-sized metadata, the ordered chunk id list of one file, not the
-// chunk data itself. plan reads it to resolve a file down to the chunk
-// ids a restore needs, with no disc present. A chunk's own bulk payload
-// is never stored.
+// The completeness of each snapshot is in the file
+// "state/catalog-state.txt" of the repository, not in the catalog
+// directory.
 package catalog
 
 import (
@@ -26,15 +19,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// Directory and file names under a catalog directory.
+// Directory and file names under the repository directory.
 const (
+	catalogDirName   = "catalog"
+	stateDirName     = "state"
+	stateFileName    = "catalog-state.txt"
 	discsDirName     = "discs"
 	snapshotsDirName = "snapshots"
 	treesDirName     = "trees"
 	blobsDirName     = "blobs"
-	stateFileName    = "state.txt"
 )
 
 // IndexFileName, RefsFileName and DiscsFileName are the file names
@@ -45,67 +43,65 @@ const (
 	DiscsFileName = "DISCS.bin"
 )
 
-// Catalog is one opened catalog directory.
+// Catalog is the opened catalog of one repository.
 type Catalog struct {
-	dir   string
-	state map[string]bool // snapshot id text form -> complete
+	dir       string
+	statePath string
+	state     map[string]bool // snapshot id text form -> complete
 }
 
 // Dir returns the catalog's root directory.
 func (c *Catalog) Dir() string { return c.dir }
 
-// Dir returns the catalog directory for the repository at repoDir: always
-// "catalog" inside the repository directory, beside "staging" and the
-// config file.
+// Dir returns the catalog directory of the repository at repoDir.
 func Dir(repoDir string) string {
-	return filepath.Join(repoDir, "cache")
+	return filepath.Join(repoDir, catalogDirName)
 }
 
-// Open opens the catalog directory at dir, creating it and its state file
-// when they do not exist yet. dir is normally ResolveDir's result.
-func Open(dir string) (*Catalog, error) {
-	if dir == "" {
-		return nil, fmt.Errorf("cache: directory is required")
+// StatePath returns the path of the completeness file of the repository
+// at repoDir.
+func StatePath(repoDir string) string {
+	return filepath.Join(repoDir, stateDirName, stateFileName)
+}
+
+// Open opens the catalog of the repository at repoDir. It creates the
+// catalog directory when it does not exist. It reads the completeness
+// file when that file exists.
+func Open(repoDir string) (*Catalog, error) {
+	if repoDir == "" {
+		return nil, fmt.Errorf("catalog: repository directory is required")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
+	c := &Catalog{dir: Dir(repoDir), statePath: StatePath(repoDir)}
+	if err := os.MkdirAll(c.dir, 0o755); err != nil {
+		return nil, fmt.Errorf("catalog: %w", err)
 	}
-	c := &Catalog{dir: dir}
-	state, err := loadState(c.statePath())
+	state, err := loadState(c.statePath)
 	if err != nil {
-		return nil, fmt.Errorf("cache: %w", err)
+		return nil, fmt.Errorf("catalog: %w", err)
 	}
 	c.state = state
 	return c, nil
 }
 
-// discDir returns the catalog directory for one disc's catalog copy.
+// discDir returns the directory of the tables of one disc.
 func (c *Catalog) discDir(uuid [16]byte) string {
 	return filepath.Join(c.dir, discsDirName, uuidText(uuid))
 }
 
-// snapshotsDir returns the directory holding catalog snapshot objects.
-func (c *Catalog) snapshotsDir() string {
-	return filepath.Join(c.dir, snapshotsDirName)
-}
-
-// treesDir returns the directory holding catalog tree objects.
-func (c *Catalog) treesDir() string {
-	return filepath.Join(c.dir, treesDirName)
-}
-
-// blobsDir returns the directory holding catalog blob objects. A blob
-// carries only an ordered chunk id list, the same small, tree-sized
-// metadata as a tree object; the catalog holds it for the same reason it
-// holds trees, so plan can resolve a file's chunk ids without a disc.
-// A chunk's own bulk payload is never stored.
-func (c *Catalog) blobsDir() string {
-	return filepath.Join(c.dir, blobsDirName)
-}
-
-// statePath returns the path of the snapshot completeness record.
-func (c *Catalog) statePath() string {
-	return filepath.Join(c.dir, stateFileName)
+// MetaPath returns the file path of a snapshot, tree or blob object in
+// the catalog. A tree or a blob goes below a fan-out directory, the
+// first two hex digits of the digest, as in staging. MetaPath returns ""
+// for a chunk: the catalog holds no chunk.
+func (c *Catalog) MetaPath(kind format.ObjectKind, id object.ID) string {
+	switch kind {
+	case format.ObjectKindSnapshot:
+		return filepath.Join(c.dir, snapshotsDirName, id.TextForm())
+	case format.ObjectKindTree:
+		return filepath.Join(c.dir, treesDirName, id.FanoutByte(), id.TextForm())
+	case format.ObjectKindBlob:
+		return filepath.Join(c.dir, blobsDirName, id.FanoutByte(), id.TextForm())
+	}
+	return ""
 }
 
 // uuidText formats a 16-byte uuid as hyphenated lowercase text, the
@@ -131,19 +127,21 @@ func parseUUIDText(s string) ([16]byte, bool) {
 
 // atomicWriteFile writes data to path through a temporary file and a
 // rename, so a crash or a concurrent reader never sees a partial file.
-// It does nothing when path already holds exactly data, so repeated
-// writes of the same bytes (a pack that carries the same snapshot or
-// tree forward, or a recover run over an already-catalog disc)
-// touch the filesystem only once.
+// It does nothing when path already holds exactly data.
 func atomicWriteFile(path string, data []byte) error {
-	if existing, err := os.ReadFile(path); err == nil {
-		if string(existing) == string(data) {
-			return nil
-		}
-	} else if !os.IsNotExist(err) {
+	existing, err := os.ReadFile(path)
+	if err == nil && string(existing) == string(data) {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	return replaceFile(path, data)
+}
 
+// replaceFile writes data to path through a temporary file in the same
+// directory and a rename. It creates the directory when it is absent.
+func replaceFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
