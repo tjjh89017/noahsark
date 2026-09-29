@@ -347,3 +347,42 @@ func TestRestoreUsageErrorsExitTwo(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoreConfigExitCodes checks the exit code of a config.yaml that
+// restore cannot use: a bad value is a usage error, and a read that
+// fails is a run-time failure.
+func TestRestoreConfigExitCodes(t *testing.T) {
+	cases := []struct {
+		name  string
+		spoil func(t *testing.T, path string)
+		want  int
+	}{
+		{"bad value", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("no_such_key: 1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, 2},
+		{"read fails", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, _ := initAndCommit(t)
+			c.spoil(t, configPath(repo))
+			dest := filepath.Join(t.TempDir(), "out")
+			code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+t.TempDir(), defaultRefName(), dest)
+			if code != c.want {
+				t.Fatalf("exit %d, want %d: %s", code, c.want, out)
+			}
+			if !strings.Contains(out, "noahsark: restore: ") {
+				t.Fatalf("output %q does not name restore", out)
+			}
+		})
+	}
+}

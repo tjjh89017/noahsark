@@ -1,13 +1,19 @@
 // Package plan plans a restore from the catalog alone. Select resolves
-// the PATH arguments of restore to the entries that they name. New
-// counts, for each disc, the items that restore must read from it. The
-// plan keeps counts only, never a list of chunks.
+// the PATH arguments of restore to the entries that they name. New and
+// Count count, for each disc, the items that restore must read from it.
+//
+// The plan holds one catalog INDEX in memory at a time. It keeps the ids
+// of the needed items in temporary files, never in memory.
 package plan
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"io"
 	"io/fs"
+	"os"
 	"slices"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -33,28 +39,41 @@ type table struct {
 
 // find returns the row of id, or false.
 func (t *table) find(id object.ID) (int, bool) {
-	return slices.BinarySearchFunc(t.ids, id, func(a, b object.ID) int { return bytes.Compare(a[:], b[:]) })
+	return slices.BinarySearchFunc(t.ids, id, compareID)
 }
+
+// ownerLen is the size of one record of the owners file: the content id,
+// the disc index as a little-endian uint32, and the byte length as a
+// little-endian uint64.
+const ownerLen = idLen + 4 + 8
 
 // Plan counts the items that a restore reads from each disc. For each
 // item it takes the first disc in this order that holds it: a disc that
 // is not lost before a lost disc, then the lowest disc_seq, then the
 // lowest uuid. It counts an item one time for each disc.
+//
+// Add collects the ids in a sorted temporary file. Count then reads the
+// catalog INDEX of each disc in that order, one at a time, and takes out
+// of the file each id that the disc holds.
 type Plan struct {
+	c       *catalog.Catalog
 	sel     *Selection
 	discs   []Disc
-	tables  []table
-	counted [][]bool
 	items   []int
 	bytes   []uint64
-	byUUID  map[[16]byte]int
-	// noDisc holds the items that no catalog INDEX lists.
-	noDisc map[object.ID]bool
+	needed  idSorter
+	counted bool
+	err     error
+	noDisc  int64
+	// owners holds one ownerLen record for each counted item.
+	owners  *os.File
+	ownersN int64
+	// held is the table of the disc heldUUID, for Holds.
+	held     *table
+	heldUUID [16]byte
 }
 
-// New prepares an empty plan for sel over discs. It reads the catalog
-// INDEX of each disc. A disc whose INDEX is not in the catalog holds no
-// item of the plan.
+// New prepares an empty plan for sel over discs. It reads nothing yet.
 func New(c *catalog.Catalog, sel *Selection, discs []Disc) (*Plan, error) {
 	ordered := slices.Clone(discs)
 	slices.SortStableFunc(ordered, func(a, b Disc) int {
@@ -72,27 +91,17 @@ func New(c *catalog.Catalog, sel *Selection, discs []Disc) (*Plan, error) {
 		}
 		return bytes.Compare(a.DiscUUID[:], b.DiscUUID[:])
 	})
-	p := &Plan{
-		sel:    sel,
-		discs:  ordered,
-		byUUID: make(map[[16]byte]int, len(ordered)),
-		noDisc: make(map[object.ID]bool),
-	}
-	for i, d := range ordered {
-		t, err := readTable(c, d.DiscUUID)
-		if err != nil {
-			return nil, err
-		}
-		p.tables = append(p.tables, t)
-		p.counted = append(p.counted, make([]bool, len(t.ids)))
-		p.items = append(p.items, 0)
-		p.bytes = append(p.bytes, 0)
-		p.byUUID[d.DiscUUID] = i
-	}
-	return p, nil
+	return &Plan{
+		c:     c,
+		sel:   sel,
+		discs: ordered,
+		items: make([]int, len(ordered)),
+		bytes: make([]uint64, len(ordered)),
+	}, nil
 }
 
-// readTable reads the Objects table of the catalog INDEX of one disc.
+// readTable reads the Objects table of the catalog INDEX of one disc. A
+// disc whose INDEX is not in the catalog holds no item.
 func readTable(c *catalog.Catalog, uuid [16]byte) (table, error) {
 	idx, err := c.IndexForDisc(uuid)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -114,12 +123,12 @@ func readTable(c *catalog.Catalog, uuid [16]byte) (table, error) {
 			t.bytes[i] = lens[i]
 		}
 	}
-	if !slices.IsSortedFunc(t.ids, func(a, b object.ID) int { return bytes.Compare(a[:], b[:]) }) {
+	if !slices.IsSortedFunc(t.ids, compareID) {
 		order := make([]int, len(t.ids))
 		for i := range order {
 			order[i] = i
 		}
-		slices.SortFunc(order, func(a, b int) int { return bytes.Compare(t.ids[a][:], t.ids[b][:]) })
+		slices.SortFunc(order, func(a, b int) int { return compareID(t.ids[a], t.ids[b]) })
 		sorted := table{ids: make([]object.ID, len(order)), bytes: make([]uint64, len(order))}
 		for i, j := range order {
 			sorted.ids[i], sorted.bytes[i] = t.ids[j], t.bytes[j]
@@ -129,44 +138,131 @@ func readTable(c *catalog.Catalog, uuid [16]byte) (table, error) {
 	return t, nil
 }
 
-// owner returns the disc that supplies id and the row of id in the table
-// of that disc.
-func (p *Plan) owner(id object.ID) (disc, row int, ok bool) {
-	for i := range p.tables {
-		if row, found := p.tables[i].find(id); found {
-			return i, row, true
+// Add takes one item that the restore needs. An item can come more than
+// one time. A write error of the temporary file is returned by Count.
+func (p *Plan) Add(id object.ID) { p.needed.add(id) }
+
+// Count counts the items of each disc. It runs one time; a later call
+// returns the result of the first call.
+func (p *Plan) Count() error {
+	if !p.counted {
+		p.counted = true
+		p.err = p.count()
+	}
+	return p.err
+}
+
+func (p *Plan) count() error {
+	left, err := p.needed.sorted()
+	if err != nil {
+		return err
+	}
+	defer func() { left.close() }()
+	owners, err := tempFile()
+	if err != nil {
+		return err
+	}
+	ow := bufio.NewWriterSize(owners, readBufLen)
+	for i, d := range p.discs {
+		t, err := readTable(p.c, d.DiscUUID)
+		if err != nil {
+			_ = owners.Close()
+			return err
 		}
+		next, err := p.countDisc(i, &t, left, ow)
+		if err != nil {
+			_ = owners.Close()
+			return err
+		}
+		left.close()
+		left = next
 	}
-	return 0, 0, false
+	if err := ow.Flush(); err != nil {
+		_ = owners.Close()
+		return err
+	}
+	p.owners = owners
+	p.noDisc = left.n
+	return nil
 }
 
-// Add counts one item that the restore needs.
-func (p *Plan) Add(id object.ID) {
-	i, row, ok := p.owner(id)
-	if !ok {
-		p.noDisc[id] = true
-		return
+// countDisc counts each id of in that the disc i holds, and writes its
+// owner record. It returns the ids that the disc does not hold. in and
+// t are both in ascending order, so one pass over each is enough.
+func (p *Plan) countDisc(i int, t *table, in idFile, owners *bufio.Writer) (idFile, error) {
+	w, err := newIDWriter()
+	if err != nil {
+		return idFile{}, err
 	}
-	if p.counted[i][row] {
-		return
+	r := in.reader()
+	row := 0
+	var rec [ownerLen]byte
+	for {
+		id, ok, err := readID(r)
+		if err != nil {
+			w.discard()
+			return idFile{}, err
+		}
+		if !ok {
+			return w.done()
+		}
+		for row < len(t.ids) && compareID(t.ids[row], id) < 0 {
+			row++
+		}
+		if row == len(t.ids) || t.ids[row] != id {
+			if err := w.write(id); err != nil {
+				w.discard()
+				return idFile{}, err
+			}
+			continue
+		}
+		p.items[i]++
+		p.bytes[i] += t.bytes[row]
+		copy(rec[:idLen], id[:])
+		binary.LittleEndian.PutUint32(rec[idLen:idLen+4], uint32(i))
+		binary.LittleEndian.PutUint64(rec[idLen+4:], t.bytes[row])
+		if _, err := owners.Write(rec[:]); err != nil {
+			w.discard()
+			return idFile{}, err
+		}
+		p.ownersN++
 	}
-	p.counted[i][row] = true
-	p.items[i]++
-	p.bytes[i] += p.tables[i].bytes[row]
 }
 
-// Holds reports whether the catalog INDEX of the disc uuid lists id.
+// Close frees the temporary file of the plan.
+func (p *Plan) Close() {
+	if p.owners != nil {
+		_ = p.owners.Close()
+		p.owners = nil
+	}
+}
+
+// Holds reports whether the catalog INDEX of the disc uuid lists id. It
+// keeps the table of the last disc that it was asked about, and reads
+// the INDEX of a new disc when the question moves to that disc. A disc
+// whose INDEX does not read holds nothing.
 func (p *Plan) Holds(uuid [16]byte, id object.ID) bool {
-	i, ok := p.byUUID[uuid]
-	if !ok {
-		return false
+	if p.held == nil || p.heldUUID != uuid {
+		if !slices.ContainsFunc(p.discs, func(d Disc) bool { return d.DiscUUID == uuid }) {
+			return false
+		}
+		p.held = nil
+		t, err := readTable(p.c, uuid)
+		if err != nil {
+			t = table{}
+		}
+		p.held, p.heldUUID = &t, uuid
 	}
-	_, found := p.tables[i].find(id)
+	_, found := p.held.find(id)
 	return found
 }
 
-// NoDisc is the number of needed items that no catalog INDEX lists.
-func (p *Plan) NoDisc() int { return len(p.noDisc) }
+// NoDisc is the number of needed items that no catalog INDEX lists. It
+// counts the plan first.
+func (p *Plan) NoDisc() int {
+	_ = p.Count()
+	return int(p.noDisc)
+}
 
 // DiscEntry is the share of one disc in a plan.
 type DiscEntry struct {
@@ -178,8 +274,10 @@ type DiscEntry struct {
 }
 
 // Discs returns each disc that supplies at least one item, in disc_seq
-// order, then in uuid order.
+// order, then in uuid order. It counts the plan first; call Count to
+// get its error.
 func (p *Plan) Discs() []DiscEntry {
+	_ = p.Count()
 	var out []DiscEntry
 	for i, d := range p.discs {
 		if p.items[i] == 0 {
@@ -206,32 +304,31 @@ type ObjectEntry struct {
 	Bytes uint64
 }
 
-// errStopWalk stops a walk when the consumer of Objects stops.
-var errStopWalk = errors.New("walk stopped")
-
-// Objects walks the selection of the plan again, and yields each item
-// that this disc supplies, one time. It does not look at the
-// destination: it yields the items of the whole selection. A catalog
-// read error ends the sequence early.
+// Objects yields each item that this disc supplies, one time, in the
+// order of the content ids. It reads the owners file of the plan. A read
+// error ends the sequence early.
 func (d DiscEntry) Objects(yield func(int, ObjectEntry) bool) {
 	p := d.plan
-	if p == nil || p.sel == nil {
+	if p == nil || p.owners == nil {
 		return
 	}
-	seen := make([]bool, len(p.tables[d.index].ids))
+	r := bufio.NewReaderSize(io.NewSectionReader(p.owners, 0, p.ownersN*int64(ownerLen)), readBufLen)
+	var rec [ownerLen]byte
 	n := 0
-	_ = p.sel.Walk(".", &chunkWalk{c: p.sel.c, chunk: func(id object.ID) error {
-		i, row, ok := p.owner(id)
-		if !ok || i != d.index || seen[row] {
-			return nil
+	for {
+		if _, err := io.ReadFull(r, rec[:]); err != nil {
+			return
 		}
-		seen[row] = true
-		if !yield(n, ObjectEntry{ID: id, Kind: format.ObjectKindChunk, Bytes: p.tables[i].bytes[row]}) {
-			return errStopWalk
+		if binary.LittleEndian.Uint32(rec[idLen:idLen+4]) != uint32(d.index) {
+			continue
+		}
+		var id object.ID
+		copy(id[:], rec[:idLen])
+		if !yield(n, ObjectEntry{ID: id, Kind: format.ObjectKindChunk, Bytes: binary.LittleEndian.Uint64(rec[idLen+4:])}) {
+			return
 		}
 		n++
-		return nil
-	}})
+	}
 }
 
 // Result is a plan of the discs in the catalog.
@@ -268,6 +365,9 @@ func Build(c *catalog.Catalog, snap *format.Snapshot, _ object.ID, paths []strin
 		return nil, err
 	}
 	if err := sel.Walk(".", &chunkWalk{c: c, chunk: func(id object.ID) error { p.Add(id); return nil }}); err != nil {
+		return nil, err
+	}
+	if err := p.Count(); err != nil {
 		return nil, err
 	}
 	return &Result{Discs: p.Discs()}, nil

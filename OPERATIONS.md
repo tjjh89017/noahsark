@@ -823,6 +823,27 @@ A `PATH` that the snapshot does not hold is a usage error, with exit code 2.
 A directory between `DEST` and a restored entry that no tree entry describes
 is created with mode 0755.
 
+More rules for `PATH`:
+
+1. A `PATH` puts the entry that it names directly into `DEST`, with the last
+   name of the `PATH`: `photos/2024/a.jpg` makes `DEST/a.jpg`.
+2. `restore` ignores an empty name, so a leading or a doubled slash changes
+   nothing. A `PATH` with no name, and a `PATH` with a trailing slash that
+   names a file, are usage errors, with exit code 2.
+3. Each `PATH` is resolved alone. `restore` writes the entries in the order
+   of the `PATH` arguments.
+
+When the root tree holds more than one source root ("Source policy"):
+
+1. With no `PATH`, each source root keeps its path below `DEST`:
+   `DEST/srv/data/notes.txt`. A source root `/` puts its content directly
+   into `DEST`.
+2. A `PATH` starts with the path of its source root: `srv/data/photos`.
+
+`DEST` is relative to the working directory. Before the first disc,
+`restore` creates `DEST` and each missing parent with mode 0755. With
+`--dry-run`, `restore` creates nothing.
+
 ### 14.2 Disc swap, one drive
 
 **The plan.** `restore` reads the snapshot, the trees and the blobs from the
@@ -835,11 +856,32 @@ of a disc, for example a disc that was `missing` and is then marked `lost`.
 type of the snapshot, and each chunk that a part file already holds. The plan
 counts only what is left.
 
+An item of the plan is one chunk that `restore` still needs. The plan counts
+an item one time, on one disc, also when many files hold it. Trees and blobs
+come from the catalog and are not items. `B` is the sum of the byte lengths
+of the object files of the items on the disc, as the Files table of the
+catalog INDEX gives them. It is not the size of the restored files.
+
 The plan keeps counts only: for each disc, the number of items and the number
-of bytes. It keeps no list of chunks, so that the memory of `restore` does not
-grow with the snapshot ("Scope and conventions"). While `restore` reads a disc,
-it decides for each chunk of the walk whether the chunk belongs to this disc.
-It reads the catalog INDEX of this disc for that, one disc at a time.
+of bytes. It keeps no list of chunks in memory, so that the memory of
+`restore` does not grow with the snapshot ("Scope and conventions"). It holds
+one catalog INDEX in memory at a time:
+
+1. The walk writes the content id of each needed chunk to a temporary file,
+   and sorts the ids on disk.
+2. For each disc, in the order of the plan, `restore` reads the catalog INDEX
+   of the disc, counts the ids that it lists, and keeps the other ids for the
+   next disc.
+3. The ids that no disc lists are the items with no known disc.
+
+The cost is one walk of the selection, a sort of the ids on disk, and one
+read of the id file for each disc. The temporary files are in the system
+temporary directory (`TMPDIR`). `restore` unlinks each one when it creates
+it. `restore` changes no file of the repository.
+
+While `restore` reads a disc, it decides for each chunk of the walk whether
+the catalog INDEX of this disc lists the chunk. It reads that INDEX one time
+for each disc.
 
 `restore` prints the plan first, in this form:
 
@@ -860,8 +902,22 @@ and `B` are the sums of their counts. Its form is fixed: it uses `discs` and
 has no known disc. It handles the two cases in the same way: it does not stop
 before it reads a disc, it restores every file that it can, it reports each
 file that needs such a chunk as `file not restored`, and it exits with code 1.
-The loop asks for the discs in `disc_seq` order, except that a disc that is
-already at `DIR` and still needed is read first.
+The line of such a file is:
+
+```
+noahsark: restore: warning: PATH: file not restored: a chunk of this file is on a lost disc or on no disc known to the catalog; the part file stays
+```
+
+The loop takes the discs in `disc_seq` order. Before each disc, `restore`
+reads `DISC.bin` below `DIR`. When the disc at `DIR` is a disc that the plan
+still needs, `restore` reads it next. When the plan needs no disc that is not
+`lost`, `restore` still walks the snapshot one time, and writes what needs no
+disc.
+
+`restore` checks a disc ("Disc detection") only when the walk first needs a
+chunk of that disc. Thus `restore` does not ask for a disc that it does not
+need: for example a disc whose chunks belong only to files that are already
+complete or that already failed.
 
 **Disc detection.** For each disc of the plan, `restore` reads
 `NOAHSARK/DISC.bin` below `DIR` and compares the `disc_uuid`.
@@ -909,6 +965,45 @@ not write.
 `restore` checks the content id of every object after it reads it. An object
 that does not verify fails the one file that needs it. `restore` writes no bad
 data, goes on, and reports at the end ("Failure policy").
+
+### 14.4 Output lines and exit codes
+
+`restore` writes the plan and the result to standard output, and every
+other line to standard error. `ID` is the short snapshot id. `DEST` and `DIR`
+are the texts that the operator gave. `PATH` in a warning line is the
+absolute path below `DEST`.
+
+| Line | Stream | When |
+|---|---|---|
+| the plan: the `disc` lines, the `restore: N item(s) have no disc known to the catalog; run recover with more discs` line, the `totals:` line | standard output | first, before any disc |
+| `disc SEQ "LABEL": found` | standard output | the expected disc is at `DIR` |
+| `expected disc SEQ "LABEL" (UUID), found ...` | standard error | a wrong disc is at `DIR` |
+| `insert disc SEQ "LABEL" (UUID) into DIR and press Enter` | standard error | the prompt |
+| `restore: insert disc SEQ "LABEL" (UUID) into DIR and run restore again` | standard error | the stop: no terminal, or the end of input. Exit code 1. No line follows. |
+| `noahsark: restore: warning: PATH: REASON` | standard error | one line for each problem, 20 lines at most |
+| `noahsark: restore: warning: N more problem(s) not shown` | standard error | more than 20 problems |
+| `noahsark: restore: warning: not restored: N KIND, N KIND; see the warning(s) above` | standard error | the summary, after the problem lines, when there is a problem |
+| `restored snapshot ID into DEST` | standard output | after the last disc, also after problem lines |
+| `skipped: N file(s) already restored` | standard output | `DEST` already held N files or symlinks with the content of the snapshot |
+
+The summary names each kind that has a problem, in this order: `existing
+path(s)`, `path(s) --overwrite could not replace`, `unsupported entry(ies)`,
+`metadata field(s)`, `file(s) not restored`.
+
+`restore` stops with one line on standard error in these cases. Each case
+but the last stops before the plan.
+
+| Line | Exit code |
+|---|---:|
+| `noahsark: restore: --disc=DIR is required`, then `usage: noahsark restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST` | 2 |
+| `usage: noahsark restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST`, when `SNAPSHOT` or `DEST` is missing | 2 |
+| `noahsark: restore: no repository; run recover first, one time for each disc` | 2 |
+| `noahsark: restore: REASON` for a `SNAPSHOT` that names no snapshot | 2 |
+| `noahsark: restore: no entry of the snapshot matches PATH` | 2 |
+| `noahsark: restore: snapshot ID is partial; run recover with more discs` | 1 |
+| `noahsark: restore: REASON` for a `config.yaml` with a bad value or an unknown key | 2 |
+| `noahsark: restore: REASON` for a `config.yaml` that does not read | 1 |
+| `noahsark: restore: REASON` for every other failure, such as a catalog read that fails | 1 |
 
 ## 15. Metadata restore policy
 

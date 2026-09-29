@@ -1,6 +1,8 @@
 package restore
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -9,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
@@ -208,5 +212,85 @@ func TestHealMemoryBounded(t *testing.T) {
 	t.Logf("Heal peak heap+stack: %d bytes (%.1f MiB)", peak, float64(peak)/(1<<20))
 	if peak > memPeakBudget {
 		t.Fatalf("Heal peaked at %d bytes, want under %d (%.1f MiB budget)", peak, memPeakBudget, float64(memPeakBudget)/(1<<20))
+	}
+}
+
+// planMemDiscs and planMemItems give a catalog of many discs with a
+// large INDEX each: together about 80 MB of Objects tables.
+const (
+	planMemDiscs = 40
+	planMemItems = 50_000
+)
+
+// planPeakBudget is the peak that the plan of that catalog may reach:
+// one INDEX and the sort buffer, never the INDEX of every disc.
+const planPeakBudget = 24 << 20
+
+// planMemID returns the content id of item i of disc d.
+func planMemID(d, i int) object.ID {
+	var b [16]byte
+	binary.LittleEndian.PutUint64(b[:8], uint64(d))
+	binary.LittleEndian.PutUint64(b[8:], uint64(i))
+	return object.ID(sha256.Sum256(b[:]))
+}
+
+// TestPlanMemoryBounded plans a restore over many discs. The plan holds
+// one catalog INDEX at a time, so its peak does not grow with the number
+// of discs.
+func TestPlanMemoryBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("memory assertion test, skipped under -short")
+	}
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var discs []plan.Disc
+	for d := range planMemDiscs {
+		idx := format.Index{
+			Header: format.CommonHeader{
+				MagicProject: format.ProjectMagic,
+				MagicKind:    format.MagicIndex,
+				VersionMajor: 1,
+				HeaderLen:    format.IndexHeaderLen,
+			},
+			ObjectCount: planMemItems,
+			Objects:     make([]format.IndexObjectRecord, planMemItems),
+		}
+		for i := range idx.Objects {
+			idx.Objects[i] = format.IndexObjectRecord{ContentID: planMemID(d, i), Kind: format.ObjectKindChunk}
+		}
+		buf := make([]byte, idx.EncodedLen())
+		if _, err := idx.Encode(buf); err != nil {
+			t.Fatal(err)
+		}
+		uuid := [16]byte{byte(d + 1)}
+		if err := c.WriteDisc(uuid, buf, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		discs = append(discs, plan.Disc{DiscUUID: uuid, DiscSeq: uint64(d)})
+	}
+
+	sampler := startPeakMemSampler()
+	p, err := plan.New(c, nil, discs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for d := range planMemDiscs {
+		for i := 0; i < planMemItems; i += 10 {
+			p.Add(planMemID(d, i))
+		}
+	}
+	if err := p.Count(); err != nil {
+		t.Fatal(err)
+	}
+	peak := sampler.Stop()
+	if got := len(p.Discs()); got != planMemDiscs {
+		t.Fatalf("the plan names %d disc(s), want %d", got, planMemDiscs)
+	}
+	t.Logf("plan peak heap+stack: %d bytes (%.1f MiB)", peak, float64(peak)/(1<<20))
+	if peak > planPeakBudget {
+		t.Fatalf("the plan peaked at %d bytes, want under %d (%.1f MiB budget)", peak, planPeakBudget, float64(planPeakBudget)/(1<<20))
 	}
 }
