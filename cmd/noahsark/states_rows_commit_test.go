@@ -31,6 +31,52 @@ func init() {
 			stdout: []string{"new items: ", "staged: "}, next: true,
 			end: stage.DiscLost,
 		},
+		// Row 3: the source still has the data. Each lost item is staged
+		// again, its chunk file is written again, and the staged line
+		// counts it. The old snapshot object is not in the new commit, so
+		// it stays lost.
+		stateCase{
+			row: "3", name: "commit stages each lost item again",
+			start: stage.DiscOnDiscOnly, setup: lostItemsSetup,
+			args:   []string{"commit", "{SRC}"},
+			stdout: []string{"staged: {LOST} items, "}, next: true,
+			end: stage.DiscLost,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if n := countByState(t, fx.repo, stage.Lost); n != 1 {
+					t.Fatalf("%d items stay lost, want 1 (the old snapshot)", n)
+				}
+				if staged := countByState(t, fx.repo, stage.Staged); staged != lostCount(t, fx) {
+					t.Fatalf("%d items staged, want %d", staged, lostCount(t, fx))
+				}
+				// pack reads the chunk file of each staged item.
+				fx.mustRun(t, "pack", "--capacity=64MiB")
+			},
+		},
+		// Row 4: the source no longer has the data. The commit names no
+		// lost item, and each lost item stays lost.
+		stateCase{
+			row: "4", name: "commit of a source without the lost data",
+			start: stage.DiscOnDiscOnly,
+			setup: func(t *testing.T, fx *discFixture) {
+				lostItemsSetup(t, fx)
+				other := t.TempDir()
+				if err := os.WriteFile(filepath.Join(other, "other.txt"), []byte("other content"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				fx.set("{OTHER}", other)
+			},
+			args: []string{"commit", "{OTHER}"},
+			next: true,
+			end:  stage.DiscLost,
+			check: func(t *testing.T, fx *discFixture, stdout, stderr string) {
+				if out := stdout + stderr; !commitLinesRe.MatchString(out) {
+					t.Fatalf("commit output %q, want only the lines snapshot, ref, new items, unstable, staged, next", out)
+				}
+				if n := countByState(t, fx.repo, stage.Lost); n != lostCount(t, fx) {
+					t.Fatalf("%d items lost, want %d", n, lostCount(t, fx))
+				}
+			},
+		},
 	)
 }
 
@@ -91,79 +137,28 @@ func TestStatesRow1CommitSkippedPrintsNext(t *testing.T) {
 	}
 }
 
-// repoWithLostItems returns a repository whose one disc was on disc only
-// and is now lost. Each item of the disc is Lost.
-func repoWithLostItems(t *testing.T) (fx *discFixture, lost int) {
+// lostItemsSetup marks the on disc only disc of fx lost, as disc lost
+// does. Each item of the disc is then Lost. {LOST} is the number of lost
+// items.
+func lostItemsSetup(t *testing.T, fx *discFixture) {
 	t.Helper()
-	fx = repoWithDisc(t, stage.DiscOnDiscOnly)
 	markDiscLostInLog(t, fx)
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscLost {
-		t.Fatalf("disc state %s, want lost", got)
-	}
-	lost = countByState(t, fx.repo, stage.Lost)
+	lost := countByState(t, fx.repo, stage.Lost)
 	if lost == 0 {
 		t.Fatal("the fixture has no lost item")
 	}
 	if n := countByState(t, fx.repo, stage.Staged); n != 0 {
 		t.Fatalf("the fixture has %d staged items, want 0", n)
 	}
-	return fx, lost
+	fx.set("{LOST}", strconv.Itoa(lost))
 }
 
-// TestStatesRow3CommitRestagesLostItems checks that a commit of a source
-// that still has the data stages each lost item again, writes its chunk
-// file again, and counts it in the staged line.
-func TestStatesRow3CommitRestagesLostItems(t *testing.T) {
-	fx, lost := repoWithLostItems(t)
-
-	code, out := fx.run(t, "commit", fx.src)
-	if code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	if !strings.HasSuffix(out, "\nnext: noahsark status\n") {
-		t.Fatalf("commit output %q, want the next line as the last line", out)
-	}
-	// The old snapshot object is not in the new commit, so it stays lost.
-	if n := countByState(t, fx.repo, stage.Lost); n != 1 {
-		t.Fatalf("%d items stay lost, want 1 (the old snapshot)", n)
-	}
-	// The staged items are the other lost items and the new snapshot.
-	staged := countByState(t, fx.repo, stage.Staged)
-	if staged != lost {
-		t.Fatalf("%d items staged, want %d", staged, lost)
-	}
-	m := stagedLineRe.FindStringSubmatch(out)
-	if m == nil || m[1] != strconv.Itoa(staged) {
-		t.Fatalf("commit output %q, want the line staged: %d items", out, staged)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscLost {
-		t.Errorf("disc state %s, want lost", got)
-	}
-	// pack reads the chunk file of each staged item.
-	fx.mustRun(t, "pack", "--capacity=64MiB")
-}
-
-// TestStatesRow4CommitLeavesLostItems checks that a commit of a source
-// that no longer has the data succeeds, names no lost item, and leaves
-// each lost item lost.
-func TestStatesRow4CommitLeavesLostItems(t *testing.T) {
-	fx, lost := repoWithLostItems(t)
-	other := t.TempDir()
-	if err := os.WriteFile(filepath.Join(other, "other.txt"), []byte("other content"), 0o644); err != nil {
+// lostCount is the {LOST} number of lostItemsSetup.
+func lostCount(t *testing.T, fx *discFixture) int {
+	t.Helper()
+	n, err := strconv.Atoi(fx.vars["{LOST}"])
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	code, out := fx.run(t, "commit", other)
-	if code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	if !commitLinesRe.MatchString(out) {
-		t.Fatalf("commit output %q, want only the lines snapshot, ref, new items, unstable, staged, next", out)
-	}
-	if n := countByState(t, fx.repo, stage.Lost); n != lost {
-		t.Fatalf("%d items lost, want %d", n, lost)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscLost {
-		t.Errorf("disc state %s, want lost", got)
-	}
+	return n
 }

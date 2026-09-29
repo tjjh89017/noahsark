@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,10 +68,17 @@ func damageObject(t *testing.T, root string, kind format.ObjectKind) object.ID {
 func recoverFixture(t *testing.T) *discFixture {
 	t.Helper()
 	fx := repoWithDisc(t, stage.DiscPacked)
+	removeRepoSetup(t, fx)
+	return fx
+}
+
+// removeRepoSetup removes the repository of fx. Only the copy of the
+// disc root stays.
+func removeRepoSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
 	if err := os.RemoveAll(fx.repo); err != nil {
 		t.Fatal(err)
 	}
-	return fx
 }
 
 // runRecover runs recover of the disc root of fx.
@@ -81,206 +89,236 @@ func (fx *discFixture) runRecover(t *testing.T) (int, string, string) {
 	return code, te.out.String(), te.errOut.String()
 }
 
-// TestRecoverRow67 recovers a lost repository from its one disc.
-func TestRecoverRow67(t *testing.T) {
-	fx := recoverFixture(t)
+// secondDiscCopySetup packs disc 1 after disc 0, copies its disc root
+// outside the repository as a counted mount, and removes the
+// repository. {UUID1} is the uuid of disc 1 and {ROOT1} is the copy.
+func secondDiscCopySetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	secondDiscSetup(t, fx)
+	second := filepath.Join(fx.work, "disc1")
+	copyTree(t, fx.vars["{ROOT1}"], second)
+	fx.set("{ROOT1}", second)
+	removeRepoSetup(t, fx)
+}
+
+// indexObjects sets {OBJECTS} to the number of objects that the INDEX of
+// the disc root of fx lists.
+func indexObjects(t *testing.T, fx *discFixture) {
+	t.Helper()
 	rr, err := image.Read(fx.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, stdout, stderr := fx.runRecover(t)
-	if code != 0 {
-		t.Fatalf("exit %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	fx.set("{OBJECTS}", strconv.Itoa(len(rr.Index.Objects)))
+}
+
+// countIs is a check: the number of items in state is the number of the
+// placeholder key plus add.
+func countIs(state stage.State, key string, add int) func(*testing.T, *discFixture, string, string) {
+	return func(t *testing.T, fx *discFixture, _, _ string) {
+		t.Helper()
+		want, err := strconv.Atoi(fx.vars[key])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := countByState(t, fx.repo, state); n != want+add {
+			t.Errorf("%d item(s) in state %s, want %d", n, state, want+add)
+		}
 	}
-	if stdout != "recover: ok\n"+nextStatusLine+"\n" {
-		t.Errorf("stdout %q", stdout)
+}
+
+// catalogStateEnds is a check: catalog-state.txt ends with mark.
+func catalogStateEnds(mark string) func(*testing.T, *discFixture, string, string) {
+	return func(t *testing.T, fx *discFixture, _, _ string) {
+		t.Helper()
+		state, err := os.ReadFile(testLayout(t, fx.repo).catalogStateFile())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(string(state), mark) {
+			t.Errorf("catalog-state.txt %q, want the mark %q", state, mark)
+		}
 	}
-	d := discState(t, fx.repo, fx.uuid)
-	if d.State != stage.DiscOnDiscOnly || d.LastCheck != stage.CheckResultNone {
-		t.Errorf("disc state %s, last check %d, want on disc only with no check", d.State, d.LastCheck)
+}
+
+// damageSetup removes the repository of fx and damages the first object
+// of kind in its disc root. {BAD} is the full text id of that object.
+func damageSetup(kind format.ObjectKind) func(*testing.T, *discFixture) {
+	return func(t *testing.T, fx *discFixture) {
+		t.Helper()
+		removeRepoSetup(t, fx)
+		indexObjects(t, fx)
+		fx.set("{BAD}", damageObject(t, fx.root, kind).TextForm())
 	}
-	if n := countByState(t, fx.repo, stage.OnDisc); n != len(rr.Index.Objects) {
-		t.Errorf("%d on-disc item(s), want %d", n, len(rr.Index.Objects))
-	}
-	cfg, err := readConfig(configPath(fx.repo))
+}
+
+// badHasNoRecord is a check: the damaged object {BAD} has no record in
+// the item state log.
+func badHasNoRecord(t *testing.T, fx *discFixture, _, _ string) {
+	t.Helper()
+	bad, err := object.ParseID(fx.vars["{BAD}"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SourceRoot != fx.src {
-		t.Errorf("sources.root %q, want %q", cfg.SourceRoot, fx.src)
-	}
-	if _, err := os.Stat(testLayout(t, fx.repo).gitignoreFile()); err != nil {
-		t.Errorf(".gitignore: %v", err)
-	}
-	state, err := os.ReadFile(testLayout(t, fx.repo).catalogStateFile())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(string(state), " complete\n") || strings.Contains(string(state), "partial") {
-		t.Errorf("catalog-state.txt %q, want every snapshot complete", state)
+	if _, ok := openTestLog(t, fx.repo).Get(bad); ok {
+		t.Error("the damaged object has a record")
 	}
 }
 
-// TestRecoverRow68 recovers a lost repository from the second of two
-// discs. The first disc becomes missing.
-func TestRecoverRow68(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscPacked)
-	if err := os.WriteFile(filepath.Join(fx.src, "second.txt"), []byte("content of the second disc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fx.mustRun(t, "commit", fx.src)
-	packOut := fx.mustRun(t, "pack", "--capacity=64MiB")
-	secondUUID := packedDiscUUID(t, packOut)
-	second := filepath.Join(fx.work, "disc1")
-	copyTree(t, packedTreeDir(t, fx.repo, packOut), second)
-	if err := os.RemoveAll(fx.repo); err != nil {
-		t.Fatal(err)
-	}
+// recoverDamaged is the output of a recover of a disc root with the one
+// damaged object {BAD}.
+var recoverDamaged = []string{"recover: damaged: {BAD}\n", "recover: 1 item(s) damaged on {DISC}\n"}
 
-	te := newTestEnv(t.TempDir())
-	code, _ := te.run("--repo="+fx.repo, "recover", "--source="+fx.src, "--disc="+second)
-	stdout := te.out.String()
-	if code != 1 {
-		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", code, stdout, te.errOut.String())
-	}
-	want := fmt.Sprintf("recover: %s named by another disc, not yet given\n%s\n", discName(0, fx.label, fx.uuidBytes(t)), nextStatusLine)
-	if stdout != want {
-		t.Errorf("stdout %q, want %q", stdout, want)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscMissing {
-		t.Errorf("first disc %s, want missing", got)
-	}
-	if got := discState(t, fx.repo, secondUUID).State; got != stage.DiscOnDiscOnly {
-		t.Errorf("second disc %s, want on disc only", got)
-	}
-}
-
-// TestRecoverRow70 recovers a disc that the repository does not know
-// into an existing repository. An item that the repository staged
-// again keeps its state.
-func TestRecoverRow70(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscPacked)
-	first := fx.root
-	if err := os.WriteFile(filepath.Join(fx.src, "second.txt"), []byte("content of the second disc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fx.mustRun(t, "commit", fx.src)
-	packOut := fx.mustRun(t, "pack", "--capacity=64MiB")
-	secondUUID := packedDiscUUID(t, packOut)
-	second := filepath.Join(fx.work, "disc1")
-	copyTree(t, packedTreeDir(t, fx.repo, packOut), second)
-	if err := os.RemoveAll(fx.repo); err != nil {
-		t.Fatal(err)
-	}
-	fx.mustRun(t, "recover", "--source="+fx.src, "--disc="+first)
-	fx.mustRun(t, "commit", fx.src)
-	staged := countByState(t, fx.repo, stage.Staged)
-	if staged == 0 {
-		t.Fatal("the commit staged no item")
-	}
-
-	fx.root = second
-	code, stdout, stderr := fx.runRecover(t)
-	if code != 0 {
-		t.Fatalf("exit %d, want 0\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-	if stdout != "recover: ok\n"+nextStatusLine+"\n" {
-		t.Errorf("stdout %q", stdout)
-	}
-	if got := discState(t, fx.repo, secondUUID).State; got != stage.DiscOnDiscOnly {
-		t.Errorf("second disc %s, want on disc only", got)
-	}
-	if got := countByState(t, fx.repo, stage.Staged); got != staged {
-		t.Errorf("%d staged item(s), want %d", got, staged)
-	}
-}
-
-// TestRecoverRow70a recovers a lost repository from a disc with a
-// damaged object. The other objects are recorded, and the disc is on
-// disc only with a failed check.
-func TestRecoverRow70a(t *testing.T) {
-	for _, kind := range []format.ObjectKind{format.ObjectKindChunk, format.ObjectKindTree} {
-		t.Run(fmt.Sprintf("kind %d", kind), func(t *testing.T) {
-			fx := recoverFixture(t)
-			rr, err := image.Read(fx.root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			bad := damageObject(t, fx.root, kind)
-			code, stdout, stderr := fx.runRecover(t)
-			if code != 1 {
-				t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", code, stdout, stderr)
-			}
-			want := fmt.Sprintf("recover: damaged: %s\nrecover: 1 item(s) damaged on %s\n%s\n", bad.TextForm(), fx.name(), nextStatusLine)
-			if stdout != want {
-				t.Errorf("stdout %q, want %q", stdout, want)
-			}
-			d := discState(t, fx.repo, fx.uuid)
-			if d.State != stage.DiscOnDiscOnly || d.LastCheck != stage.CheckResultFailed {
-				t.Errorf("disc state %s, last check %d, want on disc only with a failed check", d.State, d.LastCheck)
-			}
-			if _, ok := openTestLog(t, fx.repo).Get(bad); ok {
-				t.Error("the damaged object has a record")
-			}
-			if n := countByState(t, fx.repo, stage.OnDisc); n != len(rr.Index.Objects)-1 {
-				t.Errorf("%d on-disc item(s), want %d", n, len(rr.Index.Objects)-1)
-			}
-			state, err := os.ReadFile(testLayout(t, fx.repo).catalogStateFile())
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantMark := " complete\n"
-			if kind == format.ObjectKindTree {
-				wantMark = " partial\n"
-			}
-			if !strings.HasSuffix(string(state), wantMark) {
-				t.Errorf("catalog-state.txt %q, want the mark %q", state, wantMark)
-			}
+func init() {
+	recoverArgs := []string{"recover", "--source={SRC}", "--disc={ROOT}"}
+	registerStateCases(
+		// Row 67: recover of a lost repository from its one disc.
+		stateCase{
+			row: "67", name: "no repository, one disc",
+			start: stage.DiscPacked,
+			setup: func(t *testing.T, fx *discFixture) {
+				removeRepoSetup(t, fx)
+				indexObjects(t, fx)
+			},
+			args:   recoverArgs,
+			stdout: []string{"recover: ok\n"}, exact: true, next: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			check: allChecks(
+				lastCheckIs(stage.CheckResultNone),
+				countIs(stage.OnDisc, "{OBJECTS}", 0),
+				catalogStateEnds(" complete\n"),
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					cfg, err := readConfig(configPath(fx.repo))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if cfg.SourceRoot != fx.src {
+						t.Errorf("sources.root %q, want %q", cfg.SourceRoot, fx.src)
+					}
+					if _, err := os.Stat(testLayout(t, fx.repo).gitignoreFile()); err != nil {
+						t.Errorf(".gitignore: %v", err)
+					}
+					state, err := os.ReadFile(testLayout(t, fx.repo).catalogStateFile())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(string(state), "partial") {
+						t.Errorf("catalog-state.txt %q, want every snapshot complete", state)
+					}
+				},
+			),
+		},
+		// Row 68: recover of a lost repository from the second of two
+		// discs. The first disc becomes missing.
+		stateCase{
+			row: "68", name: "no repository, the second of two discs",
+			start: stage.DiscPacked, setup: secondDiscCopySetup,
+			args:   []string{"recover", "--source={SRC}", "--disc={ROOT1}"},
+			exit:   1,
+			stdout: []string{`recover: {DISC} ({UUID}) named by another disc, not yet given` + "\n"}, exact: true, next: true,
+			end: stage.DiscMissing,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if got := discState(t, fx.repo, fx.vars["{UUID1}"]).State; got != stage.DiscOnDiscOnly {
+					t.Errorf("second disc %s, want on disc only", got)
+				}
+			},
+		},
+		// Row 70: recover of a disc that the repository does not know
+		// into an existing repository. An item that the repository staged
+		// again keeps its state.
+		stateCase{
+			row: "70", name: "a disc that the repository does not know",
+			start: stage.DiscPacked,
+			setup: func(t *testing.T, fx *discFixture) {
+				secondDiscCopySetup(t, fx)
+				fx.mustRun(t, "recover", "--source="+fx.src, "--disc="+fx.root)
+				fx.mustRun(t, "commit", fx.src)
+				staged := countByState(t, fx.repo, stage.Staged)
+				if staged == 0 {
+					t.Fatal("the commit staged no item")
+				}
+				fx.set("{STAGED}", strconv.Itoa(staged))
+			},
+			args:   []string{"recover", "--source={SRC}", "--disc={ROOT1}"},
+			stdout: []string{"recover: ok\n"}, exact: true, next: true,
+			end: stage.DiscOnDiscOnly,
+			check: allChecks(
+				countIs(stage.Staged, "{STAGED}", 0),
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					if got := discState(t, fx.repo, fx.vars["{UUID1}"]).State; got != stage.DiscOnDiscOnly {
+						t.Errorf("second disc %s, want on disc only", got)
+					}
+				},
+			),
+		},
+		// Row 70b: a disc of another repository is refused.
+		stateCase{
+			row: "70b", name: "a disc of another repository",
+			start: stage.DiscPacked,
+			setup: func(t *testing.T, fx *discFixture) {
+				other := repoWithDisc(t, stage.DiscPacked)
+				cfg, err := readConfig(configPath(other.repo))
+				if err != nil {
+					t.Fatal(err)
+				}
+				otherRepo, err := decodeUUID(cfg.RepoUUID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fx.set("{OTHER}", other.uuid)
+				fx.set("{OTHERREPO}", uuidText(otherRepo))
+				fx.root = other.root
+			},
+			args:   recoverArgs,
+			exit:   1,
+			stderr: []string{"disc {OTHER} belongs to repository {OTHERREPO}, not to this repository\n"},
+			exact:  true, noEvent: true,
+			end: stage.DiscPacked, word: stage.WordPacked,
+			check: func(t *testing.T, fx *discFixture, _, stderr string) {
+				want := fx.filler()("disc {OTHER} belongs to repository {OTHERREPO}, not to this repository\n")
+				if !strings.HasSuffix(stderr, want) {
+					t.Errorf("stderr %q, want the suffix %q", stderr, want)
+				}
+				if n := len(readDiscLog(t, fx.repo).Discs()); n != 1 {
+					t.Errorf("the disc state log knows %d disc(s), want 1", n)
+				}
+			},
+		},
+		// Row 70d: a damaged copy of a verified disc of the repository.
+		// recover writes no event.
+		stateCase{
+			row: "70d", name: "a damaged copy of a verified disc",
+			start: stage.DiscVerified,
+			setup: func(t *testing.T, fx *discFixture) {
+				fx.set("{BAD}", damageObject(t, fx.root, format.ObjectKindChunk).TextForm())
+			},
+			args:   recoverArgs,
+			exit:   1,
+			stdout: recoverDamaged, exact: true, next: true, noEvent: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+		},
+	)
+	// Row 70a: a lost repository from a disc with a damaged object. The
+	// other objects are recorded, and the disc is on disc only with a
+	// failed check. A damaged tree makes the snapshot partial.
+	for _, damaged := range []struct {
+		kind format.ObjectKind
+		mark string
+	}{{format.ObjectKindChunk, " complete\n"}, {format.ObjectKindTree, " partial\n"}} {
+		registerStateCases(stateCase{
+			row: "70a", name: fmt.Sprintf("no repository, a damaged object of kind %d", damaged.kind),
+			start: stage.DiscPacked, setup: damageSetup(damaged.kind),
+			args:   recoverArgs,
+			exit:   1,
+			stdout: recoverDamaged, exact: true, next: true,
+			end: stage.DiscOnDiscOnly,
+			check: allChecks(
+				lastCheckIs(stage.CheckResultFailed),
+				badHasNoRecord,
+				countIs(stage.OnDisc, "{OBJECTS}", -1),
+				catalogStateEnds(damaged.mark),
+			),
 		})
-	}
-}
-
-// TestRecoverRow70b refuses a disc of another repository.
-func TestRecoverRow70b(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscPacked)
-	other := repoWithDisc(t, stage.DiscPacked)
-	code, stdout, stderr := (&discFixture{repo: fx.repo, src: fx.src, root: other.root}).runRecover(t)
-	if code != 1 {
-		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-	cfg, err := readConfig(configPath(other.repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherRepo, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := fmt.Sprintf("disc %s belongs to repository %s, not to this repository\n", other.uuid, uuidText(otherRepo))
-	if !strings.HasSuffix(stderr, want) || stdout != "" {
-		t.Errorf("stdout %q, stderr %q, want the refusal %q", stdout, stderr, want)
-	}
-	if n := len(readDiscLog(t, fx.repo).Discs()); n != 1 {
-		t.Errorf("the disc state log knows %d disc(s), want 1", n)
-	}
-}
-
-// TestRecoverRow70d recovers a damaged copy of a verified disc of the
-// repository. It writes no event.
-func TestRecoverRow70d(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	before := discState(t, fx.repo, fx.uuid)
-	bad := damageObject(t, fx.root, format.ObjectKindChunk)
-	code, stdout, stderr := fx.runRecover(t)
-	if code != 1 {
-		t.Fatalf("exit %d, want 1\nstdout: %s\nstderr: %s", code, stdout, stderr)
-	}
-	want := fmt.Sprintf("recover: damaged: %s\nrecover: 1 item(s) damaged on %s\n%s\n", bad.TextForm(), fx.name(), nextStatusLine)
-	if stdout != want {
-		t.Errorf("stdout %q, want %q", stdout, want)
-	}
-	if after := discState(t, fx.repo, fx.uuid); after != before {
-		t.Errorf("disc record %+v, want %+v", after, before)
 	}
 }
 

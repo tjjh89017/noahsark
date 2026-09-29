@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -214,125 +212,156 @@ const (
 	rootPackedTree
 )
 
-// verifyRowCase is a row case of verify that the state case harness
-// cannot express: it damages the disc root, checks a root that is not
-// counted, or runs with no repository.
-type verifyRowCase struct {
-	row, name string
-	start     stage.DiscState
-	root      verifyRootKind
-	damaged   bool
-	noRepo    bool
-	noMark    bool
-	exit      int
-	// stdout holds the lines after the ok line or the bad line. The
-	// case builds the first line from the disc name, the count and bad.
-	bad    string
-	stdout []string
-	next   bool
-	end    stage.DiscState
-	// last is the result of the last check after the event.
-	last stage.CheckResult
-}
-
-// TestVerifyRowsOfDamageAndRoots runs the rows of verify that damage the
-// disc, check a root that is not counted, or run with no repository.
-func TestVerifyRowsOfDamageAndRoots(t *testing.T) {
-	cases := []verifyRowCase{
-		{row: "38", name: "packed tree of a packed disc", start: stage.DiscPacked, root: rootPackedTree,
-			stdout: []string{notCountedDisc}, end: stage.DiscPacked},
-		{row: "38", name: "not a mount point, burned disc", start: stage.DiscBurned, root: rootNotMountPoint,
-			stdout: []string{notCountedDisc}, end: stage.DiscBurned},
-		{row: "38", name: "read-write mount, verified disc", start: stage.DiscVerified, root: rootReadWrite,
-			stdout: []string{notCountedDisc}, end: stage.DiscVerified, last: stage.CheckResultOK},
-		{row: "38", name: "packed tree with --no-mark", start: stage.DiscPacked, root: rootPackedTree, noMark: true,
-			stdout: []string{notCountedDisc}, end: stage.DiscPacked},
-		{row: "38a", name: "no repository", start: stage.DiscVerified, noRepo: true,
-			stdout: []string{notCountedNoRepo}, end: stage.DiscVerified, last: stage.CheckResultOK},
-		{row: "38b", name: "damaged, not a mount point, verified disc", start: stage.DiscVerified, root: rootNotMountPoint, damaged: true,
-			exit: 1, bad: reasonDiscRootDamaged, stdout: []string{notCountedDisc}, end: stage.DiscVerified, last: stage.CheckResultOK},
-		{row: "38b", name: "damaged, read-write mount, on disc only disc", start: stage.DiscOnDiscOnly, root: rootReadWrite, damaged: true,
-			exit: 1, bad: reasonDiscRootDamaged, stdout: []string{notCountedDisc}, end: stage.DiscOnDiscOnly, last: stage.CheckResultOK},
-		{row: "38c", name: "damaged, no repository", start: stage.DiscVerified, noRepo: true, damaged: true,
-			exit: 1, bad: reasonDiscRootDamaged, stdout: []string{notCountedNoRepo}, end: stage.DiscVerified, last: stage.CheckResultOK},
-		{row: "39", name: "damaged packed tree", start: stage.DiscPacked, root: rootPackedTree, damaged: true,
-			exit: 1, bad: reasonPackedTreeDamaged, stdout: []string{notCountedDisc}, end: stage.DiscPacked},
-		{row: "40", name: "damaged packed disc", start: stage.DiscPacked, damaged: true,
-			exit: 1, bad: "this disc is bad; no record to remove", next: true, end: stage.DiscPacked, last: stage.CheckResultFailed},
-		{row: "41", name: "damaged burned disc", start: stage.DiscBurned, damaged: true,
-			exit: 1, bad: "this disc is bad; burn record removed", next: true, end: stage.DiscPacked, last: stage.CheckResultFailed},
-		{row: "42", name: "damaged verified disc", start: stage.DiscVerified, damaged: true,
-			exit: 1, bad: "this disc is bad; verified record removed; gc holds the data", next: true, end: stage.DiscBurned, last: stage.CheckResultFailed},
-		{row: "43", name: "damaged on disc only disc", start: stage.DiscOnDiscOnly, damaged: true,
-			exit: 1, bad: "the staged copy is already freed; copy this disc now, or use your second copy, or run: noahsark disc lost 0",
-			next: true, end: stage.DiscOnDiscOnly, last: stage.CheckResultFailed},
-		{row: "37", name: "damaged verified disc with --no-mark", start: stage.DiscVerified, noMark: true, damaged: true,
-			exit: 1, bad: reasonDiscRootDamaged, stdout: []string{notMarked}, end: stage.DiscVerified, last: stage.CheckResultOK},
-	}
-	for _, c := range cases {
-		t.Run("row "+c.row+"/"+c.name, func(t *testing.T) {
-			runVerifyRowCase(t, c)
-		})
+// verifyRootSetup points {ROOT} to the disc root of kind, and damages it
+// when damaged is true. For a good disc root, {N} is the number of
+// objects that pass the full check.
+func verifyRootSetup(kind verifyRootKind, damaged bool) func(*testing.T, *discFixture) {
+	return func(t *testing.T, fx *discFixture) {
+		t.Helper()
+		fx.root = verifyRoot(t, fx, kind)
+		if damaged {
+			corruptDiscRoot(t, fx.root)
+			return
+		}
+		fx.set("{N}", strconv.Itoa(objectsOnDisc(t, fx.root)))
 	}
 }
 
-// runVerifyRowCase runs one verifyRowCase.
-func runVerifyRowCase(t *testing.T, c verifyRowCase) {
+// verifyFailDetail is a check: standard error starts with the detail of
+// the failed check.
+func verifyFailDetail(t *testing.T, _ *discFixture, _, stderr string) {
 	t.Helper()
-	fx := repoWithDisc(t, c.start)
-	root := verifyRoot(t, fx, c.root)
-	if c.damaged {
-		corruptDiscRoot(t, root)
-	}
-	logBefore := discLogBytes(t, fx.repo)
-	catalogBefore := listFilesUnder(t, testLayout(t, fx.repo).catalogDir())
-
-	name := fx.name()
-	if c.noRepo {
-		name = `disc ` + fx.uuid + ` "` + fx.label + `"`
-	}
-	args := []string{"verify"}
-	if !c.noRepo {
-		args = append([]string{"--repo=" + fx.repo}, args...)
-	}
-	if c.noMark {
-		args = append(args, "--no-mark")
-	}
-	args = append(args, root)
-	te := newTestEnv(t.TempDir())
-	code, _ := te.run(args...)
-	stdout, stderr := te.out.String(), te.errOut.String()
-	if code != c.exit {
-		t.Fatalf("%v: exit %d, want %d\nstdout: %s\nstderr: %s", args, code, c.exit, stdout, stderr)
-	}
-
-	first := name + ": bad; " + c.bad
-	if c.bad == "" {
-		first = name + ": " + strconv.Itoa(objectsOnDisc(t, root)) + " items, ok"
-	}
-	want := append([]string{first}, c.stdout...)
-	if c.next {
-		want = append(want, nextStatusLine)
-	}
-	if got := strings.Split(strings.TrimRight(stdout, "\n"), "\n"); !slices.Equal(got, want) {
-		t.Errorf("stdout lines %q, want %q\nstderr: %s", got, want, stderr)
-	}
-	if c.damaged && !strings.HasPrefix(stderr, "noahsark: verify: ") {
+	if !strings.HasPrefix(stderr, "noahsark: verify: ") {
 		t.Errorf("stderr %q, want the detail of the failed check", stderr)
 	}
+}
 
-	d := discState(t, fx.repo, fx.uuid)
-	if d.State != c.end || d.LastCheck != c.last {
-		t.Errorf("disc %s, last check %d; want %s, %d", d.State, d.LastCheck, c.end, c.last)
-	}
-	if !c.next {
-		if !bytes.Equal(discLogBytes(t, fx.repo), logBefore) {
-			t.Error("the verify wrote the disc state log")
-		}
-		if got := listFilesUnder(t, testLayout(t, fx.repo).catalogDir()); !slices.Equal(got, catalogBefore) {
-			t.Error("the verify changed the catalog")
-		}
-	}
+// noRepoDisc is the disc name of verify with no repository.
+const noRepoDisc = `disc {UUID} "{LABEL}"`
+
+func init() {
+	ok := func(disc string) string { return disc + ": {N} items, ok\n" }
+	bad := func(disc, reason string) string { return disc + ": bad; " + reason + "\n" }
+	notCounted := notCountedDisc + "\n"
+	registerStateCases(
+		// Row 38: a good disc root that is not a counted mount. Nothing
+		// is written.
+		stateCase{
+			row: "38", name: "packed tree of a packed disc",
+			start: stage.DiscPacked, setup: verifyRootSetup(rootPackedTree, false),
+			args:   []string{"verify", "{ROOT}"},
+			stdout: []string{ok("{DISC}"), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscPacked, word: stage.WordPacked, check: lastCheckIs(stage.CheckResultNone),
+		},
+		stateCase{
+			row: "38", name: "not a mount point, burned disc",
+			start: stage.DiscBurned, setup: verifyRootSetup(rootNotMountPoint, false),
+			args:   []string{"verify", "{ROOT}"},
+			stdout: []string{ok("{DISC}"), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscBurned, word: stage.WordBurned, check: lastCheckIs(stage.CheckResultNone),
+		},
+		stateCase{
+			row: "38", name: "read-write mount, verified disc",
+			start: stage.DiscVerified, setup: verifyRootSetup(rootReadWrite, false),
+			args:   []string{"verify", "{ROOT}"},
+			stdout: []string{ok("{DISC}"), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscVerified, word: stage.WordClean, check: lastCheckIs(stage.CheckResultOK),
+		},
+		stateCase{
+			row: "38", name: "packed tree with --no-mark",
+			start: stage.DiscPacked, setup: verifyRootSetup(rootPackedTree, false),
+			args:   []string{"verify", "--no-mark", "{ROOT}"},
+			stdout: []string{ok("{DISC}"), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscPacked, word: stage.WordPacked, check: lastCheckIs(stage.CheckResultNone),
+		},
+		// Row 38a: a good disc root with no repository.
+		stateCase{
+			row: "38a", name: "no repository",
+			start: stage.DiscVerified, setup: verifyRootSetup(rootCounted, false), noRepo: true,
+			args:   []string{"verify", "{ROOT}"},
+			stdout: []string{ok(noRepoDisc), notCountedNoRepo + "\n"}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscVerified, word: stage.WordClean, check: lastCheckIs(stage.CheckResultOK),
+		},
+		// Row 38b: a damaged disc root that is not a counted mount. No
+		// record is removed and no verify log event is added.
+		stateCase{
+			row: "38b", name: "damaged, not a mount point, verified disc",
+			start: stage.DiscVerified, setup: verifyRootSetup(rootNotMountPoint, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", reasonDiscRootDamaged), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: allChecks(lastCheckIs(stage.CheckResultOK), verifyFailDetail),
+		},
+		stateCase{
+			row: "38b", name: "damaged, read-write mount, on disc only disc",
+			start: stage.DiscOnDiscOnly, setup: verifyRootSetup(rootReadWrite, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", reasonDiscRootDamaged), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			check: allChecks(lastCheckIs(stage.CheckResultOK), verifyFailDetail),
+		},
+		// Row 38c: a damaged disc root with no repository.
+		stateCase{
+			row: "38c", name: "damaged, no repository",
+			start: stage.DiscVerified, setup: verifyRootSetup(rootCounted, true), noRepo: true,
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad(noRepoDisc, reasonDiscRootDamaged), notCountedNoRepo + "\n"}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: allChecks(lastCheckIs(stage.CheckResultOK), verifyFailDetail),
+		},
+		// Row 39: a damaged packed tree.
+		stateCase{
+			row: "39", name: "damaged packed tree",
+			start: stage.DiscPacked, setup: verifyRootSetup(rootPackedTree, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", reasonPackedTreeDamaged), notCounted}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscPacked, word: stage.WordPacked,
+			check: allChecks(lastCheckIs(stage.CheckResultNone), verifyFailDetail),
+		},
+		// Rows 40 to 43: a damaged counted disc. A failed check is logged,
+		// and the disc loses one record where it has one.
+		stateCase{
+			row: "40", name: "damaged packed disc",
+			start: stage.DiscPacked, setup: verifyRootSetup(rootCounted, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", "this disc is bad; no record to remove")}, exact: true, next: true,
+			end: stage.DiscPacked, word: stage.WordPacked,
+			check: allChecks(lastCheckIs(stage.CheckResultFailed), verifyFailDetail),
+		},
+		stateCase{
+			row: "41", name: "damaged burned disc",
+			start: stage.DiscBurned, setup: verifyRootSetup(rootCounted, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", "this disc is bad; burn record removed")}, exact: true, next: true,
+			end: stage.DiscPacked, word: stage.WordPacked,
+			check: allChecks(lastCheckIs(stage.CheckResultFailed), verifyFailDetail),
+		},
+		stateCase{
+			row: "42", name: "damaged verified disc",
+			start: stage.DiscVerified, setup: verifyRootSetup(rootCounted, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", "this disc is bad; verified record removed; gc holds the data")}, exact: true, next: true,
+			end: stage.DiscBurned, word: stage.WordBurned,
+			check: allChecks(lastCheckIs(stage.CheckResultFailed), verifyFailDetail),
+		},
+		stateCase{
+			row: "43", name: "damaged on disc only disc",
+			start: stage.DiscOnDiscOnly, setup: verifyRootSetup(rootCounted, true),
+			args: []string{"verify", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", "the staged copy is already freed; copy this disc now, or use your second copy, or run: noahsark disc lost {SEQ}")}, exact: true, next: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			check: allChecks(lastCheckIs(stage.CheckResultFailed), verifyFailDetail),
+		},
+		// Row 37 with a damaged disc: --no-mark writes nothing.
+		stateCase{
+			row: "37", name: "damaged verified disc with --no-mark",
+			start: stage.DiscVerified, setup: verifyRootSetup(rootCounted, true),
+			args: []string{"verify", "--no-mark", "{ROOT}"}, exit: 1,
+			stdout: []string{bad("{DISC}", reasonDiscRootDamaged), notMarked + "\n"}, exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: allChecks(lastCheckIs(stage.CheckResultOK), verifyFailDetail),
+		},
+	)
 }
 
 // verifyRoot returns the disc root of kind for the disc of fx.

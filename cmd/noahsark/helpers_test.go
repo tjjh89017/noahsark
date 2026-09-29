@@ -701,11 +701,41 @@ type discFixture struct {
 	// root is a copy of the disc root outside the repository: the
 	// stand-in for the mounted disc.
 	root string
+	// vars maps more placeholders of a state case to their text.
+	vars map[string]string
 }
 
 // name is the disc name of a message that reports a change:
 // disc SEQ "LABEL".
 func (fx *discFixture) name() string { return discNameShort(fx.seq, fx.label) }
+
+// set makes the placeholder key stand for value in the texts of a state
+// case.
+func (fx *discFixture) set(key, value string) {
+	if fx.vars == nil {
+		fx.vars = map[string]string{}
+	}
+	fx.vars[key] = value
+}
+
+// filler returns the function that replaces the placeholders of a state
+// case with the texts of fx.
+func (fx *discFixture) filler() func(string) string {
+	pairs := []string{
+		"{DISC}", fx.name(),
+		"{SEQ}", strconv.FormatUint(fx.seq, 10),
+		"{LABEL}", fx.label,
+		"{UUID}", fx.uuid,
+		"{ROOT}", fx.root,
+		"{SRC}", fx.src,
+		"{REPO}", fx.repo,
+		"{REF}", defaultRefName(),
+	}
+	for k, v := range fx.vars {
+		pairs = append(pairs, k, v)
+	}
+	return strings.NewReplacer(pairs...).Replace
+}
 
 // uuidBytes is the uuid of the disc.
 func (fx *discFixture) uuidBytes(t *testing.T) [16]byte {

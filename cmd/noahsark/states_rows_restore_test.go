@@ -67,6 +67,57 @@ func init() {
 			end:    stage.DiscMissing,
 		},
 	)
+	registerStateCases(
+		// Row 85a: the catalog INDEX of the one disc is removed. The plan
+		// names the items with no known disc. restore reads no disc, still
+		// walks the snapshot, names each file that it cannot restore, and
+		// exits 1.
+		stateCase{
+			row: "85a", name: "no disc known to the catalog",
+			start: stage.DiscVerified,
+			setup: func(t *testing.T, fx *discFixture) {
+				if err := os.RemoveAll(filepath.Join(repoCatalogDir(t, fx.repo), "discs", fx.uuid)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			args: restoreArgs("r85a", "--disc={ROOT}"),
+			exit: 1,
+			stdout: []string{
+				"restore: 2 item(s) have no disc known to the catalog; run recover with more discs\n",
+				"totals: 0 discs, 0 items, 0 bytes\n",
+				"restored snapshot ",
+			},
+			absent: []string{"found"},
+			end:    stage.DiscVerified, word: stage.WordClean,
+			check: func(t *testing.T, fx *discFixture, stdout, stderr string) {
+				dest := fx.root + "-r85a"
+				for _, name := range []string{"a.txt", filepath.Join("sub", "b.txt")} {
+					if !strings.Contains(stderr, "noahsark: restore: warning: "+filepath.Join(dest, name)+": ") {
+						t.Errorf("stderr %q does not name %s as not restored", stderr, name)
+					}
+				}
+				assertRestoredDirectory(t, filepath.Join(dest, "sub"))
+			},
+		},
+		// Row 89: restore with no repository is a usage error that names
+		// recover, and creates no DEST.
+		stateCase{
+			row: "89", name: "restore with no repository",
+			start: stage.DiscVerified, noRepo: true,
+			args:   restoreArgs("r89", "--disc={ROOT}"),
+			exit:   2,
+			stdout: nil, exact: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: allChecks(
+				stderrIs("noahsark: restore: no repository; run recover first, one time for each disc\n"),
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					if _, err := os.Lstat(fx.root + "-r89"); !os.IsNotExist(err) {
+						t.Fatalf("restore with no repository created DEST: %v", err)
+					}
+				},
+			),
+		},
+	)
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscVerified, stage.DiscOnDiscOnly} {
 		registerStateCases(stateCase{
 			row: "88", name: "dry run with a " + s.String() + " disc",
@@ -93,50 +144,5 @@ func TestRestoreRow86ChangesNoFile(t *testing.T) {
 	compareTrees(t, dest, fx.src)
 	if after := treeDigest(t, fx.repo); after != before {
 		t.Fatal("restore changed a file of the repository")
-	}
-}
-
-// TestRestoreRow85aNoKnownDisc removes the catalog INDEX of the one
-// disc. The plan names the items with no known disc, restore reads no
-// disc and still walks the snapshot, names each file it cannot restore,
-// and exits 1.
-func TestRestoreRow85aNoKnownDisc(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	if err := os.RemoveAll(filepath.Join(repoCatalogDir(t, fx.repo), "discs", fx.uuid)); err != nil {
-		t.Fatal(err)
-	}
-	dest := filepath.Join(t.TempDir(), "out")
-	code, out := fx.run(t, "restore", "--disc="+fx.root, defaultRefName(), dest)
-	if code != 1 {
-		t.Fatalf("exit %d, want 1: %s", code, out)
-	}
-	wantLines(t, out,
-		"restore: 2 item(s) have no disc known to the catalog; run recover with more discs\n",
-		"totals: 0 discs, 0 items, 0 bytes\n",
-		"restored snapshot ")
-	for _, name := range []string{"a.txt", filepath.Join("sub", "b.txt")} {
-		if !strings.Contains(out, "noahsark: restore: warning: "+filepath.Join(dest, name)+": ") {
-			t.Errorf("output %q does not name %s as not restored", out, name)
-		}
-	}
-	if strings.Contains(out, "found") || strings.Contains(out, nextStatusLine) {
-		t.Errorf("output %q reads a disc or holds the next line", out)
-	}
-	assertRestoredDirectory(t, filepath.Join(dest, "sub"))
-}
-
-// TestRestoreRow89NoRepository checks that restore with no repository
-// is a usage error that names recover.
-func TestRestoreRow89NoRepository(t *testing.T) {
-	dir := t.TempDir()
-	code, out := runIn(t, dir, "restore", "--disc="+dir, "x", filepath.Join(dir, "out"))
-	if code != 2 {
-		t.Fatalf("exit %d, want 2: %s", code, out)
-	}
-	if out != "noahsark: restore: no repository; run recover first, one time for each disc\n" {
-		t.Fatalf("output %q", out)
-	}
-	if _, err := os.Lstat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
-		t.Fatalf("restore with no repository created DEST: %v", err)
 	}
 }
