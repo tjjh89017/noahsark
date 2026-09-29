@@ -1,7 +1,6 @@
 package catalog_test
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,17 +10,16 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// TestDirIsCacheInsideTheRepository checks that the catalog directory is
-// always "catalog" inside the repository directory, matching OPERATIONS.md's
-// catalog layout rules.
+// TestDirIsCatalogInsideTheRepository checks that the catalog directory
+// is always "catalog" inside the repository directory.
 func TestDirIsCatalogInsideTheRepository(t *testing.T) {
-	want := filepath.Join("/repo", "cache")
+	want := filepath.Join("/repo", "catalog")
 	if got := catalog.Dir("/repo"); got != want {
 		t.Fatalf("Dir(%q) = %q, want %q", "/repo", got, want)
 	}
 }
 
-// TestWriteFromRootPopulatesCache packs one run and copies it into the
+// TestWriteFromRootPopulatesCatalog packs one run and copies it into the
 // catalog, then checks every read method resolves the same content.
 func TestWriteFromRootPopulatesCatalog(t *testing.T) {
 	runRoot, snapID := buildFixtureRun(t)
@@ -52,7 +50,7 @@ func TestWriteFromRootPopulatesCatalog(t *testing.T) {
 		t.Fatalf("IndexForDisc: %v", err)
 	}
 	if len(idx.Objects) != len(rr.Index.Objects) {
-		t.Fatalf("cached INDEX object count = %d, want %d", len(idx.Objects), len(rr.Index.Objects))
+		t.Fatalf("catalog INDEX object count = %d, want %d", len(idx.Objects), len(rr.Index.Objects))
 	}
 
 	refs, err := c.Refs()
@@ -60,7 +58,7 @@ func TestWriteFromRootPopulatesCatalog(t *testing.T) {
 		t.Fatalf("Refs: %v", err)
 	}
 	if len(refs.Records) != len(rr.Refs.Records) {
-		t.Fatalf("cached REFS record count = %d, want %d", len(refs.Records), len(rr.Refs.Records))
+		t.Fatalf("catalog REFS record count = %d, want %d", len(refs.Records), len(rr.Refs.Records))
 	}
 
 	discs, err := c.Discs()
@@ -68,7 +66,7 @@ func TestWriteFromRootPopulatesCatalog(t *testing.T) {
 		t.Fatalf("Discs: %v", err)
 	}
 	if len(discs.Rows) != len(rr.Discs.Rows) {
-		t.Fatalf("cached DISCS row count = %d, want %d", len(discs.Rows), len(rr.Discs.Rows))
+		t.Fatalf("catalog DISCS row count = %d, want %d", len(discs.Rows), len(rr.Discs.Rows))
 	}
 
 	snap, err := c.ReadSnapshot(snapID)
@@ -106,10 +104,7 @@ func TestWriteFromRootIsIdempotent(t *testing.T) {
 	if _, err := catalog.WriteFromRoot(c, runRoot); err != nil {
 		t.Fatal(err)
 	}
-	treesBefore, err := os.ReadDir(filepath.Join(dir, "trees"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	treesBefore := countFiles(t, filepath.Join(dir, "catalog", "trees"))
 
 	c2, err := catalog.Open(dir)
 	if err != nil {
@@ -118,12 +113,8 @@ func TestWriteFromRootIsIdempotent(t *testing.T) {
 	if _, err := catalog.WriteFromRoot(c2, runRoot); err != nil {
 		t.Fatal(err)
 	}
-	treesAfter, err := os.ReadDir(filepath.Join(dir, "trees"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(treesAfter) != len(treesBefore) {
-		t.Fatalf("tree count after second write = %d, want %d", len(treesAfter), len(treesBefore))
+	if treesAfter := countFiles(t, filepath.Join(dir, "catalog", "trees")); treesAfter != treesBefore {
+		t.Fatalf("tree count after second write = %d, want %d", treesAfter, treesBefore)
 	}
 	if !c2.Complete(snapID) {
 		t.Fatal("Complete = false after second write, want true")
@@ -132,7 +123,7 @@ func TestWriteFromRootIsIdempotent(t *testing.T) {
 
 // TestCheckCompleteReportsMissingTree builds a catalog holding a
 // snapshot whose root tree references a child tree the catalog never
-// received, and checks CheckComplete reports an *IncompleteError
+// received, and checks CheckComplete reports an *PartialError
 // naming that child.
 func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	c, err := catalog.Open(t.TempDir())
@@ -140,39 +131,39 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	missingID := object.ComputeID(format.ObjectKindChunk, []byte("a tree that is never written to the cache"))
+	missingID := object.ComputeID(format.ObjectKindChunk, []byte("a tree that is never written to the catalog"))
 	rootTree := encodeTestTree(t, format.TreeEntry{
 		EntryType: format.EntryTypeDirectory,
 		Name:      []byte("child"),
 		ContentID: missingID,
 	})
 	rootID := object.ComputeID(format.ObjectKindChunk, rootTree)
-	if err := c.WriteTree(rootID, rootTree); err != nil {
+	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
 
 	snapID := object.ComputeID(format.ObjectKindChunk, []byte("snapshot payload"))
 	snapBuf := encodeTestSnapshot(t, rootID)
-	if err := c.WriteSnapshot(snapID, snapBuf); err != nil {
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, snapBuf); err != nil {
 		t.Fatal(err)
 	}
 
 	err = c.CheckComplete(snapID)
 	if err == nil {
-		t.Fatal("CheckComplete = nil, want an *IncompleteError")
+		t.Fatal("CheckComplete = nil, want a *PartialError")
 	}
-	incomplete, ok := err.(*catalog.IncompleteError)
+	partial, ok := err.(*catalog.PartialError)
 	if !ok {
-		t.Fatalf("CheckComplete error type = %T, want *catalog.IncompleteError", err)
+		t.Fatalf("CheckComplete error type = %T, want *catalog.PartialError", err)
 	}
-	if incomplete.Snapshot != snapID {
-		t.Fatalf("IncompleteError.Snapshot = %s, want %s", incomplete.Snapshot.TextForm(), snapID.TextForm())
+	if partial.Snapshot != snapID {
+		t.Fatalf("PartialError.Snapshot = %s, want %s", partial.Snapshot.TextForm(), snapID.TextForm())
 	}
-	if incomplete.MissingTree != missingID {
-		t.Fatalf("IncompleteError.MissingTree = %s, want %s", incomplete.MissingTree.TextForm(), missingID.TextForm())
+	if partial.MissingTree != missingID {
+		t.Fatalf("PartialError.MissingTree = %s, want %s", partial.MissingTree.TextForm(), missingID.TextForm())
 	}
-	if incomplete.HasDiscUUID {
-		t.Fatalf("IncompleteError resolved a disc it should not have: %+v", incomplete)
+	if partial.HasDiscUUID {
+		t.Fatalf("PartialError resolved a disc it should not have: %+v", partial)
 	}
 	if c.Complete(snapID) {
 		t.Fatal("Complete = true, want false")
@@ -195,36 +186,36 @@ func TestCheckCompleteResolvesDisc(t *testing.T) {
 		ContentID: missingID,
 	})
 	rootID := object.ComputeID(format.ObjectKindChunk, rootTree)
-	if err := c.WriteTree(rootID, rootTree); err != nil {
+	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
 		t.Fatal(err)
 	}
 	snapID := object.ComputeID(format.ObjectKindChunk, []byte("snapshot payload 2"))
-	if err := c.WriteSnapshot(snapID, encodeTestSnapshot(t, rootID)); err != nil {
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, encodeTestSnapshot(t, rootID)); err != nil {
 		t.Fatal(err)
 	}
 
-	cachedDisc := [16]byte{3, 3, 3, 3}
+	namingDisc := [16]byte{3, 3, 3, 3}
 	holderDisc := [16]byte{9, 9, 9, 9}
 	idxBuf := encodeTestIndex(t, 3, nil, nil, []format.IndexPrereqRecord{{ContentID: missingID, DiscUUID: holderDisc}})
 	discsBuf := encodeTestDiscs(t, []format.DiscsRow{
-		{RunSeq: 3, DiscUUID: cachedDisc},
+		{RunSeq: 3, DiscUUID: namingDisc},
 		{RunSeq: 7, DiscUUID: holderDisc},
 	})
-	if err := c.WriteDisc(cachedDisc, idxBuf, encodeTestRefs(t), discsBuf); err != nil {
+	if err := c.WriteDisc(namingDisc, idxBuf, encodeTestRefs(t), discsBuf); err != nil {
 		t.Fatal(err)
 	}
 
 	err = c.CheckComplete(snapID)
-	incomplete, ok := err.(*catalog.IncompleteError)
+	partial, ok := err.(*catalog.PartialError)
 	if !ok {
-		t.Fatalf("CheckComplete error type = %T, want *catalog.IncompleteError", err)
+		t.Fatalf("CheckComplete error type = %T, want *catalog.PartialError", err)
 	}
-	if !incomplete.HasDiscUUID || incomplete.DiscUUID != holderDisc {
-		t.Fatalf("IncompleteError disc = %v (has=%v), want %v", incomplete.DiscUUID, incomplete.HasDiscUUID, holderDisc)
+	if !partial.HasDiscUUID || partial.DiscUUID != holderDisc {
+		t.Fatalf("PartialError disc = %v (has=%v), want %v", partial.DiscUUID, partial.HasDiscUUID, holderDisc)
 	}
 }
 
-// TestLocateObjectKeysByDiscNotRunSeq caches two discs that carry the
+// TestLocateObjectKeysByDiscNotRunSeq writes two discs that carry the
 // same run_seq, as two discs do after a lost repository. Each object
 // must resolve to the disc that really holds it. The Prereqs row of one
 // disc must resolve through that disc's own DISCS table, never through
@@ -337,7 +328,7 @@ func encodeTestRefs(t *testing.T) []byte {
 }
 
 // encodeTestTree builds a minimal, valid Tree object with one entry,
-// encoded ready for catalog.WriteTree.
+// encoded ready for catalog.WriteObject.
 func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
 	t.Helper()
 	tree := &format.Tree{
@@ -353,7 +344,7 @@ func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
 }
 
 // encodeTestSnapshot builds a minimal, valid Snapshot object pointing
-// at rootTree, encoded ready for catalog.WriteSnapshot.
+// at rootTree, encoded ready for catalog.WriteObject.
 func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
 	t.Helper()
 	snap := &format.Snapshot{
@@ -367,11 +358,11 @@ func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
 	return buf
 }
 
-// TestNewestCachedDiscBreaksATie caches two discs that one second holds
+// TestNewestCatalogDiscBreaksATie writes two discs that one second holds
 // both of: the newest is the one whose own DISCS table has more rows,
 // whatever the uuid order. A tie on the row count too takes the higher
 // uuid, so the answer never changes between runs.
-func TestNewestCatalogdDiscBreaksATie(t *testing.T) {
+func TestNewestCatalogDiscBreaksATie(t *testing.T) {
 	const sameSecond = 1_700_000_000
 
 	low := [16]byte{0x11}
@@ -413,7 +404,7 @@ func TestNewestCatalogdDiscBreaksATie(t *testing.T) {
 	})
 }
 
-// writeTieDisc caches one disc whose own DISCS table holds rows.
+// writeTieDisc writes the tables of one disc whose own DISCS table holds rows.
 func writeTieDisc(t *testing.T, c *catalog.Catalog, uuid [16]byte, runSeq uint64, rows []format.DiscsRow) {
 	t.Helper()
 	idx := encodeTestIndex(t, runSeq, nil, nil, nil)

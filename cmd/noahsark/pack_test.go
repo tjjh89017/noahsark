@@ -16,7 +16,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/repolock"
 )
 
-// TestPackPopulatesCache runs init, commit and pack, then checks pack
+// TestPackPopulatesCatalog runs init, commit and pack, then checks pack
 // left a catalog behind that ls and plan could use with no disc
 // present: the run's catalog, the snapshot object, at least one tree,
 // and a completeness record.
@@ -43,7 +43,7 @@ func TestPackPopulatesCatalog(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	c, err := catalog.Open(repoCatalogDir(t, repo))
+	c, err := catalog.Open(repo)
 	if err != nil {
 		t.Fatalf("catalog.Open: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestPackPopulatesCatalog(t *testing.T) {
 		t.Fatalf("Discs: %v", err)
 	}
 	if len(discs.Rows) != 1 {
-		t.Fatalf("cached DISCS row count = %d, want 1", len(discs.Rows))
+		t.Fatalf("catalog DISCS row count = %d, want 1", len(discs.Rows))
 	}
 	if _, err := c.IndexForDisc(discs.Rows[0].DiscUUID); err != nil {
 		t.Fatalf("IndexForDisc: %v", err)

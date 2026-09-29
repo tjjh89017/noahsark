@@ -118,9 +118,9 @@ scenario_incremental() {
 
 	# Proves the discs are the only source: restore never reads --repo,
 	# but deleting it here matches how the other cells prove the local
-	# cache and staging are only an accelerator.
+	# catalog and staging are only an accelerator.
 	rm -rf "$repo"
-	log "incremental: deleted repo (cache and staging) before restore"
+	log "incremental: deleted repo (catalog and staging) before restore"
 
 	local restored_base="$work/restored-base"
 	"$BIN" restore "$mnt1" "$snap1" "$restored_base"

@@ -3,16 +3,23 @@ package catalog
 import (
 	"bufio"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// loadState reads the completeness record at path. A missing file
-// means no snapshot has been recorded yet, not an error.
+// The two marks of a line of catalog-state.txt.
+const (
+	markComplete = "complete"
+	markPartial  = "partial"
+)
+
+// loadState reads the completeness file at path. A missing file means
+// that no snapshot is recorded yet, not an error.
 func loadState(path string) (map[string]bool, error) {
 	state := make(map[string]bool)
 	f, err := os.Open(path)
@@ -32,15 +39,15 @@ func loadState(path string) (map[string]bool, error) {
 		}
 		id, mark, ok := strings.Cut(line, " ")
 		if !ok {
-			return nil, fmt.Errorf("state.txt: malformed line %q", line)
+			return nil, fmt.Errorf("%s: malformed line %q", stateFileName, line)
 		}
 		switch mark {
-		case "complete":
+		case markComplete:
 			state[id] = true
-		case "incomplete":
+		case markPartial:
 			state[id] = false
 		default:
-			return nil, fmt.Errorf("state.txt: unknown mark %q", mark)
+			return nil, fmt.Errorf("%s: unknown mark %q", stateFileName, mark)
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -49,65 +56,79 @@ func loadState(path string) (map[string]bool, error) {
 	return state, nil
 }
 
-// saveState writes the whole completeness record back, one line per
-// snapshot id, sorted for a deterministic file.
+// saveState writes the whole completeness file with an atomic replace.
+// It writes one line for each snapshot id, sorted by id, so that a diff
+// of two versions stays small.
 func saveState(path string, state map[string]bool) error {
-	ids := make([]string, 0, len(state))
-	for id := range state {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
 	var b strings.Builder
-	for _, id := range ids {
-		mark := "incomplete"
+	for _, id := range slices.Sorted(maps.Keys(state)) {
+		mark := markPartial
 		if state[id] {
-			mark = "complete"
+			mark = markComplete
 		}
 		_, _ = fmt.Fprintf(&b, "%s %s\n", id, mark)
 	}
 	return atomicWriteFile(path, []byte(b.String()))
 }
 
-// setComplete records id's completeness and persists it at once.
+// setComplete records the completeness of id and writes the file at once.
 func (c *Catalog) setComplete(id object.ID, complete bool) error {
 	c.state[id.TextForm()] = complete
-	return saveState(c.statePath(), c.state)
+	if err := saveState(c.statePath, c.state); err != nil {
+		return fmt.Errorf("catalog: %s: %w", stateFileName, err)
+	}
+	return nil
 }
 
-// Complete reports whether id's whole tree set is present in the catalog,
-// from the last time it was written or verified. An id this catalog has
-// never seen reports false.
+// MarkComplete records that the catalog holds every object that snapshot
+// id reaches.
+func (c *Catalog) MarkComplete(id object.ID) error {
+	return c.setComplete(id, true)
+}
+
+// MarkPartial records that the catalog does not hold every object that
+// snapshot id reaches.
+func (c *Catalog) MarkPartial(id object.ID) error {
+	return c.setComplete(id, false)
+}
+
+// Complete reports whether the completeness file marks id complete. An
+// id that the file does not list reports false.
 func (c *Catalog) Complete(id object.ID) bool {
 	return c.state[id.TextForm()]
 }
 
-// IncompleteError reports that a snapshot's tree set is not fully
-// present in the catalog, naming, when it can be resolved, the disc that
-// holds a missing tree.
-type IncompleteError struct {
-	// Snapshot is the snapshot whose tree set is incomplete.
+// Partial reports whether the completeness file marks id partial.
+func (c *Catalog) Partial(id object.ID) bool {
+	complete, listed := c.state[id.TextForm()]
+	return listed && !complete
+}
+
+// PartialError reports that the catalog does not hold every tree that a
+// snapshot reaches. When it can, it names the disc that holds a missing
+// tree.
+type PartialError struct {
+	// Snapshot is the partial snapshot.
 	Snapshot object.ID
-	// MissingTree is the first tree id the walk could not find, or
-	// Snapshot itself when the catalog never received the snapshot
-	// object at all.
+	// MissingTree is the first tree id that the walk could not find, or
+	// Snapshot itself when the catalog does not hold the snapshot object.
 	MissingTree object.ID
-	// DiscUUID is the disc known to store MissingTree, resolved through
-	// a catalog disc's INDEX Objects or Prereqs table. HasDiscUUID is
-	// false when unknown.
+	// DiscUUID is the disc that stores MissingTree, found through the
+	// Objects or Prereqs table of an INDEX in the catalog. HasDiscUUID
+	// is false when no INDEX names the disc.
 	DiscUUID    [16]byte
 	HasDiscUUID bool
-	// Label is that disc's on-disc label, empty when no catalog DISCS
-	// row names the disc.
+	// Label is the label of that disc, empty when no DISCS row in the
+	// catalog names the disc.
 	Label string
 }
 
-func (e *IncompleteError) Error() string {
+func (e *PartialError) Error() string {
 	if e.HasDiscUUID {
-		return fmt.Sprintf("snapshot %s: object %s is missing from the cache; disc %s%s holds it",
+		return fmt.Sprintf("snapshot %s: object %s is missing from the catalog; disc %s%s holds it",
 			e.Snapshot.TextForm(), e.MissingTree.TextForm(), uuidText(e.DiscUUID), LabelSuffix(e.Label))
 	}
-	return fmt.Sprintf("snapshot %s: object %s is missing from the cache; no cached INDEX names the disc that holds it",
+	return fmt.Sprintf("snapshot %s: object %s is missing from the catalog; no INDEX in the catalog names the disc that holds it",
 		e.Snapshot.TextForm(), e.MissingTree.TextForm())
 }
 
@@ -121,9 +142,9 @@ func LabelSuffix(label string) string {
 }
 
 // CheckComplete reports whether id's tree set is present in the catalog.
-// It trusts the persisted record when Complete already says true, and
-// otherwise resolves an IncompleteError naming the missing tree and,
-// where possible, the run or disc that holds it.
+// It trusts the completeness file when Complete already says true.
+// Otherwise it returns a PartialError that names the missing tree and,
+// when it can, the disc that holds it.
 func (c *Catalog) CheckComplete(id object.ID) error {
 	if c.Complete(id) {
 		return nil
@@ -135,7 +156,7 @@ func (c *Catalog) CheckComplete(id object.ID) error {
 	if ok {
 		return c.setComplete(id, true)
 	}
-	return c.incompleteError(id, missing)
+	return c.partialError(id, missing)
 }
 
 // walkTrees walks every tree reachable from snapshot id's root tree,
@@ -180,7 +201,7 @@ func (c *Catalog) walkTrees(id object.ID) (missing object.ID, complete bool, err
 }
 
 // refreshComplete recomputes and persists id's completeness. It returns
-// only I/O errors, never an IncompleteError; call CheckComplete for a
+// only I/O errors, never a PartialError; call CheckComplete for a
 // resolved report of what is missing.
 func (c *Catalog) refreshComplete(id object.ID) error {
 	_, ok, err := c.walkTrees(id)
@@ -190,11 +211,11 @@ func (c *Catalog) refreshComplete(id object.ID) error {
 	return c.setComplete(id, ok)
 }
 
-// incompleteError builds an IncompleteError for snapshot id and its
+// partialError builds a PartialError for snapshot id and its
 // first missing tree, resolving the disc that holds the tree through
 // LocateObject and its label through DiscRow.
-func (c *Catalog) incompleteError(id, missingTree object.ID) *IncompleteError {
-	e := &IncompleteError{Snapshot: id, MissingTree: missingTree}
+func (c *Catalog) partialError(id, missingTree object.ID) *PartialError {
+	e := &PartialError{Snapshot: id, MissingTree: missingTree}
 
 	loc, found := c.LocateObject(missingTree)
 	if !found {
@@ -233,7 +254,7 @@ type ObjectLocation struct {
 // A Prereqs row names the disc by uuid, so the lookup never depends on
 // a run number, which can repeat after a repository is rebuilt.
 func (c *Catalog) LocateObject(id object.ID) (ObjectLocation, bool) {
-	uuids, err := c.cachedDiscs()
+	uuids, err := c.catalogDiscs()
 	if err != nil {
 		return ObjectLocation{}, false
 	}
@@ -286,7 +307,7 @@ func (c *Catalog) DiscRow(uuid [16]byte) (format.DiscsRow, bool) {
 	if row, found := c.ownDiscRow(uuid); found {
 		return row, true
 	}
-	uuids, err := c.cachedDiscs()
+	uuids, err := c.catalogDiscs()
 	if err != nil {
 		return format.DiscsRow{}, false
 	}

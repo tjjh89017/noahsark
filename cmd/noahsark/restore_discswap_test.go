@@ -289,8 +289,8 @@ func TestRestoreDiscSwapDiscFromEarlierRunNotNeeded(t *testing.T) {
 	}
 
 	// A second snapshot, packed to its own disc: known to this
-	// repository's cache, but not needed to restore the first snapshot.
-	// Two packs in one second tie on created_sec; the cache then takes
+	// repository's catalog, but not needed to restore the first snapshot.
+	// Two packs in one second tie on created_sec; the catalog then takes
 	// the disc whose DISCS table has more rows, which is this one.
 	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("more content"), 0o644); err != nil {
 		t.Fatal(err)
@@ -376,7 +376,7 @@ func TestRestoreDiscSwapStillReportsAGenuineMismatch(t *testing.T) {
 var mismatchNamesRe = regexp.MustCompile(`expected disc \d+ "[^"]+" \([0-9a-f-]+\), found disc \d+ "[^"]+" \([0-9a-f-]+\)`)
 
 // TestRestoreMountUnknownRefNamesProvidedDiscs checks that restore
-// --mount with a ref name the cache does not know reports the ref as
+// --mount with a ref name the catalog does not know reports the ref as
 // not on the provided disc(s), not as a name unknown outright: --mount
 // implies discs are being fed in, so a later one may still carry it.
 func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
@@ -392,7 +392,7 @@ func TestRestoreMountUnknownRefNamesProvidedDiscs(t *testing.T) {
 		t.Fatalf("restore --mount unknown ref output = %q, want the provided-disc(s) wording", out)
 	}
 	if strings.Contains(out, "neither a snapshot id nor a known ref name") {
-		t.Fatalf("restore --mount unknown ref output = %q, want the disc-oriented wording, not the cache one", out)
+		t.Fatalf("restore --mount unknown ref output = %q, want the disc-oriented wording, not the catalog one", out)
 	}
 }
 
@@ -421,7 +421,7 @@ func TestRestoreSnapshotIDPrefixNamesItself(t *testing.T) {
 // exactly the discs that hold a needed chunk: the same discs a
 // disc-swap restore of that scope actually reads. A disc the plan
 // names only because it holds a needed tree or blob object, never read
-// from a disc since the assembler resolves those from the cache, would
+// from a disc since the assembler resolves those from the catalog, would
 // otherwise make the dry-run list a disc restore never asks for.
 func TestDryRunDiscListMatchesTheDiscsRestoreReads(t *testing.T) {
 	repo, snapID, src, _ := discSwapFixture(t)

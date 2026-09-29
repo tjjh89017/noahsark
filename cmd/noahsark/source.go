@@ -77,14 +77,14 @@ func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 // The ref file is the authoritative local state: commit writes it, and
 // a pack has not yet carried the newest names into any disc's REFS.
 func (s *catalogSource) Refs() (*format.RefsTable, error) {
-	cached, catalogErr := s.c.Refs()
+	catalogRefs, catalogErr := s.c.Refs()
 	local, localErr := readRefs(s.repoDir)
 	if catalogErr != nil && (localErr != nil || len(local) == 0) {
 		// Nothing local and nothing in the catalog: the repository holds no ref
 		// at all, and the catalog's own message names the fix.
 		return nil, catalogErr
 	}
-	merged := cached
+	merged := catalogRefs
 	if merged == nil {
 		merged = &format.RefsTable{}
 	}
@@ -138,11 +138,11 @@ func (s *catalogSource) SnapshotIDs() ([]object.ID, error) {
 			}
 		}
 	}
-	cached, err := s.c.ListSnapshots()
+	catalogIDs, err := s.c.ListSnapshots()
 	if err != nil && len(ids) == 0 {
 		return nil, err
 	}
-	for _, id := range cached {
+	for _, id := range catalogIDs {
 		add(id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
@@ -159,7 +159,7 @@ type notHeldError struct {
 }
 
 func (e *notHeldError) Error() string {
-	return fmt.Sprintf("%s %s is neither staged nor cached; run pack, or run recover with the disc that holds it", e.kind, e.id.TextForm())
+	return fmt.Sprintf("%s %s is neither staged nor in the catalog; run pack, or run recover with the disc that holds it", e.kind, e.id.TextForm())
 }
 
 // ParseSnapshotArg resolves arg as a snapshot id, or, failing that, as a
@@ -233,7 +233,7 @@ func openCatalogSource(e *env) (*catalogSource, *catalog.Catalog, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	c, err := catalog.Open(catalog.Dir(repoDir))
+	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -265,36 +265,23 @@ func looksLikePathNotDisc(s string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// formatIncompleteError renders a *catalog.IncompleteError the way ls,
-// log and plan all report it: naming the snapshot and, when it can be
-// resolved, the disc to insert and the command that would fix it.
-func formatIncompleteError(cmd string, e *catalog.IncompleteError) string {
-	return fmt.Sprintf("noahsark: %s: %s", cmd, incompleteErrorBody(e))
-}
-
-// incompleteErrorBody renders a *catalog.IncompleteError with no
-// "noahsark: <cmd>:" prefix, for a caller that wraps it inside its own
-// already-prefixed message instead of printing it standalone.
-func incompleteErrorBody(e *catalog.IncompleteError) string {
-	if e.HasDiscUUID {
-		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s%s and run recover",
-			e.Snapshot.TextForm(), uuidText(e.DiscUUID), catalog.LabelSuffix(e.Label))
-	}
-	return fmt.Sprintf("snapshot %s is not complete in the cache; run recover with the disc that holds it",
-		e.Snapshot.TextForm())
+// formatPartialError renders a *catalog.PartialError the way ls, log
+// and restore report a partial snapshot.
+func formatPartialError(cmd string, e *catalog.PartialError) string {
+	return fmt.Sprintf("noahsark: %s: snapshot %s is partial; run recover with more discs", cmd, e.Snapshot.TextForm())
 }
 
 // reportSourceError prints err the way ls, log and plan all report a
-// read failure. An incomplete catalog snapshot and a missing disc are
+// read failure. A partial snapshot and a missing disc are
 // both a failure at run time, exit code 1, the same as any other read
-// failure here; a missing disc or an incomplete catalog is not a bad
+// failure here; a missing disc or a partial snapshot is not a bad
 // argument, so it never takes the usage-error code. c is nil in disc
 // mode.
 func reportSourceError(cmd string, stderr io.Writer, err error, c *catalog.Catalog, snapID object.ID) int {
 	if c != nil {
 		if ce := c.CheckComplete(snapID); ce != nil {
-			if ie, ok := errors.AsType[*catalog.IncompleteError](ce); ok {
-				_, _ = fmt.Fprintln(stderr, formatIncompleteError(cmd, ie))
+			if pe, ok := errors.AsType[*catalog.PartialError](ce); ok {
+				_, _ = fmt.Fprintln(stderr, formatPartialError(cmd, pe))
 				return 1
 			}
 		}

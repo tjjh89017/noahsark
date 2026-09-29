@@ -184,10 +184,10 @@ func TestGCDryRunDefaultIsASummary(t *testing.T) {
 	}
 }
 
-// TestGCRefusesAnUncachedRun runs gc with the catalog emptied: gc
+// TestGCSkipsADiscWithNoCatalogIndex runs gc with the catalog emptied: gc
 // must not delete any object whose run's INDEX it cannot confirm
 // against, even though the object is otherwise eligible.
-func TestGCRefusesAnUncachedRun(t *testing.T) {
+func TestGCSkipsADiscWithNoCatalogIndex(t *testing.T) {
 
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -196,7 +196,7 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	catalogDir := catalog.Dir(repo)
+	catalogDir := repoCatalogDir(t, repo)
 
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
@@ -219,7 +219,7 @@ func TestGCRefusesAnUncachedRun(t *testing.T) {
 	}
 }
 
-// TestGCPlanTakesTheIndexOfTheObjectsOwnDisc caches two discs that
+// TestGCPlanTakesTheIndexOfTheObjectsOwnDisc writes two discs that
 // carry the same run_seq, as two discs do after a lost repository. gc
 // must confirm a staged object in the catalog INDEX of the disc its own
 // state record names. The INDEX of the other disc must never stand in

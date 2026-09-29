@@ -234,7 +234,7 @@ func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 	}
 }
 
-// TestLsFromCacheWithNoDisc packs a repository, then runs ls with no
+// TestLsFromCatalogWithNoDisc packs a repository, then runs ls with no
 // disc given at all: it must resolve the snapshot and list its root
 // entries from the catalog pack left behind, the same as the
 // disc-based listing.
@@ -249,20 +249,20 @@ func TestLsFromCatalogWithNoDisc(t *testing.T) {
 
 	catalogCode, catalogOut := runCmd(t, "--repo="+repo, "ls", snapID)
 	if catalogCode != 0 {
-		t.Fatalf("ls (cache): exit %d: %s", catalogCode, catalogOut)
+		t.Fatalf("ls (catalog): exit %d: %s", catalogCode, catalogOut)
 	}
 	if catalogOut != discOut {
-		t.Fatalf("ls from cache = %q, want %q (same as disc)", catalogOut, discOut)
+		t.Fatalf("ls from catalog = %q, want %q (same as disc)", catalogOut, discOut)
 	}
 	_ = src
 }
 
-// TestLsFromCacheReportsIncompleteSnapshot builds a multi-disc
+// TestLsFromCatalogReportsPartialSnapshot builds a multi-disc
 // repository, wipes the catalog, then rebuilds it from only the last
 // disc: the snapshot's tree spans earlier discs too, so the catalog ends
-// up genuinely incomplete. ls with no disc given must exit 3 and name
+// up partial. ls with no disc given must exit 1 and name
 // recover as the fix.
-func TestLsFromCatalogReportsIncompleteSnapshot(t *testing.T) {
+func TestLsFromCatalogReportsPartialSnapshot(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
@@ -307,12 +307,12 @@ func TestLsFromCatalogReportsIncompleteSnapshot(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("ls: exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "not complete in the cache") || !strings.Contains(out, "recover") {
-		t.Fatalf("ls output %q does not report an incomplete cache", out)
+	if !strings.Contains(out, " is partial; run recover with more discs") {
+		t.Fatalf("ls output %q does not report a partial snapshot", out)
 	}
 }
 
-// TestLsAndLogAgreeOnAnEmptyCache checks that ls and log report a catalog
+// TestLsAndLogAgreeOnAnEmptyCatalog checks that ls and log report a catalog
 // with no disc in it the same way: it is a failure at run time, exit 1,
 // for the listing form and for the one-snapshot form alike.
 func TestLsAndLogAgreeOnAnEmptyCatalog(t *testing.T) {
@@ -331,8 +331,8 @@ func TestLsAndLogAgreeOnAnEmptyCatalog(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("%v: exit %d, want 1: %s", args, code, out)
 		}
-		if !strings.Contains(out, "no disc is cached yet") {
-			t.Fatalf("%v output %q does not name the empty cache", args, out)
+		if !strings.Contains(out, "no disc is in the catalog yet") {
+			t.Fatalf("%v output %q does not name the empty catalog", args, out)
 		}
 	}
 }

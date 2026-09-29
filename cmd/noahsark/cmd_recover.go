@@ -105,10 +105,10 @@ func cmdRecover(e *env, args []string) int {
 	}
 	warnIfTruncated("recover", stageLog, stderr)
 
-	if err := recoverCacheFromRoots(repoDir, readRoots); err != nil {
+	if err := recoverCatalogFromRoots(repoDir, readRoots); err != nil {
 		// The catalog is only an accelerator: a failure to populate it
 		// never fails recover itself.
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover: cache:", err)
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 	}
 
 	// Load every ledger and ref this repository already carries before
@@ -209,15 +209,15 @@ func discsNotFed(rows []format.DiscsRow, l *stage.Log) []format.DiscsRow {
 	return out
 }
 
-// recoverCacheFromRoots copies every one of readRoots' run catalog,
+// recoverCatalogFromRoots copies every one of readRoots' run catalog,
 // snapshots and trees into the catalog, so recover leaves ls
 // and plan able to run with no disc present, the same way pack does
 // right after building a run.
-func recoverCacheFromRoots(repoDir string, readRoots []string) error {
+func recoverCatalogFromRoots(repoDir string, readRoots []string) error {
 	if len(readRoots) == 0 {
 		return nil
 	}
-	c, err := catalog.Open(catalog.Dir(repoDir))
+	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return err
 	}

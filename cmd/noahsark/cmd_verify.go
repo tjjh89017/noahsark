@@ -382,7 +382,7 @@ func markVerifyFailed(l *stage.Log, discUUID [16]byte) int {
 // later confirm an object's presence through the catalog INDEX without
 // asking for the disc again.
 func catalogRunFromDisc(repoDir, target string) error {
-	c, err := catalog.Open(catalog.Dir(repoDir))
+	c, err := catalog.Open(repoDir)
 	if err != nil {
 		return err
 	}

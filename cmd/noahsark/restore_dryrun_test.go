@@ -144,8 +144,7 @@ func dryRunTotalObjects(t *testing.T, out string) int {
 func TestRestoreDryRunMissingDisc(t *testing.T) {
 	repo, snapID, _, _ := multiDiscPlanFixture(t)
 
-	catalogDir := repoCatalogDir(t, repo)
-	if err := os.RemoveAll(filepath.Join(catalogDir, "discs", firstCatalogDiscUUID(t, catalogDir))); err != nil {
+	if err := os.RemoveAll(filepath.Join(repoCatalogDir(t, repo), "discs", firstCatalogDiscUUID(t, repo))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,9 +162,9 @@ func TestRestoreDryRunMissingDisc(t *testing.T) {
 
 // firstCatalogDiscUUID returns the text form of the uuid of the disc
 // with disc_seq 0, the first disc the fixture packed.
-func firstCatalogDiscUUID(t *testing.T, catalogDir string) string {
+func firstCatalogDiscUUID(t *testing.T, repo string) string {
 	t.Helper()
-	c, err := catalog.Open(catalogDir)
+	c, err := catalog.Open(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,13 +177,13 @@ func firstCatalogDiscUUID(t *testing.T, catalogDir string) string {
 			return uuidText(row.DiscUUID)
 		}
 	}
-	t.Fatal("no cached DISCS row has disc_seq 0")
+	t.Fatal("no DISCS row in the catalog has disc_seq 0")
 	return ""
 }
 
-// TestRestoreDryRunEmptyCacheNamesTheFix checks that "restore --dry-run"
+// TestRestoreDryRunEmptyCatalogNamesTheFix checks that "restore --dry-run"
 // against a repository that has never packed or rebuilt anything fails
-// with a message naming the fix, not a bare "no run is cached" with no
+// with a message naming the fix, not a bare "no disc in the catalog" with no
 // next step.
 func TestRestoreDryRunEmptyCatalogNamesTheFix(t *testing.T) {
 	work := t.TempDir()
@@ -195,13 +194,13 @@ func TestRestoreDryRunEmptyCatalogNamesTheFix(t *testing.T) {
 
 	code, out := runRestoreDryRun(t, repo, defaultRefName())
 	if code == 0 {
-		t.Fatalf("restore --dry-run (empty cache): exit 0, want a failure: %s", out)
+		t.Fatalf("restore --dry-run (empty catalog): exit 0, want a failure: %s", out)
 	}
-	if !strings.Contains(out, "no disc is cached yet") {
-		t.Fatalf("restore --dry-run (empty cache) output %q missing \"no disc is cached yet\"", out)
+	if !strings.Contains(out, "no disc is in the catalog yet") {
+		t.Fatalf("restore --dry-run (empty catalog) output %q missing \"no disc is in the catalog yet\"", out)
 	}
 	if !strings.Contains(out, "recover") {
-		t.Fatalf("restore --dry-run (empty cache) output %q missing the fix, recover", out)
+		t.Fatalf("restore --dry-run (empty catalog) output %q missing the fix, recover", out)
 	}
 }
 

@@ -98,7 +98,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 		return 1
 	}
 	warnIfTruncated("gc", stageLog, stderr)
-	c, err := catalog.Open(catalog.Dir(repoDir))
+	c, err := catalog.Open(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1
@@ -135,7 +135,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 		}
 	}
 	if uncataloged > 0 {
-		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncataloged)
+		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not in the catalog\n", uncataloged)
 	}
 
 	// A staged file gc could not unlink is a failure at run time, named

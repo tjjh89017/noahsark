@@ -174,7 +174,7 @@ func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
 	}
 }
 
-// TestLogFromCacheWithNoDisc checks log resolves the same way, both
+// TestLogFromCatalogWithNoDisc checks log resolves the same way, both
 // listing every snapshot and printing one snapshot's own details.
 func TestLogFromCatalogWithNoDisc(t *testing.T) {
 	treeDir, snapID, _ := lsFixture(t)
@@ -186,10 +186,10 @@ func TestLogFromCatalogWithNoDisc(t *testing.T) {
 	}
 	catalogCode, catalogOut := runCmd(t, "--repo="+repo, "log", snapID)
 	if catalogCode != 0 {
-		t.Fatalf("log (cache): exit %d: %s", catalogCode, catalogOut)
+		t.Fatalf("log (catalog): exit %d: %s", catalogCode, catalogOut)
 	}
 	if catalogOut != discOut {
-		t.Fatalf("log from cache = %q, want %q (same as disc)", catalogOut, discOut)
+		t.Fatalf("log from catalog = %q, want %q (same as disc)", catalogOut, discOut)
 	}
 
 	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 {
