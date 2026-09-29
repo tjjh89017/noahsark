@@ -172,8 +172,8 @@ because you answered no, prints no `next:` line. `restore`, `ls`, `log`,
 `image build`, `--dry-run`, `verify --no-mark`, and a `verify` that is not
 counted print none either.
 
-`status` prints the staged total, one line for each snapshot that is
-packed in parts ("A snapshot packed in parts"), one line for each disc,
+`status` prints the staged total, one line for each snapshot that is not
+complete on discs ("A snapshot packed in parts"), one line for each disc,
 and one `next:` block. The block holds the lines to run next, with real paths. The lines
 of a block are joined with `&&`, so a failed line stops the lines after
 it. Paste the lines under `next:` as they are.
@@ -181,6 +181,7 @@ it. Paste the lines under `next:` as they are.
 ```
 $ noahsark status
 staged: 8 items, 3001350 bytes
+snapshot 1b03c7e2a9f4: 8 items staged, not complete on discs; recover cannot find it from the discs alone
 next: load a blank disc, then run:
   dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
 then paste this line, type the capacity, and press Enter:
@@ -241,8 +242,8 @@ total: 1 discs, 8 items, 3001350 bytes
 A snapshot that is larger than one disc goes on two or more discs. Each
 `pack` takes the next part. The snapshot object itself goes on the disc
 that holds the last part. Until that disc exists, `recover` from the discs
-alone cannot find the snapshot. `status` names such a snapshot on a line
-of its own:
+alone cannot find the snapshot. `status` names each snapshot that is not
+complete on discs on a line of its own, a new commit too:
 
 ```
 $ noahsark status
@@ -255,11 +256,19 @@ then paste this line, type the capacity, and press Enter:
   noahsark pack --capacity=
 ```
 
-`pack` always takes the rest of such a snapshot first, before a newer
-snapshot. `pack` does not wait for a full disc. You decide when to pack a
-small rest: pack it now on a small disc, or commit more and pack later. The
-snapshot is safe on discs only after its rest is packed and the disc is
-verified.
+`pack` takes the snapshots in the order of their time, the oldest first.
+Thus the rest of such a snapshot goes before each newer snapshot. `pack`
+does not wait for a full disc. You decide when to pack a small rest: pack
+it now on a small disc, or commit more and pack later. The snapshot is safe
+on discs only after its rest is packed and the disc is verified.
+
+After `disc lost` of a disc that held a part, the snapshot line says `the
+discs alone cannot restore all of it`. The next `pack` takes the items of
+the lost disc again.
+
+When `pack` or `status` prints `warning: snapshot ID: cannot pack all of
+it`, a staged item of that snapshot is damaged. `pack` packs the rest.
+Commit the same source again, then pack. The warning names the repair.
 
 
 ### Build the image, burn, and verify

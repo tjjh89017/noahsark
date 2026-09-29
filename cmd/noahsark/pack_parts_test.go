@@ -5,10 +5,12 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -191,4 +193,258 @@ func TestSnapshotPackedInPartsReachesTheDiscs(t *testing.T) {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
 	compareTrees(t, dest, src)
+}
+
+// lostPartLineRe matches the status line of a snapshot whose snapshot
+// object a disc holds while pack still takes Staged items with it.
+var lostPartLineRe = regexp.MustCompile(`^snapshot ([0-9a-f]{12}): (\d+) items staged, not complete on discs; the discs alone cannot restore all of it$`)
+
+// packThreeParts commits a source of six files into a new repository in
+// work and packs it in three parts on the discs disc0, disc1 and disc2 of
+// work. The trees and the snapshot object go on disc2. It returns the
+// repository, the source, the snapshot id and the three disc roots.
+func packThreeParts(t *testing.T, work string) (repo, src, snapID string, roots []string) {
+	t.Helper()
+	repo = filepath.Join(work, "repo")
+	src = writeSeededSource(t, 42, 6)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	snapID = snapshotIDFromCommit(t, out)
+	for i := range 3 {
+		roots = append(roots, filepath.Join(work, fmt.Sprintf("disc%d", i)))
+		packPart(t, repo, roots[i])
+	}
+	if n := countByState(t, repo, stage.Staged); n != 0 {
+		t.Fatalf("%d items staged after three packs, want 0", n)
+	}
+	return repo, src, snapID, roots
+}
+
+// packRestagedAndRestore checks a repository whose Staged items belong
+// to the snapshot snapID only through the trees and blobs of other
+// discs. status names the snapshot with the count of these items, the
+// next pack takes each of them, and status then names it no more. The
+// test deletes the repository, recovers it from the discs of kept and
+// the new disc, restores snapID and compares it with src. other is the
+// count of the Staged items that go with another snapshot.
+func packRestagedAndRestore(t *testing.T, work, repo, src, snapID string, kept []string, other int) {
+	t.Helper()
+	staged := countByState(t, repo, stage.Staged)
+	if staged <= other {
+		t.Fatal("no item is staged again; the fixture must return items to staged")
+	}
+	line := snapshotLineOf(t, repo, snapID)
+	if m := lostPartLineRe.FindStringSubmatch(line); m == nil || m[2] != fmt.Sprint(staged-other) {
+		t.Fatalf("status line of %s: %q, want the lost-part line with %d items", snapID, line, staged-other)
+	}
+
+	newDisc := filepath.Join(work, "disc-new")
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+newDisc)
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf(": %d item(s), ", staged)) {
+		t.Fatalf("pack output %q, want the %d staged items on the new disc", out, staged)
+	}
+	if n := countByState(t, repo, stage.Staged); n != 0 {
+		t.Fatalf("%d items staged after the pack, want 0", n)
+	}
+	if line := snapshotLineOf(t, repo, snapID); line != "" {
+		t.Fatalf("status still names the snapshot: %q", line)
+	}
+
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	discs := append(slices.Clone(kept), newDisc)
+	for _, root := range discs {
+		if code, out := recoverDisc(t, repo, src, root); code != 0 && !strings.Contains(out, "not yet given") {
+			t.Fatalf("recover %s: exit %d: %s", root, code, out)
+		}
+	}
+	dest := filepath.Join(work, "restored")
+	if code, out := restoreFromDiscs(t, repo, snapID, dest, discs...); code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, out)
+	}
+	compareTrees(t, dest, src)
+}
+
+// TestPackTakesTheItemsOfALostDisc packs a snapshot in three parts and
+// marks the first disc lost while it is burned. Its items return to
+// staged, below trees and a snapshot object of the third disc. The next
+// pack must take them, and the discs without the lost one must restore
+// the snapshot.
+func TestPackTakesTheItemsOfALostDisc(t *testing.T) {
+	work := t.TempDir()
+	repo, src, snapID, roots := packThreeParts(t, work)
+	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", "0"); code != 0 {
+		t.Fatalf("disc burned: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "--force-yes", "disc", "lost", "0"); code != 0 {
+		t.Fatalf("disc lost: exit %d: %s", code, out)
+	}
+	packRestagedAndRestore(t, work, repo, src, snapID, roots[1:], 0)
+}
+
+// TestPackTakesTheItemsOfALostDiscAfterGC packs a snapshot in three
+// parts, verifies the discs, lets gc free them, and marks the first disc
+// lost. Its items are lost. A commit of the same source stages them
+// again. The next pack must take them, and the discs without the lost
+// one must restore the first snapshot.
+func TestPackTakesTheItemsOfALostDiscAfterGC(t *testing.T) {
+	work := t.TempDir()
+	repo, src, snapID, roots := packThreeParts(t, work)
+	for i, root := range roots {
+		mounted := filepath.Join(work, fmt.Sprintf("mounted%d", i))
+		copyTree(t, root, mounted)
+		if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
+			t.Fatalf("verify disc %d: exit %d: %s", i, code, out)
+		}
+	}
+	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
+		t.Fatalf("gc: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "--force-yes", "disc", "lost", "0"); code != 0 {
+		t.Fatalf("disc lost: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	if code != 0 {
+		t.Fatalf("commit again: exit %d: %s", code, out)
+	}
+	second := snapshotIDFromCommit(t, out)
+	// The second snapshot reaches the same root tree, which a disc holds,
+	// so the items that the commit staged again go with the older first
+	// snapshot. The second snapshot takes only its own snapshot object.
+	if line := snapshotLineOf(t, repo, second); !strings.Contains(line, ": 1 items staged, ") {
+		t.Fatalf("status line of the second snapshot: %q, want 1 item", line)
+	}
+	packRestagedAndRestore(t, work, repo, src, snapID, roots[1:], 1)
+}
+
+// TestPackOrderFollowsSnapshotTime commits an older snapshot that shares
+// nothing with a disc, and a newer one that shares a file with a disc.
+// pack takes the older snapshot first: an item on a disc gives a newer
+// snapshot no place before it.
+func TestPackOrderFollowsSnapshotTime(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	srcA := writeSeededSource(t, 42, 2)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", srcA); code != 0 {
+		t.Fatalf("commit A: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=bd25", "--out="+filepath.Join(work, "d0")); code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=b", writeSeededSource(t, 43, 6))
+	if code != 0 {
+		t.Fatalf("commit B: exit %d: %s", code, out)
+	}
+	idB := snapshotIDFromCommit(t, out)
+	extra := writeSeededSource(t, 44, 1)
+	if err := os.Rename(filepath.Join(extra, "sub0"), filepath.Join(srcA, "new")); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCmd(t, "--repo="+repo, "commit", "--ref=a2", srcA)
+	if code != 0 {
+		t.Fatalf("commit A2: exit %d: %s", code, out)
+	}
+	idA2 := snapshotIDFromCommit(t, out)
+
+	var named []string
+	for _, line := range statusLines(t, repo) {
+		if m := statusSnapshotLineRe.FindStringSubmatch(line); m != nil {
+			named = append(named, m[1])
+		}
+	}
+	if want := []string{idB[4:16], idA2[4:16]}; !slices.Equal(named, want) {
+		t.Fatalf("status names the snapshots %v, want %v: the older snapshot B first", named, want)
+	}
+
+	// A disc that holds only a part of B takes no item of A2.
+	countOf := func(id string) string {
+		m := statusSnapshotLineRe.FindStringSubmatch(snapshotLineOf(t, repo, id))
+		if m == nil {
+			return ""
+		}
+		return m[2]
+	}
+	beforeB, beforeA2 := countOf(idB), countOf(idA2)
+	root := filepath.Join(work, "d1")
+	code, out = runCmd(t, "--repo="+repo, "pack", "--capacity="+partsCapacity, "--out="+root)
+	if code != 0 {
+		t.Fatalf("pack: exit %d: %s", code, out)
+	}
+	afterB, afterA2 := countOf(idB), countOf(idA2)
+	if afterB == "" || afterB == beforeB || afterA2 != beforeA2 {
+		t.Fatalf("staged counts of B %s -> %s, of A2 %s -> %s; want a part of B only", beforeB, afterB, beforeA2, afterA2)
+	}
+	rr, err := image.Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, _ := object.ParseID(idA2)
+	if slices.ContainsFunc(rr.Index.Objects, func(row format.IndexObjectRecord) bool { return object.ID(row.ContentID) == a2 }) {
+		t.Fatal("the disc holds the snapshot object of the newer snapshot A2")
+	}
+}
+
+// TestPackAndStatusGoOnPastADamagedSnapshot damages a staged tree of a
+// snapshot whose source is gone, then commits a second snapshot that
+// shares nothing with it. status prints its lines and a warning, and
+// exits 1. pack warns about the damaged snapshot, packs the second
+// snapshot, and exits 1.
+func TestPackAndStatusGoOnPastADamagedSnapshot(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	srcA := writeSeededSource(t, 42, 2)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", srcA)
+	if code != 0 {
+		t.Fatalf("commit A: exit %d: %s", code, out)
+	}
+	idA := snapshotIDFromCommit(t, out)
+	damaged := truncateOneStagedTree(t, repo)
+	if err := os.RemoveAll(srcA); err != nil {
+		t.Fatal(err)
+	}
+	code, out = runCmd(t, "--repo="+repo, "commit", writeSeededSource(t, 43, 2))
+	if code != 0 {
+		t.Fatalf("commit B: exit %d: %s", code, out)
+	}
+	idB := snapshotIDFromCommit(t, out)
+	warning := fmt.Sprintf("warning: snapshot %s: cannot pack all of it: tree %s is damaged; commit the same source again", idA[4:16], damaged)
+
+	te := newTestEnv(t.TempDir())
+	code, _ = te.run("--repo="+repo, "status")
+	if code != 1 || !strings.Contains(te.errOut.String(), "noahsark: status: "+warning) {
+		t.Fatalf("status: exit %d, stderr %q, want 1 and the warning %q", code, te.errOut.String(), warning)
+	}
+	for _, id := range []string{idA, idB} {
+		if !strings.Contains(te.out.String(), "snapshot "+id[4:16]+": ") {
+			t.Fatalf("status stdout %q, want the line of snapshot %s", te.out.String(), id[4:16])
+		}
+	}
+
+	code, _ = te.run("--repo="+repo, "pack", "--capacity=bd25", "--out="+filepath.Join(work, "d0"))
+	if code != 1 || !strings.Contains(te.errOut.String(), "noahsark: pack: "+warning) || !strings.Contains(te.out.String(), "packed disc 0 ") {
+		t.Fatalf("pack: exit %d, stdout %q, stderr %q, want 1, the packed disc and the warning", code, te.out.String(), te.errOut.String())
+	}
+	b, _ := object.ParseID(idB)
+	if rec, _ := openTestLog(t, repo).Get(b); rec.State != stage.Packed {
+		t.Fatalf("snapshot B is %v after the pack, want Packed", rec.State)
+	}
+	a, _ := object.ParseID(idA)
+	if rec, _ := openTestLog(t, repo).Get(a); rec.State != stage.Staged {
+		t.Fatalf("snapshot A is %v after the pack, want Staged", rec.State)
+	}
 }

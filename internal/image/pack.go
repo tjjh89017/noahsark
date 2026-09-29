@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -90,6 +92,10 @@ type PackOptions struct {
 	// tree, and FEC stripes encoded when FECEnabled. A nil Progress
 	// reports nothing.
 	Progress *progress.Reporter
+	// Unreadable gets each item that pack cannot take, once for each
+	// snapshot that reaches it. pack takes the other items. A nil
+	// Unreadable reports nothing.
+	Unreadable func(UnreadableItem)
 }
 
 // PackResult summarizes one Pack call: the run it built, plus what is
@@ -145,15 +151,18 @@ func refNamesText(snapshots []SnapshotRef) string {
 }
 
 // packUnit is one candidate object in dependency order: a tree, blob,
-// chunk or snapshot, with the direct child ids a metadata object (tree,
-// blob or snapshot) references, and the object's own file bytes when
-// already read.
+// chunk or snapshot, with the direct child ids of a metadata object
+// (tree, blob or snapshot) that a disc holds: the Prereqs rows the unit
+// can need. A child that the walk takes comes earlier in the order. The
+// walk keeps no bytes of a tree or a blob, so that its memory does not
+// grow with their size; pack reads them again for the objects that it
+// places.
 type packUnit struct {
 	ID       object.ID
 	Kind     format.ObjectKind
 	Children []object.ID
-	Bytes    []byte // nil for a chunk: its payload stays on staging disk.
-	ByteLen  uint64 // set once selectRun has sized the candidate.
+	Bytes    []byte // set for a snapshot object only.
+	ByteLen  uint64 // the size of the object file.
 }
 
 // snapshotIDs lists the snapshots through opts.SnapshotIDs, sorted by
@@ -168,12 +177,12 @@ func (opts PackOptions) snapshotIDs() ([]object.ID, error) {
 }
 
 // Pack selects the STAGED objects for exactly one run within
-// opts.TargetCapacitySectors, in this build's locality order (a snapshot's
-// tree and blob objects with their chunks, where the budget allows),
-// writes the run's NOAHSARK tree the same way Build does, and appends
-// every object it packed as Packed to opts.StageLog. Every snapshot
-// object in the repository is always written to this run's catalog,
-// whatever its own state.
+// opts.TargetCapacitySectors, in the pack order of buildPackPlan (a
+// snapshot's tree and blob objects with their chunks, where the budget
+// allows), writes the run's NOAHSARK tree the same way Build does, and
+// appends every object it packed as Packed to opts.StageLog. Every
+// snapshot object in the repository is always written to this run's
+// catalog, whatever its own state.
 func Pack(opts PackOptions) (*PackResult, error) {
 	if err := opts.check(); err != nil {
 		return nil, err
@@ -203,41 +212,102 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
 	}
 
-	onDisc := func(id object.ID) bool {
-		rec, ok := opts.StageLog.Get(id)
-		return ok && rec.State.OnDisc()
-	}
-	walkOrder, err := packWalkOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
-	if err != nil {
-		return nil, err
-	}
-	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, walkOrder, onDisc)
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []packUnit
-	for _, u := range order {
-		rec, ok := opts.StageLog.Get(u.ID)
-		if ok && rec.State.OnDisc() {
-			continue
+	// A chunk that fails its check while the run copies it goes into
+	// damaged, and the run is built again without it and without the
+	// items above it.
+	damaged := make(map[object.ID]bool)
+	reported := make(map[[2]object.ID]bool)
+	for {
+		plan, candidates, err := opts.plan(allSnapshotIDs, damaged, reported)
+		if err != nil {
+			return nil, err
 		}
-		if !ok {
-			// Defensive: every committed object should already carry a
-			// Staged record. Treat an unrecorded object as staged
-			// rather than silently dropping it from selection.
-			if err := opts.StageLog.EnsureStaged(u.ID); err != nil {
-				return nil, err
+		for _, u := range candidates {
+			if _, ok := opts.StageLog.Get(u.ID); !ok {
+				// Defensive: every committed object should already carry
+				// a Staged record. Treat an unrecorded object as staged
+				// rather than silently dropping it from selection.
+				if err := opts.StageLog.EnsureStaged(u.ID); err != nil {
+					return nil, err
+				}
 			}
 		}
-		candidates = append(candidates, u)
+		result, err := opts.packRun(plan, candidates, allSnapshotIDs, packTime)
+		if dmg, ok := errors.AsType[*ErrStagedDamaged](err); ok && dmg.Kind == format.ObjectKindChunk && !damaged[dmg.ID] {
+			damaged[dmg.ID] = true
+			continue
+		}
+		return result, err
 	}
+}
+
+// plan builds the pack order of the snapshots ids and returns it with
+// its candidates, each sized. A chunk whose file is missing goes into
+// damaged, and the order is built again without it. plan reports each
+// unreadable item through opts.Unreadable once for each key of
+// reported. A snapshot object that a disc holds and that the catalog
+// cannot give stops the pack: each run must carry it.
+func (opts PackOptions) plan(ids []object.ID, damaged map[object.ID]bool, reported map[[2]object.ID]bool) (*packPlan, []packUnit, error) {
+	for {
+		plan := buildPackPlan(opts.ObjectPath, ids, opts.StageLog, damaged, true, false)
+		for _, g := range plan.groups {
+			if g.OnDisc && g.Unreadable != nil && g.Unreadable.ID == g.ID {
+				return nil, nil, fmt.Errorf("snapshot %s: %s; each disc carries it: run recover with a disc that holds it", g.ID.TextForm(), g.Unreadable.Problem())
+			}
+		}
+		missing := false
+		for i := range plan.units {
+			u := &plan.units[i]
+			if u.Kind != format.ObjectKindChunk {
+				continue
+			}
+			fi, err := os.Stat(opts.ObjectPath(u.Kind, u.ID))
+			if errors.Is(err, fs.ErrNotExist) {
+				damaged[u.ID] = true
+				missing = true
+				continue
+			}
+			if err != nil {
+				return nil, nil, fmt.Errorf("chunk %s: %w", u.ID.TextForm(), err)
+			}
+			u.ByteLen = uint64(fi.Size())
+		}
+		if missing {
+			continue
+		}
+		report := func(item UnreadableItem) {
+			key := [2]object.ID{item.Snapshot, item.ID}
+			if opts.Unreadable != nil && !reported[key] {
+				reported[key] = true
+				opts.Unreadable(item)
+			}
+		}
+		for _, g := range plan.groups {
+			if g.Unreadable != nil {
+				report(*g.Unreadable)
+			}
+		}
+		for _, item := range plan.orphans {
+			report(item)
+		}
+		return plan, plan.units, nil
+	}
+}
+
+// packRun writes the run of candidates, the pack order of order, and
+// records it. It returns an *ErrStagedDamaged of a chunk when the copy
+// check of that chunk fails; nothing is recorded then.
+func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnapshotIDs []object.ID, packTime time.Time) (*PackResult, error) {
 	if len(candidates) == 0 {
+		if order.hasUnreadable() {
+			return nil, fmt.Errorf("%w: pack can read no staged object", ErrNothingToPack)
+		}
 		if len(opts.Snapshots) == 0 {
 			return nil, fmt.Errorf("%w: no staged object remains", ErrNothingToPack)
 		}
 		return nil, fmt.Errorf("%w: every object of %s is already on a disc", ErrNothingToPack, refNamesText(opts.Snapshots))
 	}
+	snapshotBytes := order.snapshotBytes
 
 	ledger, err := LoadDiscsLedger(opts.DiscsLedger, opts.RepoUUID)
 	if err != nil {
@@ -345,9 +415,16 @@ func Pack(opts PackOptions) (*PackResult, error) {
 
 	for _, h := range placed {
 		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, path: objectDiscPath(h.ID, h.Kind), inStream: true}
-		if h.Bytes != nil {
+		switch {
+		case h.Bytes != nil:
 			row.data = h.Bytes
-		} else {
+		case h.Kind != format.ObjectKindChunk:
+			data, err := readPlacedObject(opts.ObjectPath, h)
+			if err != nil {
+				return nil, err
+			}
+			row.data = data
+		default:
 			row.srcPath = opts.ObjectPath(h.Kind, h.ID)
 			row.srcID = h.ID
 		}
@@ -456,14 +533,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	}
 
 	remainingObjects, remainingBytes := 0, uint64(0)
-	selectedSet := make(map[object.ID]bool, len(selected))
-	for _, u := range selected {
-		selectedSet[u.ID] = true
-	}
-	for _, u := range candidates {
-		if selectedSet[u.ID] {
-			continue
-		}
+	for _, u := range candidates[len(selected):] {
 		remainingObjects++
 		n, err := objectByteLen(opts.ObjectPath, u)
 		if err != nil {
@@ -544,30 +614,15 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
 	}
 
-	onDisc := func(id object.ID) bool {
-		rec, ok := opts.StageLog.Get(id)
-		return ok && rec.State.OnDisc()
-	}
-	walkOrder, err := packWalkOrder(opts.ObjectPath, allSnapshotIDs, onDisc)
+	// An object with no state log record at all is a candidate here
+	// too, matching Pack's own defensive rule, but DryRun never writes
+	// the record: a read-only prediction must not change repository
+	// state.
+	plan, candidates, err := opts.plan(allSnapshotIDs, make(map[object.ID]bool), make(map[[2]object.ID]bool))
 	if err != nil {
 		return nil, err
 	}
-	order, snapshotBytes, err := buildPackOrder(opts.ObjectPath, walkOrder, onDisc)
-	if err != nil {
-		return nil, err
-	}
-
-	var candidates []packUnit
-	for _, u := range order {
-		if rec, ok := opts.StageLog.Get(u.ID); ok && rec.State.OnDisc() {
-			continue
-		}
-		// An object with no state log record at all is treated as
-		// staged here too, matching Pack's own defensive rule, but
-		// DryRun never writes the record: a read-only prediction must
-		// not change repository state.
-		candidates = append(candidates, u)
-	}
+	snapshotBytes := plan.snapshotBytes
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -641,10 +696,8 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 			}
 		}
 
-		selectedSet := make(map[object.ID]bool, len(selected))
 		var objectBytes uint64
 		for _, u := range selected {
-			selectedSet[u.ID] = true
 			objectBytes += u.ByteLen
 		}
 		discs = append(discs, DryRunDisc{
@@ -652,13 +705,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 			ObjectCount: len(selected), ObjectBytes: objectBytes,
 		})
 
-		remaining := candidates[:0:0]
-		for _, u := range candidates {
-			if !selectedSet[u.ID] {
-				remaining = append(remaining, u)
-			}
-		}
-		candidates = remaining
+		candidates = candidates[len(selected):]
 		rows = append(rows, newDiscsRow(discOpts.asBuildOptions(), packTime, runSeq, discSeq))
 	}
 	return discs, nil
@@ -692,16 +739,9 @@ const selectRunMaxIterations = 20
 // run's own file count is set aside, matching OPERATIONS.md's capacity
 // budget rules. Because the file count that sets the overhead is itself
 // the count of objects selected, selectRun iterates to a fixed point.
-// It returns the selected units and the set of external ids they
-// reference that this run does not store.
+// It returns the selected prefix of candidates and the set of external
+// ids it references: the children that a disc holds.
 func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uint64, fixedFileCount int) ([]packUnit, map[object.ID]bool, error) {
-	// sizeKnown and blocks cache each candidate's staged byte length and
-	// block count the first time a round reaches it, so a later round
-	// never re-stats a candidate and a candidate past every round's
-	// stopping point is never stat'd at all.
-	sizeKnown := make([]bool, len(candidates))
-	blocks := make([]uint64, len(candidates))
-
 	stripeWidth := fec.K + fec.M + 1
 	extraRows := extraFixedRowCount(opts.FECEnabled)
 
@@ -717,32 +757,21 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 			dataBudget = DataBudgetBlocksNoFEC(opts.TargetCapacitySectors, fileCount)
 		}
 
-		var round []packUnit
-		selectedSet := make(map[object.ID]bool)
+		n := 0
 		roundPrereqs := make(map[object.ID]bool)
 		var selectedBlocks uint64
 
-		for i, cand := range candidates {
-			if !sizeKnown[i] {
-				size, err := objectByteLen(opts.ObjectPath, cand)
-				if err != nil {
-					return nil, nil, err
-				}
-				candidates[i].ByteLen = size
-				blocks[i] = blockCount(size)
-				sizeKnown[i] = true
-			}
-			cand.ByteLen = candidates[i].ByteLen
-			candBlocks := blocks[i]
+		for _, cand := range candidates {
+			candBlocks := blockCount(cand.ByteLen)
 
 			var newPrereqs []object.ID
 			for _, c := range cand.Children {
-				if !selectedSet[c] && !roundPrereqs[c] {
+				if !roundPrereqs[c] {
 					newPrereqs = append(newPrereqs, c)
 				}
 			}
 
-			trialObjectCount := len(round) + 1
+			trialObjectCount := n + 1
 			trialPrereqCount := len(roundPrereqs) + len(newPrereqs)
 			trialFileCount := fixedFileCount + trialObjectCount + extraRows
 			trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
@@ -754,20 +783,19 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 				break
 			}
 
-			round = append(round, cand)
-			selectedSet[cand.ID] = true
+			n++
 			for _, p := range newPrereqs {
 				roundPrereqs[p] = true
 			}
 			selectedBlocks += candBlocks
 		}
 
-		selected = round
+		selected = candidates[:n:n]
 		prereqSet = roundPrereqs
-		if len(round) == objectCount {
+		if n == objectCount {
 			break
 		}
-		objectCount = len(round)
+		objectCount = n
 	}
 	return selected, prereqSet, nil
 }
@@ -836,12 +864,30 @@ func smallestCandidate(objectPath ObjectPathFunc, candidates []packUnit) (packUn
 	return best, nil
 }
 
+// readPlacedObject reads the tree or blob of u again for the disc root,
+// into a buffer of its exact size, and checks it against its id.
+func readPlacedObject(objectPath ObjectPathFunc, u packUnit) ([]byte, error) {
+	path := objectPath(u.Kind, u.ID)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", kindName(u.Kind), u.ID.TextForm(), err)
+	}
+	defer func() { _ = f.Close() }()
+	data := make([]byte, u.ByteLen)
+	if _, err := io.ReadFull(f, data); err != nil {
+		return nil, fmt.Errorf("%s %s changed during the pack: %w", kindName(u.Kind), u.ID.TextForm(), err)
+	}
+	if err := verifyObjectID(u.ID, u.Kind, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 // objectByteLen returns the encoded byte length of unit's own staged
-// file: the cached bytes for a tree, blob or snapshot, or a stat of the
-// chunk file otherwise.
+// file: the size that the plan gave it, or a stat of the file otherwise.
 func objectByteLen(objectPath ObjectPathFunc, u packUnit) (uint64, error) {
-	if u.Bytes != nil {
-		return uint64(len(u.Bytes)), nil
+	if u.ByteLen != 0 {
+		return u.ByteLen, nil
 	}
 	fi, err := os.Stat(objectPath(u.Kind, u.ID))
 	if err != nil {
@@ -880,136 +926,6 @@ func StagedTotals(objectPath ObjectPathFunc, stageLog *stage.Log) (objects int, 
 		bytes += uint64(size)
 	}
 	return objects, bytes, nil
-}
-
-// buildPackOrder walks every snapshot in the order of snapshotIDs,
-// children before parent (post-order), so that a straight prefix of the
-// result always
-// has every selected metadata object's staged-but-not-yet-packed
-// children ahead of it. It returns that order and every snapshot's own
-// bytes, keyed by id.
-//
-// A tree or blob onDisc already reports OnDisc is never read: rebuild-
-// cache records an object OnDisc without restoring its staging file, and
-// a fresh commit that dedups against an on-disc object never restages
-// it either, so the walk must not need that file to exist. Such an
-// object's own children are on the same disc that already holds it, so
-// the walk stops there instead of descending; its id still reaches its
-// parent's Children list for prereq detection.
-func buildPackOrder(objectPath ObjectPathFunc, snapshotIDs []object.ID, onDisc func(object.ID) bool) ([]packUnit, map[object.ID][]byte, error) {
-	seen := make(map[object.ID]bool)
-	var order []packUnit
-	snapshotBytes := make(map[object.ID][]byte, len(snapshotIDs))
-
-	var visitTree func(id object.ID) error
-	visitTree = func(id object.ID) error {
-		if seen[id] {
-			return nil
-		}
-		if onDisc(id) {
-			seen[id] = true
-			return nil
-		}
-		data, err := readObjectFile(objectPath(format.ObjectKindTree, id))
-		if err != nil {
-			return fmt.Errorf("tree %s: %w", id.TextForm(), err)
-		}
-		var tree format.Tree
-		if _, err := tree.Decode(data); err != nil {
-			return stagedDamaged(id, format.ObjectKindTree)
-		}
-		if err := verifyObjectID(id, format.ObjectKindTree, data); err != nil {
-			return err
-		}
-		var children []object.ID
-		for _, entry := range tree.Entries {
-			switch entry.EntryType {
-			case format.EntryTypeDirectory:
-				children = append(children, object.ID(entry.ContentID))
-				if err := visitTree(object.ID(entry.ContentID)); err != nil {
-					return err
-				}
-			case format.EntryTypeRegular:
-				children = append(children, object.ID(entry.ContentID))
-				if err := visitBlob(objectPath, object.ID(entry.ContentID), seen, &order, onDisc); err != nil {
-					return err
-				}
-			}
-		}
-		seen[id] = true
-		order = append(order, packUnit{ID: id, Kind: format.ObjectKindTree, Children: children, Bytes: data})
-		return nil
-	}
-
-	for _, snapID := range snapshotIDs {
-		data, err := readObjectFile(objectPath(format.ObjectKindSnapshot, snapID))
-		if err != nil {
-			return nil, nil, fmt.Errorf("snapshot %s: %w", snapID.TextForm(), err)
-		}
-		snapshotBytes[snapID] = data
-		var snap format.Snapshot
-		if _, err := snap.Decode(data); err != nil {
-			return nil, nil, stagedDamaged(snapID, format.ObjectKindSnapshot)
-		}
-		if err := verifyObjectID(snapID, format.ObjectKindSnapshot, data); err != nil {
-			return nil, nil, err
-		}
-		if onDisc(snapID) {
-			// A snapshot goes to a disc only after every object that it
-			// reaches, thus its tree needs no walk.
-			seen[snapID] = true
-			continue
-		}
-		if err := visitTree(object.ID(snap.RootTree)); err != nil {
-			return nil, nil, err
-		}
-		if !seen[snapID] {
-			seen[snapID] = true
-			order = append(order, packUnit{ID: snapID, Kind: format.ObjectKindSnapshot, Children: []object.ID{object.ID(snap.RootTree)}, Bytes: data})
-		}
-	}
-	return order, snapshotBytes, nil
-}
-
-// visitBlob adds id's blob object and every chunk it lists, children
-// (the chunks) before the blob itself. A blob onDisc already reports
-// OnDisc is never read, the same way visitTree treats one.
-//
-// A chunk's own staged file is never read here. A chunk carries no
-// child, so the walk needs nothing out of it, and reading it here would
-// read every chunk a second time. Its content id is checked instead
-// while the run copies it, the one pass that must read it anyway.
-func visitBlob(objectPath ObjectPathFunc, id object.ID, seen map[object.ID]bool, order *[]packUnit, onDisc func(object.ID) bool) error {
-	if seen[id] {
-		return nil
-	}
-	if onDisc(id) {
-		seen[id] = true
-		return nil
-	}
-	data, err := readObjectFile(objectPath(format.ObjectKindBlob, id))
-	if err != nil {
-		return fmt.Errorf("blob %s: %w", id.TextForm(), err)
-	}
-	var blob format.Blob
-	if _, err := blob.Decode(data); err != nil {
-		return stagedDamaged(id, format.ObjectKindBlob)
-	}
-	if err := verifyObjectID(id, format.ObjectKindBlob, data); err != nil {
-		return err
-	}
-	children := make([]object.ID, 0, len(blob.Entries))
-	for _, e := range blob.Entries {
-		chunkID := object.ID(e.ContentID)
-		children = append(children, chunkID)
-		if !seen[chunkID] {
-			seen[chunkID] = true
-			*order = append(*order, packUnit{ID: chunkID, Kind: format.ObjectKindChunk})
-		}
-	}
-	seen[id] = true
-	*order = append(*order, packUnit{ID: id, Kind: format.ObjectKindBlob, Children: children, Bytes: data})
-	return nil
 }
 
 // NextSeqNumbers derives the run_seq and disc_seq a new run must get

@@ -425,23 +425,49 @@ search. `pack` grows the prefix while the capacity check passes and stops at
 the first object that does not fit. Locality asks for "keep together", not for
 a bin-packing search.
 
-**`pack` finishes a snapshot that is packed in parts first, then goes by
-snapshot time.** The snapshot object comes after each object that it reaches,
-thus it goes on the disc that holds the last part. Until then `recover` from
-the discs alone cannot find the snapshot. An order by the bytes of the
-snapshot id put a new snapshot with a smaller id before the rest of an old
-snapshot, and that rest could wait for more than one pack. Time order gives
-the oldest data a disc first. The id order breaks a tie only, because two
-snapshots can have the same time. The rule is host-side and changes no disc
-byte. An item that a disc holds already makes a snapshot "packed in parts"
-also when an older snapshot put it there. The state log does not record
-which snapshot a pack took an item for, and such a snapshot is not complete
-on discs either.
+**`pack` goes by snapshot time, the oldest first.** The snapshot object comes
+after each object that it reaches, thus it goes on the disc that holds the
+last part. Until then `recover` from the discs alone cannot find the
+snapshot. An order by the bytes of the snapshot id put a new snapshot with a
+smaller id before the rest of an old snapshot, and that rest could wait for
+more than one pack. Time order gives the oldest data a disc first, and the
+rest of an old snapshot is older than each new snapshot. The id order breaks
+a tie only, because two snapshots can have the same time. The rule is
+host-side and changes no disc byte.
+
+An earlier build put a group of snapshots "packed in parts" first: a
+snapshot that reaches an item on a disc. The state log does not record which
+snapshot a pack took an item for, thus the test matched almost each
+incremental commit: it shares files with a disc. A new incremental snapshot
+then went before an older new snapshot, and the older one could wait with no
+limit. Time order alone does not have this fault, thus the group is deleted.
+
+**`pack` takes each Staged item, also below items of a disc.** The walk stops
+at a tree or a blob that a disc holds, because its children are usually on a
+disc too. `disc lost` of an earlier disc breaks that: its items return to
+Staged below trees and a snapshot object of a later disc, and the walk never
+reached them. `pack` counts the Staged items that the walk reached against
+the Staged items of the state log. Only when the counts differ does it walk
+again and go down into the trees and blobs of a disc, so the usual pack reads
+no object of a disc. The new disc holds the items as ordinary objects, with no
+copy of the trees and blobs above them: a reader takes an object from any
+disc whose INDEX lists it, and a copy of the trees would change nothing in
+the Prereqs rows of the older discs. A Staged item that no snapshot reaches
+goes last, so that the staged total can always reach zero.
+
+**A damaged staged item stops only its own snapshot.** One damaged tree once
+stopped each `pack` and each `status`, also for snapshots that share nothing
+with it, and with the source gone no command could repair it. `pack` now
+leaves the damaged item, the trees above it and the snapshot object Staged,
+packs the rest, warns, and exits 1. `pack` takes the other items of that
+snapshot too: they are safe on a disc sooner, and a later repair then packs
+only the damaged item and the items above it. No command drops a snapshot:
+a snapshot that cannot be completed stays visible in `status`.
 
 **`pack` has no minimum fill.** A pack with a small rest of a snapshot writes
 a disc that is mostly empty. The operator decides when to pack the rest.
-`status` names each snapshot that is packed in parts, thus the rest is not
-forgotten. A minimum fill would keep the snapshot out of `recover` for a time
+`status` names each snapshot that is not complete on discs, thus the rest is
+not forgotten. A minimum fill would keep the snapshot out of `recover` for a time
 that the tool cannot know.
 
 **`--capacity` is required at each `pack`, and refuses a bare number.** Each
@@ -454,8 +480,17 @@ capacity. `pack` reads no drive: the operator reads the capacity with
 
 **`pack` checks each staged object where the read is free.** A tree, a blob
 and a snapshot are checked in the selection walk, which decodes them anyway. A
-chunk is checked while it is copied into the disc root. A failure removes the
-part-written disc root and records nothing.
+chunk is checked while it is copied into the disc root. A chunk that fails
+removes the part-written disc root, and `pack` writes the disc root again
+without it. A second read of each chunk before the copy would cost a full
+read of the staged data on each pack, and a damaged chunk is rare.
+
+**The close flag waits in the plan directory.** No disc byte records
+`--close`. A `pack` that stops after its ledger row gets its `Packed` event
+from the next `pack`, and that event must be the same as the event of a pack
+that did not stop. An empty file `close` in the plan directory, synced before
+the disc root, holds the choice. `gc`, `pack --undo` and `disc lost` remove
+it with the plan directory.
 
 **`pack` syncs in one pass, then records.** One pass at the end syncs every
 file and directory. Only then does `pack` record the items as Packed, write

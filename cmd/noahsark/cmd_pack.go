@@ -83,13 +83,14 @@ func (o *packOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
+	layout := layoutOf(repoDir, cfg)
 	absOut := ""
 	if o.outDir != "" && !o.dryRun {
 		if absOut, err = e.abs(o.outDir); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 			return 1
 		}
-		if code := checkPackOut(absOut, stderr); code != 0 {
+		if code := checkPackOut(e, absOut, layout, stderr); code != 0 {
 			return code
 		}
 	}
@@ -109,7 +110,6 @@ func (o *packOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	layout := layoutOf(repoDir, cfg)
 	c, err := catalog.Open(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
@@ -168,8 +168,19 @@ func (o *packOptions) run(e *env, args []string) int {
 		FECEnabled:            o.fec,
 		Now:                   func() time.Time { return now },
 	}
+	// A warning about an item that pack cannot take makes the exit code
+	// 1, also after a good pack.
+	warned := false
+	opts.Unreadable = func(item image.UnreadableItem) {
+		_, _ = fmt.Fprintln(stderr, unreadableLine("pack", item, false))
+		warned = true
+	}
 	if o.dryRun {
-		return runPackDryRun(stdout, stderr, layout, c, logs.Items, opts, o.capacity, labelFor)
+		code := runPackDryRun(stdout, stderr, layout, c, logs.Items, opts, o.capacity, labelFor)
+		if code == 0 && warned {
+			return 1
+		}
+		return code
 	}
 	stageLog := logs.Items
 
@@ -179,7 +190,7 @@ func (o *packOptions) run(e *env, args []string) int {
 		return 1
 	}
 	label := labelFor(discSeq)
-	root, err := makePackRoot(layout, discUUID, absOut)
+	root, err := makePackRoot(layout, discUUID, absOut, o.closeDisc)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
@@ -207,6 +218,9 @@ func (o *packOptions) run(e *env, args []string) int {
 			_ = c.RemoveDisc(discUUID)
 		}
 		if errors.Is(err, image.ErrNothingToPack) {
+			if warned {
+				return 1
+			}
 			_, _ = fmt.Fprintln(stdout, packNothingStaged)
 			_, _ = fmt.Fprintln(stdout, nextStatusLine)
 			return 0
@@ -226,6 +240,9 @@ func (o *packOptions) run(e *env, args []string) int {
 		result.DiscSeq, label, result.ObjectCount, result.ObjectBytes)
 	_, _ = fmt.Fprintf(stdout, "uuid: %s\n", uuidText(discUUID))
 	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	if warned {
+		return 1
+	}
 	return 0
 }
 
@@ -272,10 +289,28 @@ func discLabel(newestRef string, seq uint64) string {
 	return fmt.Sprintf("%s disc %d", newestRef, seq)
 }
 
-// checkPackOut refuses an --out path that holds files or that is not a
+// checkPackOut refuses an --out path inside the repository or the
+// staging store, a path that holds files, and a path that is not a
 // directory, with exit code 2. It returns 0 for an empty or absent
-// directory.
-func checkPackOut(absOut string, stderr io.Writer) int {
+// directory outside them. The check resolves the symlinks of the part of
+// each path that exists.
+func checkPackOut(e *env, absOut string, layout repoLayout, stderr io.Writer) int {
+	out, err := resolveExisting(e, absOut)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	for _, dir := range []string{layout.repo, layout.stagingDir()} {
+		inside, err := resolveExisting(e, dir)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+			return 1
+		}
+		if isWithin(out, inside) {
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: --out=%s is inside the repository or the staging store; give a directory outside them\n", absOut)
+			return 2
+		}
+	}
 	fi, err := os.Stat(absOut)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0
@@ -300,14 +335,50 @@ func checkPackOut(absOut string, stderr io.Writer) int {
 	return 0
 }
 
+// resolveExisting makes path absolute and resolves the symlinks of its
+// longest part that exists. The rest of the path follows as it is.
+func resolveExisting(e *env, path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		wd, err := e.getwd()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(wd, path)
+	}
+	path = filepath.Clean(path)
+	rest := ""
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(path, rest), nil
+		}
+		rest = filepath.Join(filepath.Base(path), rest)
+		path = parent
+	}
+}
+
 // makePackRoot prepares the disc root of the disc discUUID and returns
 // its path. With no absOut, the disc root is the tree directory of the
 // plan directory. With absOut, the tree is a symlink to absOut, and the
-// disc root is absOut.
-func makePackRoot(layout repoLayout, discUUID [16]byte, absOut string) (string, error) {
+// disc root is absOut. With closeDisc, the plan directory holds the file
+// planCloseName, so that the records of a pack that stops after its
+// ledger row still get the close flag.
+func makePackRoot(layout repoLayout, discUUID [16]byte, absOut string, closeDisc bool) (string, error) {
 	planDir := layout.planDir(discUUID)
 	if err := os.MkdirAll(planDir, 0o755); err != nil {
 		return "", err
+	}
+	if closeDisc {
+		if err := writeSyncedFile(filepath.Join(planDir, planCloseName)); err != nil {
+			return "", err
+		}
 	}
 	tree := layout.planTree(discUUID)
 	root := tree
@@ -325,6 +396,19 @@ func makePackRoot(layout repoLayout, discUUID [16]byte, absOut string) (string, 
 		return "", err
 	}
 	return root, syncDir(filepath.Dir(planDir))
+}
+
+// planCloseName is the file of a plan directory that marks a disc
+// packed with --close.
+const planCloseName = "close"
+
+// writeSyncedFile creates the empty file path and syncs it.
+func writeSyncedFile(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }
 
 // syncDir flushes the entries of the directory dir to stable storage.
@@ -587,12 +671,15 @@ func ledgerNames(layout repoLayout, repoUUID, discUUID [16]byte) bool {
 // disc, and the items stay Staged. finishInterruptedPacks removes the
 // plan directory and the catalog tables of such a disc.
 //
+// Catalog tables with no record belong to a pack or a recover that
+// stopped before its ledger row. finishInterruptedPacks removes them too.
+//
 // A ledger row with a disc root and no event belongs to a pack that
 // stopped after its ledger row. finishInterruptedPacks records the
 // items that the catalog INDEX of the disc lists and that are still
 // Staged as Packed, then appends the Packed event. The event carries the
-// fec flag that the INDEX gives. The close flag is not on the disc, and
-// the event does not carry it.
+// fec flag that the INDEX gives, and the close flag when the plan
+// directory holds planCloseName.
 func finishInterruptedPacks(layout repoLayout, c *catalog.Catalog, logs *stage.Logs, rows []format.DiscsRow, stderr io.Writer) error {
 	inLedger := make(map[[16]byte]format.DiscsRow, len(rows))
 	for _, r := range rows {
@@ -611,7 +698,7 @@ func finishInterruptedPacks(layout repoLayout, c *catalog.Catalog, logs *stage.L
 			if err := os.RemoveAll(filepath.Join(dir, uuidText(u))); err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: removed %s of disc %s: an earlier pack stopped before it recorded the disc\n", filepath.Join(dir, uuidText(u)), uuidText(u))
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: removed %s: no record names disc %s; an earlier pack or recover stopped before it recorded the disc\n", filepath.Join(dir, uuidText(u)), uuidText(u))
 		}
 	}
 
@@ -642,6 +729,9 @@ func finishInterruptedPacks(layout repoLayout, c *catalog.Catalog, logs *stage.L
 		var flags stage.DiscFlags
 		if slices.ContainsFunc(idx.Files, func(f format.IndexFileRecord) bool { return f.Role == format.FileRoleChecksum }) {
 			flags |= stage.FlagFEC
+		}
+		if _, err := os.Lstat(filepath.Join(layout.planDir(row.DiscUUID), planCloseName)); err == nil {
+			flags |= stage.FlagClose
 		}
 		event := stage.DiscRecord{TimeSec: row.CreatedSec, DiscUUID: row.DiscUUID, Event: stage.EventPacked, Flags: flags, DiscSeq: row.DiscSeq, RunSeq: row.RunSeq}
 		if err := logs.Discs.Append(event); err != nil {

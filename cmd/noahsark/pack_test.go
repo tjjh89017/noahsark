@@ -747,9 +747,9 @@ func TestPackDryRunPrintsTheNewLines(t *testing.T) {
 	}
 }
 
-// TestPackFailureWritesNoEvent checks that a pack that fails on a
-// damaged staged chunk appends no Packed event and removes the plan
-// directory of the disc.
+// TestPackFailureWritesNoEvent checks that a pack that fails while it
+// writes the disc root, here on a chunk file that cannot be read,
+// appends no Packed event and removes the plan directory of the disc.
 func TestPackFailureWritesNoEvent(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	chunks := listFilesUnder(t, testLayout(t, repo).chunksDir())
@@ -757,18 +757,16 @@ func TestPackFailureWritesNoEvent(t *testing.T) {
 		t.Fatal("the fixture staged no chunk")
 	}
 	chunk := filepath.Join(testLayout(t, repo).chunksDir(), chunks[0])
-	data, err := os.ReadFile(chunk)
-	if err != nil {
+	if err := os.Remove(chunk); err != nil {
 		t.Fatal(err)
 	}
-	data[len(data)-1] ^= 0xff
-	if err := os.WriteFile(chunk, data, 0o644); err != nil {
+	if err := os.Mkdir(chunk, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
 	if code != 1 {
-		t.Fatalf("pack over a damaged chunk: exit %d, want 1: %s", code, out)
+		t.Fatalf("pack over a chunk that cannot be read: exit %d, want 1: %s", code, out)
 	}
 	if strings.Contains(out, "next:") {
 		t.Fatalf("a failed pack printed a next: line: %q", out)
@@ -1189,21 +1187,22 @@ func TestPackTooSmallNamesTheSmallestObject(t *testing.T) {
 	}
 }
 
-// TestPackNamesADamagedStagedObject checks the one damaged-staged-object
-// text: it names the object id, says the staged copy is damaged, and
-// gives the cure. A raw decoder message such as "buffer too short" tells
-// the operator nothing to do.
+// TestPackNamesADamagedStagedObject checks the warning about a damaged
+// staged object: it names the object id, says the staged copy is
+// damaged, and gives the cure. A raw decoder message such as "buffer too
+// short" tells the operator nothing to do. pack packs the other items
+// and exits 1.
 func TestPackNamesADamagedStagedObject(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	damaged := truncateOneStagedTree(t, repo)
 	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+filepath.Join(t.TempDir(), "tree"))
-	if code == 0 {
-		t.Fatalf("pack over a damaged staged object: exit 0, want a failure: %s", out)
+	if code != 1 {
+		t.Fatalf("pack over a damaged staged object: exit %d, want 1: %s", code, out)
 	}
 	if strings.Contains(out, "buffer too short") {
 		t.Fatalf("pack output %q leaks a decoder message", out)
 	}
-	for _, want := range []string{damaged, "is damaged", "commit again"} {
+	for _, want := range []string{damaged, "is damaged", "commit the same source again"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pack output %q missing %q", out, want)
 		}
@@ -1374,6 +1373,53 @@ func TestPackFinishesAnInterruptedPack(t *testing.T) {
 	if n := len(statusDiscs(t, fx.repo)); n != 2 {
 		t.Fatalf("status names %d disc(s), want 2", n)
 	}
+}
+
+// TestPackFinishesAnInterruptedCloseDisc makes the state of a pack
+// --close that stopped after its ledger row, and the catalog tables of a
+// recover that stopped before its ledger row. The next pack gives the
+// completed Packed event the close flag, and removes the tables with a
+// message that is true for a stopped recover too.
+func TestPackFinishesAnInterruptedCloseDisc(t *testing.T) {
+	repo, src := initAndCommit(t)
+	out := mustRunCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--close")
+	uuid := packedDiscUUID(t, out)
+	if !discState(t, repo, uuid).Close {
+		t.Fatal("the Packed event of pack --close has no close flag")
+	}
+	layout := testLayout(t, repo)
+	items := itemWords(t, repo, uuid)[stage.WordPacked]
+	truncateBy(t, layout.stateLogFile(), int64(items)*70)
+	truncateBy(t, layout.discLogFile(), 54)
+
+	orphan := "0badc0de-0000-4000-8000-000000000002"
+	tables := filepath.Join(layout.catalogDir(), "discs", orphan)
+	if err := os.MkdirAll(tables, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "more.txt"), []byte("content of the next disc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunCmd(t, "--repo="+repo, "commit", src)
+	out = mustRunCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
+	if d := discState(t, repo, uuid); d.State != stage.DiscPacked || !d.Close {
+		t.Fatalf("disc %s after the repair: state %s, close %v; want packed with the close flag", uuid, d.State, d.Close)
+	}
+	want := fmt.Sprintf("noahsark: pack: removed %s: no record names disc %s; an earlier pack or recover stopped before it recorded the disc", tables, orphan)
+	if !strings.Contains(out, want) {
+		t.Fatalf("pack output %q, want %q", out, want)
+	}
+}
+
+// mustRunCmd runs the CLI like runCmd and fails the test on an exit code
+// other than 0.
+func mustRunCmd(t *testing.T, args ...string) string {
+	t.Helper()
+	code, out := runCmd(t, args...)
+	if code != 0 {
+		t.Fatalf("%v: exit %d: %s", args, code, out)
+	}
+	return out
 }
 
 // TestCommitAndPackRefuseWhileADiscIsMissing checks that a missing disc

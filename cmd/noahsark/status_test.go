@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -305,12 +306,16 @@ func TestStatusEmptyRepository(t *testing.T) {
 }
 
 // TestStatusStagedBlock checks the block after a commit with no pack:
-// the media line, and the pack line that the operator completes.
+// the snapshot line, the media line, and the pack line that the
+// operator completes.
 func TestStatusStagedBlock(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	lines := statusLines(t, repo)
 	if !strings.HasPrefix(lines[0], "staged: ") || strings.HasPrefix(lines[0], "staged: 0 items") {
 		t.Fatalf("staged line %q, want a count", lines[0])
+	}
+	if !statusSnapshotLineRe.MatchString(lines[1]) {
+		t.Fatalf("line %q, want the snapshot line", lines[1])
 	}
 	want := []string{
 		"next: load a blank disc, then run:",
@@ -318,7 +323,7 @@ func TestStatusStagedBlock(t *testing.T) {
 		"then paste this line, type the capacity, and press Enter:",
 		"noahsark pack --capacity=",
 	}
-	if got := lines[1:]; !slices.Equal(got, want) {
+	if got := lines[2:]; !slices.Equal(got, want) {
 		t.Fatalf("block %q, want %q", got, want)
 	}
 }
@@ -585,17 +590,41 @@ func TestStatusNamesASnapshotPackedInParts(t *testing.T) {
 	}
 }
 
-// TestStatusNoSnapshotLineWithoutAPartOnADisc commits two snapshots and
-// packs nothing. status prints no snapshot line: no disc holds a part of
-// either snapshot.
-func TestStatusNoSnapshotLineWithoutAPartOnADisc(t *testing.T) {
-	repo, _ := initAndCommit(t)
-	if code, out := runCmd(t, "--repo="+repo, "commit", writeSeededSource(t, 7, 1)); code != 0 {
+// TestStatusNamesEachStagedSnapshot commits two snapshots that share no
+// item and packs nothing. status prints one line for each. The two
+// counts add up to the staged total.
+func TestStatusNamesEachStagedSnapshot(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", writeSeededSource(t, 6, 1))
+	if code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
+	first := snapshotIDFromCommit(t, out)
+	code, out = runCmd(t, "--repo="+repo, "commit", writeSeededSource(t, 7, 1))
+	if code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	second := snapshotIDFromCommit(t, out)
+
+	var ids []string
+	total := 0
 	for _, line := range statusLines(t, repo) {
-		if strings.HasPrefix(line, "snapshot ") {
-			t.Fatalf("status prints %q with no part on a disc", line)
+		if m := statusSnapshotLineRe.FindStringSubmatch(line); m != nil {
+			ids = append(ids, m[1])
+			n, _ := strconv.Atoi(m[2])
+			total += n
 		}
+	}
+	slices.Sort(ids)
+	want := []string{first[4:16], second[4:16]}
+	slices.Sort(want)
+	if !slices.Equal(ids, want) {
+		t.Fatalf("snapshot lines name %v, want %v", ids, want)
+	}
+	if want := countByState(t, repo, stage.Staged); total != want {
+		t.Fatalf("the snapshot lines count %d items, want the %d staged items", total, want)
 	}
 }

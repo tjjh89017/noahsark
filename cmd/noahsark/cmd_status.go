@@ -39,8 +39,10 @@ func init() {
 }
 
 // cmdStatus implements "noahsark status": the staged total, one line
-// for each snapshot that is packed in parts, one line for each disc, and the one next block of the repository. status takes
-// no lock and changes no file.
+// for each snapshot that is not complete on discs, one line for each
+// disc, and the one next block of the repository. It prints a warning on
+// standard error for each item that pack cannot take, and then exits 1.
+// status takes no lock and changes no file.
 func cmdStatus(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "status"
@@ -91,15 +93,18 @@ func cmdStatus(e *env, args []string) int {
 		return 1
 	}
 
-	parts, err := snapshotsPackedInParts(layout, c, logs.Items)
+	ids, err := packStore(layout, c, logs.Items).SnapshotIDs()
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
+	groups, orphans := image.PackGroups(layout.objectPath(c), ids, logs.Items)
 
 	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
-	for _, s := range parts {
-		_, _ = fmt.Fprintln(stdout, statusSnapshotLine(s))
+	for _, g := range groups {
+		if line := statusSnapshotLine(g); line != "" {
+			_, _ = fmt.Fprintln(stdout, line)
+		}
 	}
 	for _, d := range discs {
 		_, _ = fmt.Fprintln(stdout, statusDiscLine(d))
@@ -115,38 +120,52 @@ func cmdStatus(e *env, args []string) int {
 	for _, line := range nextBlock(r) {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
+	warned := false
+	for _, g := range groups {
+		if g.Unreadable != nil {
+			_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, *g.Unreadable, g.OnDisc))
+			warned = true
+		}
+	}
+	for _, item := range orphans {
+		_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, item, false))
+		warned = true
+	}
+	if warned {
+		return 1
+	}
 	return 0
 }
 
-// snapshotsPackedInParts returns the snapshots whose snapshot object is
-// Staged and that reach one or more items that are not Staged, in the
-// order in which pack takes them.
-func snapshotsPackedInParts(layout repoLayout, c *catalog.Catalog, items *stage.Log) ([]image.StagedSnapshot, error) {
-	ids, err := packStore(layout, c, items).SnapshotIDs()
-	if err != nil {
-		return nil, err
+// statusSnapshotLine is the line of one snapshot group of the pack
+// order, or "" when the snapshot needs none. A snapshot whose snapshot
+// object no disc holds gets a line. A snapshot whose snapshot object a
+// disc holds gets a line while pack still takes Staged items with it:
+// items that were on a lost disc. N is the count of the Staged items that
+// pack takes with the snapshot. The plural form is fixed, so that a
+// script can parse it.
+func statusSnapshotLine(g image.SnapshotGroup) string {
+	switch {
+	case !g.OnDisc:
+		return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; recover cannot find it from the discs alone", shortID(g.ID), g.StagedItems)
+	case g.StagedItems > 0:
+		return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; the discs alone cannot restore all of it", shortID(g.ID), g.StagedItems)
 	}
-	onDisc := func(id object.ID) bool {
-		rec, ok := items.Get(id)
-		return ok && rec.State.OnDisc()
-	}
-	staged, err := image.StagedSnapshots(layout.objectPath(c), ids, onDisc)
-	if err != nil {
-		return nil, err
-	}
-	var parts []image.StagedSnapshot
-	for _, s := range staged {
-		if s.PackedInParts {
-			parts = append(parts, s)
-		}
-	}
-	return parts, nil
+	return ""
 }
 
-// statusSnapshotLine is the line of one snapshot that is packed in
-// parts. The plural form is fixed, so that a script can parse it.
-func statusSnapshotLine(s image.StagedSnapshot) string {
-	return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; recover cannot find it from the discs alone", shortID(s.ID), s.StagedItems)
+// unreadableLine is the warning of pack and status about an item that
+// pack cannot take, with the repair. A snapshot object that a disc holds
+// comes back from a disc.
+func unreadableLine(cmd string, item image.UnreadableItem, snapshotOnDisc bool) string {
+	repair := item.Repair()
+	if snapshotOnDisc && item.ID == item.Snapshot {
+		repair = "run recover with a disc that holds it"
+	}
+	if item.Snapshot == (object.ID{}) {
+		return fmt.Sprintf("noahsark: %s: warning: cannot pack: %s; %s", cmd, item.Problem(), repair)
+	}
+	return fmt.Sprintf("noahsark: %s: warning: snapshot %s: cannot pack all of it: %s; %s", cmd, shortID(item.Snapshot), item.Problem(), repair)
 }
 
 // statusDiscLine is the line of one disc:

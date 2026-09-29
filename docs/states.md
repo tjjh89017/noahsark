@@ -108,6 +108,15 @@ it opens the logs, and prints one note on standard error. `status` names
 the repair in its `next:` block. OPERATIONS.md, "State log replay", gives
 the item records of each disc state and the note.
 
+A `pack` that stopped after its disc ledger row and before its `Packed`
+event leaves a disc that the disc state log does not know. The next `pack`
+writes the Packed item records and the `Packed` event of that disc, with
+the same `close` and `fec` flags as a `pack` that did not stop, and prints
+that the records are now complete. It removes the catalog tables and the
+plan directory of a disc that no record names: a `pack` or a `recover`
+stopped before its ledger row. OPERATIONS.md, "Integrity checks and
+durable recording", gives the rules and the messages.
+
 The verified time of a disc is the time of the `CheckOK` or
 `MarkedVerified` event that moved it to `verified`. The 7-day wait of
 `gc` counts from it. The last check of a disc is its newest `CheckOK`,
@@ -167,18 +176,25 @@ the state log, `state/state.db`. The state log stores four states:
 `status` never prints these words to the operator. It prints a disc's
 state (see "Disc states") and a staged total.
 
-A snapshot is packed in parts when its snapshot object is `staged` and
-one or more items that it reaches are not `staged`. `pack` puts the
-snapshot object on a disc only after each item that the snapshot
-reaches, thus `recover` from the discs alone cannot find such a
-snapshot. `status` prints one line for each snapshot that is packed in
-parts, after the `staged:` line and before the disc lines:
-`snapshot ID: N items staged, not complete on discs; recover cannot find
-it from the discs alone`. `ID` is the short snapshot id, and `N` counts
-the `staged` items that the snapshot reaches, its snapshot object
-included. A snapshot with no item on a disc, and a snapshot with no
-`staged` item, get no line. OPERATIONS.md, "Command notes", gives the
-order of the lines. These lines change no `next:` block.
+A snapshot is not complete on discs while `pack` still takes `staged`
+items with it. `pack` puts the snapshot object on a disc only after each
+item that the snapshot reaches, thus `recover` from the discs alone
+cannot find a snapshot whose snapshot object is `staged`. `status` prints
+one line for each such snapshot, after the `staged:` line and before the
+disc lines: `snapshot ID: N items staged, not complete on discs; recover
+cannot find it from the discs alone`. A snapshot whose snapshot object is
+on a disc, and whose items a `disc lost` returned to `staged` or a later
+`commit` staged again, gets the line `snapshot ID: N items staged, not
+complete on discs; the discs alone cannot restore all of it`. `ID` is the
+short snapshot id, and `N` counts the `staged` items that `pack` takes
+with the snapshot. OPERATIONS.md, "Command notes", gives the order of the
+lines and the count. These lines change no `next:` block.
+
+The next `pack` takes each `staged` item, also an item below trees and a
+snapshot object that another disc holds (OPERATIONS.md, "Packing rules").
+A `staged` item that `pack` cannot read stays `staged`, with the trees
+above it and its snapshot object. `pack` and `status` then print a warning
+and exit 1.
 
 Transitions, with the `reason` of the new record in brackets:
 
@@ -355,6 +371,8 @@ lists that last line where a row prints it.
 | 10b | staged | pack --dry-run | unchanged | one `disc N: I items, B bytes` line for each disc, then `total: D discs, I items, B bytes` (a fixed plural form, also for 1, because a program parses it). No `next:` line. | 0 | the same line without `--dry-run` |
 | 10c | any | pack --out=DIR, and DIR holds files | refused, usage error. Nothing is written. | `--out=DIR holds files; give an empty or absent directory` | 2 | give an empty or absent directory |
 | 10d | any | pack --out=DIR, and DIR is not a directory | refused, usage error. Nothing is written. | `--out=DIR is not a directory` | 2 | give an empty or absent directory |
+| 10e | any | pack --out=DIR, and DIR is inside the repository | refused, usage error. Nothing is written. | `--out=DIR is inside the repository or the staging store; give a directory outside them` | 2 | give a directory outside the repository and the staging store |
+| 10f | any | pack --out=DIR, and DIR is inside the staging store | refused, usage error. Nothing is written. | `--out=DIR is inside the repository or the staging store; give a directory outside them` | 2 | give a directory outside the repository and the staging store |
 | 11 | packed, the newest disc | pack --undo SEQ, answer yes | undone. Its items return to staged. Its record in `discs.bin` and its catalog tables are removed. The number is not given to another disc. The next pack gets the next number. | `warning: disc SEQ "LABEL" (UUID): packed -> undone`, then `the items return to staged; the disc number SEQ is not used again`, then `Continue? [y/N]` (no question with an answer flag), then `disc SEQ "LABEL": pack undone, N item(s) returned to staged`. For a `pack --out=DIR` disc, also `disc root DIR kept; delete it yourself`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 11a | packed, the newest disc | pack --undo SEQ, answer no | unchanged | the warning and the question of row 11, then `nothing changed` | 1 | `noahsark status` |
 | 12 | packed, a later disc exists | pack --undo SEQ | refused, no question | `disc SEQ is not the newest disc; pack cannot be undone` | 1 | burn it as it is, or `noahsark disc lost SEQ` to return its items to staged |
@@ -569,8 +587,9 @@ A repository with no commit and no disc matches step 8: `status` prints
 `next: nothing to do`. `status` never prints `next: nothing to do` while a
 disc matches step 1.
 
-The rest of a snapshot that is packed in parts ("Item states") is staged
-data that no disc holds. It matches step 6, and gets no block of its own.
+The rest of a snapshot that is not complete on discs ("Item states") is
+staged data that no disc holds. It matches step 6, and gets no block of
+its own.
 
 | State | `next:` block |
 |---|---|
