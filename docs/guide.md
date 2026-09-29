@@ -98,6 +98,8 @@ root and the device into `config.yaml`. `init` does not ask for a
 capacity: you give the capacity at each `pack`, because each blank disc
 can differ.
 
+With no `--source`, `init` prints no `source:` line.
+
 The `device:` line names the drive that `noahsark` puts in the lines that
 it prints for you. The tool never opens the device. When your writer is
 not `/dev/sr0`, edit `pack.device` in `/srv/ark/repo/config.yaml`:
@@ -210,6 +212,17 @@ next: noahsark status
 
 `pack` fills one disc. Data that does not fit stays staged for the next
 `pack`. The label of a disc is the newest ref, then the disc number.
+With nothing staged, `pack` prints `pack: nothing staged`, then
+`next: noahsark status`. To see how many discs the staged data needs, add
+`--dry-run` before the pack. It writes nothing and prints no `next:`
+line. Each line shows the number that the disc gets:
+
+```
+$ noahsark pack --capacity=bd25 --dry-run
+disc 0: 8 items, 3001350 bytes
+total: 1 discs, 8 items, 3001350 bytes
+```
+
 
 ### Build the image, burn, and verify
 
@@ -459,8 +472,11 @@ $ noahsark ls -R 2026-09-14
 0644	file	2998146	2026-09-12T07:59:40Z	photos/2026-09-12.jpg
 ```
 
-A `SNAPSHOT` argument is a ref name or the start of a snapshot id. You can
-copy a path from `ls` into a `restore` line.
+A `SNAPSHOT` argument is a ref name, a full snapshot id, or the start of a
+snapshot id. A ref name wins over a start of an id. When a start of an id
+matches more than one snapshot, the tool lists each full id and exits with
+code 2. Give more characters. You can copy a path from `ls` into a `restore`
+line.
 
 ## Restore
 

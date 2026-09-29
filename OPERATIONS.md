@@ -307,13 +307,13 @@ snapshot. No ref name is reserved.
 4. `recover` writes every ref that the given disc carries into `refs.txt` and
    into the ref ledger.
 
-A `SNAPSHOT` argument is a ref name, or a unique prefix of the digest part of
-a snapshot id. The tool prints a snapshot id as the first 12 hex characters of
+A `SNAPSHOT` argument is a ref name, a full snapshot id, or a prefix of the
+digest part of a snapshot id. "Commands and global options" gives the rules
+of the match. The tool prints a snapshot id as the first 12 hex characters of
 its digest, without the constant multihash prefix. This short form is for the
 output of `commit`, `ls`, `log`, `restore` and `status` only. A file of
-`state/` and the line `recover: damaged: ID` use the full text form of an id. A prefix that matches more
-than one snapshot is a usage error: the tool lists the candidates and exits
-with code 2.
+`state/`, the line `recover: damaged: ID` and the candidate list of an
+ambiguous prefix use the full text form of an id.
 
 Each snapshot is a root snapshot: the build writes no parent id. `log` orders
 snapshots by their time.
@@ -431,7 +431,9 @@ A matched directory is not walked. `commit` prints `excluded: N path(s)`.
    of INDEX.
 5. Every run carries INDEX, REFS, DISCS and the snapshot objects that
    FORMAT.md's "Catalog contents per run" names. `pack` reads the snapshot
-   objects from the catalog.
+   objects from the catalog. Each disc carries every snapshot object of the
+   catalog. The snapshots stay in the catalog after `gc`, thus a disc that is
+   packed after a `gc` carries the old snapshots too.
 6. `pack` refuses a capacity that holds not one item, with exit code 2.
 7. `pack` refuses to run while a disc is `missing`, with exit code 1.
 8. The next `disc_seq` is one more than the highest `disc_seq` of all `Packed`
@@ -451,7 +453,10 @@ removes the part-written disc root and records nothing. The operator runs
 `pack` writes the disc root to `staging/plans/<disc-uuid>/tree`. With
 `--out=DIR`, it writes the disc root into `DIR` and makes
 `staging/plans/<disc-uuid>/tree` a symlink to the absolute path of `DIR`.
-`pack` refuses an `--out` directory that holds files, with exit code 2.
+`pack` makes `DIR` absolute. Before it writes, it refuses with exit code 2 a
+`DIR` that holds files (`--out=DIR holds files; give an empty or absent
+directory`) and a path that is not a directory (`--out=DIR is not a
+directory`).
 
 `pack` syncs every file and every directory of the disc root after the write.
 It writes the catalog tables of the disc, the disc ledger row, the Packed item
@@ -464,7 +469,9 @@ interrupted `pack` leaves only a part-written disc root.
 `pack --dry-run` answers "how many discs does the staged data need?". It needs
 `--capacity`, and uses the `--fec` value of the call. It writes nothing, uses
 no sequence number and takes no lock. It prints one `disc N: I items, B bytes`
-line for each disc and a `total:` line. The numbers are an estimate.
+line for each disc, then `total: D discs, I items, B bytes`. The plural form
+is fixed, also for 1, because a program parses it. It prints no `next:` line.
+The numbers are an estimate.
 
 ### 8.4 Undo a pack
 
@@ -931,6 +938,22 @@ candidates and exits with code 2. Each candidate line has the form
 `disc SEQ "LABEL"  UUID`, with two spaces before the uuid. The uuid is in
 lower case, with hyphens. An undone disc matches nothing.
 
+A `SNAPSHOT` argument is a ref name, a full snapshot id, or a prefix of the
+digest part of a snapshot id. The tool resolves it in this order:
+
+1. A ref name wins over a prefix. A ref name is exact, with its letter case.
+2. A prefix has 1 to 64 hexadecimal characters, in any letter case. It must
+   match one snapshot.
+
+The refs come from `state/refs.txt` and from the REFS table of every disc in
+the catalog. For each name, the newest record wins. A value that matches no
+snapshot is a usage error: the tool prints `no snapshot matches ARG` and
+exits with code 2. A prefix that matches more than one snapshot is a usage
+error: the tool prints the line `ARG matches more than one snapshot:`, then
+one line `snapshot FULL-TEXT-ID` for each candidate, in the order of the
+digest, and exits with code 2. The list uses the full text id, because the
+12-character form of two candidates can be the same.
+
 A `DISC-ROOT` argument and `--disc=DIR` name one directory that holds
 `NOAHSARK/`: the mount point of a disc, or a copy of a disc root.
 
@@ -995,7 +1018,7 @@ Each line takes the global options before the command name.
 with a new `repo.uuid`, `staging.dir: staging`, `sources.root` from
 `--source`, and `pack.device: /dev/sr0`. It writes `.gitignore` and creates
 `state/`, `catalog/` and `staging/`. It prints `initialized repository PATH`,
-`source: PATH`, `device: DEV`, and `next: noahsark status`. To use another device, the operator edits `pack.device` in
+`source: PATH` (only when `--source` is given), `device: DEV`, and `next: noahsark status`. To use another device, the operator edits `pack.device` in
 `config.yaml`. `init` exits with code 2 when the directory already is a
 repository. Do not run `init` to recover a lost repository.
 
@@ -1007,11 +1030,15 @@ the sum of the stored file sizes of the Staged items: the chunk files in
 when a file was skipped or unstable; the snapshot is committed all the same. A
 special file never changes the exit code.
 
-**`pack`** prints `packed disc SEQ "LABEL": N item(s), B bytes`, `uuid:
-UUID`, and `next: noahsark status`. With nothing staged, it prints `pack:
-nothing staged` and exits 0. Exit: 2 for a missing capacity, an `--out`
-directory that holds files, or a capacity too small for one item. 1 while a
-disc is `missing`.
+**`pack`** prints `packed disc SEQ "LABEL": N item(s), B bytes`, then `uuid:
+UUID`, then `next: noahsark status`. The label is the newest ref of the
+repository and the text ` disc SEQ`, for example `2026-09-14 disc 0`. With no
+ref, the label is `disc SEQ`. With nothing staged, it prints `pack: nothing
+staged`, then `next: noahsark status`, and exits 0. With nothing staged and
+`--dry-run`, it prints only `pack: nothing staged`. A dry run prints the lines
+of "Dry run" and no `next:` line. Exit: 2 for a missing capacity, an `--out`
+directory that holds files, an `--out` path that is not a directory, or a
+capacity too small for one item. 1 while a disc is `missing`.
 
 **`image build`** is "Disc filesystems and image building". It prints no
 `next:` line.
