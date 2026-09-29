@@ -512,6 +512,12 @@ repository. `TREE` and `IMG` are the disc root and the image under
 path of the symlink. `/mnt/ark` is the mount point that `status` always
 uses. `SOURCE` is `sources.root` from the config.
 
+`SEQ` in a block is the disc number. It is the full uuid when two discs
+that are not undone have the same number. `DEV`, `REPO`, `SOURCE`, and
+`DEV=IMG` each go into a command line as one shell word. A word that holds
+a character other than a letter, a digit, or one of `_./:=@%+,-` goes in
+single quotes, and each `'` in it becomes `'\''`.
+
 Each `noahsark` line of a block carries no `--repo`, except the `sudo`
 line: `sudo` does not keep the environment. The operator pastes the
 block in the shell where `status` found the repository.
@@ -526,6 +532,9 @@ in this order, and inside one step the lowest number:
 5. staged data that no disc holds;
 6. a `verified` disc that waits for the 7 days;
 7. nothing.
+
+A repository with no commit and no disc matches step 7: `status` prints
+`next: nothing to do`.
 
 | State | `next:` block |
 |---|---|

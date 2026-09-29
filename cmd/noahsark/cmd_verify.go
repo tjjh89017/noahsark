@@ -117,7 +117,6 @@ func (o *verifyOptions) verifyWithoutRepo(e *env, root string, ident discIdentit
 		e:     e,
 		name:  fmt.Sprintf("disc %s %q", uuidText(ident.DiscUUID), ident.Label),
 		short: "disc " + uuidText(ident.DiscUUID),
-		items: -1,
 	}
 	if o.heal {
 		return c.heal(root, o.out, ident)
@@ -164,12 +163,10 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 		return 1
 	}
 
-	items := len(logs.Items.ItemsOfDisc(ident.DiscUUID))
 	c := verifyCheck{
 		e:     e,
 		name:  discNameShort(ident.DiscSeq, ident.Label),
 		short: fmt.Sprintf("disc %d", ident.DiscSeq),
-		items: items,
 	}
 	if o.heal {
 		return c.heal(root, o.out, ident)
@@ -220,7 +217,7 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "%s: %d items, ok\n", c.name, items)
+	_, _ = fmt.Fprintf(stdout, "%s: %d items, ok\n", c.name, rr.ObjectsVerified)
 	_, _ = fmt.Fprintln(stdout, verifyOKText(disc.State))
 	_, _ = fmt.Fprintln(stdout, nextStatusLine)
 	return 0
@@ -248,10 +245,6 @@ type verifyCheck struct {
 	// the disc name of a refusal.
 	name  string
 	short string
-	// items is the item count of the ok line from the state log. A
-	// negative items takes the count of the objects that passed their
-	// check: with no repository, no state log gives the count.
-	items int
 	// note is the line after the ok line or the bad line.
 	note string
 	// reason is the text after "bad; " of a failed check.
@@ -268,11 +261,7 @@ func (c verifyCheck) report(rr *image.ReadResult, checkErr error) int {
 		_, _ = fmt.Fprintf(c.e.stderr, "noahsark: verify: %v\n", checkErr)
 		return 1
 	}
-	items := c.items
-	if items < 0 {
-		items = rr.ObjectsVerified
-	}
-	_, _ = fmt.Fprintf(stdout, "%s: %d items, ok\n", c.name, items)
+	_, _ = fmt.Fprintf(stdout, "%s: %d items, ok\n", c.name, rr.ObjectsVerified)
 	_, _ = fmt.Fprintln(stdout, c.note)
 	return 0
 }

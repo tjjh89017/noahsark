@@ -453,7 +453,6 @@ func TestVerifyHealRepairsADamagedDisc(t *testing.T) {
 	corruptDiscRoot(t, mounted)
 	logBefore := discLogBytes(t, repo)
 	discUUID := packedDiscUUID(t, packOut)
-	items := len(readLogs(t, repo).Items.ItemsOfDisc(mustUUID(t, discUUID)))
 	label := defaultRefName() + " disc 0"
 
 	healed := filepath.Join(work, "healed")
@@ -461,7 +460,7 @@ func TestVerifyHealRepairsADamagedDisc(t *testing.T) {
 	code, _ = te.run("--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
 	want := []string{
 		`disc 0 "` + label + `": healed 1 file(s) into ` + healed,
-		`disc 0 "` + label + `": ` + strconv.Itoa(items) + ` items, ok`,
+		`disc 0 "` + label + `": ` + strconv.Itoa(objectsOnDisc(t, healed)) + ` items, ok`,
 		notCountedDisc,
 	}
 	if got := strings.Split(strings.TrimRight(te.out.String(), "\n"), "\n"); code != 0 || !slices.Equal(got, want) {
@@ -505,14 +504,4 @@ func TestVerifyUndoTakesNoOtherOption(t *testing.T) {
 	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscVerified {
 		t.Fatalf("disc state %s, want verified", got)
 	}
-}
-
-// mustUUID decodes the uuid text s.
-func mustUUID(t *testing.T, s string) [16]byte {
-	t.Helper()
-	u, err := decodeUUID(strings.ReplaceAll(s, "-", ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u
 }
