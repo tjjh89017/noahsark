@@ -772,7 +772,10 @@ FEC, it checks the checksum column and the parity too.
 `verify` checks in this order, and stops at the first refusal:
 
 1. The options. `--heal` with no `--out`, `--out` with no `--heal`, and
-   `--undo` with another option are usage errors, with exit code 2.
+   `--undo` with another option are usage errors, with exit code 2. So is
+   an `--out` DIR that holds files (`--out=DIR holds files; give an empty
+   or absent directory`) or that is not a directory (`--out=DIR is not a
+   directory`): old files would stay in the healed disc root.
 2. The repository and its config, as for every command.
 3. The `DISC.bin` of `DISC-ROOT`. When `verify` cannot read it, it prints
    `noahsark: verify: DISC-ROOT: cannot read the disc: ERROR` and exits
@@ -786,17 +789,26 @@ FEC, it checks the checksum column and the parity too.
    disc, a `lost` disc and a `missing` disc, with exit code 1.
 6. With `--heal`: the FEC of the disc, as the heal sources below give.
 
-Then `verify` reads every object. After the read, and with a repository,
-`verify` compares the disc uuid of the full read with the disc uuid of
-step 3. After a failed read, it reads `DISC.bin` again for the uuid. When
-the two uuids differ, it prints `noahsark: verify: DISC-ROOT: the disc
-changed during the check: disc UUID before, disc UUID after; nothing is
-recorded`, records nothing, and exits with code 1. When
-`DISC-ROOT` is a counted mount ("Transition rules") and `--no-mark` is not
-given:
+Then `verify` reads every object. `verify` reads the run header from
+`RUN.bin`, or from `RUN2.bin` when `RUN.bin` cannot be read or fails its
+checks (FORMAT.md's "Run header copies"). Damage to one copy fails the
+check, also when the other copy is good: the disc is damaged. `recover`
+and `--heal` go on with the good copy. A disc tree that holds a symlink or
+another entry that is not a regular file or a directory fails the check:
+the tool never writes such an entry on a disc, and never follows one.
+
+After the read, with a repository and with no `--heal`, `verify` compares
+the disc uuid of the full read with the disc uuid of step 3. After a failed
+read, it reads `DISC.bin` again for the uuid. When the two uuids differ, it
+prints `noahsark: verify: DISC-ROOT: the disc changed during the check: disc
+UUID before, disc UUID after; nothing is recorded`, records nothing, and
+exits with code 1.
+
+When `DISC-ROOT` is a counted mount ("Transition rules") and `--no-mark` is
+not given:
 
 - A good check writes the catalog tables and objects of the disc that the
-  catalog does not hold, then appends `BurnRecorded` when the disc is
+  catalog does not hold, or holds with other bytes, then appends `BurnRecorded` when the disc is
   `packed`, then `CheckOK`. The catalog write uses the result of the check:
   it reads again only the snapshot, tree and blob files and the tables, not
   the chunks and not the FEC files. When the catalog write fails, the
@@ -813,8 +825,8 @@ verify: DISC-ROOT is not counted: REASON` to standard error, with the `REASON`
 of "Transition rules". With no repository, it
 prints `not counted: no repository`. A failed check of such a root prints
 `disc SEQ "LABEL": bad; REASON` first, then the same `not counted` line, and
-exits with code 1. It removes no record and logs nothing. `--no-mark` writes nothing: no record, no
-verify log event and no catalog entry.
+exits with code 1. It removes no record and logs nothing. `--no-mark` writes
+nothing: no record, no verify log event and no catalog entry.
 
 The first line of a check is `disc SEQ "LABEL": N items, ok` or `disc SEQ
 "LABEL": bad; REASON`. With no repository, `verify` names the disc by uuid.
@@ -853,8 +865,9 @@ The operator tries the heal sources in this order.
    DISC-ROOT` writes the healed disc root into `DIR`, and then checks `DIR`.
    `--heal` refuses a disc whose newest run has no FEC, with exit code 1.
    It prints `noahsark: verify: disc SEQ has no FEC; --heal needs a disc
-   with FEC`, or `disc UUID` with no repository. When the `RUN.bin` of the
-   newest run cannot be read, `--heal` goes on. A healed tree
+   with FEC`, or `disc UUID` with no repository. When neither run header
+   copy of the newest run can be read, `--heal` goes on, and then fails
+   with `cannot heal`. A healed tree
    lives on the hard disk, not on a disc, so it is never a counted mount:
    `--heal` records nothing, whatever `DIR` checks clean as. `image build`
    takes only a disc of the repository, not a directory. Thus the operator
@@ -874,6 +887,39 @@ The operator tries the heal sources in this order.
    cannot repair the damage, it prints `disc SEQ "LABEL": bad; cannot heal;
    REASON` and exits with code 1. With no repository, it names the disc by
    uuid, as a plain `verify` does.
+
+   `--heal` copies the disc tree into `DIR` first. A read error does not
+   stop the copy. A block of 2048 bytes that the drive cannot read, a file
+   that cannot be opened, a file that ends before its length, and a
+   directory that cannot be listed are erasures: the copy holds zero bytes
+   in their place, and the parity makes them again. `--heal` handles each
+   kind of block as FORMAT.md states: an unreadable data block or parity
+   block is an erasure from the start. When the checksum block of a stripe
+   cannot be read or fails its header check, `--heal` checks each file of
+   the stripe against its content id or its `file_hash`, and each block of
+   a file that fails is an erasure. `--heal` repairs these stripes last,
+   after the stripes with a good checksum block. A file that has damage in
+   two such stripes fails its check in both, and the heal stops. `--heal`
+   writes the checksum block again from the repaired data. When one run
+   header copy is damaged, `--heal` writes it again from the other copy. `--heal` writes no wrong byte: a stripe with
+   more erasures than parity blocks stops the heal with `stripe N`, exit
+   code 1, and the files of that stripe stay unhealed in `DIR`. Bytes that
+   cannot be read in a file that the parity does not cover also stop the
+   heal, with exit code 1, and the error names the file. `--heal` refuses
+   a symlink and every entry that is not a regular file or a directory in
+   the disc tree, and never writes through a symlink.
+
+   A drive can stop, or take a very long time, on a damaged disc. Then
+   use `ddrescue` as the second method. `ddrescue` copies the disc into an
+   image file and records the sectors that it cannot read. Loop-mount the
+   image read-only, and run `verify --heal --out=DIR` on the mount point.
+   The image holds zeros in place of each sector that `ddrescue` could
+   not read, and `--heal` finds those blocks as damage through the
+   checksum column and repairs them. The parity cannot repair damage to
+   the filesystem structures of the image. When the image does not mount,
+   the disc counts as lost. As above, the heal of the image records
+   nothing. The operator burns `DIR` with the folder burn method, and only
+   a counted `verify` of the new disc records a check.
 
    The parity heals less damage than its count of parity blocks can. The
    decode uses the lowest-indexed parity blocks that are present, and a
@@ -1536,9 +1582,10 @@ catalog or a record, with exit code 1:
   `DIR is not counted: REASON; recover reads only a read-only mount point
   outside the repository`. `REASON` is one of the texts of "Transition
   rules".
-- The disc cannot be read: `NOAHSARK`, `DISC.bin`, `RUN.bin` or `INDEX.bin`
-  is missing or does not pass its check. It prints `DIR: cannot read the
-  disc: ERROR`.
+- The disc cannot be read: `NOAHSARK`, `DISC.bin` or `INDEX.bin` is missing
+  or does not pass its check, or neither run header copy (`RUN.bin` and
+  `RUN2.bin`) passes its check. It prints `DIR: cannot read the disc:
+  ERROR`.
 - The disc log records the disc as undone by `pack --undo`. It prints `disc
   UUID was undone by pack --undo; it is not in this repository`.
 
@@ -1558,8 +1605,8 @@ the snapshot of the record into `refs.txt`. Else the line stays, thus a
 name that a later `commit` moved keeps its newer snapshot. A name that the
 disc does not carry stays as it is.
 
-A damaged file that is not an object, for example `README.txt`, `RUN2.bin`
-or an FEC file, gives the line `noahsark: recover: damaged file: FILE:
+A damaged file that is not an object, for example `README.txt`, one run
+header copy (`RUN.bin` or `RUN2.bin`) or an FEC file, gives the line `noahsark: recover: damaged file: FILE:
 REASON` on standard error and no `damaged:` line. The count line does not
 count it. The disc still gets `CheckFailed`, and `recover` exits with code 1.
 When `REFS.bin` or `DISCS.bin` is damaged, `recover` writes none of the

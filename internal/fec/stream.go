@@ -1,6 +1,6 @@
 package fec
 
-import "slices"
+import "sort"
 
 // StreamLayout maps the FEC stream, the run's data files padded and
 // concatenated in INDEX's file order, to blocks, columns and stripes.
@@ -48,6 +48,9 @@ func (s *StreamLayout) BlockCount() uint64 { return s.blockCount }
 // StripeCount returns L, the number of blocks in one column.
 func (s *StreamLayout) StripeCount() uint64 { return s.stripeCount }
 
+// FileStart returns the first stream block of file i.
+func (s *StreamLayout) FileStart(i int) uint64 { return s.fileStart[i] }
+
 // Locate returns the file index and the byte offset inside that file
 // where block starts. When block covers a file's zero padding, offset
 // still points past the file's own bytes; the caller supplies zeros
@@ -56,13 +59,9 @@ func (s *StreamLayout) Locate(block uint64) (fileIndex int, offset uint64, err e
 	if block >= s.blockCount {
 		return 0, 0, ErrBlockRange
 	}
-	idx := 0
-	for i, v := range slices.Backward(s.fileStart) {
-		if v <= block {
-			idx = i
-			break
-		}
-	}
+	// The last file that starts at or before block holds it. An empty
+	// file starts where the next file starts, thus the last one wins.
+	idx := sort.Search(len(s.fileStart), func(i int) bool { return s.fileStart[i] > block }) - 1
 	offset = (block - s.fileStart[idx]) * BlockSize
 	return idx, offset, nil
 }

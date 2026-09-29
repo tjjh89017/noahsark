@@ -4,11 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
-	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/restore"
@@ -80,6 +80,11 @@ func (o *verifyOptions) run(e *env, args []string) int {
 	if o.out != "" && !o.heal {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify: --out needs --heal")
 		return 2
+	}
+	if o.heal {
+		if code := checkHealOut(o.out, stderr); code != 0 {
+			return code
+		}
 	}
 
 	repoDir, err := e.findRepo()
@@ -298,70 +303,44 @@ func (c verifyCheck) heal(root, out string, ident discIdentity) int {
 		_, _ = fmt.Fprintf(e.stderr, "noahsark: verify: %s has no FEC; --heal needs a disc with FEC\n", c.short)
 		return 1
 	}
-	reports, err := restore.HealWithProgress(root, out, e.progress())
-	if err == nil {
-		var files int
-		files, err = healedFileCount(out, reports)
-		if err == nil {
-			_, _ = fmt.Fprintf(e.stdout, "%s: healed %d file(s) into %s\n", c.name, files, out)
-		}
-	}
+	res, err := restore.HealWithOptions(root, out, restore.HealOptions{Progress: e.progress()})
 	if err != nil {
 		_, _ = fmt.Fprintf(e.stdout, "%s: bad; cannot heal; %v\n", c.name, err)
 		return 1
 	}
+	_, _ = fmt.Fprintf(e.stdout, "%s: healed %d file(s) into %s\n", c.name, len(res.Files), out)
 	c.note = notCountedDisc
 	c.reason = reasonDiscRootDamaged
 	rr, checkErr := image.ReadWithProgress(out, e.progress())
 	return c.report(rr, checkErr)
 }
 
-// healedFileCount counts the files of the disc root dir that the repair
-// reports changed: the stream files that a repaired data block falls in,
-// and the parity files of a repaired parity block.
-func healedFileCount(dir string, reports []restore.StripeReport) (int, error) {
-	if len(reports) == 0 {
-		return 0, nil
+// checkHealOut refuses an --out path that holds files or that is not a
+// directory, with exit code 2: old files would stay in the healed disc
+// root. It returns 0 for an empty or absent directory.
+func checkHealOut(out string, stderr io.Writer) int {
+	fi, err := os.Stat(out)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
 	}
-	cache := image.NewNameCache()
-	base, err := image.FindNoahsark(dir, cache)
 	if err != nil {
-		return 0, err
+		_, _ = fmt.Fprintf(stderr, "noahsark: verify: %v\n", err)
+		return 1
 	}
-	runDir, err := image.NewestRunDir(cache.Join(base, "runs"))
+	if !fi.IsDir() {
+		_, _ = fmt.Fprintf(stderr, "noahsark: verify: --out=%s is not a directory\n", out)
+		return 2
+	}
+	entries, err := os.ReadDir(out)
 	if err != nil {
-		return 0, err
+		_, _ = fmt.Fprintf(stderr, "noahsark: verify: %v\n", err)
+		return 1
 	}
-	_, sizes, _, err := image.StreamFilesWithCache(base, runDir, cache)
-	if err != nil {
-		return 0, err
+	if len(entries) > 0 {
+		_, _ = fmt.Fprintf(stderr, "noahsark: verify: --out=%s holds files; give an empty or absent directory\n", out)
+		return 2
 	}
-	layout, err := fec.NewStreamLayout(sizes, fec.K)
-	if err != nil {
-		return 0, err
-	}
-	stripes := layout.StripeCount()
-	streamFiles := map[int]bool{}
-	parityFiles := map[int]bool{}
-	for _, r := range reports {
-		for _, col := range r.DataColumns {
-			block := uint64(col)*stripes + r.Stripe
-			if block >= layout.BlockCount() {
-				continue
-			}
-			idx, off, err := layout.Locate(block)
-			if err != nil {
-				return 0, err
-			}
-			if off < sizes[idx] {
-				streamFiles[idx] = true
-			}
-		}
-		for _, j := range r.ParityColumns {
-			parityFiles[j] = true
-		}
-	}
-	return len(streamFiles) + len(parityFiles), nil
+	return 0
 }
 
 // isPackedTree tells whether root is the disc root that pack wrote for
@@ -491,15 +470,15 @@ type discIdentity struct {
 	DiscUUID [16]byte
 	DiscSeq  uint64
 	Label    string
-	// RunRead is true when the RUN.bin of the newest run decoded. FEC is
-	// valid only then.
+	// RunRead is true when a run header copy of the newest run passed its
+	// checks. FEC is valid only then.
 	RunRead bool
 	FEC     bool
 }
 
-// readDiscIdentity reads DISC.bin and the RUN.bin of the newest run
-// under root, without the object and FEC checks. Damage to RUN.bin only
-// clears RunRead: the full check reports it.
+// readDiscIdentity reads DISC.bin and the run header of the newest run
+// under root, without the object and FEC checks. Damage to both run
+// header copies only clears RunRead: the full check reports it.
 func readDiscIdentity(root string) (discIdentity, error) {
 	names := image.NewNameCache()
 	base, err := image.FindNoahsark(root, names)
@@ -524,16 +503,12 @@ func readDiscIdentity(root string) (discIdentity, error) {
 	if err != nil {
 		return ident, nil
 	}
-	runBuf, err := os.ReadFile(filepath.Join(runDir, names.Resolve(runDir, "RUN.bin")))
-	if err != nil || len(runBuf) < format.RunLen {
-		return ident, nil
-	}
-	var run format.Run
-	if run.Decode(runBuf[:format.RunLen]) != nil {
+	header, err := image.ReadRunHeader(runDir, names)
+	if err != nil {
 		return ident, nil
 	}
 	ident.RunRead = true
-	ident.FEC = run.FECScheme == format.FECSchemeRS255GF8
+	ident.FEC = header.Run.FECScheme == format.FECSchemeRS255GF8
 	return ident, nil
 }
 

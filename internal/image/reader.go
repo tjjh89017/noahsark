@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,10 +102,10 @@ type ReadOptions struct {
 	Progress *progress.Reporter
 
 	// KeepGoing continues the read after damage to an object, REFS.bin,
-	// DISCS.bin, README.txt, FORMAT.txt, decoder.py, RUN2.bin or the FEC
-	// files, and lists each damaged item in ReadResult.Damaged. Damage
-	// to DISC.bin, RUN.bin or INDEX.bin stops the read with an error also
-	// with KeepGoing.
+	// DISCS.bin, README.txt, FORMAT.txt, decoder.py, one of the two run
+	// header copies or the FEC files, and lists each damaged item in
+	// ReadResult.Damaged. Damage to DISC.bin, to both run header copies
+	// or to INDEX.bin stops the read with an error also with KeepGoing.
 	KeepGoing bool
 }
 
@@ -154,6 +155,9 @@ func ReadWithOptions(root string, opts ReadOptions) (*ReadResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := CheckTree(root, base); err != nil {
+		return nil, err
+	}
 
 	discBuf, err := os.ReadFile(filepath.Join(base, cache.Resolve(base, "DISC.bin")))
 	if err != nil {
@@ -170,29 +174,28 @@ func ReadWithOptions(root string, opts ReadOptions) (*ReadResult, error) {
 		return nil, err
 	}
 
-	runBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
+	header, err := ReadRunHeader(runDir, cache)
 	if err != nil {
-		return nil, fmt.Errorf("RUN.bin: %w", err)
+		return nil, err
 	}
-	if len(runBuf) != RunFileLen {
-		return nil, fmt.Errorf("RUN.bin: want %d bytes, got %d", RunFileLen, len(runBuf))
-	}
-	var run format.Run
-	if err := run.Decode(runBuf); err != nil {
-		return nil, fmt.Errorf("RUN.bin: %w", err)
-	}
-
+	run := header.Run
 	runCopies := 1
-	run2Buf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
-	if err == nil && !bytes.Equal(runBuf, run2Buf) {
-		err = errors.New("does not match RUN.bin")
-	}
-	if err != nil {
-		if err := damage.add(fileDamage("RUN2.bin", err)); err != nil {
+	if header.FirstDamage != nil {
+		if err := damage.add(fileDamage("RUN.bin", header.FirstDamage)); err != nil {
 			return nil, err
 		}
 	} else {
-		runCopies++
+		run2Buf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
+		if err == nil && !bytes.Equal(header.Raw, run2Buf) {
+			err = errors.New("does not match RUN.bin")
+		}
+		if err != nil {
+			if err := damage.add(fileDamage("RUN2.bin", err)); err != nil {
+				return nil, err
+			}
+		} else {
+			runCopies++
+		}
 	}
 
 	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
@@ -204,7 +207,10 @@ func ReadWithOptions(root string, opts ReadOptions) (*ReadResult, error) {
 		return nil, fmt.Errorf("INDEX.bin: %w", err)
 	}
 	if run.IndexBytes != uint64(len(indexBuf)) || run.IndexHash != sha256sum(indexBuf) {
-		return nil, fmt.Errorf("RUN.bin index_hash does not match INDEX.bin")
+		return nil, fmt.Errorf("%s index_hash does not match INDEX.bin", header.File)
+	}
+	if idx.RunSeq != run.RunSeq {
+		return nil, fmt.Errorf("INDEX.bin: run_seq %d differs from the run_seq %d of %s", idx.RunSeq, run.RunSeq, header.File)
 	}
 	if err := checkFileHash(&idx, format.FileRoleDisc, discBuf, "DISC.bin"); err != nil {
 		return nil, err
@@ -328,6 +334,90 @@ func FindNoahsark(root string, cache *NameCache) (string, error) {
 		return nested, nil
 	}
 	return "", fmt.Errorf("no DISC.bin under %s or %s", root, nested)
+}
+
+// CheckTree refuses a disc tree that holds an entry that is not a
+// regular file or a directory. The tool never writes a symlink or a
+// special file on a disc, and a reader must not follow one out of the
+// disc root. root is the path that the operator gave and can itself be a
+// symlink; base is the NOAHSARK directory that FindNoahsark found under
+// it. A directory that cannot be listed is skipped: each file under it
+// is damage that the read of the file reports.
+func CheckTree(root, base string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, base)
+	if err != nil {
+		return err
+	}
+	walkBase := filepath.Join(realRoot, rel)
+	return filepath.WalkDir(walkBase, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d == nil {
+				return err
+			}
+			return nil
+		}
+		if d.IsDir() || d.Type().IsRegular() {
+			return nil
+		}
+		name, rerr := filepath.Rel(walkBase, path)
+		if rerr != nil {
+			name = path
+		}
+		return fmt.Errorf("%s is not a regular file or a directory; a disc holds no other kind of entry", name)
+	})
+}
+
+// RunHeader is the run header of one run, read from one of its two
+// copies.
+type RunHeader struct {
+	Run format.Run
+	// File is the name of the copy that gave Run: RUN.bin or RUN2.bin.
+	File string
+	// Raw is the bytes of that copy.
+	Raw []byte
+	// FirstDamage is the damage of RUN.bin when Run came from RUN2.bin.
+	// It is nil when RUN.bin passed its checks.
+	FirstDamage error
+}
+
+// ReadRunHeader reads the run header of the run in runDir: RUN.bin, or
+// RUN2.bin when RUN.bin cannot be read or fails its checks. It applies
+// the same checks to both copies. It returns an error when neither copy
+// passes.
+func ReadRunHeader(runDir string, cache *NameCache) (*RunHeader, error) {
+	run, raw, firstErr := readRunCopy(filepath.Join(runDir, cache.Resolve(runDir, "RUN.bin")))
+	if firstErr == nil {
+		return &RunHeader{Run: run, File: "RUN.bin", Raw: raw}, nil
+	}
+	run, raw, secondErr := readRunCopy(filepath.Join(runDir, cache.Resolve(runDir, "RUN2.bin")))
+	if secondErr != nil {
+		return nil, fmt.Errorf("RUN.bin: %w; RUN2.bin: %w", firstErr, secondErr)
+	}
+	return &RunHeader{Run: run, File: "RUN2.bin", Raw: raw, FirstDamage: firstErr}, nil
+}
+
+// readRunCopy reads and checks one run header copy: its length, magic,
+// version, CRC and hash algorithm.
+func readRunCopy(path string) (format.Run, []byte, error) {
+	var run format.Run
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return run, nil, err
+	}
+	if len(buf) != RunFileLen {
+		return run, nil, fmt.Errorf("want %d bytes, got %d", RunFileLen, len(buf))
+	}
+	if err := run.Decode(buf); err != nil {
+		return run, nil, err
+	}
+	if run.HashAlgo != format.HashAlgoSHA256 {
+		return run, nil, fmt.Errorf("hash_algo 0x%02x is not sha2-256 (0x%02x)", uint8(run.HashAlgo), uint8(format.HashAlgoSHA256))
+	}
+	return run, buf, nil
 }
 
 // NewestRunDir returns the run directory with the highest numeric
@@ -474,38 +564,61 @@ func StreamFiles(base, runDir string) (paths []string, sizes []uint64, idx *form
 // StreamFilesWithCache is StreamFiles, resolving every fixed name
 // through cache instead of a fresh, single-use one.
 func StreamFilesWithCache(base, runDir string, cache *NameCache) (paths []string, sizes []uint64, idx *format.Index, err error) {
-	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
+	files, idx, err := StreamFileList(base, runDir, cache)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	for _, f := range files {
+		paths = append(paths, f.Path)
+		sizes = append(sizes, f.Row.ByteLen)
+	}
+	return paths, sizes, idx, nil
+}
+
+// StreamFile is one file of the FEC stream of a run.
+type StreamFile struct {
+	Path string
+	// Row is the INDEX Files row of the file.
+	Row format.IndexFileRecord
+	// ObjectID is the content id of an object file, role 13, and zero
+	// for every other role.
+	ObjectID object.ID
+}
+
+// StreamFileList is StreamFilesWithCache, with the INDEX Files row and,
+// for an object file, the content id of each stream file.
+func StreamFileList(base, runDir string, cache *NameCache) ([]StreamFile, *format.Index, error) {
+	indexBuf, err := os.ReadFile(filepath.Join(runDir, cache.Resolve(runDir, "INDEX.bin")))
+	if err != nil {
+		return nil, nil, err
+	}
 	var decoded format.Index
 	if _, err := decoded.Decode(indexBuf); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	objectPaths, err := ObjectPaths(base, &decoded, cache)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
+	var files []StreamFile
 	objIdx := 0
 	for _, row := range decoded.Files {
-		var path string
+		f := StreamFile{Row: row}
 		var inStream bool
 		switch row.Role {
 		case format.FileRoleObject:
-			path, inStream = objectPaths[objIdx], true
+			f.Path, f.ObjectID, inStream = objectPaths[objIdx], object.ID(decoded.Objects[objIdx].ContentID), true
 			objIdx++
 		default:
-			path, inStream = filesRowPath(base, runDir, row.Role, cache)
+			f.Path, inStream = filesRowPath(base, runDir, row.Role, cache)
 		}
-		if !inStream {
-			continue
+		if inStream {
+			files = append(files, f)
 		}
-		sizes = append(sizes, row.ByteLen)
-		paths = append(paths, path)
 	}
-	return paths, sizes, &decoded, nil
+	return files, &decoded, nil
 }
 
 // verifyFEC rebuilds the checksum column and the parity from the run's
@@ -566,11 +679,16 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, checksumPath s
 		}
 	}()
 
+	columnBytes := int64(L) * fec.BlockSize
+
 	checksumFile, err := os.Open(checksumPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = checksumFile.Close() }()
+	if err := checkColumnFileLen(checksumFile, "checksum.bin", columnBytes); err != nil {
+		return err
+	}
 
 	parityFiles := make([]*os.File, fec.M)
 	for j, p := range parityPaths {
@@ -579,6 +697,9 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, checksumPath s
 			return err
 		}
 		defer func() { _ = f.Close() }()
+		if err := checkColumnFileLen(f, fmt.Sprintf("parity column %d", j), columnBytes); err != nil {
+			return err
+		}
 		parityFiles[j] = f
 	}
 
@@ -625,6 +746,20 @@ func compareFEC(sources []streamSource, layout *fec.StreamLayout, checksumPath s
 		prog.Add(1)
 	}
 	prog.Done()
+	return nil
+}
+
+// checkColumnFileLen refuses a checksum or parity file whose length is
+// not exactly L blocks: a file with bytes after its last block is damaged
+// too.
+func checkColumnFileLen(f *os.File, name string, want int64) error {
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if fi.Size() != want {
+		return fmt.Errorf("%s: %d bytes, want %d", name, fi.Size(), want)
+	}
 	return nil
 }
 

@@ -787,6 +787,16 @@ same number and uuid on its sleeve. `--heal` refuses a disc without FEC.
 The parity cannot heal every damage that its size suggests, thus a second
 copy is the main redundancy and the parity is only an aid.
 
+`DIR` must be empty or absent. A sector that the drive cannot read does
+not stop `--heal`: the copy in `DIR` holds zeros there, and the parity
+makes those bytes again. When too many sectors of one stripe are lost,
+`--heal` stops with `cannot heal`, names the stripe, and writes no wrong
+byte.
+
+A drive can stop, or retry for hours, on a badly damaged disc. Then copy
+the disc with `ddrescue` first, and heal the copy. OPERATIONS.md, "Verify
+and heal", gives the method.
+
 **Close.** `pack --close` makes the `growisofs` line of `status` seal the
 disc with `-dvd-compat`. A sealed disc can take no more data. The choice
 is permanent. The default burn leaves the disc open, and every reader

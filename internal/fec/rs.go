@@ -26,9 +26,12 @@ type Codec struct {
 	enc  reedsolomon.Encoder
 }
 
-// NewCodec builds a Codec for k data shards and m parity shards.
+// NewCodec builds a Codec for k data shards and m parity shards. The
+// codec keeps no inverted matrix between two decodes: a cache would keep
+// one for each erasure pattern, and a damaged disc can give a new pattern
+// in each stripe.
 func NewCodec(k, m int) (*Codec, error) {
-	enc, err := reedsolomon.New(k, m, reedsolomon.WithCauchyMatrix())
+	enc, err := reedsolomon.New(k, m, reedsolomon.WithCauchyMatrix(), reedsolomon.WithInversionCache(false))
 	if err != nil {
 		return nil, err
 	}

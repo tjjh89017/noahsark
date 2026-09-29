@@ -824,3 +824,38 @@ func TestCommitDropsEntryOnMidFileReadError(t *testing.T) {
 	}
 	findEntry(t, dirTree, "a.txt")
 }
+
+// TestCommitReplacesADamagedMetadataObject damages a tree object of the
+// catalog with no change to its size. A second commit of the same source
+// writes the tree again, as the catalog writes an object.
+func TestCommitReplacesADamagedMetadataObject(t *testing.T) {
+	src := t.TempDir()
+	buildFixture(t, src)
+
+	staging := t.TempDir()
+	w := testWriter(staging)
+	w.Now = fixedClock
+	snapID, _, err := w.Commit(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	treePath := testMetaPath(staging)(format.ObjectKindTree, ID(loadSnapshot(t, staging, snapID).RootTree))
+	good, err := os.ReadFile(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged := bytes.Clone(good)
+	damaged[len(damaged)-1] ^= 0xff
+	mustWriteBytes(t, treePath, damaged)
+
+	if _, _, err := w.Commit(src); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, good) {
+		t.Fatal("commit kept a damaged tree object of the same size")
+	}
+}

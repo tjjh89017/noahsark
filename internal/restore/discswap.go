@@ -3,7 +3,9 @@ package restore
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -60,10 +62,6 @@ type Assembler struct {
 	// existing destination. A later walk creates no directory and no
 	// symlink.
 	firstDisc bool
-	// chunkBuf backs the content check of a resumed part file. It grows
-	// to the largest chunk the restore meets, never past the maximum
-	// chunk size.
-	chunkBuf []byte
 	// linkedDir is the directory that got a final name after its last
 	// flush, or "". The walk flushes it when a final name goes into
 	// another directory, and at its end.
@@ -187,9 +185,20 @@ func (w *discWalk) Other(dest string, e format.TreeEntry) error {
 	return nil
 }
 
-// blobError reports a blob that the catalog cannot give.
+// blobError reports a blob that the catalog cannot give. A damaged blob
+// and a blob of another size than its tree entry already name the blob
+// and the cause.
 func blobError(id object.ID, err error) error {
-	return fmt.Errorf("blob %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("blob %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
+	}
+	if _, damaged := errors.AsType[*catalog.DamagedObjectError](err); damaged {
+		return err
+	}
+	if _, size := errors.AsType[*catalog.FileSizeError](err); size {
+		return err
+	}
+	return fmt.Errorf("blob %s: %w", id.TextForm(), err)
 }
 
 // file restores regular file no as far as d can take it. The first walk
@@ -205,17 +214,12 @@ func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d Disc
 			return err
 		}
 	}
-	blobID := object.ID(e.ContentID)
 	blob, err := a.c.ReadFileBlob(e)
 	if err != nil {
-		a.wp.failed(dest, blobError(blobID, err))
+		a.wp.failed(dest, blobError(object.ID(e.ContentID), err))
 		return a.states.clear(no, pending)
 	}
 	entries := placeChunks(blob.Entries)
-	if size := blobSize(entries); size != e.Size {
-		a.wp.failed(dest, fmt.Errorf("blob %s holds %d bytes, but the tree entry says %d; the catalog does not agree with itself", blobID.TextForm(), size, e.Size))
-		return a.states.clear(no, pending)
-	}
 
 	if a.firstDisc {
 		if !a.wp.overwrite {
@@ -273,7 +277,7 @@ func (a *Assembler) register(part string, entries []placedChunk) fileState {
 	defer func() { _ = f.Close() }()
 	var remaining uint64
 	for _, be := range entries {
-		if !a.chunkInPlace(f, be) {
+		if !chunkAt(f, be) {
 			remaining++
 		}
 	}
@@ -295,7 +299,7 @@ func (a *Assembler) writePart(part string, st *fileState, e format.TreeEntry, wa
 	}
 	for _, be := range wanted {
 		id := object.ID(be.ContentID)
-		if st.resume && a.chunkInPlace(f, be) {
+		if st.resume && chunkAt(f, be) {
 			// register already took this chunk out of remaining.
 			continue
 		}
@@ -318,22 +322,15 @@ func (a *Assembler) writePart(part string, st *fileState, e format.TreeEntry, wa
 	return f.Close()
 }
 
-// chunkInPlace reports whether f already holds be's own bytes at be's
-// offset, by the same content id check a restore uses everywhere else.
-func (a *Assembler) chunkInPlace(f *os.File, be placedChunk) bool {
-	if uint64(cap(a.chunkBuf)) < be.Length {
-		a.chunkBuf = make([]byte, be.Length)
-	}
-	return chunkAt(f, be, a.chunkBuf[:be.Length])
-}
-
 // chunkAt reports whether f holds the bytes of be at the offset of be.
-// buf has the length of be.
-func chunkAt(f *os.File, be placedChunk, buf []byte) bool {
-	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
+// It hashes the bytes while it reads them, thus the length of a blob
+// entry never sizes a buffer.
+func chunkAt(f *os.File, be placedChunk) bool {
+	if be.Length > math.MaxInt64 || be.Offset > math.MaxInt64-be.Length {
 		return false
 	}
-	return object.ComputeID(format.ObjectKindChunk, buf) == object.ID(be.ContentID)
+	id, n, err := object.ReaderID(format.ObjectKindChunk, io.NewSectionReader(f, int64(be.Offset), int64(be.Length)))
+	return err == nil && uint64(n) == be.Length && id == object.ID(be.ContentID)
 }
 
 // finishPart gives a complete part file its final name, then applies
@@ -437,15 +434,6 @@ func syncDir(dir string) error {
 	return nil
 }
 
-// blobSize is the size of the file that entries describe.
-func blobSize(entries []placedChunk) uint64 {
-	if len(entries) == 0 {
-		return 0
-	}
-	last := entries[len(entries)-1]
-	return last.Offset + last.Length
-}
-
 // linkFile is os.Link, a seam a test drives the no-hard-link fallback
 // through.
 var linkFile = os.Link
@@ -537,12 +525,8 @@ func fileAlreadyRestored(dest string, fi os.FileInfo, e format.TreeEntry, entrie
 // fileMatches reports whether the bytes of f, split at the offsets and
 // lengths of entries, hash to the content id that each entry names.
 func fileMatches(f *os.File, entries []placedChunk) bool {
-	var buf []byte
 	for _, be := range entries {
-		if uint64(cap(buf)) < be.Length {
-			buf = make([]byte, be.Length)
-		}
-		if !chunkAt(f, be, buf[:be.Length]) {
+		if !chunkAt(f, be) {
 			return false
 		}
 	}

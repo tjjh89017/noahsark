@@ -292,9 +292,10 @@ func TestRestoreChecksContentOfExistingFile(t *testing.T) {
 	}
 }
 
-// TestRestoreRefusesBlobOfOtherSize damages the size of cross.bin in the
-// catalog tree, so that the blob and the tree entry do not agree. The
-// restore must not give the final name to a file of the wrong size.
+// TestRestoreRefusesBlobOfOtherSize changes the size of cross.bin in the
+// catalog tree, so that the blob and the tree entry do not agree. Each
+// changed tree gives its new id, thus only the size check can refuse it.
+// The restore must not give the final name to a file of the wrong size.
 func TestRestoreRefusesBlobOfOtherSize(t *testing.T) {
 	srcDir := buildSpanFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
@@ -303,43 +304,46 @@ func TestRestoreRefusesBlobOfOtherSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var holder object.ID
-	var walk func(id object.ID)
-	walk = func(id object.ID) {
+	found := false
+	var rewrite func(id object.ID) object.ID
+	rewrite = func(id object.ID) object.ID {
 		tree, err := c.ReadTree(id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, e := range tree.Entries {
+		for i, e := range tree.Entries {
 			switch {
 			case string(e.Name) == "cross.bin":
-				holder = id
+				tree.Entries[i].Size ^= 1 << 16
+				found = true
 			case e.EntryType == format.EntryTypeDirectory:
-				walk(object.ID(e.ContentID))
+				tree.Entries[i].ContentID = rewrite(object.ID(e.ContentID))
 			}
 		}
+		return writeTreeObject(t, c, tree)
 	}
-	walk(object.ID(snap.RootTree))
-	path := c.MetaPath(format.ObjectKindTree, holder)
-	buf, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := bytes.Index(buf, []byte("cross.bin"))
-	if name < format.TreeEntryHeaderLen {
+	snap.RootTree = rewrite(object.ID(snap.RootTree))
+	if !found {
 		t.Fatal("no tree holds cross.bin")
-	}
-	// The size field is the u64 at offset 8 of the entry header.
-	buf[name-format.TreeEntryHeaderLen+8+2] ^= 0x01
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatal(err)
 	}
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	rep, err := restoreWith(t, c, treeDir, snapID, outDir, false)
+	sel, err := plan.Select(c, snap, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	a, err := NewAssembler(c, sel, outDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err := a.Disc(&treeDisc{root: treeDir}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	rep := a.Report()
 	if _, err := os.Lstat(filepath.Join(outDir, "cross.bin")); err == nil {
 		t.Fatal("cross.bin has its final name, but its blob does not have the size of its tree entry")
 	}
@@ -386,5 +390,35 @@ func TestLaterWalkCreatesNoDirectory(t *testing.T) {
 	}
 	if _, err := os.Lstat(sub); err == nil {
 		t.Fatal("a later walk created a directory")
+	}
+}
+
+// TestChunkAtNeedsNoBufferOfTheEntryLength checks a part file against a
+// blob entry whose length is far larger than any file. The check reads
+// the file and fails, with no buffer of that length.
+func TestChunkAtNeedsNoBufferOfTheEntryLength(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "part")
+	payload := []byte("content of a")
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	id := object.ComputeID(format.ObjectKindChunk, payload)
+
+	good := placedChunk{ContentID: id, Length: uint64(len(payload))}
+	if !chunkAt(f, good) {
+		t.Fatal("chunkAt refuses a chunk that the file holds")
+	}
+	huge := placedChunk{ContentID: id, Length: 1 << 62}
+	if chunkAt(f, huge) {
+		t.Fatal("chunkAt accepts an entry longer than the file")
+	}
+	overflow := placedChunk{ContentID: id, Length: 1 << 63, Offset: 1 << 63}
+	if chunkAt(f, overflow) {
+		t.Fatal("chunkAt accepts an entry whose end overflows")
 	}
 }

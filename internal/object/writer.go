@@ -566,7 +566,7 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	if _, err := b.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.MetaPath(format.ObjectKindBlob, id), buf)
+	isNew, err := writeMetaObjectFile(w.MetaPath(format.ObjectKindBlob, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -597,7 +597,7 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	if _, err := t.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.MetaPath(format.ObjectKindTree, id), buf)
+	isNew, err := writeMetaObjectFile(w.MetaPath(format.ObjectKindTree, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -638,7 +638,7 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	if _, err := s.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeObjectFile(w.MetaPath(format.ObjectKindSnapshot, id), buf)
+	isNew, err := writeMetaObjectFile(w.MetaPath(format.ObjectKindSnapshot, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -675,8 +675,8 @@ func commonHeader(kind format.Magic, headerLen int) format.CommonHeader {
 	}
 }
 
-// writeObjectFile writes data to path through a temp file and a rename,
-// so a crash leaves no partial object. When an object with this name
+// writeObjectFile writes the chunk object data to path through a temp
+// file and a rename, so a crash leaves no partial object. When an object with this name
 // already exists and its size matches data, it is trusted without a
 // write: two objects sharing a content id share identical bytes, and
 // pack checks every object's content id before placing it onto a run,
@@ -691,30 +691,53 @@ func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 	} else if !os.IsNotExist(statErr) {
 		return false, statErr
 	}
+	return true, replaceObjectFile(path, data)
+}
 
+// writeMetaObjectFile writes a snapshot, tree or blob object to path in
+// the catalog, as the catalog writes an object: a file of the same name
+// counts only when its bytes are data. Each read of the catalog checks
+// the object against its id, thus a damaged file with the size of data
+// must be replaced here. isNew is true when path did not exist.
+func writeMetaObjectFile(path string, data []byte) (isNew bool, err error) {
+	existing, err := os.ReadFile(path)
+	switch {
+	case err == nil && bytes.Equal(existing, data):
+		return false, nil
+	case err == nil:
+		return false, replaceObjectFile(path, data)
+	case os.IsNotExist(err):
+		return true, replaceObjectFile(path, data)
+	}
+	return false, err
+}
+
+// replaceObjectFile writes data to path through a temp file and a
+// rename, so a crash leaves no partial object.
+func replaceObjectFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, err
+		return err
 	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
-		return false, err
+		return err
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return false, err
+		return err
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		return false, err
+		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // countObject adds id to sum as new or existing. id counts as existing
