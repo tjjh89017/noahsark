@@ -1,158 +1,91 @@
 package restore
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/plan"
 )
 
-// NeededChunks returns the ids of the chunks a restore of snap into
-// outDir must still read from a disc. It reads no disc and writes
-// nothing, so a dry run and a rerun both use it to list the discs the
-// operator still has to insert.
+// Scan calls need for each chunk that a restore of sel into outDir must
+// still read from a disc. It reads no disc and writes nothing, so a dry
+// run and a rerun both use it to plan the discs that are still needed.
 //
-// A file that is already complete at its final name needs nothing. A
-// chunk whose bytes a part file already holds, checked by its content
-// id, needs nothing either. Every other chunk of every file in scope is
-// needed.
+// A file that the destination already holds needs nothing: without
+// overwrite, the restore leaves it as it is. A chunk whose bytes a part
+// file already holds, checked by its content id, needs nothing either.
+// A file whose blob is not in the catalog needs nothing, because the
+// restore cannot write it. need can get one chunk more than one time.
 //
-// The walk holds one file at a time: the blob entries of that file, one
-// chunk buffer, and the set of needed ids. It never maps a chunk back
-// to the files that hold it.
-func NeededChunks(c *catalog.Catalog, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (map[object.ID]bool, error) {
-	s := &pendingScan{c: c, outDir: outDir, overwrite: overwrite, needed: make(map[object.ID]bool)}
-	rootTree, err := c.ReadTree(object.ID(snap.RootTree))
-	if err != nil {
-		return nil, err
-	}
-	filter, err := newFilterState(includes)
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range rootTree.Entries {
-		if e.EntryType != format.EntryTypeDirectory {
-			continue
-		}
-		rootPath := rootPathOf(e)
-		if rootPath == "" {
-			continue
-		}
-		childFilter, include := stepInto(filter, splitPath(rootPath))
-		if !include {
-			continue
-		}
-		dest, err := joinComponents(outDir, splitPath(rootPath))
-		if err != nil {
-			return nil, err
-		}
-		if err := s.dir(object.ID(e.ContentID), dest, childFilter); err != nil {
-			return nil, err
-		}
-	}
-	return s.needed, nil
+// The walk holds one file at a time: the blob entries of that file and
+// one chunk buffer. It keeps no list of chunks.
+func Scan(c *catalog.Catalog, sel *plan.Selection, outDir string, overwrite bool, need func(object.ID)) error {
+	return sel.Walk(outDir, &pendingScan{c: c, overwrite: overwrite, need: need})
 }
 
-// pendingScan is one NeededChunks walk.
+// pendingScan is the visitor of one Scan.
 type pendingScan struct {
 	c         *catalog.Catalog
-	outDir    string
 	overwrite bool
-	needed    map[object.ID]bool
+	need      func(object.ID)
 	buf       []byte
 }
 
-func (s *pendingScan) dir(treeID object.ID, dest string, filter *filterState) error {
-	t, err := s.c.ReadTree(treeID)
+// Dir joins names below parent. Without overwrite, a name that stands in
+// the destination and is not a directory skips what the directory
+// holds, as the restore does.
+func (s *pendingScan) Dir(parent string, names []string) (string, bool, error) {
+	path, err := plan.JoinAll(parent, names)
 	if err != nil {
-		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
+		return "", false, err
 	}
-	taken := make(map[string]bool, len(t.Entries))
-	for _, e := range t.Entries {
-		taken[string(e.Name)] = true
+	if s.overwrite {
+		return path, true, nil
 	}
-	for _, e := range t.Entries {
-		childFilter, include := stepInto(filter, []string{string(e.Name)})
-		if !include {
-			continue
-		}
-		name := string(e.Name)
-		child, err := joinSafe(dest, name)
-		if err != nil {
-			return err
-		}
-		switch e.EntryType {
-		case format.EntryTypeDirectory:
-			if err := s.dir(object.ID(e.ContentID), child, childFilter); err != nil {
-				return err
-			}
-		case format.EntryTypeRegular:
-			part, err := joinSafe(dest, partName(name, taken))
-			if err != nil {
-				return err
-			}
-			if err := s.file(child, part, object.ID(e.ContentID), e); err != nil {
-				return err
-			}
+	dir := parent
+	for _, name := range names {
+		dir, _ = plan.JoinSafe(dir, name)
+		if fi, err := os.Lstat(dir); err == nil && !fi.IsDir() {
+			return "", false, nil
 		}
 	}
-	return nil
+	return path, true, nil
 }
 
-// file adds every chunk of one regular file that the destination does
-// not already hold.
-func (s *pendingScan) file(dest, part string, blobID object.ID, e format.TreeEntry) error {
-	blob, err := s.c.ReadBlob(blobID)
+func (s *pendingScan) DirDone(string, format.TreeEntry) {}
+
+func (s *pendingScan) Other(string, format.TreeEntry) error { return nil }
+
+// File calls need for each chunk of one regular file that the
+// destination does not hold.
+func (s *pendingScan) File(dest, part string, e format.TreeEntry) error {
+	blob, err := s.c.ReadBlob(object.ID(e.ContentID))
 	if err != nil {
-		return fmt.Errorf("blob %s: not held by the cache; disc-swap restore needs every blob cached: %w", blobID.TextForm(), err)
+		return nil
 	}
+	entries := placeChunks(blob.Entries)
 	if !s.overwrite {
-		if resumed, found := existingFileStatus(dest, e, placeChunks(blob.Entries)); found && resumed {
+		if _, found := existingFileStatus(dest, e, entries); found {
 			return nil
 		}
 	}
 	f, err := os.Open(part)
 	if err != nil {
-		for _, be := range blob.Entries {
-			s.needed[object.ID(be.ContentID)] = true
+		for _, be := range entries {
+			s.need(object.ID(be.ContentID))
 		}
 		return nil
 	}
 	defer func() { _ = f.Close() }()
-	for _, be := range placeChunks(blob.Entries) {
-		if s.chunkInPlace(f, be) {
-			continue
+	for _, be := range entries {
+		if uint64(cap(s.buf)) < be.Length {
+			s.buf = make([]byte, be.Length)
 		}
-		s.needed[object.ID(be.ContentID)] = true
+		if !chunkAt(f, be, s.buf[:be.Length]) {
+			s.need(object.ID(be.ContentID))
+		}
 	}
 	return nil
-}
-
-// chunkInPlace reports whether f already holds be's own bytes at be's
-// offset, the same content id check the assembler makes.
-func (s *pendingScan) chunkInPlace(f *os.File, be placedChunk) bool {
-	if uint64(cap(s.buf)) < be.Length {
-		s.buf = make([]byte, be.Length)
-	}
-	buf := s.buf[:be.Length]
-	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
-		return false
-	}
-	return object.ComputeID(format.ObjectKindChunk, buf) == object.ID(be.ContentID)
-}
-
-// joinComponents joins every component under parent, refusing any that
-// escapes it.
-func joinComponents(parent string, components []string) (string, error) {
-	dest := parent
-	for _, c := range components {
-		next, err := joinSafe(dest, c)
-		if err != nil {
-			return "", err
-		}
-		dest = next
-	}
-	return dest, nil
 }

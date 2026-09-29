@@ -357,3 +357,8 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	}
 	return out.Close()
 }
+
+// uuidText gives the text form of a disc uuid, in five groups.
+func uuidText(u [16]byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
+}

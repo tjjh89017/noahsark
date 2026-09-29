@@ -231,10 +231,10 @@ scenario_iso() {
 	assert_listing_matches "$mnt" "$work"
 
 	t0=$(date +%s)
-	"$BIN" restore "$mnt" "$snap" "$restored"
+	"$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$restored"
 	t1=$(date +%s)
 	log "iso: restore took $((t1 - t0))s"
-	assert_dirs_equal "$restored$src" "$src"
+	assert_dirs_equal "$restored" "$src"
 
 	umount_if_mounted "$mnt"
 

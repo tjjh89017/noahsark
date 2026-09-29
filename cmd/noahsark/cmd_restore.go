@@ -6,166 +6,179 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"sort"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/restore"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 func init() {
 	register(&command{
-		name: "restore",
-		usage: "restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR\n" +
-			"restore [--include=PATH]... [--overwrite] --mount=DIR [--dry-run] SNAPSHOT OUT-DIR",
-		summary: "Restore a snapshot to a directory. Accepts one or more DISC-ROOT positionals for the all-discs-at-once mode.",
-		flags:   restoreFlags,
+		name:  "restore",
+		usage: "restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST",
+		summary: "Restore a snapshot into DEST. Plan from the catalog, then read one disc at a time from the mount point DIR. " +
+			"PATH is relative to the source root, as ls prints it; a trailing slash puts the content of a directory into DEST.",
+		flags: restoreFlags,
 	})
 }
 
 // restoreOptions holds the command options of restore.
 type restoreOptions struct {
-	includes  stringList
 	overwrite bool
-	mount     string
 	dryRun    bool
+	disc      oneValue
 }
 
 func restoreFlags(fs *flag.FlagSet) runFunc {
 	o := &restoreOptions{}
-	fs.Var(&o.includes, "include", "restore only this snapshot-relative path and, if it names a directory, everything under it; repeatable")
-	fs.BoolVar(&o.overwrite, "overwrite", false, "unlink an existing path first and then create it; without this, an existing path is left alone")
-	fs.StringVar(&o.mount, "mount", "", "the directory where the drive is mounted; required for the disc-swap mode")
-	fs.BoolVar(&o.dryRun, "dry-run", false, "print the disc list the restore needs and stop; reads no disc and writes nothing; needs --mount")
+	fs.BoolVar(&o.overwrite, "overwrite", false, "unlink an existing path first and then create it")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and stop")
+	fs.Var(&o.disc, "disc", "the mount point of the one drive; one value; required")
 	return o.run
 }
 
-// run implements "noahsark restore". Two modes share this
-// entry point.
-//
-// With one or more DISC-ROOT positionals, restore reads every disc at
-// once. A shell glob such as /mnt/discs/* expands to that positional
-// list.
-//
-// With none, and exactly SNAPSHOT and OUT-DIR left over, restore
-// resolves SNAPSHOT through the catalog and walks the disc-swap
-// loop one disc at a time, by disc number, prompting the operator to
-// insert the next one. This is the single-drive path; see
-// docs/decisions.md, "Restore".
+// oneValue is a string option that takes one value only.
+type oneValue struct {
+	value string
+	set   bool
+}
+
+func (v *oneValue) String() string { return v.value }
+
+func (v *oneValue) Set(s string) error {
+	if v.set {
+		return errors.New("the option takes one value only")
+	}
+	v.value, v.set = s, true
+	return nil
+}
+
+// errNoRepoForRestore is the refusal of restore with no repository.
+var errNoRepoForRestore = errors.New("no repository; run recover first, one time for each disc")
+
+// run implements "noahsark restore". It plans from the catalog and reads
+// one disc at a time from --disc. It changes no file of the repository.
 func (o *restoreOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
+	if o.disc.value == "" || len(args) < 2 {
+		if o.disc.value == "" {
+			_, _ = fmt.Fprintln(stderr, "noahsark: restore: --disc=DIR is required")
+		}
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST")
+		return 2
+	}
+	snapArg, paths, destArg := args[0], args[1:len(args)-1], args[len(args)-1]
+
+	repoDir, err := e.findRepo()
+	if err != nil {
+		if errors.Is(err, errNoRepo) {
+			err = errNoRepoForRestore
+		}
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 2
+	}
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 2
+	}
+	layout := layoutOf(repoDir, cfg)
+	c, err := catalog.OpenReadOnly(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	src := &catalogSource{c: c, refsPath: layout.refsFile()}
+	snapID, err := src.ParseSnapshotArg(snapArg)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return exitForSnapshotArg(err)
+	}
+	if c.Partial(snapID) {
+		_, _ = fmt.Fprintf(stderr, "noahsark: restore: snapshot %s is partial; run recover with more discs\n", shortID(snapID))
+		return 1
+	}
+	snap, err := src.Snapshot(snapID)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	sel, err := plan.Select(c, snap, paths)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		if _, ok := errors.AsType[*plan.PathError](err); ok {
+			return 2
+		}
+		return 1
+	}
+
+	dest, err := e.abs(destArg)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	mountDir, err := e.abs(o.disc.value)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	discs, err := restoreDiscs(layout, cfg)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	p, err := plan.New(c, sel, discs.list)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	if err := restore.Scan(c, sel, dest, o.overwrite, p.Add); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	needed := p.Discs()
+	printRestorePlan(stdout, needed, p.NoDisc())
+	if o.dryRun {
+		return 0
+	}
+
+	a, err := restore.NewAssembler(c, sel, dest, o.overwrite)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
+	s := &discSwap{
+		e:        e,
+		mountDir: mountDir,
+		dirArg:   o.disc.value,
+		names:    discs.names,
+		plan:     p,
+		input:    bufio.NewScanner(e.stdin),
+	}
 	prog := e.progress()
-	includeFlags, overwrite, mountFlag, dryRun := o.includes, o.overwrite, o.mount, o.dryRun
-
-	if dryRun && mountFlag == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --dry-run needs --mount; the disc list comes from the catalog, and the all-discs-at-once mode reads every disc together with no such list to preview")
-		return 2
+	prog.Start("restore: bytes written", 0)
+	err = s.readDiscs(a, needed, prog)
+	prog.Done()
+	if stop, ok := errors.AsType[*insertDiscError](err); ok {
+		_, _ = fmt.Fprintf(stderr, "restore: insert %s into %s and run restore again\n", stop.disc, s.dirArg)
+		return 1
 	}
-	// Two positional arguments, with --mount given, are the disc-swap
-	// mode's SNAPSHOT OUT-DIR. Without --mount, the same two arguments
-	// are ambiguous: they are a DISC-ROOT SNAPSHOT with OUT-DIR left
-	// off when the first one names an existing directory, and a
-	// SNAPSHOT OUT-DIR with no disc given otherwise. Both mistakes get
-	// their own line, naming what the operator typed.
-	if len(args) == 2 {
-		if mountFlag == "" {
-			if looksLikeDiscRoot(args[0]) {
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: %s is a disc root, so OUT-DIR is missing\n", args[0])
-			} else {
-				_, _ = fmt.Fprintf(stderr, "noahsark: restore: no disc given for snapshot %q; pass a DISC-ROOT or --mount\n", args[0])
-			}
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] SNAPSHOT OUT-DIR")
-			return 2
-		}
-		return cmdRestoreDiscSwap(e, includeFlags, overwrite, mountFlag, dryRun, args[0], args[1], stdout, stderr, prog)
-	}
-	// --mount is disc-swap mode, which never takes a DISC-ROOT: three or
-	// more positional arguments with --mount given carry a leftover
-	// DISC-ROOT from the all-discs-at-once form, not that mode's own
-	// SNAPSHOT OUT-DIR pair.
-	if mountFlag != "" && len(args) >= 3 {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount takes no DISC-ROOT")
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] [--mount=DIR] SNAPSHOT OUT-DIR")
-		return 2
-	}
-
-	// The trailing two positional arguments are always SNAPSHOT and
-	// OUT-DIR; everything before them is one or more DISC-ROOTs, so
-	// this needs no guess about where the roots end.
-	if len(args) < 3 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark restore [--include=PATH]... [--overwrite] DISC-ROOT... SNAPSHOT OUT-DIR")
-		return 2
-	}
-	discRoots := args[:len(args)-2]
-	positional := args[len(args)-2:]
-	for _, root := range discRoots {
-		if !looksLikeDiscRoot(root) {
-			// Every argument in this position is always a mounted
-			// disc or an unpacked NOAHSARK tree. Name it here, so a
-			// mistyped path is not reported later as a missing
-			// object.
-			_, _ = fmt.Fprintf(stderr, "noahsark: restore: no such disc root: %s\n", root)
-			return 2
-		}
-	}
-	snapshotArg, outDir := positional[0], positional[1]
-
-	src, err := restore.OpenSource(discRoots)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
-	snapID, err := src.ParseSnapshotArg(snapshotArg)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 2
-	}
 
-	opts := []restore.Option{
-		restore.WithInclude(includeFlags),
-		restore.WithOverwrite(overwrite),
-	}
-	if known := knownDiscsForRepo(e); len(known) > 0 {
-		opts = append(opts, restore.WithKnownDiscs(known))
-	}
-	rep, err := restore.RestoreMultiWithProgress(discRoots, snapID, outDir, prog, opts...)
+	a.Finish()
+	rep := a.Report()
 	printProblems(stderr, rep)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
-	}
-	return printRestoreResult(stdout, rep, snapID, outDir)
-}
-
-// printProblems writes one warning line for every problem the report
-// holds, then one line for the problems it counted but dropped. A
-// problem that lost data is not called a warning; every other kind is.
-func printProblems(stderr io.Writer, rep restore.Report) {
-	for _, p := range rep.Problems {
-		prefix := "noahsark: restore: warning:"
-		if p.Kind == restore.KindFile {
-			prefix = "noahsark: restore:"
-		}
-		_, _ = fmt.Fprintf(stderr, "%s %s: %s\n", prefix, p.Path, p.Err)
-	}
-	if dropped := rep.Dropped(); dropped > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: restore: warning: %d more problem(s) not shown\n", dropped)
-	}
-}
-
-// printRestoreResult writes the result lines every restore mode ends
-// with, and returns the exit code: 1 when the restore lost data or
-// metadata, 0 otherwise.
-func printRestoreResult(stdout io.Writer, rep restore.Report, snapID object.ID, outDir string) int {
-	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", snapID.TextForm(), outDir)
+	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", shortID(snapID), destArg)
 	if rep.Resumed > 0 {
-		_, _ = fmt.Fprintf(stdout, "resumed: %d file(s) already restored\n", rep.Resumed)
-	}
-	if summary := rep.Summary(); summary != "" {
-		_, _ = fmt.Fprintln(stdout, summary)
+		_, _ = fmt.Fprintf(stdout, "skipped: %d file(s) already restored\n", rep.Resumed)
 	}
 	if rep.Failed() {
 		return 1
@@ -173,226 +186,194 @@ func printRestoreResult(stdout io.Writer, rep restore.Report, snapID object.ID, 
 	return 0
 }
 
-// errStdinClosed is returned when the disc-swap loop's prompt cannot
-// read another line, the same signal a killed session leaves behind:
-// the caller reports it as a failed restore, with every part file left
-// in place for a later run.
-var errStdinClosed = fmt.Errorf("stdin closed while waiting for the next disc")
-
-// cmdRestoreDiscSwap runs the single-drive restore: build the plan,
-// print the disc list, then read one disc at a time, prompting the
-// operator between discs.
-// dryRun prints the disc list and stops there, before any disc is read.
-// The mode writes only below OUT-DIR, so it takes no repository lock.
-func cmdRestoreDiscSwap(e *env, includes stringList, overwrite bool, mountDir string, dryRun bool, snapshotArg, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	if mountDir == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore: --mount is required; there is no config key for it")
-		return 2
-	}
-
-	src, c, err := openCatalogSource(e)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
-	}
-
-	snapID, err := src.ParseSnapshotArg(snapshotArg)
-	if err != nil {
-		// --mount names a disc to swap discs through, so a ref this
-		// repository's catalog does not know is reported as possibly on a
-		// disc not yet inserted, not as an unknown name outright,
-		// unless it looks like a truncated snapshot id, which
-		// *refNotFoundError already reports as that.
-		if _, ok := err.(*refNotFoundError); ok && !restore.LooksLikeSnapshotIDPrefix(snapshotArg) {
-			err = fmt.Errorf("ref %q is not on the provided disc(s); a later disc in the chain may carry it", snapshotArg)
+// printRestorePlan prints the plan: one line for each needed disc, the
+// line of the items with no known disc, and the totals line.
+func printRestorePlan(w io.Writer, discs []plan.DiscEntry, noDisc int) {
+	items, bytes := 0, uint64(0)
+	for _, d := range discs {
+		lost := ""
+		if d.Lost {
+			lost = " (lost)"
 		}
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 2
+		_, _ = fmt.Fprintf(w, "%s: %d items, %d bytes%s\n", discName(d.DiscSeq, d.Label, d.DiscUUID), d.Items, d.Bytes, lost)
+		items += d.Items
+		bytes += d.Bytes
 	}
-	return cmdRestoreDiscSwapRun(e.stdin, c, snapID, includes, overwrite, mountDir, dryRun, outDir, stdout, stderr, prog)
+	if noDisc > 0 {
+		_, _ = fmt.Fprintf(w, "restore: %d item(s) have no disc known to the catalog; run recover with more discs\n", noDisc)
+	}
+	_, _ = fmt.Fprintf(w, "totals: %d discs, %d items, %d bytes\n", len(discs), items, bytes)
 }
 
-// cmdRestoreDiscSwapRun is cmdRestoreDiscSwap's body once snapID and
-// includes are known.
-func cmdRestoreDiscSwapRun(stdin io.Reader, c *catalog.Catalog, snapID object.ID, includes []string, overwrite bool, mountDir string, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
-	if err := c.CheckComplete(snapID); err != nil {
-		if pe, ok := errors.AsType[*catalog.PartialError](err); ok {
-			_, _ = fmt.Fprintln(stderr, formatPartialError("restore", pe))
-			return 1
+// printProblems writes one warning line for each problem that the
+// report holds, then the count of the problems it does not hold, then
+// the summary line.
+func printProblems(stderr io.Writer, rep restore.Report) {
+	const prefix = "noahsark: restore: warning:"
+	for _, p := range rep.Problems {
+		_, _ = fmt.Fprintf(stderr, "%s %s: %s\n", prefix, p.Path, p.Err)
+	}
+	if dropped := rep.Dropped(); dropped > 0 {
+		_, _ = fmt.Fprintf(stderr, "%s %d more problem(s) not shown\n", prefix, dropped)
+	}
+	if summary := rep.Summary(); summary != "" {
+		_, _ = fmt.Fprintf(stderr, "%s %s\n", prefix, summary)
+	}
+}
+
+// restoreDiscList is the discs that a restore can plan with, and the
+// name of each disc that the repository knows.
+type restoreDiscList struct {
+	list  []plan.Disc
+	names map[[16]byte]plan.Disc
+}
+
+// restoreDiscs reads the discs of the repository from the disc ledger
+// and their states from the disc state log. It leaves out an undone
+// disc. It reads only.
+func restoreDiscs(layout repoLayout, cfg repoConfig) (restoreDiscList, error) {
+	out := restoreDiscList{names: make(map[[16]byte]plan.Disc)}
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		return out, err
+	}
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
+	if err != nil {
+		return out, err
+	}
+	discLog, err := stage.OpenDiscLogReadOnly(layout.stateDir())
+	if err != nil {
+		return out, err
+	}
+	var order [][16]byte
+	for _, row := range ledger.Rows {
+		if _, ok := out.names[row.DiscUUID]; !ok {
+			order = append(order, row.DiscUUID)
 		}
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
+		out.names[row.DiscUUID] = plan.Disc{DiscUUID: row.DiscUUID, DiscSeq: row.DiscSeq, Label: labelText(row.Label[:row.LabelLen])}
 	}
-	snap, err := c.ReadSnapshot(snapID)
-	if err != nil {
-		return reportSourceError("restore", stderr, err, c, snapID)
+	for _, uuid := range order {
+		d := out.names[uuid]
+		info, _ := discLog.Disc(uuid)
+		switch info.State {
+		case stage.DiscUndone:
+			delete(out.names, uuid)
+			continue
+		case stage.DiscLost:
+			d.Lost = true
+		}
+		out.list = append(out.list, d)
 	}
+	return out, nil
+}
 
-	// The plan holds only the chunks the destination does not hold yet,
-	// so a rerun and a dry run both list the discs that are still
-	// needed and nothing more.
-	needed, err := restore.NeededChunks(c, snap, outDir, includes, overwrite)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
-	}
-	result, err := plan.BuildForChunks(c, snap, snapID, includes, needed)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
-	}
-	discs := discsBySeq(result)
-	allDiscUUIDs := make(map[[16]byte]bool, len(discs))
+// insertDiscError stops a restore that needs another disc and cannot
+// ask for it: standard input is not a terminal, or it ended.
+type insertDiscError struct{ disc string }
+
+func (e *insertDiscError) Error() string { return "insert " + e.disc }
+
+// discSwapRetries is how many times a restore reads an unreadable
+// DISC.bin again before it asks for the disc, and discSwapRetryPause is
+// the pause between two reads.
+const discSwapRetries = 3
+
+var discSwapRetryPause = 300 * time.Millisecond
+
+// discSwap reads the discs of a plan one at a time from one mount point.
+type discSwap struct {
+	e *env
+	// mountDir is the absolute mount point; dirArg is the text the
+	// operator gave for it.
+	mountDir string
+	dirArg   string
+	names    map[[16]byte]plan.Disc
+	plan     *plan.Plan
+	input    *bufio.Scanner
+}
+
+// readDiscs reads each disc of discs that is not lost, in disc_seq
+// order. A disc that is already at the mount point and still needed
+// comes first. With no disc to read, it still walks the selection one
+// time, to write what needs no disc.
+func (s *discSwap) readDiscs(a *restore.Assembler, discs []plan.DiscEntry, prog *progress.Reporter) error {
+	var todo []plan.DiscEntry
 	for _, d := range discs {
-		allDiscUUIDs[d.DiscUUID] = true
+		if !d.Lost {
+			todo = append(todo, d)
+		}
 	}
-	printPlanText(stdout, discs, result)
-	if len(result.Missing) > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: restore: %d item(s) have no disc known to the catalog; run recover with more discs\n", result.MissingObjectCount())
-		return 1
+	if len(todo) == 0 {
+		return a.Disc(noDisc{}, prog)
 	}
-	if dryRun {
-		return 0
-	}
-
-	a, err := restore.NewAssembler(c, snap, outDir, includes, overwrite)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-		return 1
-	}
-
-	scanner := bufio.NewScanner(stdin)
-	done := make(map[[16]byte]bool, len(discs))
-	for len(discs) > 0 {
-		// The disc already in the drive is read first when the restore
-		// still needs it, whatever its place in the list: the operator
-		// is never asked to take out a disc and put it back later.
+	for len(todo) > 0 {
 		next := 0
-		if id, err := restore.ReadDiscIdentity(mountDir); err == nil {
-			for i, d := range discs {
+		if id, err := restore.ReadDiscIdentity(s.mountDir); err == nil {
+			for i, d := range todo {
 				if d.DiscUUID == id.UUID {
 					next = i
 					break
 				}
 			}
 		}
-		d := discs[next]
-		discs = append(discs[:next], discs[next+1:]...)
-
-		md := newMountedDisc(mountDir, d, func() error {
-			return detectDisc(mountDir, c, d, scanner, stdout, stderr, done, allDiscUUIDs)
-		})
+		d := todo[next]
+		todo = append(todo[:next], todo[next+1:]...)
+		md := &mountedDisc{swap: s, disc: d.Disc}
 		if err := a.Disc(md, prog); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
-			return 1
-		}
-		if md.read {
-			// A disc whose chunks are all already in place is never
-			// read, and so never becomes a disc the operator swapped.
-			done[d.DiscUUID] = true
+			if fatal, ok := errors.AsType[*restore.FatalDiscError](err); ok {
+				return fatal.Err
+			}
+			return err
 		}
 	}
-
-	a.Finish()
-	rep := a.Report()
-	printProblems(stderr, rep)
-	return printRestoreResult(stdout, rep, snapID, outDir)
+	return nil
 }
 
-// mountedDisc is one plan disc, read through the operator's drive. It
-// detects the disc at the first chunk the walk must read from it, so a
-// disc the restore no longer needs is never asked for.
+// noDisc is a disc that holds nothing.
+type noDisc struct{}
+
+func (noDisc) Has(object.ID) bool { return false }
+
+func (noDisc) Read(id object.ID) ([]byte, error) {
+	return nil, fmt.Errorf("chunk %s: no disc holds it", id.TextForm())
+}
+
+// mountedDisc is one plan disc, read through the mount point. It checks
+// the disc at the first chunk that the walk reads from it, so a disc
+// that the restore no longer needs is never asked for.
 type mountedDisc struct {
-	mountDir string
-	ids      map[object.ID]bool
-	detect   func() error
-	read     bool
+	swap  *discSwap
+	disc  plan.Disc
+	found bool
 }
 
-func newMountedDisc(mountDir string, d plan.DiscEntry, detect func() error) *mountedDisc {
-	ids := make(map[object.ID]bool, len(d.Objects))
-	for _, o := range d.Objects {
-		ids[o.ID] = true
-	}
-	return &mountedDisc{mountDir: mountDir, ids: ids, detect: detect}
-}
+func (m *mountedDisc) Has(id object.ID) bool { return m.swap.plan.Holds(m.disc.DiscUUID, id) }
 
-func (m *mountedDisc) Has(id object.ID) bool { return m.ids[id] }
-
-// Read returns one verified chunk payload, after the operator has put
-// this disc in the drive. A prompt that cannot be answered stops the
-// whole restore; a chunk that does not read or does not verify fails
-// its own file only.
+// Read returns one verified chunk payload, after the disc is at the
+// mount point. A disc that the restore cannot get stops the whole
+// restore; a chunk that does not read or does not verify fails its own
+// file only.
 func (m *mountedDisc) Read(id object.ID) ([]byte, error) {
-	if !m.read {
-		if err := m.detect(); err != nil {
+	if !m.found {
+		if err := m.swap.waitFor(m.disc); err != nil {
 			return nil, &restore.FatalDiscError{Err: err}
 		}
-		m.read = true
+		m.found = true
 	}
-	return restore.ReadChunkFromRoot(m.mountDir, id)
+	return restore.ReadChunkFromRoot(m.swap.mountDir, id)
 }
 
-// discsBySeq returns the plan's discs by disc number, then by uuid. The
-// operator looks a disc up by the number on its sleeve, so the printed
-// list and the order the restore asks for the discs both follow that
-// number.
-func discsBySeq(r *plan.Result) []plan.DiscEntry {
-	discs := append([]plan.DiscEntry(nil), r.Discs...)
-	sort.Slice(discs, func(i, j int) bool {
-		if discs[i].DiscSeq != discs[j].DiscSeq {
-			return discs[i].DiscSeq < discs[j].DiscSeq
-		}
-		return plan.UUIDText(discs[i].DiscUUID) < plan.UUIDText(discs[j].DiscUUID)
-	})
-	return discs
-}
-
-// printPlanText prints one line per disc, in the order the restore asks
-// for them, then the plan's totals.
-func printPlanText(stdout io.Writer, discs []plan.DiscEntry, r *plan.Result) {
-	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "disc %d %q (%s): %d objects, %d bytes\n",
-			d.DiscSeq, d.Label, plan.UUIDText(d.DiscUUID), len(d.Objects), d.Bytes)
-	}
-	for _, m := range r.Missing {
-		if !m.HasDisc {
-			_, _ = fmt.Fprintf(stdout, "missing: %d object(s), disc unknown\n", m.Objects)
-			continue
-		}
-		_, _ = fmt.Fprintf(stdout, "missing: %d object(s) on disc %s, no DISCS row in the catalog names it\n",
-			m.Objects, plan.UUIDText(m.DiscUUID))
-	}
-	_, _ = fmt.Fprintf(stdout, "totals: %d discs, %d objects, %d bytes\n",
-		len(r.Discs), r.TotalObjects, r.TotalBytes)
-}
-
-// discSwapRetries is how many times detectDisc retries an unreadable
-// DISC.bin before it prompts the operator, and the pause between tries.
-const discSwapRetries = 3
-
-var discSwapRetryPause = 300 * time.Millisecond
-
-// detectDisc waits until the disc d names is in the drive at mountDir:
-// no prompt when that disc is already there, a prompt otherwise. The
-// operator swaps the disc by hand; noahsark never unmounts and never
-// ejects.
-//
-// done holds the discs this restore has already read. The first look of
-// each call passes over such a disc with no mismatch line: it is only
-// the disc the last step finished, still in the drive, and not a wrong
-// disc the operator inserted. A later look reports it the normal way.
-//
-// needed holds every disc uuid this restore's plan asks for. A disc this
-// repository's catalog knows, left in the drive from an earlier run, but
-// outside that set, is not a mismatch: it is simply not wanted this time,
-// and detectDisc says so calmly instead of reporting an expected/found
-// pair.
-func detectDisc(mountDir string, c *catalog.Catalog, d plan.DiscEntry, scanner *bufio.Scanner, stdout, stderr io.Writer, done, needed map[[16]byte]bool) error {
+// waitFor returns when the disc d is at the mount point. It prints
+// "disc SEQ "LABEL": found" for it. For a wrong disc it names both
+// discs; for an unreadable DISC.bin it reads again a few times first.
+// Then it asks for d on a terminal, or returns an *insertDiscError. The
+// operator swaps the disc; restore never unmounts and never ejects.
+func (s *discSwap) waitFor(d plan.Disc) error {
+	want := discName(d.DiscSeq, d.Label, d.DiscUUID)
+	stderr := s.e.stderr
 	unreadable := 0
-	promptedOnce := false
 	for {
-		found, err := restore.ReadDiscIdentity(mountDir)
+		found, err := restore.ReadDiscIdentity(s.mountDir)
 		switch {
 		case err != nil:
 			unreadable++
@@ -401,72 +382,29 @@ func detectDisc(mountDir string, c *catalog.Catalog, d plan.DiscEntry, scanner *
 				continue
 			}
 		case found.UUID == d.DiscUUID:
-			_, _ = fmt.Fprintf(stdout, "%s: found\n", discNameShort(d.DiscSeq, d.Label))
+			_, _ = fmt.Fprintf(s.e.stdout, "%s: found\n", discNameShort(d.DiscSeq, d.Label))
 			return nil
-		case !needed[found.UUID] && discKnownToRepo(c, found.UUID):
-			_, _ = fmt.Fprintf(stderr, "%s is not needed; insert %s into %s and press Enter\n",
-				discNameFound(c, found), discName(d.DiscSeq, d.Label, d.DiscUUID), mountDir)
-			if !scanner.Scan() {
-				return errStdinClosed
-			}
-			unreadable = 0
-			promptedOnce = true
-			continue
 		default:
-			if promptedOnce || !done[found.UUID] {
-				_, _ = fmt.Fprintf(stderr, "expected %s, found %s\n",
-					discName(d.DiscSeq, d.Label, d.DiscUUID), discNameFound(c, found))
-			}
+			_, _ = fmt.Fprintf(stderr, "expected %s, found %s\n", want, s.foundName(found))
 		}
-		_, _ = fmt.Fprintf(stderr, "insert %s into %s and press Enter\n",
-			discName(d.DiscSeq, d.Label, d.DiscUUID), mountDir)
-		if !scanner.Scan() {
-			return errStdinClosed
+		if !s.e.stdinTTY {
+			return &insertDiscError{disc: want}
+		}
+		_, _ = fmt.Fprintf(stderr, "insert %s into %s and press Enter\n", want, s.dirArg)
+		if !s.input.Scan() {
+			return &insertDiscError{disc: want}
 		}
 		unreadable = 0
-		promptedOnce = true
 	}
 }
 
-// discKnownToRepo reports whether uuid names a disc this repository's
-// catalog has a DISCS row for, whatever that row's label holds.
-func discKnownToRepo(c *catalog.Catalog, uuid [16]byte) bool {
-	discs, err := c.Discs()
-	if err != nil {
-		return false
+// foundName names the disc at the mount point: by the name that the
+// repository gives it, or by its uuid when the repository does not know
+// it.
+func (s *discSwap) foundName(found restore.DiscIdentity) string {
+	d, ok := s.names[found.UUID]
+	if !ok {
+		return "disc " + uuidText(found.UUID)
 	}
-	for _, row := range discs.Rows {
-		if row.DiscUUID == uuid {
-			return true
-		}
-	}
-	return false
-}
-
-// discNameFound names the disc that is in the drive. Its own DISC.bin
-// carries the number and the label, so the name is complete even for a
-// disc of another repository; the catalog fills in a label DISC.bin left
-// empty.
-func discNameFound(c *catalog.Catalog, found restore.DiscIdentity) string {
-	label := found.Label
-	if label == "" {
-		label = labelForUUID(c, found.UUID)
-	}
-	return discName(found.Seq, label, found.UUID)
-}
-
-// labelForUUID looks up a disc's label in the catalog's DISCS table. It
-// returns "" when the catalog does not know uuid.
-func labelForUUID(c *catalog.Catalog, uuid [16]byte) string {
-	discs, err := c.Discs()
-	if err != nil {
-		return ""
-	}
-	for _, row := range discs.Rows {
-		if row.DiscUUID == uuid {
-			n := min(int(row.LabelLen), len(row.Label))
-			return string(row.Label[:n])
-		}
-	}
-	return ""
+	return discName(d.DiscSeq, d.Label, d.DiscUUID)
 }

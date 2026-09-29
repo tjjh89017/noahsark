@@ -14,12 +14,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/plan"
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
-
-// partSuffix ends the name of the hidden file a restore writes a file's
-// bytes into until the file is complete.
-const partSuffix = ".noahsark-part"
 
 // DiscChunks is one inserted disc, as the assembler reads it. Has
 // answers from the disc's own object list, with no disc access; Read
@@ -38,18 +35,17 @@ type FatalDiscError struct{ Err error }
 func (e *FatalDiscError) Error() string { return e.Err.Error() }
 func (e *FatalDiscError) Unwrap() error { return e.Err }
 
-// Assembler restores one snapshot from the catalog and one disc at
-// a time, with no spool: it walks the snapshot's tree one time for each
-// disc and writes each chunk of that disc straight into the part file
-// of the file that holds it.
+// Assembler restores one selection of a snapshot from the catalog and
+// one disc at a time, with no spool: it walks the selection one time for
+// each disc and writes each chunk of that disc straight into the part
+// file of the file that holds it.
 //
 // It reads every tree and blob from the catalog. Only chunk payloads come
 // from a disc.
 type Assembler struct {
 	c           *catalog.Catalog
-	snap        *format.Snapshot
+	sel         *plan.Selection
 	outDir      string
-	includes    []string
 	wp          *writePolicy
 	dirsForMeta []dirMeta
 	// pending holds one record for each file in scope that is not
@@ -84,28 +80,28 @@ type dirMeta struct {
 	e    format.TreeEntry
 }
 
-// errIncomplete names a file no disc of this restore could finish.
-var errIncomplete = errors.New("not every chunk of this file was read; the part file is kept for a later run")
+// errIncomplete names a file that needs a chunk that no disc of this
+// restore gave: a chunk on a lost disc, or a chunk that no catalog INDEX
+// lists.
+var errIncomplete = errors.New("a chunk of this file is on a lost disc or on no disc known to the catalog; the part file stays")
 
-// NewAssembler prepares a disc-swap restore of snap into outDir,
-// restricted to includes (the whole snapshot when includes is empty).
-// It creates outDir and reads nothing else until the first Disc call.
-func NewAssembler(c *catalog.Catalog, snap *format.Snapshot, outDir string, includes []string, overwrite bool) (*Assembler, error) {
+// NewAssembler prepares a disc-swap restore of sel into outDir. It
+// creates outDir and reads nothing else until the first Disc call.
+func NewAssembler(c *catalog.Catalog, sel *plan.Selection, outDir string, overwrite bool) (*Assembler, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, err
 	}
 	return &Assembler{
 		c:         c,
-		snap:      snap,
+		sel:       sel,
 		outDir:    outDir,
-		includes:  includes,
 		wp:        &writePolicy{overwrite: overwrite},
 		pending:   make(map[string]*pendingFile),
 		firstDisc: true,
 	}, nil
 }
 
-// Disc walks the snapshot one time against d, and writes every chunk d
+// Disc walks the selection one time against d, and writes every chunk d
 // holds into the part file of the file that holds it. A file whose last
 // chunk lands here gets its final name before Disc moves to the next
 // file.
@@ -117,133 +113,62 @@ func (a *Assembler) Disc(d DiscChunks, prog *progress.Reporter) error {
 	if !a.firstDisc && len(a.pending) == 0 {
 		return nil
 	}
-	rootTree, err := a.c.ReadTree(object.ID(a.snap.RootTree))
-	if err != nil {
-		return err
-	}
-	filter, err := newFilterState(a.includes)
-	if err != nil {
-		return err
-	}
-	for _, e := range rootTree.Entries {
-		if e.EntryType != format.EntryTypeDirectory {
-			continue
-		}
-		rootPath := rootPathOf(e)
-		if rootPath == "" {
-			continue
-		}
-		childFilter, include := stepInto(filter, splitPath(rootPath))
-		if !include {
-			continue
-		}
-		dest, ok, err := a.dir(a.outDir, splitPath(rootPath))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		if err := a.walkDir(object.ID(e.ContentID), dest, childFilter, d, prog); err != nil {
-			return err
-		}
-		if a.firstDisc {
-			a.dirsForMeta = append(a.dirsForMeta, dirMeta{dest, e})
-		}
-	}
-	if a.firstDisc {
-		if unmatched := unmatchedIncludes(filter, a.includes); len(unmatched) > 0 {
-			return &UnmatchedIncludeError{Paths: unmatched}
-		}
-	}
+	err := a.sel.Walk(a.outDir, &discWalk{a: a, d: d, prog: prog})
 	a.firstDisc = false
-	return nil
+	return err
 }
 
-// dir makes or enters every component under parent. The first walk
+// discWalk is the walk of one disc.
+type discWalk struct {
+	a    *Assembler
+	d    DiscChunks
+	prog *progress.Reporter
+}
+
+// Dir makes or enters every component under parent. The first walk
 // creates what is missing and reports a path it cannot use; a later
 // walk enters the same directories again, with no second report of a
 // path the first walk already reported.
-func (a *Assembler) dir(parent string, components []string) (string, bool, error) {
-	if a.firstDisc {
-		return ensureDir(parent, components, a.wp)
+func (w *discWalk) Dir(parent string, names []string) (string, bool, error) {
+	if w.a.firstDisc {
+		return ensureDir(parent, names, w.a.wp)
 	}
-	return ensureDir(parent, components, nil)
+	return ensureDir(parent, names, nil)
 }
 
-func (a *Assembler) walkDir(treeID object.ID, dest string, filter *filterState, d DiscChunks, prog *progress.Reporter) error {
-	t, err := a.c.ReadTree(treeID)
+func (w *discWalk) DirDone(path string, e format.TreeEntry) {
+	if w.a.firstDisc {
+		w.a.dirsForMeta = append(w.a.dirsForMeta, dirMeta{path, e})
+	}
+}
+
+func (w *discWalk) File(dest, part string, e format.TreeEntry) error {
+	return w.a.file(dest, part, object.ID(e.ContentID), e, w.d, w.prog)
+}
+
+// Other restores a symlink, and reports a special file, on the first
+// walk only.
+func (w *discWalk) Other(dest string, e format.TreeEntry) error {
+	if !w.a.firstDisc {
+		return nil
+	}
+	if e.EntryType != format.EntryTypeSymlink {
+		w.a.wp.unsupported(dest, e.EntryType)
+		return nil
+	}
+	target, err := symlinkTarget(e)
+	if err == nil {
+		err = restoreSymlink(dest, target, e, w.a.wp)
+	}
 	if err != nil {
-		return fmt.Errorf("tree %s: %w", treeID.TextForm(), err)
-	}
-	taken := make(map[string]bool, len(t.Entries))
-	for _, e := range t.Entries {
-		taken[string(e.Name)] = true
-	}
-	for _, e := range t.Entries {
-		childFilter, include := stepInto(filter, []string{string(e.Name)})
-		if !include {
-			continue
-		}
-		name := string(e.Name)
-		child, err := joinSafe(dest, name)
-		if err != nil {
-			return err
-		}
-		switch e.EntryType {
-		case format.EntryTypeDirectory:
-			sub, ok, err := a.dir(dest, []string{name})
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			if err := a.walkDir(object.ID(e.ContentID), sub, childFilter, d, prog); err != nil {
-				return err
-			}
-			if a.firstDisc {
-				a.dirsForMeta = append(a.dirsForMeta, dirMeta{sub, e})
-			}
-		case format.EntryTypeRegular:
-			part, err := joinSafe(dest, partName(name, taken))
-			if err != nil {
-				return err
-			}
-			if err := a.file(child, part, object.ID(e.ContentID), e, d, prog); err != nil {
-				return err
-			}
-		case format.EntryTypeSymlink:
-			if !a.firstDisc {
-				continue
-			}
-			target, err := symlinkTarget(e)
-			if err != nil {
-				return err
-			}
-			if err := restoreSymlink(child, target, e, a.wp); err != nil {
-				a.wp.failed(child, err)
-			}
-		default:
-			if a.firstDisc {
-				a.wp.unsupported(child, e.EntryType)
-			}
-		}
+		w.a.wp.failed(dest, err)
 	}
 	return nil
 }
 
-// partName returns the part-file name of a file called name in a
-// directory whose own entry names are taken. The snapshot itself can
-// hold a file of the plain part name; the suffix then carries a number,
-// so a restore never writes into a path the snapshot owns. The names
-// come from the tree, thus every run picks the same one.
-func partName(name string, taken map[string]bool) string {
-	candidate := "." + name + partSuffix
-	for i := 2; taken[candidate]; i++ {
-		candidate = fmt.Sprintf(".%s%s%d", name, partSuffix, i)
-	}
-	return candidate
+// blobError reports a blob that the catalog cannot give.
+func blobError(id object.ID, err error) error {
+	return fmt.Errorf("blob %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
 }
 
 // file restores one regular file as far as d can take it. The first
@@ -256,7 +181,9 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 	}
 	blob, err := a.c.ReadBlob(blobID)
 	if err != nil {
-		return fmt.Errorf("blob %s: not held by the cache; disc-swap restore needs every blob cached: %w", blobID.TextForm(), err)
+		a.wp.failed(dest, blobError(blobID, err))
+		delete(a.pending, dest)
+		return nil
 	}
 	entries := placeChunks(blob.Entries)
 
@@ -363,7 +290,12 @@ func (a *Assembler) chunkInPlace(f *os.File, be placedChunk) bool {
 	if uint64(cap(a.chunkBuf)) < be.Length {
 		a.chunkBuf = make([]byte, be.Length)
 	}
-	buf := a.chunkBuf[:be.Length]
+	return chunkAt(f, be, a.chunkBuf[:be.Length])
+}
+
+// chunkAt reports whether f holds the bytes of be at the offset of be.
+// buf has the length of be.
+func chunkAt(f *os.File, be placedChunk, buf []byte) bool {
 	if _, err := f.ReadAt(buf, int64(be.Offset)); err != nil {
 		return false
 	}
@@ -452,8 +384,7 @@ func (a *Assembler) Finish() {
 	}
 }
 
-// Report is what this restore did not do, in the one form every restore
-// mode reports through.
+// Report is what this restore did not do.
 func (a *Assembler) Report() Report { return a.wp.report }
 
 // fileAlreadyRestored reports whether dest, an existing regular file,
@@ -496,11 +427,7 @@ func contentMatches(dest string, entries []placedChunk) bool {
 		if cap(buf) < int(be.Length) {
 			buf = make([]byte, be.Length)
 		}
-		chunk := buf[:be.Length]
-		if _, err := f.ReadAt(chunk, int64(be.Offset)); err != nil {
-			return false
-		}
-		if object.ComputeID(format.ObjectKindChunk, chunk) != object.ID(be.ContentID) {
+		if !chunkAt(f, be, buf[:be.Length]) {
 			return false
 		}
 	}
@@ -508,8 +435,7 @@ func contentMatches(dest string, entries []placedChunk) bool {
 }
 
 // ReadChunkFromRoot reads and verifies one chunk object from a mounted
-// disc root or unpacked NOAHSARK tree, the same on-disc layout Restore
-// reads.
+// disc root or a copy of a disc root.
 func ReadChunkFromRoot(root string, id object.ID) ([]byte, error) {
 	names := image.NewNameCache()
 	base, err := findNoahsark(root, names)
@@ -529,7 +455,7 @@ type DiscIdentity struct {
 }
 
 // ReadDiscIdentity reads and decodes DISC.bin from a mounted disc root
-// or unpacked NOAHSARK tree.
+// or a copy of a disc root.
 func ReadDiscIdentity(root string) (DiscIdentity, error) {
 	names := image.NewNameCache()
 	base, err := findNoahsark(root, names)

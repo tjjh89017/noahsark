@@ -5,22 +5,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
 // catalogSource resolves a snapshot from the repository alone, with no
 // disc present: from the catalog and the local ref file. commit writes
 // every snapshot, tree and blob object into the catalog, thus a
-// snapshot lists before the first pack. ls, log and plan use it.
+// snapshot lists before the first pack. ls, log and restore use it.
 type catalogSource struct {
 	c        *catalog.Catalog
 	refsPath string
@@ -90,6 +87,11 @@ func (s *catalogSource) SnapshotIDs() ([]object.ID, error) {
 	return s.c.ListSnapshots()
 }
 
+// errNoSnapshotArg reports that the snapshot argument is empty. It has
+// its own message, because an empty name quoted back at the operator
+// names nothing. Every command that takes a snapshot reports it.
+var errNoSnapshotArg = errors.New("no snapshot given; name a ref, or a snapshot id from noahsark log")
+
 // notHeldError reports an object that the catalog does not hold. recover
 // with the disc that holds it gives it back.
 type notHeldError struct {
@@ -109,7 +111,7 @@ func (e *notHeldError) Error() string {
 // object.
 func (s *catalogSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	if arg == "" {
-		return object.ID{}, restore.ErrNoSnapshotArg
+		return object.ID{}, errNoSnapshotArg
 	}
 	refs, refsErr := s.Refs()
 	if refsErr != nil && !errors.Is(refsErr, catalog.ErrNoDisc) {
@@ -218,59 +220,4 @@ type refNotFoundError struct{ arg string }
 
 func (e *refNotFoundError) Error() string {
 	return fmt.Sprintf("no snapshot matches %s", e.arg)
-}
-
-// openCatalogSource opens the catalog of the repository that e
-// finds, and
-// returns it wrapped as a snapshotSource plus the *catalog.Catalog itself,
-// so a caller can also call CheckComplete on it.
-func openCatalogSource(e *env) (*catalogSource, *catalog.Catalog, error) {
-	repoDir, err := e.findRepo()
-	if err != nil {
-		return nil, nil, err
-	}
-	cfg, err := readConfig(configPath(repoDir))
-	if err != nil {
-		return nil, nil, err
-	}
-	c, err := catalog.Open(repoDir)
-	if err != nil {
-		return nil, nil, err
-	}
-	return &catalogSource{c: c, refsPath: layoutOf(repoDir, cfg).refsFile()}, c, nil
-}
-
-// looksLikeDiscRoot reports whether s names an existing directory: a
-// disc root is always a real directory on this host, a mounted disc or
-// an unpacked NOAHSARK tree, so this tells a DISC-ROOT positional
-// argument apart from a SNAPSHOT id or ref name, neither of which is
-// ever also an existing directory in ordinary use.
-func looksLikeDiscRoot(s string) bool {
-	info, err := os.Stat(s)
-	return err == nil && info.IsDir()
-}
-
-// formatPartialError renders a *catalog.PartialError the way ls, log
-// and restore report a partial snapshot.
-func formatPartialError(cmd string, e *catalog.PartialError) string {
-	return fmt.Sprintf("noahsark: %s: snapshot %s is partial; run recover with more discs", cmd, e.Snapshot.TextForm())
-}
-
-// reportSourceError prints err the way ls, log and plan all report a
-// read failure. A partial snapshot and a missing disc are
-// both a failure at run time, exit code 1, the same as any other read
-// failure here; a missing disc or a partial snapshot is not a bad
-// argument, so it never takes the usage-error code. c is nil in disc
-// mode.
-func reportSourceError(cmd string, stderr io.Writer, err error, c *catalog.Catalog, snapID object.ID) int {
-	if c != nil {
-		if ce := c.CheckComplete(snapID); ce != nil {
-			if pe, ok := errors.AsType[*catalog.PartialError](ce); ok {
-				_, _ = fmt.Fprintln(stderr, formatPartialError(cmd, pe))
-				return 1
-			}
-		}
-	}
-	_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-	return 1
 }

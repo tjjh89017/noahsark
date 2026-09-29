@@ -58,7 +58,7 @@ func TestApplyMetadataRecordsFailure(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestApplyMetadataRecordsFailure(t *testing.T) {
 	}
 
 	// The file itself was still written, despite the metadata failure.
-	if _, err := os.Stat(filepath.Join(outDir, srcDir, "small.txt")); err != nil {
+	if _, err := os.Stat(filepath.Join(outDir, "small.txt")); err != nil {
 		t.Fatalf("small.txt: %v", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestApplyMetadataSkipsOwnerWhenUnprivileged(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestApplyMetadataReportsOwnerFailureWhenPrivileged(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	rep, err := Restore(treeDir, snapID, outDir)
+	rep, err := restoreTree(t, treeDir, snapID, outDir, false)
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
@@ -224,11 +224,11 @@ func TestSymlinkMetadataNeverFollowsLink(t *testing.T) {
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
 	outDir := t.TempDir()
 
-	if _, err := Restore(treeDir, snapID, outDir); err != nil {
+	if _, err := restoreTree(t, treeDir, snapID, outDir, false); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
-	root := filepath.Join(outDir, srcDir)
+	root := outDir
 	target := filepath.Join(root, "small.txt")
 	link := filepath.Join(root, "link-to-small")
 

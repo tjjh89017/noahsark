@@ -124,7 +124,7 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 	}
 
 	crossRel = filepath.Join("big", "cross.bin")
-	include := strings.TrimPrefix(filepath.Join(src, "big"), "/")
+	include := "big"
 	if seqs := chunkDiscSeqs(t, repo, snapID, include); len(seqs) < 2 {
 		t.Fatalf("%s has its chunks on %d disc(s), want at least 2", crossRel, len(seqs))
 	}
@@ -226,10 +226,10 @@ func TestRestoreDiscSwapCrossDiscFile(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	setScriptedTerminal(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
@@ -239,8 +239,8 @@ func TestRestoreDiscSwapCrossDiscFile(t *testing.T) {
 	if n := strings.Count(out, "insert disc"); n != len(seqs)-1 {
 		t.Fatalf("restore prompted %d time(s), want %d: %s", n, len(seqs)-1, out)
 	}
-	compareFiles(t, filepath.Join(outDir, src, crossRel), filepath.Join(src, crossRel))
-	compareTrees(t, filepath.Join(outDir, src), src)
+	compareFiles(t, filepath.Join(outDir, crossRel), filepath.Join(src, crossRel))
+	compareTrees(t, outDir, src)
 	if left := partFilesUnder(t, outDir); len(left) > 0 {
 		t.Fatalf("part file(s) left after a successful restore: %v", left)
 	}
@@ -259,11 +259,11 @@ func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
 
 	// stdin closes with no line at all: the session is killed while it
 	// waits for the second disc.
-	setFakeStdin(t, &scriptedStdin{})
-	if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir); code == 0 {
+	setScriptedTerminal(t, &scriptedStdin{})
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, snapID, outDir); code == 0 {
 		t.Fatalf("restore (interrupted): exit 0, want non-zero: %s", out)
 	}
-	cross := filepath.Join(outDir, src, crossRel)
+	cross := filepath.Join(outDir, crossRel)
 	if _, err := os.Stat(cross); !os.IsNotExist(err) {
 		t.Fatalf("%s carries its final name after the first disc alone: %v", cross, err)
 	}
@@ -271,15 +271,15 @@ func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
 		t.Fatal("the interrupted restore left no part file to continue from")
 	}
 
-	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
-	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
+	setScriptedTerminal(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore (resumed): exit %d, want 0: %s", code, out)
 	}
 	if got := foundDiscSeqs(t, out); !slices.Equal(got, seqs[1:]) {
 		t.Fatalf("the rerun detected disc_seq %v, want only the discs it still needs: %v", got, seqs[1:])
 	}
-	compareTrees(t, filepath.Join(outDir, src), src)
+	compareTrees(t, outDir, src)
 	if left := partFilesUnder(t, outDir); len(left) > 0 {
 		t.Fatalf("part file(s) left after a successful restore: %v", left)
 	}
@@ -289,13 +289,13 @@ func TestRestoreDiscSwapCrossDiscResume(t *testing.T) {
 // final name of the cross-disc file while the restore waits for the
 // second disc. The restore must not replace it, and must report it.
 func TestRestoreDiscSwapNoOverwriteAtTheLinkStep(t *testing.T) {
-	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
+	repo, snapID, _, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
 	outDir := filepath.Join(t.TempDir(), "out")
-	cross := filepath.Join(outDir, src, crossRel)
+	cross := filepath.Join(outDir, crossRel)
 	const planted = "written by somebody else\n"
 
 	steps := swapSteps(t, mountDir, discRoots, seqs)
@@ -306,9 +306,9 @@ func TestRestoreDiscSwapNoOverwriteAtTheLinkStep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	setFakeStdin(t, &scriptedStdin{steps: steps})
+	setScriptedTerminal(t, &scriptedStdin{steps: steps})
 
-	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, snapID, outDir)
 	if code != 1 {
 		t.Fatalf("restore: exit %d, want 1: %s", code, out)
 	}
@@ -335,8 +335,8 @@ func TestRestoreDiscSwapOverwriteReplacesAFileAndRefusesADirectory(t *testing.T)
 	seqs := planDiscSeqs(t, repo, snapID)
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	cross := filepath.Join(outDir, src, crossRel)
-	blocked := filepath.Join(outDir, src, "small", "s0.bin")
+	cross := filepath.Join(outDir, crossRel)
+	blocked := filepath.Join(outDir, "small", "s0.bin")
 	if err := os.MkdirAll(filepath.Dir(cross), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -349,9 +349,9 @@ func TestRestoreDiscSwapOverwriteReplacesAFileAndRefusesADirectory(t *testing.T)
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	setScriptedTerminal(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
 
-	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--overwrite", snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, "--overwrite", snapID, outDir)
 	if code != 1 {
 		t.Fatalf("restore --overwrite: exit %d, want 1: %s", code, out)
 	}
@@ -367,11 +367,11 @@ func TestRestoreDiscSwapOverwriteReplacesAFileAndRefusesADirectory(t *testing.T)
 // TestRestoreDiscSwapPartPathSymlinkIsNotFollowed plants a symlink at
 // the part file's own path. The restore must not write through it.
 func TestRestoreDiscSwapPartPathSymlinkIsNotFollowed(t *testing.T) {
-	repo, snapID, src, discRoots, crossRel := crossDiscFixture(t)
+	repo, snapID, _, discRoots, crossRel := crossDiscFixture(t)
 	seqs := planDiscSeqs(t, repo, snapID)
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	cross := filepath.Join(outDir, src, crossRel)
+	cross := filepath.Join(outDir, crossRel)
 	if err := os.MkdirAll(filepath.Dir(cross), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -387,9 +387,9 @@ func TestRestoreDiscSwapPartPathSymlinkIsNotFollowed(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoots[seqs[0]])
-	setFakeStdin(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
+	setScriptedTerminal(t, &scriptedStdin{steps: swapSteps(t, mountDir, discRoots, seqs)})
 
-	code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
+	code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, snapID, outDir)
 	if code != 1 {
 		t.Fatalf("restore: exit %d, want 1: %s", code, out)
 	}
@@ -437,15 +437,15 @@ func TestRestoreDiscSwapPartNameCollision(t *testing.T) {
 
 	mountDir := filepath.Join(t.TempDir(), "mount")
 	mountDisc(t, mountDir, discRoot)
-	setFakeStdin(t, &scriptedStdin{})
+	setScriptedTerminal(t, &scriptedStdin{})
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	code, out = runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, snapID, outDir)
+	code, out = runCmd(t, "--repo="+repo, "restore", "--disc="+mountDir, snapID, outDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d: %s", code, out)
 	}
-	compareTrees(t, filepath.Join(outDir, src), src)
-	if left := partFilesUnder(t, filepath.Join(outDir, src, "..")); len(left) != 1 {
+	compareTrees(t, outDir, src)
+	if left := partFilesUnder(t, outDir); len(left) != 1 {
 		t.Fatalf("part-like file(s) below the output: %v, want the snapshot's own one alone", left)
 	}
 }

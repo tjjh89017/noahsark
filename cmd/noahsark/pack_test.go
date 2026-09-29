@@ -818,10 +818,10 @@ func TestPackCarriesEveryPendingRef(t *testing.T) {
 	}
 
 	outDir := filepath.Join(work, "out-b")
-	if code, out := runCmd(t, "restore", treeDir, "B", outDir); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "restore", "--disc="+treeDir, "B", outDir); code != 0 {
 		t.Fatalf("restore B: exit %d: %s", code, out)
 	}
-	restored := filepath.Join(outDir, srcByRef["B"], "a.txt")
+	restored := filepath.Join(outDir, "a.txt")
 	if _, err := os.Stat(restored); err != nil {
 		t.Fatalf("restored file for ref B missing: %v", err)
 	}

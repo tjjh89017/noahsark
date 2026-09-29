@@ -61,9 +61,8 @@ type Problem struct {
 	Err  error
 }
 
-// Report is the one record of what a restore did not do. Restore and
-// RestoreMulti return it, and the disc-swap Manifest carries the same
-// type, so every restore mode reports through one print loop.
+// Report is the one record of what a restore did not do. The Assembler
+// returns it, and one print loop prints it.
 type Report struct {
 	// Resumed counts the paths that already held the snapshot's own
 	// content, from an earlier, interrupted restore.

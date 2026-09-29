@@ -35,7 +35,7 @@ func TestRestoreContinuesPastFIFO(t *testing.T) {
 	}
 
 	restoredDir := filepath.Join(work, "restored")
-	code, out = runCmd(t, "restore", treeDir, snapID, restoredDir)
+	code, out = runCmd(t, "--repo="+repo, "restore", "--disc="+treeDir, snapID, restoredDir)
 	if code != 0 {
 		t.Fatalf("restore: exit %d, want 0; output: %s", code, out)
 	}
@@ -52,7 +52,7 @@ func TestRestoreContinuesPastFIFO(t *testing.T) {
 		t.Fatalf("output = %q, want a kind name, never a raw entry type", out)
 	}
 	for _, rel := range []string{"a.txt", "sub/b.txt"} {
-		if _, err := os.Stat(filepath.Join(restoredDir, src, rel)); err != nil {
+		if _, err := os.Stat(filepath.Join(restoredDir, rel)); err != nil {
 			t.Fatalf("%s: %v", rel, err)
 		}
 	}
