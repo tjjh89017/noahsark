@@ -544,8 +544,10 @@ There is no `--long`. Reasons: the output is easy to parse, and the values are
 exact.
 
 **The config is YAML, in `config.yaml`.** A Go struct holds the keys, with
-struct tags for `go.yaml.in/yaml/v4`. Reasons: a new field is a new struct
-field, and the library is a standard choice. The loader refuses an unknown
+struct tags for `go.yaml.in/yaml/v3`. Reasons: a new field is a new struct
+field, and the library is a standard choice. Version 4 of the library has
+only release candidates. Version 3 is stable, and it has the same
+maintainers. The loader refuses an unknown
 key by name. `pack.device` stays, with the default `/dev/sr0`; `init` prints
 it on its `device:` line. There is no `init --device`: the operator edits
 `config.yaml` to change the device.
