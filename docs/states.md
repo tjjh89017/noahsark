@@ -119,8 +119,9 @@ disc (number, label, uuid), the state now, the state after, and the
 effect in one sentence. Then the command asks `Continue? [y/N]` on
 standard error, and reads one line from standard input.
 
-- Only `y` or `yes` continues. Any other answer, an empty line, or an
-  end of input changes nothing. The command prints `nothing changed` and
+- The answers `y` and `yes` continue, in any letter case. Spaces around
+  the answer are ignored. Every other answer, an empty line, and the end
+  of input change nothing. The command prints `nothing changed` and
   exits 1.
 - The global option `--yes` answers an ordinary confirmation. The
   global option `--force-yes` answers an ordinary and a critical
@@ -282,7 +283,7 @@ root that is not a counted mount)`, `verify fail (packed tree)`,
 `restore`, `status`, and the syntax events of rows 72 to 76 and 77 to
 79. `verify` without a qualifier means a verify of a counted mount with
 a repository. `verify (any)` means each `verify` event except `verify
---undo`, and it includes `verify --heal`. "Answer yes" is `y` or `yes` on a terminal, or an answer flag
+--undo`, and it includes `verify --heal`. "Answer yes" is `y` or `yes` (any letter case) on a terminal, or an answer flag
 that covers the confirmation. "Answer no" is any other answer, an empty
 line, an end of input, or no terminal and no covering answer flag. See
 "Confirmations". Rows 80 to 84 test the answer rules once for all
@@ -403,8 +404,8 @@ lists that last line where a row prints it.
 | 75 | any | an unknown subcommand, for example `noahsark disc burnt 0` | refused, usage error | `unknown subcommand of disc: burnt; the subcommands are:`, then one line for each subcommand: `burned`, `lost`, `verified` | 2 | the same line with a listed subcommand |
 | 76 | any | `-h` on a group: `noahsark disc -h` or `noahsark -h disc` | unchanged | one line for each subcommand of the group, with what it does | 0 | `noahsark disc SUBCOMMAND -h` for the options of one subcommand |
 | 77 | any | `noahsark --repo=PATH init` | refused, usage error | `init makes the current directory the repository; it does not take --repo` | 2 | `cd PATH && noahsark init` |
-| 78 | any | a disc argument that matches no disc | refused, usage error | `no disc matches ARG` | 2 | `noahsark status` lists the discs |
-| 79 | any | a disc argument that matches more than one disc | refused, usage error | `ARG matches more than one disc:`, then one `disc SEQ "LABEL"  UUID` line for each candidate | 2 | the same line with the full uuid |
+| 78 | any | a disc argument that matches no disc | refused, usage error | `no disc matches ARG`. The tool lists no candidate. | 2 | `noahsark status` lists the discs |
+| 79 | any | a disc argument that matches more than one disc | refused, usage error | `ARG matches more than one disc:`, then one `disc SEQ "LABEL"  UUID` line for each candidate, with two spaces before the uuid, in lower case with hyphens | 2 | the same line with the full uuid |
 | 80 | a state where an ordinary confirmation asks (rows 11, 24, 47, 61 to 63) | the command with `--yes` or `--force-yes` | as the answer-yes row | the warning, no question, then the message of the answer-yes row | 0 | as the answer-yes row |
 | 81 | a state where an ordinary confirmation asks | the command, no terminal on standard input, no answer flag | unchanged. Standard input is not read. | the warning, then `nothing changed` | 1 | the same line with `--yes` before the command name |
 | 82 | a state where a critical confirmation asks (rows 27, 57 to 59) | the command with `--force-yes` | as the answer-yes row | the warning, no question, then the message of the answer-yes row | 0 | as the answer-yes row |
