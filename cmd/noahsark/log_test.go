@@ -6,271 +6,200 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// TestLogListsKnownSnapshots checks that a bare log lists the one
-// committed snapshot, naming its id, ref and root path.
-func TestLogListsKnownSnapshots(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	code, out := runCmd(t, "log", treeDir)
+// firstLogID gives the id field of the first log line of repo.
+func firstLogID(t *testing.T, repo string) string {
+	t.Helper()
+	code, out, errOut := runLs(t, repo, "log")
 	if code != 0 {
-		t.Fatalf("log: exit %d: %s", code, out)
+		t.Fatalf("log: exit %d: %s", code, errOut)
 	}
-	if !strings.Contains(out, snapID) {
-		t.Fatalf("log output %q missing the snapshot id", out)
-	}
-	if !strings.Contains(out, "refs: "+defaultRefName()) {
-		t.Fatalf("log output %q missing the ref name", out)
-	}
-	if !strings.Contains(out, "roots: "+rootPath(src)) {
-		t.Fatalf("log output %q missing the root path", out)
-	}
+	id, _, _ := strings.Cut(out, "\t")
+	return id
 }
 
-// TestLogNamesARefOnAnotherDiscAfterGC checks that log on a disc root
-// still lists a ref whose disc gc has freed: REFS.bin carries the ref
-// forward on every later run, and every run carries every snapshot
-// object of the catalog, thus the newest disc holds it too.
-func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	srcA := writeRefsCarryFixture(t, "A")
-
+// TestLogPrintsOneLineForEachSnapshot checks the fields of a log line:
+// the 12-character id, the time in UTC, the refs, the source path and
+// the message, separated by a tab.
+func TestLogPrintsOneLineForEachSnapshot(t *testing.T) {
+	when := time.Date(2026, time.September, 14, 8, 30, 0, 500, time.FixedZone("x", 3600))
+	setFakeNow(t, func() time.Time { return when })
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=A", srcA)
-	if code != 0 {
-		t.Fatalf("commit A: exit %d: %s", code, out)
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=b", "-m", "first\tline\nsecond", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	snapA := snapshotIDFromCommit(t, out)
-	before := time.Now()
-	packAndVerifyDisc(t, work, repo, srcA)
+	full := fullSnapshotID(t, repo)
+	appendRef(t, repo, "a", full)
+	id := full[len(full)-64 : len(full)-52]
 
-	// Past the fixed 7-day retention: gc frees disc A's run, including
-	// its own staged snapshot object.
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
-	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
-		t.Fatalf("gc: exit %d: %s", code, out)
+	want := id + "\t2026-09-14T07:30:00Z\ta,b\t" + src + "\tfirst\\tline\\nsecond\n"
+	code, out, errOut := runLs(t, repo, "log")
+	if code != 0 || out != want || errOut != "" {
+		t.Fatalf("log: exit %d, output %q, stderr %q; want %q", code, out, errOut, want)
 	}
-
-	srcB := writeRefsCarryFixture(t, "B")
-	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=B", srcB); code != 0 {
-		t.Fatalf("commit B: exit %d: %s", code, out)
-	}
-	code, out = runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+filepath.Join(work, "disc-b"))
-	if code != 0 {
-		t.Fatalf("pack B: exit %d: %s", code, out)
-	}
-	discB := packedTreeDir(t, repo, out)
-
-	code, out = runCmd(t, "log", discB)
-	if code != 0 {
-		t.Fatalf("log disc-b: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "refs: B") {
-		t.Fatalf("log output %q is missing ref B", out)
-	}
-	if !strings.Contains(out, snapA) || !strings.Contains(out, "refs: A") {
-		t.Fatalf("log output %q does not name ref A's snapshot", out)
+	for _, arg := range []string{"a", "b", id, strings.ToUpper(id[:5]), full} {
+		code, out, errOut := runLs(t, repo, "log", arg)
+		if code != 0 || out != want {
+			t.Fatalf("log %s: exit %d, output %q, stderr %q; want %q", arg, code, out, errOut, want)
+		}
 	}
 }
 
-// TestLogWithArgumentPrintsOneSnapshotsDetails checks that log SNAPSHOT
-// prints that snapshot's own details instead of a listing line.
-func TestLogWithArgumentPrintsOneSnapshotsDetails(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	code, out := runCmd(t, "log", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("log: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "snapshot "+snapID) {
-		t.Fatalf("log output %q missing the snapshot header line", out)
-	}
-	if !strings.Contains(out, "parent: (none)") {
-		t.Fatalf("log output %q missing the parent line", out)
-	}
-	if !strings.Contains(out, "root paths: "+rootPath(src)) {
-		t.Fatalf("log output %q missing the root paths line", out)
-	}
-}
-
-// TestLogAcceptsARefName checks log resolves a ref name the same way it
-// resolves a snapshot id text form.
-func TestLogAcceptsARefName(t *testing.T) {
-	treeDir, snapID, _ := lsFixture(t)
-	code, out := runCmd(t, "log", treeDir, defaultRefName())
-	if code != 0 {
-		t.Fatalf("log by ref name: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "snapshot "+snapID) {
-		t.Fatalf("log by ref name output %q missing the resolved snapshot id", out)
-	}
-}
-
-// TestLogSameSecondSnapshotsStayNewestFirst commits twice with the
-// clock pinned to the same second (but two different nanoseconds
-// within it, since a real clock never repeats a nanosecond in
-// practice), so both snapshots tie on log's printed, second-precision
-// time, and checks that the truly newer one still lists first, not
-// whichever sort.Slice happened to leave on top.
-func TestLogSameSecondSnapshotsStayNewestFirst(t *testing.T) {
+// TestLogNewestFirst commits twice in the same second. The newer
+// snapshot, by the nanoseconds of its time, comes first.
+func TestLogNewestFirst(t *testing.T) {
 	base := time.Date(2026, time.September, 14, 12, 0, 0, 0, time.UTC)
 	next := base
 	setFakeNow(t, func() time.Time { return next })
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
+	repo := filepath.Join(t.TempDir(), "repo")
 	src := writeFixtureSource(t)
-
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	next = base.Add(1 * time.Millisecond)
-	code, out := runCmd(t, "--repo="+repo, "commit", src)
-	if code != 0 {
+	next = base.Add(time.Millisecond)
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=old", src); code != 0 {
 		t.Fatalf("commit 1: exit %d: %s", code, out)
 	}
-	snap1 := snapshotIDFromCommit(t, out)
-
-	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("changed content of a"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("changed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	next = base.Add(2 * time.Millisecond)
-	code, out = runCmd(t, "--repo="+repo, "commit", src)
-	if code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref=new", "-m", "m", src); code != 0 {
 		t.Fatalf("commit 2: exit %d: %s", code, out)
 	}
-	snap2 := snapshotIDFromCommit(t, out)
-	if snap1 == snap2 {
-		t.Fatal("the two commits produced the same snapshot id; fixture did not change")
-	}
-
-	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-
-	code, out = runCmd(t, "log", treeDir)
+	code, out, errOut := runLs(t, repo, "log")
 	if code != 0 {
-		t.Fatalf("log: exit %d: %s", code, out)
+		t.Fatalf("log: exit %d: %s", code, errOut)
 	}
-	i1, i2 := strings.Index(out, snap1), strings.Index(out, snap2)
-	if i1 < 0 || i2 < 0 {
-		t.Fatalf("log output %q missing one of the two snapshot ids", out)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log printed %d lines, want 2: %q", len(lines), out)
 	}
-	if i2 > i1 {
-		t.Fatalf("log output %q lists the older snapshot %s before the newer %s", out, snap1, snap2)
+	if f := strings.Split(lines[0], "\t"); f[2] != "new" || f[4] != "m" {
+		t.Fatalf("first line %q, want the ref new and the message m", lines[0])
 	}
-}
-
-// TestLogFromCatalogWithNoDisc checks log resolves the same way, both
-// listing every snapshot and printing one snapshot's own details.
-func TestLogFromCatalogWithNoDisc(t *testing.T) {
-	treeDir, snapID, _ := lsFixture(t)
-	repo := repoDirFromTreeDir(t, treeDir)
-
-	discCode, discOut := runCmd(t, "log", treeDir, snapID)
-	if discCode != 0 {
-		t.Fatalf("log (disc): exit %d: %s", discCode, discOut)
-	}
-	catalogCode, catalogOut := runCmd(t, "--repo="+repo, "log", snapID)
-	if catalogCode != 0 {
-		t.Fatalf("log (catalog): exit %d: %s", catalogCode, catalogOut)
-	}
-	if catalogOut != discOut {
-		t.Fatalf("log from catalog = %q, want %q (same as disc)", catalogOut, discOut)
-	}
-
-	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 {
-		t.Fatalf("--repo log (list all): exit %d: %s", code, out)
-	} else if !strings.Contains(out, snapID) {
-		t.Fatalf("--repo log listing = %q, does not name %s", out, snapID)
+	if f := strings.Split(lines[1], "\t"); f[2] != "old" || f[4] != "-" {
+		t.Fatalf("second line %q, want the ref old and no message", lines[1])
 	}
 }
 
-// TestLogNonexistentPathReportsNoSuchDiscRoot is TestLsNonexistentPathReportsNoSuchDiscRoot for log.
-func TestLogNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "no-such-disc")
-	code, out := runCmd(t, "log", missing)
-	if code != 2 {
-		t.Fatalf("log: exit %d, want 2: %s", code, out)
+// TestLogRefToASnapshotNotHeld checks the line of a ref whose snapshot
+// object the catalog does not hold: "-" in the time, the source path and
+// the message fields.
+func TestLogRefToASnapshotNotHeld(t *testing.T) {
+	repo := commitWithRef(t, "latest")
+	full := fullSnapshotID(t, repo)
+	c, err := catalog.OpenReadOnly(repo)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, "no such disc root: "+missing) {
-		t.Fatalf("log output %q does not name the missing disc root", out)
+	id := snapshotIDs(t, repo)[0]
+	if err := os.Remove(c.MetaPath(format.ObjectKindSnapshot, id)); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// firstColumn returns the first whitespace-separated field of the first
-// non-empty line of out.
-func firstColumn(t *testing.T, out string) string {
-	t.Helper()
-	for line := range strings.SplitSeq(out, "\n") {
-		if fields := strings.Fields(line); len(fields) > 0 {
-			return fields[0]
-		}
-	}
-	t.Fatalf("no line in output: %q", out)
-	return ""
-}
-
-// TestSnapshotArgFormsFromLog covers the forms the operator guide shows
-// for a snapshot argument: a ref name, and the snapshot id that log
-// prints in its first column. restore, ls and restore --dry-run must
-// all accept both.
-func TestSnapshotArgFormsFromLog(t *testing.T) {
-	repo, treeDir, snapID := snapshotArgFixture(t)
-
-	code, out := runCmd(t, "--repo="+repo, "log")
-	if code != 0 {
-		t.Fatalf("log: exit %d: %s", code, out)
-	}
-	logged := firstColumn(t, out)
-	if logged != snapID {
-		t.Fatalf("log printed %q in its first column, commit printed %q", logged, snapID)
-	}
-
-	mountDir := filepath.Join(t.TempDir(), "mount")
-	mountDisc(t, mountDir, treeDir)
-
-	outRoot := t.TempDir()
-	for i, arg := range []string{logged, defaultRefName()} {
-		if code, out := runCmd(t, "restore", treeDir, arg, filepath.Join(outRoot, string(rune('a'+i)))); code != 0 {
-			t.Fatalf("restore %q: exit %d, want 0: %s", arg, code, out)
-		}
-		if code, out := runCmd(t, "ls", treeDir, arg); code != 0 {
-			t.Fatalf("ls %q: exit %d, want 0: %s", arg, code, out)
-		}
-		if code, out := runCmd(t, "--repo="+repo, "restore", "--mount="+mountDir, "--dry-run", arg, filepath.Join(outRoot, "dry-run")); code != 0 {
-			t.Fatalf("restore --dry-run %q: exit %d, want 0: %s", arg, code, out)
-		}
-		if code, out := runCmd(t, "--repo="+repo, "log", arg); code != 0 {
-			t.Fatalf("log %q: exit %d, want 0: %s", arg, code, out)
+	want := full[len(full)-64:len(full)-52] + "\t-\tlatest\t-\t-\n"
+	for _, args := range [][]string{{"log"}, {"log", "latest"}} {
+		code, out, errOut := runLs(t, repo, args...)
+		if code != 0 || out != want {
+			t.Fatalf("%q: exit %d, output %q, stderr %q; want %q", args, code, out, errOut, want)
 		}
 	}
 }
 
-// TestLogUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
-// log: each case exits 2, never 0 or 1.
-func TestLogUsageErrorsExitTwo(t *testing.T) {
+// TestLogPartialSnapshot checks that log prints every line, then one
+// partial line for each partial snapshot to standard error, and exits 1.
+func TestLogPartialSnapshot(t *testing.T) {
+	repo := commitWithRef(t, "latest")
+	full := fullSnapshotID(t, repo)
+	if err := os.WriteFile(catalog.StatePath(repo), []byte(full+" partial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := full[len(full)-64 : len(full)-52]
+	for _, args := range [][]string{{"log"}, {"log", "latest"}} {
+		code, out, errOut := runLs(t, repo, args...)
+		if code != 1 || !strings.HasPrefix(out, id+"\t") {
+			t.Fatalf("%q: exit %d, output %q; want 1 and the line", args, code, out)
+		}
+		want := "noahsark: log: snapshot " + id + " is partial; run recover with more discs\n"
+		if errOut != want {
+			t.Fatalf("%q: stderr %q, want %q", args, errOut, want)
+		}
+	}
+}
+
+// TestLogEmptyRepository checks that log in a repository with no
+// snapshot prints nothing and exits 0, and that a SNAPSHOT there matches
+// nothing.
+func TestLogEmptyRepository(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
+	if code, out, errOut := runLs(t, repo, "log"); code != 0 || out != "" || errOut != "" {
+		t.Fatalf("log: exit %d, output %q, stderr %q; want 0 and nothing", code, out, errOut)
+	}
+	code, _, errOut := runLs(t, repo, "log", "latest")
+	if code != 2 || errOut != "noahsark: log: no snapshot matches latest\n" {
+		t.Fatalf("log latest: exit %d, stderr %q; want 2", code, errOut)
+	}
+}
 
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{"unknown flag", []string{"--repo=" + repo, "log", "--no-such-flag"}},
+// TestLogUsageErrorsExitTwo checks the usage errors of log.
+func TestLogUsageErrorsExitTwo(t *testing.T) {
+	repo := commitWithRef(t, "latest")
+	for _, args := range [][]string{
+		{"log", "a", "b"},
+		{"log", "--no-such-flag"},
+		{"log", "no-such-ref"},
+	} {
+		code, out, errOut := runLs(t, repo, args...)
+		if code != 2 || out != "" {
+			t.Fatalf("%q: exit %d, output %q, stderr %q; want 2", args, code, out, errOut)
+		}
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			code, out := runCmd(t, c.args...)
-			if code != 2 {
-				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
-			}
-		})
+}
+
+// TestLogNoRepository checks that log with no repository is a usage
+// error that names recover.
+func TestLogNoRepository(t *testing.T) {
+	code, out := runCmd(t, "log")
+	if want := "noahsark: log: no repository; run recover first, one time for each disc\n"; code != 2 || out != want {
+		t.Fatalf("log with no repository: exit %d, output %q; want 2 and %q", code, out, want)
 	}
+}
+
+// appendRef adds the ref name for the snapshot fullID to the local ref
+// file of repo.
+func appendRef(t *testing.T, repo, name, fullID string) {
+	t.Helper()
+	f, err := os.OpenFile(testLayout(t, repo).refsFile(), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(name + " " + fullID + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// logID gives the id field that log prints for the snapshot with the
+// full text id fullID.
+func logID(t *testing.T, fullID string) string {
+	t.Helper()
+	id, err := object.ParseID(fullID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return shortID(id)
 }

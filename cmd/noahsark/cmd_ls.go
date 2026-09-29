@@ -1,176 +1,204 @@
 package main
 
 import (
+	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"strconv"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
 func init() {
 	register(&command{
 		name:  "ls",
-		usage: "ls [--long] [--recursive] [DISC-ROOT...] SNAPSHOT [PATH]",
-		summary: "List a snapshot's tree. Resolves SNAPSHOT through the catalog with no disc given; accepts one or more DISC-ROOT positionals to read a disc instead. " +
-			"Each line's first column: '!' when the entry is UNSTABLE, a space otherwise.",
+		usage: "ls [-R | --recursive] SNAPSHOT [PATH]",
+		summary: "List the entries of a snapshot from the catalog. One entry on each line: " +
+			"mode, type, size, time and path, separated by a tab.",
 		flags: lsFlags,
 	})
 }
 
 // lsOptions holds the command options of ls.
 type lsOptions struct {
-	long      bool
 	recursive bool
 }
 
 func lsFlags(fs *flag.FlagSet) runFunc {
 	o := &lsOptions{}
-	fs.BoolVar(&o.long, "long", false, "print mode, owner, size and mtime")
+	fs.BoolVar(&o.recursive, "R", false, "descend into subdirectories")
 	fs.BoolVar(&o.recursive, "recursive", false, "descend into subdirectories")
 	return o.run
 }
 
-// run implements "noahsark ls". With no DISC-ROOT, SNAPSHOT (an id or a
-// ref name) resolves through the catalog, so ls needs no disc
-// present; give one or more DISC-ROOT positionals to read straight from
-// a disc instead, the same way restore and verify do. ls reads tree
-// objects only; it never opens a chunk.
-func (o *lsOptions) run(e *env, args []string) int {
-	stdout, stderr := e.stdout, e.stderr
+// lsUsage is the usage line that ls prints for a wrong argument count.
+const lsUsage = "usage: noahsark ls [-R | --recursive] SNAPSHOT [PATH]"
 
-	// Leading positional arguments that name an existing directory are
-	// DISC-ROOTs; at least one argument stays unconsumed for SNAPSHOT.
-	// This needs no guess: SNAPSHOT and PATH are never paths that already
-	// exist on this host.
-	end := max(len(args)-1, 0)
-	i := 0
-	for i < end && looksLikeDiscRoot(args[i]) {
-		i++
-	}
-	discRootArgs := args[:i]
-	discRootGiven := len(discRootArgs) > 0
-	if !discRootGiven && len(args) > 0 && looksLikePathNotDisc(args[0]) {
-		_, _ = fmt.Fprintf(stderr, "noahsark: ls: no such disc root: %s\n", args[0])
+// run implements "noahsark ls". It reads the catalog only, takes no lock
+// and changes no file.
+func (o *lsOptions) run(e *env, args []string) int {
+	const cmd = "ls"
+	stderr := e.stderr
+	if len(args) < 1 || len(args) > 2 {
+		_, _ = fmt.Fprintln(stderr, lsUsage)
 		return 2
 	}
-	catalogMode := !discRootGiven
-
-	var src snapshotSource
-	var catalogObj *catalog.Catalog
-	var positional []string
-	switch {
-	case catalogMode:
-		if len(args) < 1 || len(args) > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] SNAPSHOT [PATH]")
-			return 2
-		}
-		positional = args
-		cs, c, err := openCatalogSource(e)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-			return 1
-		}
-		src, catalogObj = cs, c
-	default:
-		positional = args[len(discRootArgs):]
-		if len(positional) < 1 || len(positional) > 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: noahsark ls [--long] [--recursive] DISC-ROOT... SNAPSHOT [PATH]")
-			return 2
-		}
-	}
-
-	if !catalogMode {
-		restoreSrc, err := restore.OpenSource(discRootArgs)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-			return 1
-		}
-		src = restoreSrc
-	}
-
-	snapID, err := src.ParseSnapshotArg(positional[0])
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: ls:", err)
-		return exitForSnapshotArg(err)
-	}
 	var pathArg string
-	if len(positional) > 1 {
-		pathArg = positional[1]
+	if len(args) == 2 {
+		pathArg = args[1]
 	}
 
-	snap, err := src.Snapshot(snapID)
-	if err != nil {
-		return reportSourceError("ls", stderr, err, catalogObj, snapID)
+	rc, code := openRepoCatalog(e, cmd)
+	if rc == nil {
+		return code
+	}
+	id, code, ok := rc.resolve(cmd, args[0])
+	if !ok {
+		return code
+	}
+	snap, code, ok := rc.snapshot(cmd, args[0], id)
+	if !ok {
+		return code
 	}
 
-	lister := &lsLister{src: src, stdout: stdout, long: o.long}
-	if err := lister.run(object.ID(snap.RootTree), pathArg, o.recursive); err != nil {
-		return reportSourceError("ls", stderr, err, catalogObj, snapID)
+	out := bufio.NewWriter(e.stdout)
+	l := &lsLister{src: rc.src, out: out, recursive: o.recursive}
+	err := l.run(object.ID(snap.RootTree), pathArg)
+	_ = out.Flush()
+	var missing *notHeldError
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &missing):
+		printPartial(stderr, cmd, id)
+		return 1
+	case errors.Is(err, errNoSuchPath):
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is not in snapshot %s\n", cmd, escapeField(pathArg), shortID(id))
+		return 2
 	}
-	return 0
+	_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+	return 1
 }
 
-// lsLister walks the part of a snapshot's tree ls was asked to list and
-// prints one line per entry as it is found, so a whole-snapshot
-// --recursive listing never holds the full entry list in memory.
+// errNoSuchPath reports a PATH that the snapshot does not hold.
+var errNoSuchPath = errors.New("path is not in the snapshot")
+
+// lsItem is one entry that ls can print: the tree entry, its path
+// relative to the source root, and the name that a PATH segment matches.
+// The name of a root entry is its full source root path.
+type lsItem struct {
+	path  string
+	name  string
+	entry format.TreeEntry
+}
+
+// lsLister walks the part of a snapshot tree that ls lists. It prints
+// each line when it finds the entry, thus it never holds the full list.
 type lsLister struct {
-	src    snapshotSource
-	stdout io.Writer
-	long   bool
+	src       *catalogSource
+	out       io.Writer
+	recursive bool
 }
 
-// run lists rootTreeID's tree, restricted to pathArg (the include-path
-// form: root path then entry path, forward slashes, an optional leading
-// slash), or the tree's root entries when pathArg is empty.
-func (l *lsLister) run(rootTreeID object.ID, pathArg string, recursive bool) error {
-	rootTree, err := l.src.Tree(rootTreeID)
+// run lists the snapshot with the root tree rootID, below pathArg, or
+// below the source root when pathArg is empty.
+func (l *lsLister) run(rootID object.ID, pathArg string) error {
+	top, err := l.topLevel(rootID)
 	if err != nil {
 		return err
 	}
+	segs := splitLsPath(pathArg)
+	if len(segs) == 0 {
+		return l.listItems(top)
+	}
+	item, err := l.find(top, segs)
+	if err != nil {
+		return err
+	}
+	if item.entry.EntryType != format.EntryTypeDirectory {
+		l.emit(item)
+		return nil
+	}
+	return l.listDir(item)
+}
 
-	if pathArg == "" {
-		for _, e := range rootTree.Entries {
-			rp := strings.Join(splitLsPath(rootPathOf(e)), "/")
-			l.emit(rp, e)
-			if recursive {
-				if err := l.listDir(object.ID(e.ContentID), rp, true); err != nil {
-					return err
-				}
+// topLevel gives the entries of the first level that ls prints. A
+// snapshot with one source root skips the root tree level: the top level
+// is the content of the source root. A snapshot with more than one
+// source root keeps the root level: each root entry is a directory whose
+// path is its source root path without the leading slash.
+func (l *lsLister) topLevel(rootID object.ID) ([]lsItem, error) {
+	root, err := l.src.Tree(rootID)
+	if err != nil {
+		return nil, err
+	}
+	if len(root.Entries) == 1 {
+		return l.children(lsItem{entry: root.Entries[0]})
+	}
+	items := make([]lsItem, 0, len(root.Entries))
+	for _, e := range root.Entries {
+		p := strings.Join(splitLsPath(rootPathOf(e)), "/")
+		items = append(items, lsItem{path: p, name: p, entry: e})
+	}
+	return items, nil
+}
+
+// children reads the tree of the directory dir and gives its entries.
+func (l *lsLister) children(dir lsItem) ([]lsItem, error) {
+	t, err := l.src.Tree(object.ID(dir.entry.ContentID))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]lsItem, 0, len(t.Entries))
+	for _, e := range t.Entries {
+		name := string(e.Name)
+		items = append(items, lsItem{path: joinLsPath(dir.path, name), name: name, entry: e})
+	}
+	return items, nil
+}
+
+// find walks from the top level to the entry that segs names.
+func (l *lsLister) find(top []lsItem, segs []string) (lsItem, error) {
+	level := top
+	for {
+		var next *lsItem
+		var used int
+		for i := range level {
+			key := splitLsPath(level[i].name)
+			if len(key) > 0 && len(key) <= len(segs) && slices.Equal(key, segs[:len(key)]) {
+				next, used = &level[i], len(key)
+				break
 			}
 		}
-		return nil
+		if next == nil {
+			return lsItem{}, errNoSuchPath
+		}
+		segs = segs[used:]
+		if len(segs) == 0 {
+			return *next, nil
+		}
+		if next.entry.EntryType != format.EntryTypeDirectory {
+			return lsItem{}, errNoSuchPath
+		}
+		var err error
+		if level, err = l.children(*next); err != nil {
+			return lsItem{}, err
+		}
 	}
-
-	target, targetPath, err := resolveLsPath(l.src, rootTree.Entries, pathArg)
-	if err != nil {
-		return err
-	}
-	if target.EntryType != format.EntryTypeDirectory {
-		l.emit(targetPath, *target)
-		return nil
-	}
-	return l.listDir(object.ID(target.ContentID), targetPath, recursive)
 }
 
-// listDir lists the children of the tree at id, whose own path is
-// prefix, descending into subdirectories when recurse is true.
-func (l *lsLister) listDir(id object.ID, prefix string, recurse bool) error {
-	t, err := l.src.Tree(id)
-	if err != nil {
-		return err
-	}
-	for _, e := range t.Entries {
-		path := prefix + "/" + string(e.Name)
-		l.emit(path, e)
-		if recurse && e.EntryType == format.EntryTypeDirectory {
-			if err := l.listDir(object.ID(e.ContentID), path, recurse); err != nil {
+// listItems prints each item, and descends into a directory with -R.
+func (l *lsLister) listItems(items []lsItem) error {
+	for _, it := range items {
+		l.emit(it)
+		if l.recursive && it.entry.EntryType == format.EntryTypeDirectory {
+			if err := l.listDir(it); err != nil {
 				return err
 			}
 		}
@@ -178,98 +206,79 @@ func (l *lsLister) listDir(id object.ID, prefix string, recurse bool) error {
 	return nil
 }
 
-// emit prints one entry.
-func (l *lsLister) emit(path string, e format.TreeEntry) {
-	unstable := e.EntryFlags&format.EntryFlagUnstable != 0
-	marker := byte(' ')
-	if unstable {
-		marker = '!'
+// listDir prints the entries of the directory dir.
+func (l *lsLister) listDir(dir lsItem) error {
+	items, err := l.children(dir)
+	if err != nil {
+		return err
 	}
-	displayPath := path
-	if e.EntryType == format.EntryTypeDirectory {
-		displayPath += "/"
-	}
-	if l.long {
-		_, _ = fmt.Fprintf(l.stdout, "%c%s  %-20s  %10d  %s  %s\n",
-			marker, modeString(e), ownerString(e), e.Size, mtimeString(e), displayPath)
-		return
-	}
-	_, _ = fmt.Fprintf(l.stdout, "%c%s\n", marker, displayPath)
+	return l.listItems(items)
 }
 
-// resolveLsPath walks from rootEntries to the entry pathArg names, in the
-// include-path form: pathArg's leading segments match one root entry's
-// own root path in full, whole segment by whole segment, and any
-// remaining segments name a path inside that root entry's own tree. It
-// returns the entry found and its full path.
-func resolveLsPath(src snapshotSource, rootEntries []format.TreeEntry, pathArg string) (*format.TreeEntry, string, error) {
-	segs := splitLsPath(pathArg)
-	if len(segs) == 0 {
-		return nil, "", fmt.Errorf("ls: empty path")
-	}
+// emit prints one line: mode, type, size, time and path, separated by a
+// tab.
+func (l *lsLister) emit(it lsItem) {
+	e := it.entry
+	_, _ = fmt.Fprintf(l.out, "%04o\t%s\t%d\t%s\t%s\n",
+		e.Mode&0o7777, entryTypeWord(e.EntryType), entrySize(e),
+		utcTime(e.MtimeSec), escapeField(it.path))
+}
 
-	var cur *format.TreeEntry
-	var consumed []string
-	for i := range rootEntries {
-		e := rootEntries[i]
-		rp := splitLsPath(rootPathOf(e))
-		if len(rp) == 0 || len(rp) > len(segs) || !segsEqual(rp, segs[:len(rp)]) {
-			continue
-		}
-		cur = &e
-		consumed = rp
-		break
+// entryTypeWord gives the type field of an ls line.
+func entryTypeWord(t uint8) string {
+	switch t {
+	case format.EntryTypeRegular:
+		return "file"
+	case format.EntryTypeDirectory:
+		return "dir"
+	case format.EntryTypeSymlink:
+		return "symlink"
+	case format.EntryTypeFIFO:
+		return "fifo"
+	case format.EntryTypeSocket:
+		return "socket"
+	case format.EntryTypeCharDev:
+		return "chardev"
+	case format.EntryTypeBlockDev:
+		return "blockdev"
 	}
-	if cur == nil {
-		return nil, "", fmt.Errorf("ls: path %q matches no entry", pathArg)
-	}
+	return fmt.Sprintf("type%d", t)
+}
 
-	curEntry := *cur
-	for _, name := range segs[len(consumed):] {
-		if curEntry.EntryType != format.EntryTypeDirectory {
-			return nil, "", fmt.Errorf("ls: path %q matches no entry", pathArg)
-		}
-		t, err := src.Tree(object.ID(curEntry.ContentID))
-		if err != nil {
-			return nil, "", err
-		}
-		found := false
-		for _, e := range t.Entries {
-			if string(e.Name) == name {
-				curEntry = e
-				found = true
-				break
+// entrySize gives the size field of an ls line: the content size of a
+// file, the target length of a symlink, and 0 for every other type.
+func entrySize(e format.TreeEntry) uint64 {
+	switch e.EntryType {
+	case format.EntryTypeRegular:
+		return e.Size
+	case format.EntryTypeSymlink:
+		for _, t := range e.TLVs {
+			if t.Type == format.TLVTypeSymlinkTarget {
+				return uint64(len(t.Payload))
 			}
 		}
-		if !found {
-			return nil, "", fmt.Errorf("ls: path %q matches no entry", pathArg)
-		}
-		consumed = append(consumed, name)
 	}
-	return &curEntry, strings.Join(consumed, "/"), nil
+	return 0
 }
 
-func segsEqual(a, b []string) bool {
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+// utcTime gives a time as RFC 3339 in UTC, to the second.
+func utcTime(sec int64) string {
+	return time.Unix(sec, 0).UTC().Format(time.RFC3339)
 }
 
-// splitLsPath splits a forward-slash path into segments, stripping one
-// leading slash and dropping any empty segment a doubled or trailing
-// slash would otherwise produce. It matches restore --include's own path
-// form, so a line copied from ls works as --include.
+// joinLsPath joins a directory path and an entry name.
+func joinLsPath(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	return dir + "/" + name
+}
+
+// splitLsPath splits a path into its segments. It drops a leading or a
+// trailing slash and an empty segment.
 func splitLsPath(p string) []string {
-	p = strings.TrimPrefix(p, "/")
-	if p == "" {
-		return nil
-	}
-	parts := strings.Split(p, "/")
-	out := make([]string, 0, len(parts))
-	for _, s := range parts {
+	var out []string
+	for s := range strings.SplitSeq(p, "/") {
 		if s != "" {
 			out = append(out, s)
 		}
@@ -277,87 +286,109 @@ func splitLsPath(p string) []string {
 	return out
 }
 
-// rootPathOf returns the source root path a root tree entry's name
-// holds, decoded by the root name escape rule. An undecodable name is
-// used as it is.
+// rootPathOf gives the source root path that the name of a root tree
+// entry holds. A name that does not decode is used as it is.
 func rootPathOf(e format.TreeEntry) string {
 	path, _ := format.DecodeRootName(string(e.Name))
 	return path
 }
 
-// modeString renders e's type and permission bits the way "ls -l" does:
-// one type character followed by nine rwx characters.
-func modeString(e format.TreeEntry) string {
-	var typeChar byte
-	switch e.EntryType {
-	case format.EntryTypeDirectory:
-		typeChar = 'd'
-	case format.EntryTypeSymlink:
-		typeChar = 'l'
-	case format.EntryTypeCharDev:
-		typeChar = 'c'
-	case format.EntryTypeBlockDev:
-		typeChar = 'b'
-	case format.EntryTypeFIFO:
-		typeChar = 'p'
-	case format.EntryTypeSocket:
-		typeChar = 's'
-	default:
-		typeChar = '-'
-	}
-	const bits = "rwxrwxrwx"
-	b := make([]byte, 10)
-	b[0] = typeChar
-	for i := range 9 {
-		if e.Mode&(1<<uint(8-i)) != 0 {
-			b[i+1] = bits[i]
-		} else {
-			b[i+1] = '-'
-		}
-	}
-	// setuid, setgid and sticky each replace the execute character of
-	// their own triple, upper case when that triple has no execute bit.
-	for _, m := range []struct {
-		bit  uint32
-		pos  int
-		set  byte
-		nset byte
-	}{
-		{0o4000, 3, 's', 'S'},
-		{0o2000, 6, 's', 'S'},
-		{0o1000, 9, 't', 'T'},
-	} {
-		if e.Mode&m.bit == 0 {
-			continue
-		}
-		if b[m.pos] == 'x' {
-			b[m.pos] = m.set
-		} else {
-			b[m.pos] = m.nset
-		}
-	}
-	return string(b)
+// repoCatalog is the catalog of a repository, opened read-only, and the
+// merged refs. ls and log read it.
+type repoCatalog struct {
+	c      *catalog.Catalog
+	src    *catalogSource
+	refs   *format.RefsTable
+	stderr io.Writer
 }
 
-// ownerString renders e's owner as "user:group", using the entry's
-// user_name and group_name TLVs when present, and the numeric uid and
-// gid otherwise.
-func ownerString(e format.TreeEntry) string {
-	user := strconv.FormatUint(uint64(e.UID), 10)
-	group := strconv.FormatUint(uint64(e.GID), 10)
-	for _, t := range e.TLVs {
-		switch t.Type {
-		case format.TLVTypeUserName:
-			user = string(t.Payload)
-		case format.TLVTypeGroupName:
-			group = string(t.Payload)
-		}
+// openRepoCatalog finds the repository and opens its catalog read-only.
+// It takes no lock. On a failure it prints the reason and returns nil and
+// the exit code.
+func openRepoCatalog(e *env, cmd string) (*repoCatalog, int) {
+	repoDir, err := e.findRepo()
+	if errors.Is(err, errNoRepo) {
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: no repository; run recover first, one time for each disc\n", cmd)
+		return nil, 2
 	}
-	return user + ":" + group
+	if err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
+		return nil, 2
+	}
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
+		return nil, 2
+	}
+	c, err := catalog.OpenReadOnly(repoDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
+		return nil, 1
+	}
+	src := &catalogSource{c: c, refsPath: layoutOf(repoDir, cfg).refsFile()}
+	refs, err := src.Refs()
+	if errors.Is(err, catalog.ErrNoDisc) {
+		refs, err = &format.RefsTable{}, nil
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
+		return nil, 1
+	}
+	return &repoCatalog{c: c, src: src, refs: refs, stderr: e.stderr}, 0
 }
 
-// mtimeString renders e's mtime in UTC, so ls output does not depend on
-// the host's local time zone.
-func mtimeString(e format.TreeEntry) string {
-	return time.Unix(e.MtimeSec, int64(e.MtimeNsec)).UTC().Format("2006-01-02 15:04:05")
+// resolve resolves a SNAPSHOT argument. An empty catalog matches no
+// snapshot. On a failure it prints the reason and returns false and the
+// exit code.
+func (rc *repoCatalog) resolve(cmd, arg string) (object.ID, int, bool) {
+	id, err := rc.src.ParseSnapshotArg(arg)
+	if err == nil {
+		return id, 0, true
+	}
+	if errors.Is(err, catalog.ErrNoDisc) {
+		err = &refNotFoundError{arg: arg}
+	}
+	_, _ = fmt.Fprintf(rc.stderr, "noahsark: %s: %v\n", cmd, err)
+	return object.ID{}, exitForSnapshotArg(err), false
+}
+
+// known reports whether a ref names id, or the completeness file lists
+// it.
+func (rc *repoCatalog) known(id object.ID) bool {
+	if rc.c.Partial(id) || rc.c.Complete(id) {
+		return true
+	}
+	for _, r := range rc.refs.Records {
+		if object.ID(r.SnapshotID) == id {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshot reads the snapshot id that arg resolved to. A partial
+// snapshot, and a known snapshot whose object the catalog does not hold,
+// print the partial line and exit 1. A full id that nothing knows
+// matches no snapshot. On a failure it prints the reason and returns
+// false and the exit code.
+func (rc *repoCatalog) snapshot(cmd, arg string, id object.ID) (*format.Snapshot, int, bool) {
+	if rc.c.Partial(id) {
+		printPartial(rc.stderr, cmd, id)
+		return nil, 1, false
+	}
+	snap, err := rc.src.Snapshot(id)
+	if err == nil {
+		return snap, 0, true
+	}
+	if rc.known(id) {
+		printPartial(rc.stderr, cmd, id)
+		return nil, 1, false
+	}
+	_, _ = fmt.Fprintf(rc.stderr, "noahsark: %s: %v\n", cmd, &refNotFoundError{arg: arg})
+	return nil, 2, false
+}
+
+// printPartial prints the line of a partial snapshot.
+func printPartial(w io.Writer, cmd string, id object.ID) {
+	_, _ = fmt.Fprintf(w, "noahsark: %s: snapshot %s is partial; run recover with more discs\n", cmd, shortID(id))
 }

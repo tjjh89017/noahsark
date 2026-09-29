@@ -17,18 +17,6 @@ import (
 	"github.com/tjjh89017/noahsark/internal/restore"
 )
 
-// snapshotSource resolves tree, blob and snapshot objects, and REFS,
-// well enough for ls, log and plan to read a snapshot's tree. Both
-// *restore.Source (reading one or more disc roots) and *catalogSource
-// (reading the catalog, no disc present) implement it.
-type snapshotSource interface {
-	Tree(object.ID) (*format.Tree, error)
-	Snapshot(object.ID) (*format.Snapshot, error)
-	Refs() (*format.RefsTable, error)
-	SnapshotIDs() ([]object.ID, error)
-	ParseSnapshotArg(string) (object.ID, error)
-}
-
 // catalogSource resolves a snapshot from the repository alone, with no
 // disc present: from the catalog and the local ref file. commit writes
 // every snapshot, tree and blob object into the catalog, thus a
@@ -260,21 +248,6 @@ func openCatalogSource(e *env) (*catalogSource, *catalog.Catalog, error) {
 func looksLikeDiscRoot(s string) bool {
 	info, err := os.Stat(s)
 	return err == nil && info.IsDir()
-}
-
-// looksLikePathNotDisc reports whether s was plainly meant as a path,
-// even though looksLikeDiscRoot says it is not a directory: it contains
-// a slash, or it exists as a file. A SNAPSHOT id or ref name never
-// contains a slash and never already exists as a file, so this tells
-// apart a mistyped or missing DISC-ROOT from an ordinary SNAPSHOT
-// argument, letting log and ls report the mistake by name instead of
-// falling into catalog mode and resolving it as a ref.
-func looksLikePathNotDisc(s string) bool {
-	if strings.ContainsRune(s, '/') {
-		return true
-	}
-	info, err := os.Stat(s)
-	return err == nil && !info.IsDir()
 }
 
 // formatPartialError renders a *catalog.PartialError the way ls, log

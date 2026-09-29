@@ -1,448 +1,477 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// TestLsDefaultListsRootEntry asserts that a plain ls, with no PATH,
-// lists the snapshot's root entries only, one per line, with a trailing
-// slash marking a directory.
-func TestLsDefaultListsRootEntry(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	code, out := runCmd(t, "ls", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
-	}
-	want := " " + rootPath(src) + "/\n"
-	if out != want {
-		t.Fatalf("ls output = %q, want %q", out, want)
-	}
-}
-
-// TestLsRecursiveMatchesGolden runs ls --recursive over the fixture and
-// compares its output, with the fixture's own temp-dir source path
-// normalized to a placeholder, against a checked-in golden file.
-func TestLsRecursiveMatchesGolden(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	code, out := runCmd(t, "ls", "--recursive", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
-	}
-	got := strings.ReplaceAll(out, rootPath(src), "{{SRC}}")
-
-	want, err := os.ReadFile(filepath.Join("testdata", "ls_recursive.golden"))
+// lsLine gives the ls line that the file at src/rel must print, from the
+// file itself.
+func lsLine(t *testing.T, src, rel, typ string) string {
+	t.Helper()
+	fi, err := os.Lstat(filepath.Join(src, rel))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != string(want) {
-		t.Fatalf("ls --recursive output =\n%s\nwant\n%s", got, want)
+	size := fi.Size()
+	if typ == "dir" {
+		size = 0
 	}
+	return fmt.Sprintf("%04o\t%s\t%d\t%s\t%s", uint32(fi.Mode().Perm()), typ, size,
+		fi.ModTime().UTC().Format("2006-01-02T15:04:05Z"), rel)
 }
 
-// TestLsLongPrintsModeOwnerSizeAndMtime asserts --long adds the four
-// fixed columns before the path.
-func TestLsLongPrintsModeOwnerSizeAndMtime(t *testing.T) {
-	treeDir, snapID, _ := lsFixture(t)
-	code, out := runCmd(t, "ls", "--long", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "drwx") {
-		t.Fatalf("ls --long output %q missing a directory mode string", out)
-	}
-	if !ownerColumn.MatchString(out) {
-		t.Fatalf("ls --long output %q missing a numeric owner column", out)
-	}
+// runLs runs ls in repo and returns the exit code, standard output and
+// standard error apart.
+func runLs(t *testing.T, repo string, args ...string) (int, string, string) {
+	t.Helper()
+	te := newTestEnv(t.TempDir())
+	code := run(te.env, append([]string{"--repo=" + repo}, args...))
+	return code, te.out.String(), te.errOut.String()
 }
 
-// ownerColumn matches --long's owner column: two colon-separated
-// numbers, since the fixture's files carry no owner-name TLV.
-var ownerColumn = regexp.MustCompile(`\d+:\d+`)
-
-// TestLsPathListsOneEntry checks that a PATH naming one file lists just
-// that file, with no trailing slash.
-func TestLsPathListsOneEntry(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	path := rootPath(src) + "/a.txt"
-	code, out := runCmd(t, "ls", treeDir, snapID, path)
+// TestLsListsOneLevel checks that ls prints the entries of the source
+// root, one level, one tab-separated line each, with paths relative to
+// the source root.
+func TestLsListsOneLevel(t *testing.T) {
+	repo, src := initAndCommit(t)
+	code, out, errOut := runLs(t, repo, "ls", defaultRefName())
 	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
+		t.Fatalf("ls: exit %d: %s", code, errOut)
 	}
-	want := " " + rootPath(src) + "/a.txt\n"
+	want := lsLine(t, src, "a.txt", "file") + "\n" + lsLine(t, src, "sub", "dir") + "\n"
 	if out != want {
-		t.Fatalf("ls PATH output = %q, want %q", out, want)
+		t.Fatalf("ls output:\n%q\nwant:\n%q", out, want)
+	}
+	if errOut != "" {
+		t.Fatalf("ls wrote to standard error: %q", errOut)
 	}
 }
 
-// TestLsPathOnDirectoryListsChildren checks that a PATH naming a
-// directory lists its immediate children.
-func TestLsPathOnDirectoryListsChildren(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-	code, out := runCmd(t, "ls", treeDir, snapID, rootPath(src))
-	if code != 0 {
-		t.Fatalf("ls: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, rootPath(src)+"/a.txt\n") {
-		t.Fatalf("ls PATH output %q missing a.txt", out)
-	}
-	if !strings.Contains(out, rootPath(src)+"/sub/\n") {
-		t.Fatalf("ls PATH output %q missing sub/", out)
+// TestLsRecursive checks that -R and --recursive descend depth first.
+func TestLsRecursive(t *testing.T) {
+	repo, src := initAndCommit(t)
+	want := lsLine(t, src, "a.txt", "file") + "\n" +
+		lsLine(t, src, "sub", "dir") + "\n" +
+		lsLine(t, src, "sub/b.txt", "file") + "\n"
+	for _, flag := range []string{"-R", "--recursive"} {
+		code, out, errOut := runLs(t, repo, "ls", flag, defaultRefName())
+		if code != 0 {
+			t.Fatalf("ls %s: exit %d: %s", flag, code, errOut)
+		}
+		if out != want {
+			t.Fatalf("ls %s output:\n%q\nwant:\n%q", flag, out, want)
+		}
 	}
 }
 
-// TestLsMarksAnUnstableEntry uses the same newWriter seam
-// TestCommitExitsOneAndReportsAnUnstablePath uses to force one file
-// UNSTABLE, then checks a recursive ls marks exactly that file with "!"
-// in the first column, and every other entry with a plain space.
-func TestLsMarksAnUnstableEntry(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-	target, err := filepath.Abs(filepath.Join(src, "a.txt"))
-	if err != nil {
+// TestLsPath checks PATH: a directory lists its entries, a file prints
+// its own line, a trailing slash changes nothing, and a path that the
+// snapshot does not hold is a usage error.
+func TestLsPath(t *testing.T) {
+	repo, src := initAndCommit(t)
+	ref := defaultRefName()
+	subLine := lsLine(t, src, "sub/b.txt", "file") + "\n"
+	for _, c := range []struct{ path, want string }{
+		{"sub", subLine},
+		{"sub/", subLine},
+		{"/sub", subLine},
+		{"sub/b.txt", subLine},
+		{"a.txt", lsLine(t, src, "a.txt", "file") + "\n"},
+	} {
+		code, out, errOut := runLs(t, repo, "ls", ref, c.path)
+		if code != 0 {
+			t.Fatalf("ls %s: exit %d: %s", c.path, code, errOut)
+		}
+		if out != c.want {
+			t.Fatalf("ls %s output:\n%q\nwant:\n%q", c.path, out, c.want)
+		}
+	}
+	for _, path := range []string{"nope", "a.txt/x", "sub/nope"} {
+		code, out, errOut := runLs(t, repo, "ls", ref, path)
+		if code != 2 || out != "" {
+			t.Fatalf("ls %s: exit %d, output %q; want 2 and no output", path, code, out)
+		}
+		if !strings.Contains(errOut, path+" is not in snapshot ") {
+			t.Fatalf("ls %s: standard error %q does not name the path", path, errOut)
+		}
+	}
+}
+
+// TestLsFieldsOfEachType checks the size of a symlink, the mode bits
+// above the permission bits, and the escape of special bytes in a path.
+func TestLsFieldsOfEachType(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-
-	oldNewWriter := newWriter
-	defer func() { newWriter = oldNewWriter }()
-	var calls int
-	newWriter = func(chunkPath, metaPath object.PathFunc) *object.Writer {
-		w := oldNewWriter(chunkPath, metaPath)
-		w.Stat = func(path string) (os.FileInfo, error) {
-			real, err := os.Lstat(path)
-			if err != nil {
-				return nil, err
-			}
-			if path != target {
-				return real, nil
-			}
-			calls++
-			return fakeStatInfo{FileInfo: real, size: real.Size() + int64(calls)}, nil
-		}
-		return w
-	}
-
-	code, out := runCmd(t, "--repo="+repo, "commit", src)
-	if code != 1 {
-		t.Fatalf("commit: exit %d, want 1: %s", code, out)
-	}
-	snapID := snapshotIDFromCommit(t, out)
-
-	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-
-	code, out = runCmd(t, "ls", "--recursive", treeDir, snapID)
-	if code != 0 {
-		t.Fatalf("ls --recursive: exit %d: %s", code, out)
-	}
-	unstableLine := "!" + rootPath(src) + "/a.txt"
-	if !strings.Contains(out, unstableLine) {
-		t.Fatalf("ls --recursive output %q missing the unstable line %q", out, unstableLine)
-	}
-	for line := range strings.SplitSeq(strings.TrimRight(out, "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		wantUnstable := line == unstableLine
-		if (line[0] == '!') != wantUnstable {
-			t.Fatalf("ls line %q has the wrong marker; want unstable only for %q", line, unstableLine)
+	names := []string{"tab\tname", "new\nline", "bad\xffutf8", "del\x7f", "ok-é"}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(src, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
-
-// TestLsAcceptsARefName checks that ls resolves a ref name the same way
-// it resolves a snapshot id text form.
-func TestLsAcceptsARefName(t *testing.T) {
-	treeDir, _, src := lsFixture(t)
-	code, out := runCmd(t, "ls", treeDir, defaultRefName())
-	if code != 0 {
-		t.Fatalf("ls by ref name: exit %d: %s", code, out)
-	}
-	want := " " + rootPath(src) + "/\n"
-	if out != want {
-		t.Fatalf("ls by ref name output = %q, want %q", out, want)
-	}
-}
-
-// TestLsSnapshotIDPrefixNamesItself checks that an argument that is 8
-// or more hex characters, and resolves as neither a full snapshot id
-// nor a ref name, is reported as a likely truncated snapshot id,
-// instead of the generic ref-not-found wording.
-func TestLsSnapshotIDPrefixNamesItself(t *testing.T) {
-	treeDir, _, _ := lsFixture(t)
-	code, out := runCmd(t, "ls", treeDir, "1220a053")
-	if code != 2 {
-		t.Fatalf("ls with a snapshot id prefix: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "looks like a snapshot id prefix") {
-		t.Fatalf("ls with a snapshot id prefix output %q missing the prefix hint", out)
-	}
-}
-
-// TestLsExitsThreeOnAMissingDisc packs a multi-disc sequence, then runs
-// ls with one disc root left off the command line, and asserts exit 3
-// and the same missing-disc message restore uses.
-func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeMultiDiscFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	code, out := runCmd(t, "--repo="+repo, "commit", src)
-	if code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	snapID := snapshotIDFromCommit(t, out)
-
-	discsDir := filepath.Join(work, "discs")
-	// disc1's root is never passed to ls, so it is left off.
-	var discRoots []string
-	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
-	for i, cap := range capacities {
-		treeDir := filepath.Join(discsDir, "disc"+strconv.Itoa(i))
-		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
-			t.Fatalf("pack %d: exit %d: %s", i, code, out)
-		}
-		if i != 1 {
-			discRoots = append(discRoots, treeDir)
-		}
-	}
-
-	args := append([]string{"ls", "--recursive"}, discRoots...)
-	args = append(args, snapID)
-	code, out = runCmd(t, args...)
-	if code != 1 {
-		t.Fatalf("ls: exit %d, want 1: %s", code, out)
-	}
-	if !strings.Contains(out, "missing disc") {
-		t.Fatalf("ls output %q does not name a missing disc", out)
-	}
-}
-
-// TestLsFromCatalogWithNoDisc packs a repository, then runs ls with no
-// disc given at all: it must resolve the snapshot and list its root
-// entries from the catalog pack left behind, the same as the
-// disc-based listing.
-func TestLsFromCatalogWithNoDisc(t *testing.T) {
-	treeDir, snapID, src := lsFixture(t)
-
-	repo := repoDirFromTreeDir(t, treeDir)
-	discCode, discOut := runCmd(t, "ls", treeDir, snapID)
-	if discCode != 0 {
-		t.Fatalf("ls (disc): exit %d: %s", discCode, discOut)
-	}
-
-	catalogCode, catalogOut := runCmd(t, "--repo="+repo, "ls", snapID)
-	if catalogCode != 0 {
-		t.Fatalf("ls (catalog): exit %d: %s", catalogCode, catalogOut)
-	}
-	if catalogOut != discOut {
-		t.Fatalf("ls from catalog = %q, want %q (same as disc)", catalogOut, discOut)
-	}
-	_ = src
-}
-
-// TestLsFromCatalogReportsPartialSnapshot builds a multi-disc
-// repository, wipes the catalog, then rebuilds it from only the last
-// disc: the snapshot's tree spans earlier discs too, so the catalog ends
-// up partial. ls with no disc given must exit 1 and name
-// recover as the fix.
-func TestLsFromCatalogReportsPartialSnapshot(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeMultiDiscFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	code, out := runCmd(t, "--repo="+repo, "commit", src)
-	if code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	snapID := snapshotIDFromCommit(t, out)
-
-	// Two small forced capacities split the commit across two runs, on
-	// two discs: the snapshot's tree needs both.
-	var discRoots []string
-	capacities := []string{packSectors(7_000_000), packSectors(7_000_000)}
-	for i, cap := range capacities {
-		treeDir := filepath.Join(work, "disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code == 2 {
-			t.Fatalf("pack %d: exit %d: %s", i, code, out)
-		}
-		discRoots = append(discRoots, treeDir)
-	}
-
-	catalogDir := repoCatalogDir(t, repo)
-	if err := os.RemoveAll(catalogDir); err != nil {
+	if err := os.Symlink("target-of-12", filepath.Join(src, "link")); err != nil {
 		t.Fatal(err)
 	}
-
-	lastDisc := discRoots[len(discRoots)-1]
-	addFakeMount(t, lastDisc, true)
-	if code, out := runCmd(t, "--repo="+repo, "recover", "--source="+src, "--disc="+lastDisc); code == 2 {
-		t.Fatalf("recover: exit %d: %s", code, out)
+	sticky := filepath.Join(src, "sticky")
+	if err := os.Mkdir(sticky, 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	code, out = runCmd(t, "--repo="+repo, "ls", "--recursive", snapID)
-	if code != 1 {
-		t.Fatalf("ls: exit %d, want 1: %s", code, out)
+	if err := os.Chmod(sticky, 0o755|os.ModeSticky); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(out, " is partial; run recover with more discs") {
-		t.Fatalf("ls output %q does not report a partial snapshot", out)
-	}
-}
-
-// TestLsAndLogAgreeOnAnEmptyCatalog checks that ls and log report a catalog
-// with no disc in it the same way: it is a failure at run time, exit 1,
-// for the listing form and for the one-snapshot form alike.
-func TestLsAndLogAgreeOnAnEmptyCatalog(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-
-	cases := [][]string{
-		{"--repo=" + repo, "ls", "latest"},
-		{"--repo=" + repo, "log", "latest"},
-		{"--repo=" + repo, "log"},
-	}
-	for _, args := range cases {
-		code, out := runCmd(t, args...)
-		if code != 1 {
-			t.Fatalf("%v: exit %d, want 1: %s", args, code, out)
-		}
-		if !strings.Contains(out, "no disc is in the catalog yet") {
-			t.Fatalf("%v output %q does not name the empty catalog", args, out)
-		}
-	}
-}
-
-// TestLsNonexistentPathReportsNoSuchDiscRoot checks that a nonexistent
-// path given as ls's first positional is reported as a missing disc
-// root, not resolved as a SNAPSHOT arg through catalog mode.
-func TestLsNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "no-such-disc")
-	code, out := runCmd(t, "ls", missing, "SOMESNAP")
-	if code != 2 {
-		t.Fatalf("ls: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "no such disc root: "+missing) {
-		t.Fatalf("ls output %q does not name the missing disc root", out)
-	}
-}
-
-// TestLsAndLogBeforeTheFirstPack checks that log and ls -r resolve a
-// just-committed ref and its trees from the staging store, before any
-// pack has filled the catalog.
-func TestLsAndLogBeforeTheFirstPack(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	code, out := runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-21", src)
-	if code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	snapID := snapshotIDFromCommit(t, out)
 
-	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 {
-		t.Fatalf("log: exit %d, want 0: %s", code, out)
-	} else if !strings.Contains(out, snapID) || !strings.Contains(out, "2026-09-21") {
-		t.Fatalf("log output %q, want the staged snapshot and its ref", out)
-	}
-
-	if code, out := runCmd(t, "--repo="+repo, "ls", "--recursive", "2026-09-21"); code != 0 {
-		t.Fatalf("ls -r: exit %d, want 0: %s", code, out)
-	} else if !strings.Contains(out, "a.txt") || !strings.Contains(out, "b.txt") {
-		t.Fatalf("ls -r output %q, want the committed files", out)
-	}
-
-	// A second commit with a pack in between: the first snapshot comes
-	// from the catalog, the second one from staging, and log lists both.
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-	if err := os.WriteFile(filepath.Join(src, "c.txt"), []byte("content of c"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	code, out = runCmd(t, "--repo="+repo, "commit", "--ref=2026-09-22", src)
+	code, out, errOut := runLs(t, repo, "ls", defaultRefName())
 	if code != 0 {
-		t.Fatalf("commit 2: exit %d: %s", code, out)
+		t.Fatalf("ls: exit %d: %s", code, errOut)
 	}
-	snapID2 := snapshotIDFromCommit(t, out)
-
-	code, out = runCmd(t, "--repo="+repo, "log")
-	if code != 0 {
-		t.Fatalf("log (after the second commit): exit %d: %s", code, out)
+	paths := map[string][]string{}
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) != 5 {
+			t.Fatalf("ls line %q has %d fields, want 5", line, len(f))
+		}
+		paths[f[4]] = f
 	}
-	if !strings.Contains(out, snapID) || !strings.Contains(out, snapID2) {
-		t.Fatalf("log output %q, want both snapshots", out)
+	for _, p := range []string{`tab\tname`, `new\nline`, `bad\xffutf8`, `del\x7f`, "ok-é"} {
+		if _, ok := paths[p]; !ok {
+			t.Errorf("ls output has no path %q:\n%s", p, out)
+		}
 	}
-	if code, out := runCmd(t, "--repo="+repo, "ls", "--recursive", "2026-09-22"); code != 0 {
-		t.Fatalf("ls -r (second): exit %d: %s", code, out)
-	} else if !strings.Contains(out, "c.txt") {
-		t.Fatalf("ls -r output %q, want the new file", out)
+	if f := paths["link"]; f == nil || f[0] != "0777" || f[1] != "symlink" || f[2] != "12" {
+		t.Errorf("symlink line = %q, want mode 0777, type symlink, size 12", f)
+	}
+	if f := paths["sticky"]; f == nil || f[0] != "1755" || f[1] != "dir" || f[2] != "0" {
+		t.Errorf("sticky line = %q, want mode 1755, type dir, size 0", f)
 	}
 }
 
-// TestLsFlagAfterPositionalReportedClearly asserts that a flag placed
-// after ls's positional arguments is reported as a usage error naming
-// the flag, instead of being read back as a PATH.
-func TestLsFlagAfterPositionalReportedClearly(t *testing.T) {
-	treeDir, snapID, _ := lsFixture(t)
-
-	code, out := runCmd(t, "ls", treeDir, snapID, "--recursive")
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
-	}
-	want := "flags must come before positional arguments: --recursive"
-	if !strings.Contains(out, want) {
-		t.Fatalf("output = %q, want it to contain %q", out, want)
-	}
-	if strings.Contains(out, "matches no entry") {
-		t.Fatalf("output = %q, want no \"matches no entry\" misreading", out)
+// TestEscapeField checks the escape of each byte class in an ls path
+// and a log field.
+func TestEscapeField(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"plain/path é", "plain/path é"},
+		{"a\\b", `a\\b`},
+		{"a\tb", `a\tb`},
+		{"a\nb", `a\nb`},
+		{"a\rb\x00c\x1f", `a\x0db\x00c\x1f`},
+		{"del\x7f", `del\x7f`},
+		{"bad\xff\xc3", `bad\xff\xc3`},
+		{"\xef\xbf\xbd", "\xef\xbf\xbd"},
+	} {
+		if got := escapeField(c.in); got != c.want {
+			t.Errorf("escapeField(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
-// TestLsUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
-// ls: each case exits 2, never 0 or 1.
+// TestLsSnapshotArgument checks the forms of SNAPSHOT: a ref name, the
+// full id, and a digest prefix give the same lines. A value that matches
+// no snapshot is a usage error, also in an empty repository.
+func TestLsSnapshotArgument(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	_, want, _ := runLs(t, repo, "ls", defaultRefName())
+	id := firstLogID(t, repo)
+	for _, arg := range []string{id, strings.ToUpper(id[:8])} {
+		code, out, errOut := runLs(t, repo, "ls", arg)
+		if code != 0 || out != want {
+			t.Fatalf("ls %s: exit %d, output %q, stderr %q; want %q", arg, code, out, errOut, want)
+		}
+	}
+	full := fullSnapshotID(t, repo)
+	if code, out, errOut := runLs(t, repo, "ls", full); code != 0 || out != want {
+		t.Fatalf("ls FULL-ID: exit %d, output %q, stderr %q", code, out, errOut)
+	}
+
+	code, out, errOut := runLs(t, repo, "ls", "no-such-ref")
+	if code != 2 || out != "" || !strings.Contains(errOut, "no snapshot matches no-such-ref") {
+		t.Fatalf("ls no-such-ref: exit %d, output %q, stderr %q", code, out, errOut)
+	}
+
+	empty := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, empty, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	code, _, errOut = runLs(t, empty, "ls", "latest")
+	if code != 2 || !strings.Contains(errOut, "no snapshot matches latest") {
+		t.Fatalf("ls in an empty repository: exit %d, stderr %q", code, errOut)
+	}
+}
+
+// TestLsPartialSnapshot checks that a snapshot that the completeness
+// file marks partial, or whose tree the catalog does not hold, exits 1
+// and names recover.
+func TestLsPartialSnapshot(t *testing.T) {
+	t.Run("marked partial", func(t *testing.T) {
+		repo, _ := initAndCommit(t)
+		full := fullSnapshotID(t, repo)
+		if err := os.WriteFile(catalog.StatePath(repo), []byte(full+" partial\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut := runLs(t, repo, "ls", defaultRefName())
+		want := "noahsark: ls: snapshot " + full[len(full)-64:len(full)-52] + " is partial; run recover with more discs\n"
+		if code != 1 || out != "" || errOut != want {
+			t.Fatalf("ls: exit %d, output %q, stderr %q; want 1 and %q", code, out, errOut, want)
+		}
+	})
+	t.Run("tree not held", func(t *testing.T) {
+		repo, _ := initAndCommit(t)
+		removeTree(t, repo, "sub")
+		code, _, errOut := runLs(t, repo, "ls", "-R", defaultRefName())
+		if code != 1 || !strings.Contains(errOut, " is partial; run recover with more discs") {
+			t.Fatalf("ls -R: exit %d, stderr %q; want 1 and the partial line", code, errOut)
+		}
+	})
+}
+
+// TestLsKeepsTheRootLevelOfSeveralRoots gives the snapshot a second
+// source root. ls then prints the root level, each root as its path
+// without the leading slash, and PATH starts with a root path.
+func TestLsKeepsTheRootLevelOfSeveralRoots(t *testing.T) {
+	repo, src := initAndCommit(t)
+	const other = "/zz/other root"
+	addSourceRoot(t, repo, other)
+
+	code, out, errOut := runLs(t, repo, "ls", defaultRefName())
+	if code != 0 {
+		t.Fatalf("ls: exit %d: %s", code, errOut)
+	}
+	var paths []string
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
+		f := strings.Split(line, "\t")
+		if f[1] != "dir" {
+			t.Fatalf("root line %q is not a directory", line)
+		}
+		paths = append(paths, f[4])
+	}
+	want := []string{rootPath(src), strings.TrimPrefix(other, "/")}
+	if !slices.Equal(paths, want) {
+		t.Fatalf("root level paths = %q, want %q", paths, want)
+	}
+
+	code, out, errOut = runLs(t, repo, "ls", defaultRefName(), rootPath(src)+"/sub")
+	if code != 0 || !strings.HasSuffix(out, "\t"+rootPath(src)+"/sub/b.txt\n") {
+		t.Fatalf("ls ROOT/sub: exit %d, output %q, stderr %q", code, out, errOut)
+	}
+}
+
+// TestLsUsageErrorsExitTwo checks the usage errors of ls.
 func TestLsUsageErrorsExitTwo(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	for _, args := range [][]string{
+		{"ls"},
+		{"ls", "a", "b", "c"},
+		{"ls", "--long", defaultRefName()},
+		{"ls", defaultRefName(), "--recursive"},
+	} {
+		code, out, errOut := runLs(t, repo, args...)
+		if code != 2 || out != "" {
+			t.Fatalf("%q: exit %d, output %q, stderr %q; want 2", args, code, out, errOut)
+		}
+	}
+}
+
+// TestLsNoRepository checks that ls with no repository is a usage
+// error that names recover.
+func TestLsNoRepository(t *testing.T) {
+	code, out := runCmd(t, "ls", "latest")
+	if want := "noahsark: ls: no repository; run recover first, one time for each disc\n"; code != 2 || out != want {
+		t.Fatalf("ls with no repository: exit %d, output %q; want 2 and %q", code, out, want)
+	}
+}
+
+// TestLsAndLogChangeNoFile lists every file and directory of the work
+// tree, with its mode, size and modification time, before and after ls
+// and log. The two lists must be equal, also for a failure.
+func TestLsAndLogChangeNoFile(t *testing.T) {
+	commands := [][]string{
+		{"ls", "-R", "latest"},
+		{"log"},
+		{"log", "latest"},
+	}
+	check := func(t *testing.T, work, repo string) {
+		t.Helper()
+		for _, args := range commands {
+			before := treeSnapshot(t, work)
+			runCmd(t, append([]string{"--repo=" + repo}, args...)...)
+			after := treeSnapshot(t, work)
+			if !mapsEqual(before, after) {
+				t.Errorf("%q changed the tree:\nbefore %v\nafter  %v", args, before, after)
+			}
+		}
+	}
+	t.Run("empty repository", func(t *testing.T) {
+		work := t.TempDir()
+		repo := filepath.Join(work, "repo")
+		if code, out := runIn(t, repo, "init"); code != 0 {
+			t.Fatalf("init: exit %d: %s", code, out)
+		}
+		check(t, work, repo)
+	})
+	t.Run("no catalog directory", func(t *testing.T) {
+		work := t.TempDir()
+		repo := filepath.Join(work, "repo")
+		if code, out := runIn(t, repo, "init"); code != 0 {
+			t.Fatalf("init: exit %d: %s", code, out)
+		}
+		if err := os.RemoveAll(filepath.Join(repo, "catalog")); err != nil {
+			t.Fatal(err)
+		}
+		check(t, work, repo)
+	})
+	t.Run("committed", func(t *testing.T) {
+		repo := commitWithRef(t, "latest")
+		check(t, filepath.Dir(repo), repo)
+	})
+	t.Run("packed", func(t *testing.T) {
+		repo := commitWithRef(t, "latest")
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
+			t.Fatalf("pack: exit %d: %s", code, out)
+		}
+		check(t, filepath.Dir(repo), repo)
+	})
+	t.Run("partial", func(t *testing.T) {
+		repo := commitWithRef(t, "latest")
+		removeTree(t, repo, "sub")
+		check(t, filepath.Dir(repo), repo)
+	})
+}
+
+// mapsEqual reports whether two tree listings are equal.
+func mapsEqual(a, b map[string]treeEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
+// commitWithRef makes a repository with one commit that moves ref, and
+// returns the repository directory.
+func commitWithRef(t *testing.T, ref string) string {
+	t.Helper()
 	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{"missing SNAPSHOT", []string{"--repo=" + repo, "ls"}},
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref="+ref, src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			code, out := runCmd(t, c.args...)
-			if code != 2 {
-				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
+	return repo
+}
+
+// fullSnapshotID gives the full text id of the one snapshot of repo.
+func fullSnapshotID(t *testing.T, repo string) string {
+	t.Helper()
+	ids := snapshotIDs(t, repo)
+	if len(ids) != 1 {
+		t.Fatalf("repository holds %d snapshots, want 1", len(ids))
+	}
+	return ids[0].TextForm()
+}
+
+// snapshotIDs lists the snapshots of the catalog of repo.
+func snapshotIDs(t *testing.T, repo string) []object.ID {
+	t.Helper()
+	c, err := catalog.OpenReadOnly(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := c.ListSnapshots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+// rootTreeOf reads the root tree of the one snapshot of repo.
+func rootTreeOf(t *testing.T, repo string) (*catalog.Catalog, object.ID, *format.Tree) {
+	t.Helper()
+	c, err := catalog.OpenReadOnly(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := object.ParseID(fullSnapshotID(t, repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := c.ReadSnapshot(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID := object.ID(snap.RootTree)
+	root, err := c.ReadTree(rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, rootID, root
+}
+
+// removeTree deletes from the catalog the tree of the directory name
+// below the source root of the one snapshot of repo.
+func removeTree(t *testing.T, repo, name string) {
+	t.Helper()
+	c, _, root := rootTreeOf(t, repo)
+	top, err := c.ReadTree(object.ID(root.Entries[0].ContentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range top.Entries {
+		if string(e.Name) == name {
+			if err := os.Remove(c.MetaPath(format.ObjectKindTree, object.ID(e.ContentID))); err != nil {
+				t.Fatal(err)
 			}
-		})
+			return
+		}
+	}
+	t.Fatalf("no directory %s below the source root", name)
+}
+
+// addSourceRoot adds a second root entry, a copy of the first one with
+// the source root path path, to the root tree file of the one snapshot
+// of repo. The catalog reader does not check the content id, thus the
+// file keeps its name.
+func addSourceRoot(t *testing.T, repo, path string) {
+	t.Helper()
+	c, rootID, root := rootTreeOf(t, repo)
+	oldLen := uint64(root.EncodedLen())
+	extra := root.Entries[0]
+	extra.Name = []byte(format.EncodeRootName(path))
+	root.Entries = append(root.Entries, extra)
+	slices.SortFunc(root.Entries, func(a, b format.TreeEntry) int {
+		return bytes.Compare(append(slices.Clone(a.Name), '/'), append(slices.Clone(b.Name), '/'))
+	})
+	root.EntryCount = uint32(len(root.Entries))
+	grow := uint64(root.EncodedLen()) - oldLen
+	root.ObjectHeader.PayloadLen += grow
+	root.ObjectHeader.StoredLen += grow
+	buf := make([]byte, root.EncodedLen())
+	if _, err := root.Encode(buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.MetaPath(format.ObjectKindTree, rootID), buf, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

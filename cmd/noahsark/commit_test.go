@@ -45,14 +45,14 @@ func mustWriteCmd(t *testing.T, path, content string) {
 }
 
 // packAndLs packs repo's staged snapshot onto a disc, then runs
-// "ls --recursive" over it from the packed tree, and returns the output.
+// "ls --recursive" from the catalog, and returns the output.
 func packAndLs(t *testing.T, repo, snapID string) string {
 	t.Helper()
 	treeDir := filepath.Join(t.TempDir(), "tree")
 	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
-	code, out := runCmd(t, "ls", "--recursive", treeDir, snapID)
+	code, out := runCmd(t, "--repo="+repo, "ls", "--recursive", snapID)
 	if code != 0 {
 		t.Fatalf("ls: exit %d: %s", code, out)
 	}
@@ -382,10 +382,10 @@ func TestTwoCommitsOneDayMoveOneRefAndKeepBoth(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("log: exit %d: %s", code, logOut)
 	}
-	if !strings.Contains(logOut, first) {
+	if !strings.Contains(logOut, logID(t, first)) {
 		t.Fatalf("log output %q does not reach the older snapshot %s", logOut, first)
 	}
-	if !strings.Contains(logOut, second) {
+	if !strings.Contains(logOut, logID(t, second)) {
 		t.Fatalf("log output %q does not name the newer snapshot %s", logOut, second)
 	}
 }
