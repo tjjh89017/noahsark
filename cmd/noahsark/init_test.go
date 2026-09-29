@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,4 +127,106 @@ func TestInitUsageErrorsExitTwo(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInitWritesConfigLast makes the creation of state/ fail. init must
+// then leave no config.yaml: config.yaml makes the directory a
+// repository, and a later init must accept the directory again.
+func TestInitWritesConfigLast(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "state"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runIn(t, dir, "init")
+	if code != 1 {
+		t.Fatalf("init: exit %d, want 1: %s", code, out)
+	}
+	if isRepoDir(dir) {
+		t.Fatal("init wrote config.yaml before it created state/")
+	}
+	if err := os.Remove(filepath.Join(dir, "state")); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := runIn(t, dir, "init"); code != 0 {
+		t.Fatalf("init again: exit %d: %s", code, out)
+	}
+}
+
+// repoFileState gives the path, the mode, the size and the mtime of each
+// path below dir, for a check that a command changed no file.
+func repoFileState(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		out[path] = fmt.Sprintf("%v %d %d", info.Mode(), info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestCloneWithNoStateDirectory makes a repository as a git clone of a
+// repository with no commit gives it: config.yaml and .gitignore only.
+// status and log change no file. commit creates state/ and catalog/ and
+// works.
+func TestCloneWithNoStateDirectory(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	for _, name := range []string{"state", "catalog", "staging", "lock"} {
+		if err := os.RemoveAll(filepath.Join(repo, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := repoFileState(t, repo)
+	for _, args := range [][]string{{"status"}, {"log"}} {
+		code, out := runCmd(t, append([]string{"--repo=" + repo}, args...)...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, out)
+		}
+		if after := repoFileState(t, repo); !maps.Equal(before, after) {
+			t.Fatalf("%v changed the repository: before %v, after %v", args, before, after)
+		}
+	}
+
+	src := writeFixtureSource(t)
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	for _, name := range []string{"state", "catalog"} {
+		fi, err := os.Stat(filepath.Join(repo, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fi.IsDir() || fi.Mode().Perm() != 0o755&^currentUmask() {
+			t.Fatalf("%s: mode %v, want a directory with mode 0755", name, fi.Mode())
+		}
+	}
+	if code, out := runCmd(t, "--repo="+repo, "status"); code != 0 {
+		t.Fatalf("status after commit: exit %d: %s", code, out)
+	}
+}
+
+// currentUmask returns the umask of the process without a change of it.
+func currentUmask() os.FileMode {
+	dir, err := os.MkdirTemp("", "umask")
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	probe := filepath.Join(dir, "d")
+	if err := os.Mkdir(probe, 0o777); err != nil {
+		return 0
+	}
+	fi, err := os.Stat(probe)
+	if err != nil {
+		return 0
+	}
+	return 0o777 &^ fi.Mode().Perm()
 }

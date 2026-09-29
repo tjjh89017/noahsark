@@ -66,6 +66,11 @@ The `state/` directory holds these files:
 | `refs.txt` | The local refs ("Local refs"). |
 | `catalog-state.txt` | The completeness of each snapshot in the catalog ("Catalog layout"). |
 
+Git keeps no empty directory, thus a clone of a repository can lack
+`state/`, `catalog/` and `staging/`. `commit` creates each one that is
+absent, with mode 0755. `status`, `ls`, `log` and `restore` read a missing
+directory as empty, and change no file.
+
 The tracked part is permanent: the operator can keep it in a version control
 system. The ignored part holds only what `gc` frees, and the sequence mark.
 The tool never runs `git`. The operator must not use `git`, or any other tool,
@@ -222,6 +227,9 @@ the state of the item's disc, as `docs/states.md`, "Item states", defines.
 `<repo>/state/refs.txt` is a text file. Each line holds a ref name, one space,
 and a snapshot id in text form. `commit` replaces the line of the ref that it
 moves. `recover` writes the names that the REFS table of its disc carries.
+Each write of the file goes to a temporary file, which is synced, then
+renamed; the directory is synced after the rename. A crash thus leaves the
+old file or the new file.
 
 ### 3.3 Ledgers
 
@@ -476,8 +484,12 @@ The lock is advisory. It is not a security boundary.
 4. For each directory, bottom-up: write the tree object into `catalog/trees/`.
 5. Write the snapshot object, with the root tree, the time and the `-m`
    message, into `catalog/snapshots/`.
+   Each object file of steps 3 to 5 goes to a temporary file, which is
+   synced, then renamed. Then `commit` syncs each directory that got a new
+   name, one time.
 6. Record every new item in the state log as Staged. An item is a chunk, a
-   blob, a tree or a snapshot object.
+   blob, a tree or a snapshot object. Only an item that the snapshot reaches
+   gets a record.
 7. Mark the snapshot `complete` in `catalog-state.txt`.
 8. Move the ref in `refs.txt`.
 
@@ -499,7 +511,8 @@ scheduler and no daemon.
 
 | Rule | Behaviour |
 |---|---|
-| Source roots | One source root for each commit. It is opened read-only. |
+| Source roots | One source root for each commit. It is opened read-only. It must be a directory. A source root that is a symlink is refused with exit code 1: the message names the directory that the link points to, and the operator gives that directory. |
+| The repository and the staging store | Never walked, also when the source holds them. `commit` finds them by device and inode, not by path. It also leaves out the `pack --out` directory that a plan symlink in `staging/plans/` names. For each one it prints `excluded PATH: the repository`, `excluded PATH: the staging store` or `excluded PATH: the disc root of a pack --out`. The exit code does not change. |
 | Symlinks | Never followed. The link itself is stored. |
 | FIFO, socket, device node | Recorded by type, with no content. `commit` warns about each one. |
 | Unreadable or vanished file | Skipped and reported. The snapshot is still written. Exit code 1. |
@@ -517,7 +530,10 @@ more than one source root, they keep the root level.
 or the mtime differs, it reads the file again, one time. When the file still
 differs, `commit` stores the content that it read last, sets the `UNSTABLE`
 flag of FORMAT.md's "Entry flags" on the entry, and prints `unstable PATH
-branch=flagged`. The exit code is then 1. This detection always runs. A
+branch=flagged`. The exit code is then 1. A read that `commit` does not
+keep, and the read of a file that fails part way, give no item. `commit`
+removes each chunk file that such a read wrote, unless the snapshot reaches
+the chunk or the state log has a record for it. This detection always runs. A
 read-only filesystem snapshot (btrfs, LVM or ZFS) as the source removes
 in-flight changes.
 
@@ -1460,15 +1476,17 @@ Each line takes the global options before the command name.
 
 **`init`** makes the current directory a repository. It writes `config.yaml`
 with a new `repo.uuid`, `staging.dir: staging`, `sources.root` from
-`--source`, and `pack.device: /dev/sr0`. It writes `.gitignore` and creates
-`state/`, `catalog/` and `staging/`. It prints `initialized repository PATH`,
+`--source`, and `pack.device: /dev/sr0`. It creates `state/`, `catalog/` and
+`staging/`, writes `.gitignore`, and writes `config.yaml` last. It syncs each
+of them. A crash before `config.yaml` thus leaves a directory that is not a
+repository, and `init` runs again. It prints `initialized repository PATH`,
 `source: PATH` (only when `--source` is given), `device: DEV`, and `next: noahsark status`. To use another device, the operator edits `pack.device` in
 `config.yaml`. `init` exits with code 2 when the directory already is a
 repository. Do not run `init` to recover a lost repository.
 
 **`commit`** prints `snapshot ID`, `ref NAME -> ID`, `new items: N, existing
-items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped or
-special path, `staged: N items, B bytes`, and `next: noahsark status`. `ID`
+items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped,
+special or left-out path ("Source policy"), `staged: N items, B bytes`, and `next: noahsark status`. `ID`
 is the full text form of the snapshot id ("Refs"). `B` is
 the sum of the stored file sizes of the Staged items: the chunk files in
 `staging/chunks/` and the metadata object files in `catalog/`. Exit: 1

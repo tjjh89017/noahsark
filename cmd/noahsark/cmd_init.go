@@ -5,7 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/tjjh89017/noahsark/internal/object"
 )
 
 func init() {
@@ -78,6 +81,13 @@ func (o *initOptions) run(e *env, args []string) int {
 		return 1
 	}
 
+	// config.yaml makes the directory a repository, thus init writes it
+	// last. A crash before it leaves a directory that init accepts again.
+	layout := layoutOf(absRepoPath, repoConfig{StagingDir: filepath.Join(absRepoPath, defaultStagingDir)})
+	if err := makeRepoLayout(layout); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
+		return 1
+	}
 	if err := writeConfig(configPath(absRepoPath), newConfigFile(repoUUID, absSourcePath)); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return 1
@@ -86,10 +96,6 @@ func (o *initOptions) run(e *env, args []string) int {
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
 		return configExitCode(err)
-	}
-	if err := makeRepoLayout(layoutOf(absRepoPath, cfg)); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: init:", err)
-		return 1
 	}
 
 	_, _ = fmt.Fprintf(stdout, "initialized repository %s\n", absRepoPath)
@@ -106,16 +112,55 @@ func (o *initOptions) run(e *env, args []string) int {
 // recover call it.
 func makeRepoLayout(l repoLayout) error {
 	for _, dir := range []string{l.stateDir(), l.catalogDir(), l.chunksDir(), l.plansDir()} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := mkdirDurable(dir); err != nil {
 			return err
 		}
 	}
 	return ensureGitignore(l.gitignoreFile())
 }
 
+// ensureRepoDirs creates state/ and catalog/ when they are absent. Git
+// keeps no empty directory, thus a clone of a repository with no commit
+// holds neither. A command that writes them calls it before the first
+// write.
+func ensureRepoDirs(l repoLayout) error {
+	for _, dir := range []string{l.stateDir(), l.catalogDir()} {
+		if err := mkdirDurable(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mkdirDurable creates dir and each missing parent of it with mode 0755,
+// and syncs the parent of each directory that it creates.
+func mkdirDurable(dir string) error {
+	fi, err := os.Stat(dir)
+	if err == nil {
+		if !fi.IsDir() {
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		if err := mkdirDurable(parent); err != nil {
+			return err
+		}
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+		return err
+	}
+	return object.SyncDir(parent)
+}
+
 // ensureGitignore writes the file at path with the lines of
 // gitignoreLines. It never overwrites a file that exists: it appends
-// only each line that the file lacks.
+// only each line that the file lacks. It syncs the file, and the
+// directory when it created the file.
 func ensureGitignore(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -143,9 +188,15 @@ func ensureGitignore(path string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(add.String()); err != nil {
-		_ = f.Close()
+	_, err = f.WriteString(add.String())
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil || len(data) > 0 {
 		return err
 	}
-	return f.Close()
+	return object.SyncDir(filepath.Dir(path))
 }

@@ -159,7 +159,9 @@ Commit as often as you want. A later commit stages only new data. Pack
 when the staged bytes come near the size of one disc, or at a fixed
 interval, for example one month. To leave paths out, give
 `--exclude=PATTERN`, or put the patterns in a `.noahsarkignore` file in
-the source root.
+the source root. When the repository is inside the source, for example
+with the source `$HOME`, `commit` leaves the repository and the staging
+store out by itself and prints one `excluded` line for each.
 
 ### Run status, and paste its block
 

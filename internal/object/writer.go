@@ -52,9 +52,9 @@ type Summary struct {
 	// Skipped lists every path the writer could not commit: it vanished
 	// between being listed and being opened, or an open, read or
 	// readdir error blocked it (for example EACCES or EIO). The commit
-	// continues without it. Any chunk already staged for a skipped
-	// file's content stays in staging as an orphan; gc reclaims it like
-	// any other object nothing references.
+	// continues without it. Commit removes each chunk file that the
+	// dropped read wrote, unless the snapshot reaches the chunk or
+	// HasRecord knows it.
 	Skipped []SkippedPath
 	// Special lists every FIFO, socket and device node the commit
 	// recorded in a tree. The tree entry keeps the name, the kind and
@@ -66,7 +66,9 @@ type Summary struct {
 	// tree reaches, whether or not the writer actually staged its file.
 	// A caller that needs the commit's full object graph must read it
 	// here rather than walking the graph back off disk: a chunk that
-	// OnDisc reported as already on a disc gets no chunk file.
+	// OnDisc reported as already on a disc gets no chunk file. A read
+	// that the writer dropped, of an unstable file or of a file that
+	// failed, adds no id.
 	Reachable []ID
 	// Excluded counts every path an exclude pattern kept out of the
 	// tree: a file, or a directory whose contents were never walked.
@@ -76,6 +78,16 @@ type Summary struct {
 	// from the source root's. Each one is recorded as an empty
 	// directory in the tree.
 	MountPoints []string
+	// OwnDirs lists every directory of the source that is one of
+	// Writer.OwnDirs. The tree does not hold it. Path is relative to the
+	// source root.
+	OwnDirs []OwnDir
+}
+
+// OwnDir names a directory that commit never walks, and what it is.
+type OwnDir struct {
+	Path string
+	What string
 }
 
 // UnstablePath names one path the in-flight change detection flagged, and
@@ -179,11 +191,55 @@ type Writer struct {
 	// always written: MetaPath names the permanent catalog.
 	OnDisc func(id ID) bool
 
+	// HasRecord reports whether the state log holds a record for id, in
+	// any state. At the end of Commit, the writer removes each chunk file
+	// that a dropped read wrote, unless the snapshot reaches the chunk or
+	// HasRecord reports true. A nil HasRecord knows no id.
+	HasRecord func(id ID) bool
+
+	// OwnDirs names the directories that the walk leaves out: the
+	// repository, the staging store, and each pack output directory.
+	// The walk compares each directory of the source with them by device
+	// and inode, not by path text. A path that does not exist is ignored.
+	OwnDirs []OwnDir
+
+	// SyncDir syncs one directory. Commit calls it one time for each
+	// directory that got a new name, before it returns. Defaults to
+	// SyncDir.
+	SyncDir func(dir string) error
+
 	reachable  map[ID]uint64
+	dropped    map[ID]string
+	knownDirs  map[string]bool
+	dirtyDirs  map[string]bool
+	ownInfos   []ownInfo
 	rootAbs    string
 	rootDev    uint64
 	rootDevOK  bool
 	ownerNames *nameCache
+}
+
+// ownInfo is the stat of one directory of Writer.OwnDirs.
+type ownInfo struct {
+	info os.FileInfo
+	what string
+}
+
+// ownDirErr tells commitDir that a child directory is one of
+// Writer.OwnDirs.
+type ownDirErr struct {
+	what string
+}
+
+func (e *ownDirErr) Error() string { return e.what }
+
+// chunkRead is one chunk that one read of a file gave. path is the chunk
+// file when the read wrote a new one, else "".
+type chunkRead struct {
+	id    ID
+	size  uint64
+	isNew bool
+	path  string
 }
 
 // NewWriter returns a Writer that writes chunk objects to the paths
@@ -201,12 +257,14 @@ func NewWriter(chunkPath, metaPath PathFunc) *Writer {
 		Stat:            os.Lstat,
 		Open:            func(path string) (io.ReadCloser, error) { return os.Open(path) },
 		DeviceID:        deviceID,
+		SyncDir:         SyncDir,
 	}
 }
 
 // Commit walks sourceDir, writes every chunk, blob and tree object it
 // needs, writes one snapshot object over the whole tree, and returns the
-// snapshot id and the object counts.
+// snapshot id and the object counts. Each object file and each directory
+// that got a new name is synced before Commit returns.
 func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	absRoot, err := filepath.Abs(sourceDir)
 	if err != nil {
@@ -216,11 +274,22 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	if err != nil {
 		return ID{}, Summary{}, err
 	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return ID{}, Summary{}, symlinkRootError(absRoot)
+	}
 	if !rootInfo.IsDir() {
 		return ID{}, Summary{}, fmt.Errorf("object: source %s is not a directory", absRoot)
 	}
+	ownInfos, err := statOwnDirs(w.OwnDirs)
+	if err != nil {
+		return ID{}, Summary{}, err
+	}
 
+	w.ownInfos = ownInfos
 	w.reachable = make(map[ID]uint64)
+	w.dropped = make(map[ID]string)
+	w.knownDirs = make(map[string]bool)
+	w.dirtyDirs = make(map[string]bool)
 	w.ownerNames = newNameCache()
 	w.rootAbs = absRoot
 	w.rootDev, w.rootDevOK = 0, false
@@ -264,6 +333,12 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 
 	snapID, err := w.writeSnapshot(rootTreeID, &sum)
 	if err != nil {
+		return ID{}, Summary{}, err
+	}
+	if err := w.removeDropped(); err != nil {
+		return ID{}, Summary{}, err
+	}
+	if err := w.syncDirtyDirs(); err != nil {
 		return ID{}, Summary{}, err
 	}
 	sum.Reachable = make([]ID, 0, len(w.reachable))
@@ -316,6 +391,10 @@ func (w *Writer) commitDir(dirPath string, sum *Summary) (ID, error) {
 			continue
 		}
 		te, err := w.commitEntry(childPath, de.Name(), sum)
+		if own, ok := errors.AsType[*ownDirErr](err); ok {
+			sum.OwnDirs = append(sum.OwnDirs, OwnDir{Path: w.relPath(childPath), What: own.what})
+			continue
+		}
 		if se, ok := asSkip(err); ok {
 			sum.Skipped = append(sum.Skipped, SkippedPath{Path: w.relPath(childPath), Reason: se.reason})
 			continue
@@ -366,6 +445,9 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 	mode := info.Mode()
 	switch {
 	case mode.IsDir():
+		if what := w.ownDirOf(info); what != "" {
+			return te, &ownDirErr{what: what}
+		}
 		te.EntryType = format.EntryTypeDirectory
 		if w.rootDevOK && w.crossesMount(info) {
 			sum.MountPoints = append(sum.MountPoints, w.relPath(path))
@@ -432,7 +514,8 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 // differs, the writer keeps the last read content and reports it
 // unstable. Detection never changes the chunk ids a stable file produces,
 // since a stable file always takes the no-difference return before any
-// retry runs.
+// retry runs. Only the read that the writer keeps adds its chunks to the
+// snapshot and writes a blob; a read that it drops adds nothing.
 func (w *Writer) commitFile(path string, before os.FileInfo, sum *Summary) (id ID, size int64, unstable bool, err error) {
 	maxRetries := 0
 	if w.RestatAfterRead {
@@ -440,48 +523,52 @@ func (w *Writer) commitFile(path string, before os.FileInfo, sum *Summary) (id I
 	}
 
 	for attempt := 0; ; attempt++ {
-		id, size, err = w.readAndChunk(path, sum)
+		entries, n, chunks, err := w.readAndChunk(path)
 		if err != nil {
+			w.drop(chunks)
 			return ID{}, 0, false, err
 		}
-		if !w.RestatAfterRead {
-			return id, size, false, nil
+		changed := false
+		var after os.FileInfo
+		var statErr error
+		if w.RestatAfterRead {
+			after, statErr = w.Stat(path)
+			changed = statErr != nil || statDiffers(before, after)
 		}
-
-		after, statErr := w.Stat(path)
-		changed := statErr != nil || statDiffers(before, after)
-		if !changed {
-			return id, size, false, nil
+		if !changed || attempt >= maxRetries {
+			w.keep(chunks, sum)
+			id, err := w.writeBlob(entries, n, sum)
+			if err != nil {
+				return ID{}, 0, false, err
+			}
+			return id, int64(n), changed, nil
 		}
-		if attempt >= maxRetries {
-			return id, size, true, nil
+		w.drop(chunks)
+		// A file that is gone between reads leaves nothing to restat
+		// against: the next read keeps the same baseline.
+		if statErr == nil {
+			before = after
 		}
-		if statErr != nil {
-			// The file is gone between reads; nothing left to restat
-			// against. Keep retrying the read itself against the same
-			// baseline until the retry budget runs out.
-			continue
-		}
-		before = after
 	}
 }
 
-// readAndChunk chunks path, writes every new chunk and one blob over
-// their ids, and returns the blob id and the file's size. An open error,
+// readAndChunk chunks path, writes every new chunk, and returns the blob
+// entries, the file's size and the chunks of this read. An open error,
 // or a read error partway through the file (for example a file that
 // vanished after its caller opened it, or an EIO mid-read), is reported
 // as a skipErr: the caller drops the whole entry rather than staging a
-// blob over truncated content. Any chunk already written to staging
-// before the failure stays there as an orphan.
-func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
+// blob over truncated content. With an error, the chunks written before
+// it come back too, thus the caller can drop them.
+func (w *Writer) readAndChunk(path string) ([]format.BlobEntry, uint64, []chunkRead, error) {
 	f, err := w.Open(path)
 	if err != nil {
-		return ID{}, 0, &skipErr{reason: err.Error()}
+		return nil, 0, nil, &skipErr{reason: err.Error()}
 	}
 	defer func() { _ = f.Close() }()
 
 	ck := chunker.New(f, w.Profile)
 	var entries []format.BlobEntry
+	var chunks []chunkRead
 	var offset uint64
 	for {
 		chunk, err := ck.Next()
@@ -489,33 +576,74 @@ func (w *Writer) readAndChunk(path string, sum *Summary) (ID, int64, error) {
 			break
 		}
 		if err != nil {
-			return ID{}, 0, &skipErr{reason: err.Error()}
+			return nil, 0, chunks, &skipErr{reason: err.Error()}
 		}
-		id, err := w.writeChunk(chunk, sum)
+		cr, err := w.writeChunk(chunk)
 		if err != nil {
-			return ID{}, 0, err
+			return nil, 0, chunks, err
 		}
+		chunks = append(chunks, cr)
 		entries = append(entries, format.BlobEntry{
-			ContentID: id,
+			ContentID: cr.id,
 			Length:    uint64(len(chunk)),
 		})
 		offset += uint64(len(chunk))
 		w.Progress.Add(int64(len(chunk)))
 	}
+	return entries, offset, chunks, nil
+}
 
-	blobID, err := w.writeBlob(entries, offset, sum)
-	return blobID, int64(offset), err
+// keep adds the chunks of a read that the writer keeps to the snapshot,
+// and counts them. A chunk file that a dropped read wrote new counts as
+// new here, and the file stays.
+func (w *Writer) keep(chunks []chunkRead, sum *Summary) {
+	for _, c := range chunks {
+		isNew := c.isNew
+		if _, ok := w.dropped[c.id]; ok {
+			isNew = true
+			delete(w.dropped, c.id)
+		}
+		w.recordReachable(c.id, c.size)
+		w.countObject(sum, c.id, isNew)
+	}
+}
+
+// drop notes each chunk file that a dropped read wrote new, for
+// removeDropped.
+func (w *Writer) drop(chunks []chunkRead) {
+	for _, c := range chunks {
+		if c.isNew {
+			w.dropped[c.id] = c.path
+		}
+	}
+}
+
+// removeDropped removes each chunk file that a dropped read wrote, when
+// the snapshot does not reach the chunk and HasRecord does not know it.
+func (w *Writer) removeDropped() error {
+	for id, path := range w.dropped {
+		if _, ok := w.reachable[id]; ok {
+			continue
+		}
+		if w.HasRecord != nil && w.HasRecord(id) {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeChunk writes one chunk object for payload, applying the
-// minimum-gain compression rule, and returns its content id.
-func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
+// minimum-gain compression rule. It does not add the chunk to the
+// snapshot: keep does that for the read that the writer keeps.
+func (w *Writer) writeChunk(payload []byte) (chunkRead, error) {
 	id := ComputeID(format.ObjectKindChunk, payload)
-	w.recordReachable(id, uint64(len(payload)))
+	cr := chunkRead{id: id, size: uint64(len(payload))}
 
 	if w.OnDisc != nil && w.OnDisc(id) {
-		w.countObject(sum, id, false)
-		return id, nil
+		return cr, nil
 	}
 
 	stored, code, storedLen := Compress(payload)
@@ -532,14 +660,17 @@ func (w *Writer) writeChunk(payload []byte, sum *Summary) (ID, error) {
 	}
 	buf := make([]byte, c.EncodedLen())
 	if _, err := c.Encode(buf); err != nil {
-		return ID{}, err
+		return chunkRead{}, err
 	}
-	isNew, err := writeObjectFile(w.ChunkPath(format.ObjectKindChunk, id), buf)
+	path := w.ChunkPath(format.ObjectKindChunk, id)
+	isNew, err := w.writeObjectFile(path, buf)
 	if err != nil {
-		return ID{}, err
+		return chunkRead{}, err
 	}
-	w.countObject(sum, id, isNew)
-	return id, nil
+	if isNew {
+		cr.isNew, cr.path = true, path
+	}
+	return cr, nil
 }
 
 // writeBlob writes one blob object over entries and returns its content
@@ -566,7 +697,7 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	if _, err := b.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeMetaObjectFile(w.MetaPath(format.ObjectKindBlob, id), buf)
+	isNew, err := w.writeMetaObjectFile(w.MetaPath(format.ObjectKindBlob, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -597,7 +728,7 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	if _, err := t.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeMetaObjectFile(w.MetaPath(format.ObjectKindTree, id), buf)
+	isNew, err := w.writeMetaObjectFile(w.MetaPath(format.ObjectKindTree, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -638,7 +769,7 @@ func (w *Writer) writeSnapshot(rootTreeID ID, sum *Summary) (ID, error) {
 	if _, err := s.Encode(buf); err != nil {
 		return ID{}, err
 	}
-	isNew, err := writeMetaObjectFile(w.MetaPath(format.ObjectKindSnapshot, id), buf)
+	isNew, err := w.writeMetaObjectFile(w.MetaPath(format.ObjectKindSnapshot, id), buf)
 	if err != nil {
 		return ID{}, err
 	}
@@ -683,7 +814,7 @@ func commonHeader(kind format.Magic, headerLen int) format.CommonHeader {
 // the real guard against a corrupt staging file. A file that exists
 // under the right name but a different size (for example truncated by a
 // prior crash) is rewritten through the same temp-file-and-rename path.
-func writeObjectFile(path string, data []byte) (isNew bool, err error) {
+func (w *Writer) writeObjectFile(path string, data []byte) (isNew bool, err error) {
 	if fi, statErr := os.Stat(path); statErr == nil {
 		if fi.Size() == int64(len(data)) {
 			return false, nil
@@ -691,7 +822,7 @@ func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 	} else if !os.IsNotExist(statErr) {
 		return false, statErr
 	}
-	return true, replaceObjectFile(path, data)
+	return true, w.replaceObjectFile(path, data)
 }
 
 // writeMetaObjectFile writes a snapshot, tree or blob object to path in
@@ -699,45 +830,118 @@ func writeObjectFile(path string, data []byte) (isNew bool, err error) {
 // counts only when its bytes are data. Each read of the catalog checks
 // the object against its id, thus a damaged file with the size of data
 // must be replaced here. isNew is true when path did not exist.
-func writeMetaObjectFile(path string, data []byte) (isNew bool, err error) {
+func (w *Writer) writeMetaObjectFile(path string, data []byte) (isNew bool, err error) {
 	existing, err := os.ReadFile(path)
 	switch {
 	case err == nil && bytes.Equal(existing, data):
 		return false, nil
 	case err == nil:
-		return false, replaceObjectFile(path, data)
+		return false, w.replaceObjectFile(path, data)
 	case os.IsNotExist(err):
-		return true, replaceObjectFile(path, data)
+		return true, w.replaceObjectFile(path, data)
 	}
 	return false, err
 }
 
-// replaceObjectFile writes data to path through a temp file and a
-// rename, so a crash leaves no partial object.
-func replaceObjectFile(path string, data []byte) error {
+// replaceObjectFile writes data to path through a temp file, a sync and
+// a rename, so a crash leaves no partial object. It notes the directory
+// of path for syncDirtyDirs, which makes the rename durable.
+func (w *Writer) replaceObjectFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := w.ensureDir(dir); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
+	if err := writeSyncRename(path, data, 0); err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
+	w.dirtyDirs[dir] = true
+	return nil
+}
+
+// ensureDir creates dir and each missing parent of it. It notes the
+// parent of each directory that it creates for syncDirtyDirs.
+func (w *Writer) ensureDir(dir string) error {
+	if w.knownDirs[dir] {
+		return nil
+	}
+	fi, err := os.Stat(dir)
+	switch {
+	case err == nil && !fi.IsDir():
+		return fmt.Errorf("object: %s is not a directory", dir)
+	case os.IsNotExist(err):
+		parent := filepath.Dir(dir)
+		if parent != dir {
+			if err := w.ensureDir(parent); err != nil {
+				return err
+			}
+		}
+		if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		w.dirtyDirs[parent] = true
+	case err != nil:
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
+	w.knownDirs[dir] = true
+	return nil
+}
+
+// syncDirtyDirs syncs each directory that got a new name during this
+// commit, one time.
+func (w *Writer) syncDirtyDirs() error {
+	syncDir := w.SyncDir
+	if syncDir == nil {
+		syncDir = SyncDir
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
+	dirs := make([]string, 0, len(w.dirtyDirs))
+	for dir := range w.dirtyDirs {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		if err := syncDir(dir); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// statOwnDirs stats each directory of dirs, and follows a symlink. A
+// directory that does not exist is left out.
+func statOwnDirs(dirs []OwnDir) ([]ownInfo, error) {
+	var out []ownInfo
+	for _, d := range dirs {
+		info, err := os.Stat(d.Path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ownInfo{info: info, what: d.What})
+	}
+	return out, nil
+}
+
+// ownDirOf returns what the directory info is when it is one of
+// Writer.OwnDirs, by device and inode, else "".
+func (w *Writer) ownDirOf(info os.FileInfo) string {
+	for _, o := range w.ownInfos {
+		if os.SameFile(info, o.info) {
+			return o.what
+		}
+	}
+	return ""
+}
+
+// symlinkRootError is the refusal of a source root that is a symlink.
+// It names the directory that the link points to, when it resolves.
+func symlinkRootError(absRoot string) error {
+	target, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return fmt.Errorf("object: source %s is a symlink; commit does not follow a symlink root, and the link does not resolve: %w", absRoot, err)
+	}
+	return fmt.Errorf("object: source %s is a symlink; commit does not follow a symlink root; give the directory that it points to: %s", absRoot, target)
 }
 
 // countObject adds id to sum as new or existing. id counts as existing
