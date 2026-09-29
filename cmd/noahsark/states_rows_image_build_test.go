@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/progress"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
@@ -13,20 +14,18 @@ import (
 const fakeImageBytes = "67108864"
 
 // fakeMakeImage stands in for mkudffs and the loop mount: it makes a
-// sparse file of the image length.
-func fakeMakeImage(treeDir, imagePath string, sectors uint64, _ *progress.Reporter) error {
-	if _, err := os.Stat(treeDir); err != nil {
-		return err
-	}
-	f, err := os.Create(imagePath)
+// sparse file of the image length through the descriptors of the plan.
+func fakeMakeImage(plan *image.Plan, sectors uint64, _ *progress.Reporter) error {
+	img, err := plan.CreateImage()
 	if err != nil {
 		return err
 	}
-	if err := f.Truncate(int64(sectors * 2048)); err != nil {
-		_ = f.Close()
+	defer func() { _ = img.Close() }()
+	if err := img.Truncate(int64(sectors * 2048)); err != nil {
+		plan.DiscardImage(img)
 		return err
 	}
-	return f.Close()
+	return plan.FinishImage(img)
 }
 
 // fakeMkudffsVersion is a good udftools version.

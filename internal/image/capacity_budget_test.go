@@ -104,7 +104,7 @@ func TestPackedTreeFitsRealUDFImage(t *testing.T) {
 		t.Fatalf("pack: %v", err)
 	}
 
-	imagePath := filepath.Join(t.TempDir(), "run.img")
+	imagePath := filepath.Join(filepath.Dir(outDir), "run.img")
 	if err := MakeImage(outDir, imagePath, capSectors, nil); err != nil {
 		t.Fatalf("MakeImage (mkudffs build and populate): %v", err)
 	}
