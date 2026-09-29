@@ -1,15 +1,19 @@
 package main
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -120,25 +124,26 @@ func (o *packOptions) run(e *env, args []string) int {
 		}
 	}
 
-	var discLog *stage.DiscLog
-	if o.dryRun {
-		discLog, err = stage.OpenDiscLogReadOnly(layout.stateDir())
-	} else {
-		discLog, err = stage.OpenDiscLog(layout.stateDir())
-	}
+	logs, err := openLogs("pack", layout, !o.dryRun, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	if torn := discLog.TornBytes(); torn > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: pack: the disc state log's tail was truncated; %d byte(s) after the last valid record were ignored, matching a crash during an earlier append\n", torn)
+	if refuseWhileMissing("pack", layout, cfg, logs.Discs, stderr) {
+		return 1
 	}
 	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	runSeq, discSeq := nextPackSeqNumbers(ledger.Rows, discLog)
+	if !o.dryRun {
+		if err := finishInterruptedPacks(layout, c, logs, ledger.Rows, stderr); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+			return 1
+		}
+	}
+	runSeq, discSeq := nextPackSeqNumbers(ledger.Rows, logs.Discs)
 
 	labelName := newestRefName(c, allRepoRefs(layout))
 	labelFor := func(seq uint64) string { return discLabel(labelName, seq) }
@@ -153,15 +158,9 @@ func (o *packOptions) run(e *env, args []string) int {
 		Now:                   func() time.Time { return now },
 	}
 	if o.dryRun {
-		return runPackDryRun(stdout, stderr, layout, c, opts, o.capacity, labelFor)
+		return runPackDryRun(stdout, stderr, layout, c, logs.Items, opts, o.capacity, labelFor)
 	}
-
-	stageLog, err := stage.Open(layout.stateDir())
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
-	warnIfTruncated("pack", stageLog, stderr)
+	stageLog := logs.Items
 
 	var discUUID [16]byte
 	if _, err := rand.Read(discUUID[:]); err != nil {
@@ -181,11 +180,21 @@ func (o *packOptions) run(e *env, args []string) int {
 	opts.DiscUUID = discUUID
 	opts.Label = label
 	opts.Progress = e.progress()
+	opts.WriteCatalog = func() error {
+		_, err := catalog.WriteTablesFromRoot(c, root)
+		return err
+	}
 	result, err := image.Pack(opts)
 	if err != nil {
-		// Pack removes the part-written disc root. The plan directory of
-		// this disc goes too; an --out directory stays.
-		_ = os.RemoveAll(layout.planDir(discUUID))
+		// Pack removes the part-written disc root when it stops before
+		// the ledger row. The plan directory and the catalog tables of
+		// this disc go too; an --out directory stays. After the ledger
+		// row, the disc root stays, and the next pack finishes the
+		// records of the disc.
+		if !ledgerNames(layout, repoUUID, discUUID) {
+			_ = os.RemoveAll(layout.planDir(discUUID))
+			_ = c.RemoveDisc(discUUID)
+		}
 		if errors.Is(err, image.ErrNothingToPack) {
 			_, _ = fmt.Fprintln(stdout, packNothingStaged)
 			_, _ = fmt.Fprintln(stdout, nextStatusLine)
@@ -194,12 +203,10 @@ func (o *packOptions) run(e *env, args []string) int {
 		return packFailed(stderr, o.capacity, capacitySectors, err)
 	}
 
-	if _, err := catalog.WriteTablesFromRoot(c, root); err != nil {
-		// The Packed event still follows: the ledger row and the item
-		// records already name this disc.
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-	}
-	if err := discLog.Append(packedEvent(now, discUUID, result, o.closeDisc, o.fec)); err != nil {
+	// The Packed event is the last durable write of a pack. A pack that
+	// stops before it leaves a ledger row with no event, and the next
+	// pack finishes the records of that disc.
+	if err := logs.Discs.Append(packedEvent(now, discUUID, result, o.closeDisc, o.fec)); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
@@ -339,13 +346,7 @@ func packFailed(stderr io.Writer, capacity string, capacitySectors uint64, err e
 // runPackDryRun implements "pack --dry-run". It prints the discs that
 // the staged data needs, and writes nothing: no disc root, no record,
 // no catalog entry and no ledger row. It uses no sequence number.
-func runPackDryRun(stdout, stderr io.Writer, layout repoLayout, c *catalog.Catalog, opts image.PackOptions, capacity string, labelFor func(uint64) string) int {
-	stageLog, err := stage.OpenReadOnly(layout.stateDir())
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
-	warnIfTruncated("pack", stageLog, stderr)
+func runPackDryRun(stdout, stderr io.Writer, layout repoLayout, c *catalog.Catalog, stageLog *stage.Log, opts image.PackOptions, capacity string, labelFor func(uint64) string) int {
 	opts.Store = packStore(layout, c, stageLog)
 	opts.StageLog = stageLog
 
@@ -536,6 +537,130 @@ func packStore(layout repoLayout, c *catalog.Catalog, l *stage.Log) image.Store 
 		DiscsLedger: layout.discsLedgerFile(),
 		RefsLedger:  layout.refsLedgerFile(),
 	}
+}
+
+// refuseWhileMissing refuses the command cmd while a disc is missing. It
+// prints `disc SEQ "LABEL" is missing` for each missing disc, and
+// reports true. The number and the label come from the disc ledger.
+func refuseWhileMissing(cmd string, layout repoLayout, cfg repoConfig, discs *stage.DiscLog, stderr io.Writer) bool {
+	missing := discs.InState(stage.DiscMissing)
+	if len(missing) == 0 {
+		return false
+	}
+	var rows []format.DiscsRow
+	if repoUUID, err := decodeUUID(cfg.RepoUUID); err == nil {
+		if ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID); err == nil {
+			rows = ledger.Rows
+		}
+	}
+	for _, d := range missing {
+		row := newestDiscRow(rows, d.UUID)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is missing\n", cmd, discNameShort(row.DiscSeq, labelText(row.Label[:row.LabelLen])))
+	}
+	return true
+}
+
+// ledgerNames reports whether the disc ledger holds a row of the disc
+// discUUID.
+func ledgerNames(layout repoLayout, repoUUID, discUUID [16]byte) bool {
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(ledger.Rows, func(r format.DiscsRow) bool { return r.DiscUUID == discUUID })
+}
+
+// finishInterruptedPacks repairs what a pack that stopped leaves. pack
+// writes, in this order, the synced disc root, the catalog tables, the
+// disc ledger row, the item records and the Packed event.
+//
+// A disc root and catalog tables with no ledger row and no event belong
+// to a pack that stopped before its ledger row: no record names that
+// disc, and the items stay Staged. finishInterruptedPacks removes the
+// plan directory and the catalog tables of such a disc.
+//
+// A ledger row with a disc root and no event belongs to a pack that
+// stopped after its ledger row. finishInterruptedPacks records the
+// items that the catalog INDEX of the disc lists and that are still
+// Staged as Packed, then appends the Packed event. The event carries the
+// fec flag that the INDEX gives. The close flag is not on the disc, and
+// the event does not carry it.
+func finishInterruptedPacks(layout repoLayout, c *catalog.Catalog, logs *stage.Logs, rows []format.DiscsRow, stderr io.Writer) error {
+	inLedger := make(map[[16]byte]format.DiscsRow, len(rows))
+	for _, r := range rows {
+		inLedger[r.DiscUUID] = r
+	}
+	known := func(u [16]byte) bool {
+		_, ok := logs.Discs.Disc(u)
+		_, row := inLedger[u]
+		return ok || row
+	}
+	for _, dir := range []string{filepath.Join(c.Dir(), "discs"), layout.plansDir()} {
+		for _, u := range uuidDirs(dir) {
+			if known(u) {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(dir, uuidText(u))); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(stderr, "noahsark: pack: removed %s of disc %s: an earlier pack stopped before it recorded the disc\n", filepath.Join(dir, uuidText(u)), uuidText(u))
+		}
+	}
+
+	for _, row := range slices.SortedFunc(maps.Values(inLedger), func(a, b format.DiscsRow) int { return cmp.Compare(a.DiscSeq, b.DiscSeq) }) {
+		if _, ok := logs.Discs.Disc(row.DiscUUID); ok {
+			continue
+		}
+		if _, err := os.Lstat(layout.planTree(row.DiscUUID)); err != nil {
+			continue
+		}
+		idx, err := c.IndexForDisc(row.DiscUUID)
+		if err != nil {
+			return fmt.Errorf("disc %d: an earlier pack stopped, and the catalog holds no INDEX of the disc: %w", row.DiscSeq, err)
+		}
+		var ids []object.ID
+		for _, o := range idx.Objects {
+			id := object.ID(o.ContentID)
+			if rec, ok := logs.Items.Get(id); !ok || rec.State == stage.Staged {
+				ids = append(ids, id)
+			}
+		}
+		if err := logs.Items.EnsureStaged(ids...); err != nil {
+			return err
+		}
+		if err := logs.Items.MarkPacked(row.RunSeq, row.DiscUUID, ids...); err != nil {
+			return err
+		}
+		var flags stage.DiscFlags
+		if slices.ContainsFunc(idx.Files, func(f format.IndexFileRecord) bool { return f.Role == format.FileRoleChecksum }) {
+			flags |= stage.FlagFEC
+		}
+		event := stage.DiscRecord{TimeSec: row.CreatedSec, DiscUUID: row.DiscUUID, Event: stage.EventPacked, Flags: flags, DiscSeq: row.DiscSeq, RunSeq: row.RunSeq}
+		if err := logs.Discs.Append(event); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: %s: an earlier pack stopped before it recorded the disc; its records are now complete\n",
+			discNameShort(row.DiscSeq, labelText(row.Label[:row.LabelLen])))
+	}
+	return nil
+}
+
+// uuidDirs returns the uuid of each entry of dir whose name is the text
+// form of a uuid. A missing dir gives none.
+func uuidDirs(dir string) [][16]byte {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out [][16]byte
+	for _, ent := range entries {
+		raw, err := hex.DecodeString(strings.ReplaceAll(ent.Name(), "-", ""))
+		if err != nil || len(raw) != 16 || uuidText([16]byte(raw)) != ent.Name() {
+			continue
+		}
+		out = append(out, [16]byte(raw))
+	}
+	return out
 }
 
 func decodeUUID(s string) ([16]byte, error) {

@@ -25,7 +25,8 @@ const confirmQuestion = "Continue? [y/N] "
 // level answers yes, and confirm reads nothing. With no terminal on
 // standard input, the answer is no, and confirm reads nothing. Otherwise
 // confirm prints the question to standard error and reads one line from
-// standard input. Only "y" or "yes" and then Enter continues.
+// standard input. Only "y" or "yes" in any letter case, with any spaces
+// around it, and then Enter continues.
 //
 // command is the command name, such as "disc verified". It names the
 // command in the refusal of a critical confirmation that got only --yes.
@@ -54,7 +55,7 @@ func (e *env) confirm(level confirmLevel, command string, warning []string) bool
 		// An end of input before Enter answers no, also after "y". The
 		// next line of standard error starts on a new line.
 		_, _ = fmt.Fprintln(e.stderr)
-	} else if a := strings.TrimSpace(answer); a == "y" || a == "yes" {
+	} else if a := strings.ToLower(strings.TrimSpace(answer)); a == "y" || a == "yes" {
 		return true
 	}
 	_, _ = fmt.Fprintln(e.stdout, "nothing changed")

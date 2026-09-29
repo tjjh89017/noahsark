@@ -33,7 +33,7 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "verify: verified") {
+	if !strings.Contains(out, "\nverified\n") {
 		t.Fatalf("verify output %q, want the verified line", out)
 	}
 
@@ -44,6 +44,13 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 	}
 	if strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
+	}
+	discs := readDiscLog(t, repo).Discs()
+	if len(discs) != 1 || discs[0].State != stage.DiscOnDiscOnly {
+		t.Fatalf("discs after gc = %+v, want one disc on disc only", discs)
+	}
+	if n := countByState(t, repo, stage.Packed); n != 0 {
+		t.Fatalf("%d item(s) still Packed after gc, want 0", n)
 	}
 }
 
@@ -226,36 +233,11 @@ func TestGCSkipsADiscWithNoCatalogIndex(t *testing.T) {
 // for it.
 func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 	stagingDir := t.TempDir()
-	l, err := stage.Open(stagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	discA := [16]byte{0xaa}
 	discB := [16]byte{0xbb}
 	const sharedRunSeq = 5
 	onDiscA := object.ComputeID(format.ObjectKindChunk, []byte("an object disc A holds"))
 	onDiscB := object.ComputeID(format.ObjectKindChunk, []byte("an object staged for disc B, named by disc A's INDEX alone"))
-
-	for _, staged := range []struct {
-		id   object.ID
-		disc [16]byte
-	}{{onDiscA, discA}, {onDiscB, discB}} {
-		if err := l.EnsureStaged(staged.id); err != nil {
-			t.Fatal(err)
-		}
-		if err := l.MarkPacked(staged.id, sharedRunSeq, staged.disc); err != nil {
-			t.Fatal(err)
-		}
-		if err := l.MarkBurned(staged.id, sharedRunSeq, staged.disc); err != nil {
-			t.Fatal(err)
-		}
-		for range 2 {
-			if err := l.MarkVerified(staged.id); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
 
 	c, err := catalog.Open(t.TempDir())
 	if err != nil {
@@ -272,16 +254,63 @@ func TestGCPlanTakesTheIndexOfTheObjectsOwnDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	objs, uncataloged := gcPlanStagingObjects(l, c, repoLayout{repo: t.TempDir(), staging: stagingDir}, 0, time.Now())
-	if len(objs) != 1 {
-		t.Fatalf("gcPlanStagingObjects returned %d object(s), want 1", len(objs))
+	layout := repoLayout{repo: t.TempDir(), staging: stagingDir}
+	for _, tc := range []struct {
+		disc         [16]byte
+		item         object.ID
+		wantObjs     int
+		wantUnlisted int
+	}{
+		{discA, onDiscA, 1, 0},
+		{discB, onDiscB, 0, 1},
+	} {
+		idx, err := c.IndexForDisc(tc.disc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		objs, unlisted := gcPlanDisc(tc.disc, []object.ID{tc.item}, idx, layout)
+		if len(objs) != tc.wantObjs || unlisted != tc.wantUnlisted {
+			t.Fatalf("disc %x: %d file(s), %d unlisted; want %d and %d", tc.disc[0], len(objs), unlisted, tc.wantObjs, tc.wantUnlisted)
+		}
+		if len(objs) == 1 && (objs[0].id != tc.item || objs[0].discUUID != tc.disc) {
+			t.Fatalf("file = %s on disc %v, want %s on disc %v", objs[0].id.TextForm(), objs[0].discUUID, tc.item.TextForm(), tc.disc)
+		}
 	}
-	if objs[0].id != onDiscA || objs[0].discUUID != discA {
-		t.Fatalf("candidate = %s on disc %v, want %s on disc %v",
-			objs[0].id.TextForm(), objs[0].discUUID, onDiscA.TextForm(), discA)
+}
+
+// TestGCFreesNoItemOfADiscWhoseIndexMissesAnItem gives a verified disc
+// one Packed item that its catalog INDEX does not list. gc must free no
+// item of that disc, append no Freed event, and report the skip.
+func TestGCFreesNoItemOfADiscWhoseIndexMissesAnItem(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscVerified)
+	extra := object.ComputeID(format.ObjectKindChunk, []byte("an item that the INDEX does not list"))
+	logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if uncataloged != 1 {
-		t.Fatalf("uncataloged = %d, want 1: disc B's own INDEX names no object", uncataloged)
+	if err := logs.Items.EnsureStaged(extra); err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Items.MarkPacked(1, fx.uuidBytes(t), extra); err != nil {
+		t.Fatal(err)
+	}
+	chunksBefore, err := countFiles(testLayout(t, fx.repo).chunksDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := fx.mustRun(t, "gc", "--force-after=0d")
+	if !strings.Contains(out, "gc: 1 object(s) skipped: their disc's INDEX does not list them") {
+		t.Fatalf("gc output %q, want the skip line", out)
+	}
+	if d := discState(t, fx.repo, fx.uuid); d.State != stage.DiscVerified {
+		t.Fatalf("disc state %s after gc, want verified: no Freed event", d.State)
+	}
+	if n := countByState(t, fx.repo, stage.OnDisc); n != 0 {
+		t.Fatalf("%d item(s) OnDisc, want none", n)
+	}
+	if n, err := countFiles(testLayout(t, fx.repo).chunksDir()); err != nil || n != chunksBefore {
+		t.Fatalf("chunk files = %d, %v; want %d kept", n, err, chunksBefore)
 	}
 }
 
@@ -376,11 +405,14 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	if n, err := countFiles(objDir); err != nil || n != staged {
 		t.Fatalf("staging has %d chunk file(s), %v; want the %d orphans left behind", n, err, staged)
 	}
-	if n := countByState(t, repo, stage.OnDiscOnly); n == 0 {
+	if n := countByState(t, repo, stage.OnDisc); n == 0 {
 		t.Fatal("gc unlinked before it recorded: no ON-DISC record survived the failed unlink")
 	}
-	if n := countByState(t, repo, stage.Clean); n != 0 {
-		t.Fatalf("%d object(s) still CLEAN; the record must go to the disk before the unlink", n)
+	if n := countByState(t, repo, stage.Packed); n != 0 {
+		t.Fatalf("%d item(s) still Packed; the record must go to the disk before the unlink", n)
+	}
+	if discs := readDiscLog(t, repo).Discs(); len(discs) != 1 || discs[0].State != stage.DiscOnDiscOnly {
+		t.Fatalf("discs = %+v, want the Freed event before the unlink", discs)
 	}
 
 	gcRemove = oldRemove
@@ -440,6 +472,7 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
+	setFakeNow(t, func() time.Time { return before.Add(16 * 24 * time.Hour) })
 
 	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
@@ -463,12 +496,10 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	}
 }
 
-// TestGCForceAfterConfirmedDeletes runs gc --force-after with a fake
-// clock placing an object CLEAN for longer than the forced duration but
-// not the fixed 7-day retention, and a stdin pipe answering "y": the
-// object must be deleted.
-func TestGCForceAfterConfirmedDeletes(t *testing.T) {
-
+// TestGCForceAfterShortensTheWait runs gc --force-after with a fake
+// clock 2 hours past the verified time: nowhere near the 7-day wait,
+// but past a 1-hour --force-after. gc frees the disc and asks nothing.
+func TestGCForceAfterShortensTheWait(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -478,66 +509,23 @@ func TestGCForceAfterConfirmedDeletes(t *testing.T) {
 	}
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-
-	// 2 hours past CLEAN: nowhere near the fixed 7-day retention, but
-	// past a 1-hour --force-after.
 	setFakeNow(t, func() time.Time { return before.Add(2 * time.Hour) })
 
-	setFakeStdin(t, strings.NewReader("y\n"))
 	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
 	if code != 0 {
-		t.Fatalf("gc --force-after=1h (confirmed): exit %d: %s", code, out)
+		t.Fatalf("gc --force-after=1h: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "delete") || !strings.Contains(out, "bytes?") {
-		t.Fatalf("gc output %q missing the confirmation prompt", out)
+	if strings.Contains(out, "?") {
+		t.Fatalf("gc output %q asks a question; gc asks no confirmation", out)
 	}
 	if strings.Contains(out, "deleted 0 staged object") {
 		t.Fatalf("gc output %q, want more than 0 objects deleted", out)
 	}
 }
 
-// TestGCForceAfterDeclinedDeletesNothing checks answering "n" to the
-// confirmation leaves every object in place.
-func TestGCForceAfterDeclinedDeletesNothing(t *testing.T) {
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	before := time.Now()
-	packAndVerifyDisc(t, work, repo, src)
-
-	setFakeNow(t, func() time.Time { return before.Add(2 * time.Hour) })
-
-	setFakeStdin(t, strings.NewReader("n\n"))
-	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
-	if code == 0 {
-		t.Fatalf("gc --force-after=1h (declined): exit 0, want non-zero: %s", out)
-	}
-	if !strings.Contains(out, "not confirmed") {
-		t.Fatalf("gc output %q missing the not-confirmed message", out)
-	}
-
-	// A follow-up dry-run still finds the object eligible: nothing was
-	// deleted.
-	code, out = runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
-	if code != 0 {
-		t.Fatalf("gc --dry-run (after decline): exit %d: %s", code, out)
-	}
-	if strings.Contains(out, "would delete 0 staged object") {
-		t.Fatalf("gc --dry-run (after decline) output %q, want the object still eligible", out)
-	}
-}
-
-// TestGCForceAfterEmptyStdinDeletesNothing checks that a closed or
-// empty stdin answers no: a killed or scripted session must never read
-// silence as consent to delete under a shortened retention. A script
-// that means yes pipes a "y" in.
-func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
-
+// TestGCForceAfterDryRunChangesNothing checks that --dry-run with
+// --force-after reports what gc would free and changes nothing.
+func TestGCForceAfterDryRunChangesNothing(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -548,41 +536,11 @@ func TestGCForceAfterEmptyStdinDeletesNothing(t *testing.T) {
 	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 	setFakeNow(t, func() time.Time { return before.Add(2 * time.Hour) })
-
-	setFakeStdin(t, strings.NewReader(""))
-	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
-	if code != 1 {
-		t.Fatalf("gc --force-after=1h (empty stdin): exit %d, want 1: %s", code, out)
-	}
-	if !strings.Contains(out, "not confirmed") {
-		t.Fatalf("gc output %q missing the not-confirmed message", out)
+	chunksBefore, err := countFiles(testLayout(t, repo).chunksDir())
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	code, out = runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
-	if code != 0 {
-		t.Fatalf("gc --dry-run (after empty stdin): exit %d: %s", code, out)
-	}
-	if strings.Contains(out, "would delete 0 staged object") {
-		t.Fatalf("gc --dry-run output %q, want the object still eligible", out)
-	}
-}
-
-// TestGCForceAfterDryRunSkipsConfirmation checks --dry-run with
-// --force-after never prompts: it changes nothing either way.
-func TestGCForceAfterDryRunSkipsConfirmation(t *testing.T) {
-
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	before := time.Now()
-	packAndVerifyDisc(t, work, repo, src)
-	setFakeNow(t, func() time.Time { return before.Add(2 * time.Hour) })
-
-	setFakeStdin(t, strings.NewReader(""))
 	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
 	if code != 0 {
 		t.Fatalf("gc --force-after=1h --dry-run: exit %d: %s", code, out)
@@ -590,35 +548,23 @@ func TestGCForceAfterDryRunSkipsConfirmation(t *testing.T) {
 	if strings.Contains(out, "would delete 0 staged object") {
 		t.Fatalf("gc --dry-run output %q, want more than 0 objects reported", out)
 	}
-	if strings.Contains(out, "bytes?") {
-		t.Fatalf("gc --dry-run output %q, want no confirmation prompt", out)
+	if n, err := countFiles(testLayout(t, repo).chunksDir()); err != nil || n != chunksBefore {
+		t.Fatalf("chunk files = %d, %v after --dry-run; want %d", n, err, chunksBefore)
+	}
+	if discs := readDiscLog(t, repo).Discs(); len(discs) != 1 || discs[0].State != stage.DiscVerified {
+		t.Fatalf("discs after --dry-run = %+v, want the disc still verified", discs)
 	}
 }
 
 // TestGCApplyStagingObjectsSkipsAlreadyGoneFile checks that a gcObj
 // whose staged file does not exist frees no bytes and is not counted
-// deleted: only an object gc actually removed counts, even though the
-// state log still moves it on to ON-DISC.
+// deleted: only a file that gc actually removed counts.
 func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 	dir := t.TempDir()
-	l, err := stage.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	id := object.ComputeID(format.ObjectKindChunk, []byte("gone"))
-	if err := l.EnsureStaged(id); err != nil {
-		t.Fatal(err)
-	}
+	objs := []gcObj{{id: id, path: filepath.Join(dir, "no", "such-file"), size: 1234}}
 
-	objs := []gcObj{{
-		id:          id,
-		path:        filepath.Join(dir, "no", "such-file"),
-		size:        1234,
-		needsRecord: true,
-	}}
-
-	deleted, bytesFreed, failures := gcApplyStagingObjects(l, objs, false)
+	deleted, bytesFreed, failures := gcApplyStagingObjects(objs, false)
 	if deleted != 0 {
 		t.Fatalf("deleted = %d, want 0: an already-gone file frees nothing this run", deleted)
 	}
@@ -628,35 +574,21 @@ func TestGCApplyStagingObjectsSkipsAlreadyGoneFile(t *testing.T) {
 	if len(failures) != 0 {
 		t.Fatalf("failures = %v, want none: an already-gone file is not a failure", failures)
 	}
-
-	rec, ok := l.Get(id)
-	if !ok || rec.State != stage.OnDiscOnly {
-		t.Fatalf("got %+v, %v, want OnDiscOnly: the state machine still moves on", rec, ok)
-	}
 }
 
 // TestGCApplyStagingObjectsCountsRealDelete is the control: a gcObj
 // whose file exists is removed, counted, and its bytes freed.
 func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 	dir := t.TempDir()
-	l, err := stage.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	id := object.ComputeID(format.ObjectKindChunk, []byte("present"))
-	if err := l.EnsureStaged(id); err != nil {
-		t.Fatal(err)
-	}
-
 	path := filepath.Join(dir, "chunks", "present")
 	if err := writeFile(path, "payload"); err != nil {
 		t.Fatal(err)
 	}
 
-	objs := []gcObj{{id: id, path: path, size: 7, needsRecord: true}}
+	objs := []gcObj{{id: id, path: path, size: 7}}
 
-	deleted, bytesFreed, failures := gcApplyStagingObjects(l, objs, false)
+	deleted, bytesFreed, failures := gcApplyStagingObjects(objs, false)
 	if deleted != 1 {
 		t.Fatalf("deleted = %d, want 1", deleted)
 	}
@@ -665,6 +597,9 @@ func TestGCApplyStagingObjectsCountsRealDelete(t *testing.T) {
 	}
 	if len(failures) != 0 {
 		t.Fatalf("failures = %v, want none", failures)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the file is still there: %v", err)
 	}
 }
 

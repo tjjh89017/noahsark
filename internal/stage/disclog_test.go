@@ -511,3 +511,53 @@ func TestDiscLogListAndHighestPacked(t *testing.T) {
 		t.Fatal("Disc found a uuid that the log does not hold")
 	}
 }
+
+// TestDiscLogCheckAndNext checks the functions that decide a change
+// before a command asks a confirmation: they give the answer of Append,
+// and they write nothing.
+func TestDiscLogCheckAndNext(t *testing.T) {
+	dir := t.TempDir()
+	l, err := OpenDiscLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvents(t, l, testDiscA, 1000, EventPacked, EventBurnRecorded)
+	before := readDiscFile(t, dir)
+
+	if to, ok := l.Next(testDiscA, EventBurnRemoved); !ok || to != DiscPacked {
+		t.Fatalf("Next(BurnRemoved) = %s, %v; want packed, true", to, ok)
+	}
+	if to, ok := l.Next(testDiscA, EventBurnRecorded); ok || to != DiscBurned {
+		t.Fatalf("Next(BurnRecorded) = %s, %v; want burned, false", to, ok)
+	}
+	if err := l.Check(discEvent(testDiscA, EventCheckOK, 2000), discEvent(testDiscA, EventFreed, 2001)); err != nil {
+		t.Fatalf("Check of a permitted batch: %v", err)
+	}
+	if err := l.Check(discEvent(testDiscA, EventFreed, 2000)); !errors.Is(err, ErrDiscEventRefused) {
+		t.Fatalf("Check of a refused event = %v, want ErrDiscEventRefused", err)
+	}
+	if !bytes.Equal(readDiscFile(t, dir), before) {
+		t.Fatal("Check or Next wrote the file")
+	}
+	if d, _ := l.Disc(testDiscA); d.State != DiscBurned {
+		t.Fatalf("state %s after Check, want burned", d.State)
+	}
+}
+
+func TestDiscLogInState(t *testing.T) {
+	l, err := OpenDiscLog(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, c := [16]byte{0xB0}, [16]byte{0xC0}
+	appendEvents(t, l, testDiscA, 1000, EventPacked)
+	appendEvents(t, l, b, 1000, EventNamedMissing)
+	appendEvents(t, l, c, 1000, EventRecovered)
+	got := l.InState(DiscMissing, DiscOnDiscOnly)
+	if len(got) != 2 || got[0].UUID != b || got[1].UUID != c {
+		t.Fatalf("InState = %+v, want the missing and the on disc only disc", got)
+	}
+	if got := l.InState(DiscLost); len(got) != 0 {
+		t.Fatalf("InState(lost) = %+v, want none", got)
+	}
+}

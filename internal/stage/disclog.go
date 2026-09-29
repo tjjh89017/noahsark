@@ -416,22 +416,45 @@ func (l *DiscLog) HighestPacked() (discSeq, runSeq uint64) {
 	return l.maxDiscSeq, l.maxRunSeq
 }
 
-// Append writes recs as one batch with one sync, and then applies them.
-// It sets the sequence of each record. It first checks each record and
-// each transition in order; when one is refused, it writes nothing and
-// returns an error that wraps ErrDiscEventRefused for a refused
-// transition. A batch can hold two events of one disc, for example
-// BurnRecorded and then CheckOK.
-func (l *DiscLog) Append(recs ...DiscRecord) error {
+// InState returns the record of every disc in one of states, in the
+// order of Discs.
+func (l *DiscLog) InState(states ...DiscState) []DiscInfo {
+	var out []DiscInfo
+	for _, d := range l.Discs() {
+		if slices.Contains(states, d.State) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// Next returns the state that event e gives the disc id now, and
+// whether the replay table permits e. It writes nothing. A command calls
+// it to refuse a change before it asks a confirmation.
+func (l *DiscLog) Next(id [16]byte, e DiscEvent) (DiscState, bool) {
+	d := l.discs[id]
+	return DiscTransition(d.State, d.BeforeLost, e)
+}
+
+// Check reports whether Append would accept recs, and writes nothing.
+// It returns the error that Append would return for a record that
+// breaks the rules or for a refused transition.
+func (l *DiscLog) Check(recs ...DiscRecord) error {
+	_, err := l.prepare(recs)
+	return err
+}
+
+// prepare sets the sequence of each record of a copy of recs, checks
+// each record and each transition in order, and returns the copy.
+func (l *DiscLog) prepare(recs []DiscRecord) ([]DiscRecord, error) {
 	staged := make(map[[16]byte]DiscInfo)
 	written := slices.Clone(recs)
-	batch := make([]byte, len(written)*discRecordLen)
 	seq := l.file.nextSeq()
 	for i := range written {
 		rec := &written[i]
 		rec.Sequence = seq + uint64(i)
 		if err := rec.check(); err != nil {
-			return fmt.Errorf("stage: disc %s: %w", uuid.UUID(rec.DiscUUID), err)
+			return nil, fmt.Errorf("stage: disc %s: %w", uuid.UUID(rec.DiscUUID), err)
 		}
 		d, ok := staged[rec.DiscUUID]
 		if !ok {
@@ -439,10 +462,27 @@ func (l *DiscLog) Append(recs ...DiscRecord) error {
 		}
 		d, err := d.apply(*rec)
 		if err != nil {
-			return fmt.Errorf("stage: %w", err)
+			return nil, fmt.Errorf("stage: %w", err)
 		}
 		staged[rec.DiscUUID] = d
-		rec.encode(batch[i*discRecordLen : (i+1)*discRecordLen])
+	}
+	return written, nil
+}
+
+// Append writes recs as one batch with one sync, and then applies them.
+// It sets the sequence of each record. It first checks each record and
+// each transition in order; when one is refused, it writes nothing and
+// returns an error that wraps ErrDiscEventRefused for a refused
+// transition. A batch can hold two events of one disc, for example
+// BurnRecorded and then CheckOK.
+func (l *DiscLog) Append(recs ...DiscRecord) error {
+	written, err := l.prepare(recs)
+	if err != nil {
+		return err
+	}
+	batch := make([]byte, len(written)*discRecordLen)
+	for i := range written {
+		written[i].encode(batch[i*discRecordLen : (i+1)*discRecordLen])
 	}
 	if err := l.file.appendBatch(batch); err != nil {
 		return err

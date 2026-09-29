@@ -3,22 +3,22 @@ package main
 import (
 	"flag"
 	"fmt"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// The operator burns with growisofs by hand. "disc burned" is how the
-// staging state machine learns that a disc was burned: no on-disc
-// structure records that moment. See docs/decisions.md, "Burning and
-// disc lifecycle".
+// The operator burns a disc with a tool outside noahsark. "disc burned"
+// records the burn: no on-disc structure records that moment. See
+// docs/decisions.md, "Burning and disc lifecycle".
 func init() {
 	register(&command{
 		name:    "burned",
 		group:   "disc",
-		usage:   "disc burned [--undo] DISC [DISC...]",
-		summary: "Mark a disc burned, moving its PACKED objects to BURNED.",
+		usage:   "disc burned [--undo] DISC",
+		summary: "Record the burn of a packed disc, or remove it with --undo.",
 		flags:   discBurnedFlags,
 	})
 }
@@ -30,34 +30,75 @@ type discBurnedOptions struct {
 
 func discBurnedFlags(fs *flag.FlagSet) runFunc {
 	o := &discBurnedOptions{}
-	fs.BoolVar(&o.undo, "undo", false, "undo: move BURNED objects back to PACKED, for a burn that turned out bad")
+	fs.BoolVar(&o.undo, "undo", false, "remove the burn record of a burned disc")
 	return o.run
 }
 
-// run implements "noahsark disc burned [--undo] DISC [DISC...]". It
-// moves every PACKED object of each named disc's runs to BURNED,
-// standing in for the missing `burn` command: the operator runs it
-// right after burning both twins by hand. --undo reverses that, for a
-// burn that turned out bad, moving BURNED objects back to PACKED with
-// the burn-failed reason.
+// discTarget is one disc that a DISC argument named: its record in the
+// disc state log, and its number and label from the disc ledger.
+type discTarget struct {
+	info  stage.DiscInfo
+	seq   uint64
+	label string
+}
+
+// name is the disc name of a message that reports a change.
+func (d discTarget) name() string { return discNameShort(d.seq, d.label) }
+
+// short is the disc name of a refusal.
+func (d discTarget) short() string { return fmt.Sprintf("disc %d", d.seq) }
+
+// warning is the first line of a confirmation: the disc, the state now,
+// and the state after.
+func (d discTarget) warning(after stage.DiscState) string {
+	return fmt.Sprintf("warning: %s: %s -> %s", discName(d.seq, d.label, d.info.UUID), d.info.State, after)
+}
+
+// resolveDisc resolves a DISC argument against the rows of the disc
+// ledger. An undone disc matches no argument.
+func resolveDisc(rows []format.DiscsRow, discs *stage.DiscLog, arg string) ([16]byte, error) {
+	return resolveDiscArgExcept(rows, arg, func(uuid [16]byte) bool {
+		d, ok := discs.Disc(uuid)
+		return ok && d.State == stage.DiscUndone
+	})
+}
+
+// discTargetOf returns the disc discUUID with its number and label from
+// the newest ledger row of that disc.
+func discTargetOf(rows []format.DiscsRow, discs *stage.DiscLog, discUUID [16]byte) discTarget {
+	info, _ := discs.Disc(discUUID)
+	info.UUID = discUUID
+	row := newestDiscRow(rows, discUUID)
+	return discTarget{info: info, seq: row.DiscSeq, label: labelText(row.Label[:row.LabelLen])}
+}
+
+// discEvent is a disc state log record of event e for the disc discUUID
+// at the time now.
+func discEvent(now time.Time, discUUID [16]byte, e stage.DiscEvent) stage.DiscRecord {
+	return stage.DiscRecord{TimeSec: now.Unix(), DiscUUID: discUUID, Event: e}
+}
+
+// run implements "noahsark disc burned [--undo] DISC". docs/states.md,
+// rows 20 to 26, gives the messages.
 func (o *discBurnedOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
-	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned [--undo] DISC [DISC...]")
+	const cmd = "disc burned"
+	if len(args) != 1 {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark disc burned [--undo] DISC")
 		return 2
 	}
 
 	repoDir, err := e.findRepo()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 2
 	}
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 2
 	}
-	lk, code, ok := lockRepo("disc burned", repoDir, stderr)
+	lk, code, ok := lockRepo(cmd, repoDir, stderr)
 	if !ok {
 		return code
 	}
@@ -65,48 +106,95 @@ func (o *discBurnedOptions) run(e *env, args []string) int {
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
 	layout := layoutOf(repoDir, cfg)
+	logs, err := openLogs(cmd, layout, true, stderr)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	}
 	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
-	stageLog, err := stage.Open(layout.stateDir())
+	discUUID, err := resolveDisc(ledger.Rows, logs.Discs, args[0])
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 2
+	}
+	disc := discTargetOf(ledger.Rows, logs.Discs, discUUID)
+
+	if o.undo {
+		return undoDiscBurn(e, logs.Discs, disc)
+	}
+	if refusal := discBurnedRefusal(disc); refusal != "" {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, refusal)
 		return 1
 	}
-	warnIfTruncated("disc burned", stageLog, stderr)
-
-	for _, arg := range args {
-		discUUID, err := resolveDiscArg(ledger.Rows, arg)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
-			return 2
-		}
-		row := newestDiscRow(ledger.Rows, discUUID)
-		label := labelText(row.Label[:row.LabelLen])
-
-		if o.undo {
-			if n := countInState(stageLog, stage.Clean, discUUID); n > 0 {
-				_, _ = fmt.Fprintf(stderr, "noahsark: disc burned: %s is verified and cannot be returned to packed\n", discNameShort(row.DiscSeq, label))
-				return 1
-			}
-			n := undoDiscBurn(stageLog, discUUID)
-			_, _ = fmt.Fprintf(stdout, "%s: undo: returned to packed, %d objects\n", discNameShort(row.DiscSeq, label), n)
-			continue
-		}
-
-		n := markDiscBurned(stageLog, discUUID)
-		if n == 0 {
-			_, _ = fmt.Fprintf(stdout, "%s: already burned, 0 objects to mark\n", discNameShort(row.DiscSeq, label))
-			continue
-		}
-		_, _ = fmt.Fprintf(stdout, "%s: marked burned, %d object(s) marked\n", discNameShort(row.DiscSeq, label), n)
+	if err := logs.Discs.Append(discEvent(e.now(), discUUID, stage.EventBurnRecorded)); err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
 	}
+	_, _ = fmt.Fprintf(stdout, "%s: burn recorded\n", disc.name())
+	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	return 0
+}
+
+// discBurnedRefusal returns the refusal of disc burned for the state of
+// disc, or an empty string when disc burned records the burn.
+func discBurnedRefusal(disc discTarget) string {
+	switch disc.info.State {
+	case stage.DiscPacked:
+		return ""
+	case stage.DiscBurned:
+		return disc.short() + " already has a burn record"
+	case stage.DiscVerified, stage.DiscOnDiscOnly:
+		return disc.short() + " is already verified"
+	}
+	return discStateRefusal(disc)
+}
+
+// discStateRefusal is the refusal for a disc that is lost, missing, or
+// not in the disc state log.
+func discStateRefusal(disc discTarget) string {
+	switch disc.info.State {
+	case stage.DiscLost:
+		return disc.short() + " is marked lost"
+	case stage.DiscMissing:
+		return disc.short() + " is missing"
+	}
+	return disc.short() + " has no record in the disc state log"
+}
+
+// undoDiscBurn implements "disc burned --undo DISC": it removes the
+// burn record of a burned disc after an ordinary confirmation.
+func undoDiscBurn(e *env, discs *stage.DiscLog, disc discTarget) int {
+	const cmd = "disc burned"
+	switch disc.info.State {
+	case stage.DiscBurned:
+	case stage.DiscPacked:
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %s has no burn record\n", cmd, disc.short())
+		return 1
+	default:
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %s is not burned\n", cmd, disc.short())
+		return 1
+	}
+	warning := []string{
+		disc.warning(stage.DiscPacked),
+		"the burn record is removed; burn the disc again from its disc root",
+	}
+	if !e.confirm(confirmOrdinary, "disc burned --undo", warning) {
+		return 1
+	}
+	if err := discs.Append(discEvent(e.now(), disc.info.UUID, stage.EventBurnRemoved)); err != nil {
+		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	}
+	_, _ = fmt.Fprintf(e.stdout, "%s: burn record removed\n", disc.name())
+	_, _ = fmt.Fprintln(e.stdout, nextStatusLine)
 	return 0
 }
 
@@ -120,37 +208,4 @@ func newestDiscRow(rows []format.DiscsRow, discUUID [16]byte) format.DiscsRow {
 		}
 	}
 	return out
-}
-
-// markDiscBurned moves every object of disc discUUID that is at PACKED
-// to BURNED, and reports how many objects it moved. The burned record
-// carries the run_seq the packed record already held.
-func markDiscBurned(l *stage.Log, discUUID [16]byte) int {
-	n := 0
-	for _, id := range l.IDsInState(stage.Packed) {
-		rec, ok := l.Get(id)
-		if !ok || rec.DiscUUID != discUUID {
-			continue
-		}
-		if err := l.MarkBurned(id, rec.RunSeq, discUUID); err == nil {
-			n++
-		}
-	}
-	return n
-}
-
-// undoDiscBurn moves every object of disc discUUID that is at BURNED
-// back to PACKED, and reports how many objects it moved.
-func undoDiscBurn(l *stage.Log, discUUID [16]byte) int {
-	n := 0
-	for _, id := range l.IDsInState(stage.Burned) {
-		rec, ok := l.Get(id)
-		if !ok || rec.DiscUUID != discUUID {
-			continue
-		}
-		if err := l.MarkBurnUndone(id); err == nil {
-			n++
-		}
-	}
-	return n
 }

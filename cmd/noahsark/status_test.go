@@ -103,8 +103,8 @@ func TestStatusNextLinesFollowTheCycle(t *testing.T) {
 }
 
 // TestStatusDiscsKeepsExactNumbers checks that the disc summaries
-// behind "status" carry the exact counts the one-word text form leaves
-// out.
+// behind "status" carry the state of the disc from the disc state log
+// and the exact item count that the one-word text form leaves out.
 func TestStatusDiscsKeepsExactNumbers(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -125,8 +125,8 @@ func TestStatusDiscsKeepsExactNumbers(t *testing.T) {
 	if len(discs) != 1 || discs[0].Label != defaultRefName()+" disc 0" {
 		t.Fatalf("status discs = %+v, want one disc labelled %q", discs, defaultRefName()+" disc 0")
 	}
-	if discs[0].PackedObjects == 0 {
-		t.Fatalf("packed_objects = 0, want the exact count after a pack")
+	if discs[0].Items == 0 || discs[0].Info.State != stage.DiscPacked {
+		t.Fatalf("disc = %+v, want a packed disc with the exact item count", discs[0])
 	}
 	if stagedObjects := countByState(t, repo, stage.Staged); stagedObjects != 0 {
 		t.Fatalf("staged_objects = %d, want 0", stagedObjects)
