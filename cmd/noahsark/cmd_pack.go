@@ -26,8 +26,8 @@ import (
 func init() {
 	register(&command{
 		name:    "pack",
-		usage:   "pack --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]",
-		summary: "Pack staged items onto the next disc.",
+		usage:   "pack --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]\npack --undo DISC",
+		summary: "Pack staged items onto the next disc, or undo the pack of the newest disc.",
 		flags:   packFlags,
 	})
 }
@@ -39,6 +39,7 @@ type packOptions struct {
 	fec       bool
 	closeDisc bool
 	dryRun    bool
+	undo      bool
 }
 
 func packFlags(fs *flag.FlagSet) runFunc {
@@ -48,6 +49,7 @@ func packFlags(fs *flag.FlagSet) runFunc {
 	fs.BoolVar(&o.fec, "fec", false, "write FEC for this disc")
 	fs.BoolVar(&o.closeDisc, "close", false, "make status print the sealing burn line for this disc")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the discs that the staged data needs at this capacity, and stop")
+	fs.BoolVar(&o.undo, "undo", false, "return the items of the newest disc to staged, while that disc is packed")
 	return o.run
 }
 
@@ -57,6 +59,9 @@ const packNothingStaged = "pack: nothing staged"
 // run implements "noahsark pack". pack takes every pending ref; there
 // is no way to name a snapshot explicitly. See docs/decisions.md, "Pack".
 func (o *packOptions) run(e *env, args []string) int {
+	if o.undo {
+		return o.runUndo(e, args)
+	}
 	stdout, stderr := e.stdout, e.stderr
 
 	repoDir, err := e.findRepo()
@@ -131,6 +136,12 @@ func (o *packOptions) run(e *env, args []string) int {
 	}
 	if refuseWhileMissing("pack", layout, cfg, logs.Discs, stderr) {
 		return 1
+	}
+	if !o.dryRun {
+		if err := finishUndonePacks(layout, c, repoUUID, logs, stderr); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+			return 1
+		}
 	}
 	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
