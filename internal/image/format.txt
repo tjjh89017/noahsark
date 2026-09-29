@@ -32,7 +32,7 @@ disc, so it describes that disc exactly. This document is plain ASCII.
 - [7. Disc and run model](#7-disc-and-run-model)
   [7.1](#71-the-physical-disc) | [7.2](#72-the-run-and-the-fec-terms) | [7.3](#73-what-the-parity-does-and-does-not-cover) | [7.4](#74-disc-superblock) | [7.5](#75-run-header) | [7.6](#76-run-header-copies)
 - [8. Filesystem and the volume tree](#8-filesystem-and-the-volume-tree)
-  [8.1](#81-the-udf-volume) | [8.2](#82-files-at-the-volume-root) | [8.3](#83-run-directory-naming) | [8.4](#84-readmetxt) | [8.5](#85-formattxt) | [8.6](#86-reference-decoder) | [8.7](#87-fill-order-inside-a-run) | [8.8](#88-name-and-path-budget)
+  [8.1](#81-filesystem-requirements) | [8.2](#82-files-at-the-volume-root) | [8.3](#83-run-directory-naming) | [8.4](#84-readmetxt) | [8.5](#85-formattxt) | [8.6](#86-reference-decoder) | [8.7](#87-fill-order-inside-a-run) | [8.8](#88-name-and-path-budget)
 - [9. Forward error correction](#9-forward-error-correction)
   [9.1](#91-parity-layout) | [9.2](#92-the-code) | [9.3](#93-checksum-column) | [9.4](#94-header-replication-and-parity-files) | [9.5](#95-decode-rule) | [9.6](#96-scheme-0-no-fec)
 - [10. The run index and the catalog](#10-the-run-index-and-the-catalog)
@@ -372,25 +372,25 @@ limit. A reader refuses a structure that exceeds one and names the limit.
 | Tree entry length | 2^32 - 1 bytes | `entry_len`, section 6.5. |
 | TLV payload | Always inline. At most `entry_len` minus the 72-byte fixed header minus the TLV's own 8-byte prefix, that is at most `2^32 - 1 - 72 - 8` bytes (4,294,967,215), and far less once the name, the content area and any other TLV of the entry are counted. | Section 6.9. |
 | Snapshot metadata TLVs | 65,535 per snapshot | `meta_count`, section 6.13. |
-| Ref name | 1 to 40 bytes | Section 6.17. |
-| Disc label | 64 bytes, in the superblock and in the DISCS row alike | Sections 7.5 and 11.3. |
+| Ref name | 1 to 40 bytes | Section 6.15. |
+| Disc label | 64 bytes, in the superblock and in the DISCS row alike | Sections 7.4 and 10.3. |
 | Run sequence number | 1 to 9,999,999,999 | The 10-digit run directory name, section 8.3. |
 | Objects per run | 2^32 - 1 | `object_count`, section 10.1, is u32, so this is the limit INDEX can index; a writer refuses to pack a run past it. |
 | File size | 2^64 - 1 bytes | Every size field is u64, section 2.1. |
-| Disc capacity | 2^64 - 1 sectors of 2048 bytes, a physical medium unit. | Section 7.5. |
-| FEC geometry | `k = 231`, `m = 23` | Section 10.1. |
+| Disc capacity | 2^64 - 1 sectors of 2048 bytes, a physical medium unit. | Section 7.4. |
+| FEC geometry | `k = 231`, `m = 23` | Sections 7.5 and 9.1. |
 | On-disc object name | 68 characters | Section 3.4. |
 | Any on-disc name | 126 characters | Section 8.8. |
 | Any on-disc path | under 220 characters | Section 8.8. |
 
-The host limits of the burn plan, the shelf note and the host filesystems
-are not in this table. The operations document holds them.
+The host limits of the capacity and the host filesystems are not in this
+table. The operations document holds them.
 
 ### 2.10 Trust boundaries and safety invariants
 
 - Bytes read from a disc are untrusted until the content id verifies.
-- A local index is untrusted. Every cache answer is confirmed against INDEX
-  before it is used to drop data.
+- The host catalog is untrusted. Every catalog answer is confirmed against
+  INDEX before it is used to drop data.
 - Names inside a tree object are untrusted.
 - A symlink target is data. A restorer never traverses it.
 - The restore safety invariants are host behaviour. The operations document
@@ -1212,7 +1212,7 @@ below is mandatory.
 | TLV records | `tlv_type` ascending, then payload bytes ascending. |
 | Blob entries | File order. |
 | INDEX Objects rows and Prereqs rows | Content id ascending. |
-| Ref records | Section 6.17. |
+| Ref records | Section 6.15. |
 | DISCS rows | `run_seq` ascending, then `disc_uuid` bytes ascending. |
 
 Every "ascending" in this table, and everywhere else in this document, is an
@@ -1245,15 +1245,15 @@ burn and never adds to it.
 
 ### 7.2 The run and the FEC terms
 
-A run is one execution of one burn plan. It is the unit of packing, of the
+A run is what one pack writes for one disc. It is the unit of packing, of the
 object index, of the Reed-Solomon parity and of the catalog copy.
 
 A run is self-contained: it carries its own header in two files, its own
 INDEX, and, when `fec_scheme` is 1, its own parity.
 
 **FEC terms.** This table is a complete forward definition of every term that
-sections 7.4 to 7.8 use. Section 10.1 repeats it with the burst bound and the
-encoding order.
+sections 7.4 to 7.6 and section 9 use. Section 9.1 repeats it with the burst
+bound and the encoding order.
 
 | Term | Meaning |
 |---|---|
@@ -1276,10 +1276,10 @@ medium. A block index is a position inside the stream, never a medium address.
 
 The parity covers exactly the bytes of the FEC stream: the run's stream
 files, in INDEX's file order, zero-padded per file to a 2048 boundary.
-Filesystem metadata, such as a UDF directory record or File Entry block, is
-never part of the stream and is never covered by the parity. The parity
-therefore does not depend on where the filesystem places a file, or on
-whether UDF embeds a small file inside its File Entry.
+Filesystem metadata, such as a directory record, is never part of the stream
+and is never covered by the parity. The parity therefore does not depend on
+where the filesystem places a file, or on whether the filesystem stores a
+small file inside its own metadata blocks.
 
 ### 7.4 Disc superblock
 
@@ -1409,42 +1409,50 @@ the reader reads `RUN2.bin` and applies the same checks.
 ---
 ## 8. Filesystem and the volume tree
 
-### 8.1 The UDF volume
+### 8.1 Filesystem requirements
 
-The filesystem of a disc is pure UDF at revision 2.01, block size 2048. There
-is no ISO 9660 bridge, no Joliet and no Rock Ridge. The format stores no
-filesystem field; the UDF volume itself states its revision.
+The format does not fix the filesystem type of a disc, and it stores no
+filesystem field. A filesystem conforms when it meets every requirement
+below:
 
-The image is built with
-`mkudffs`, and these options are normative: `--media-type=hd`,
-`--blocksize=2048`, `--udfrev=2.01`, `--uid=0`, `--gid=0`, `--mode=0555`,
-`--bootarea=erase`, and no sparing table, that is no `--spartable`. The label
-comes from the writer. A sparing table is forbidden because it adds a second
-logical-to-physical indirection.
+1. The block size is 2048 bytes.
+2. Every name is kept in full. No name is truncated. The longest name is an
+   object name of 68 characters (section 3.5).
+3. The case of every name is kept, or the case is folded so that no two names
+   collide. A reader accepts a case-folded fixed name: it tries the exact name
+   first, then a match without case in the listing of that directory.
+4. Every byte that NoahsArk writes is an ordinary file under `/NOAHSARK/`
+   (section 8.2).
+5. A reader reads every file by name through the mounted filesystem.
 
-The image length is `capacity_sectors` (section 7.4) rounded down to a
-multiple of 16 sectors.
+A disc whose filesystem does not mount counts as lost: this format defines no
+recovery from the raw medium.
 
-`mkudffs` places the UDF anchors at fixed, standard-mandated positions of the
-image. NoahsArk never writes an anchor itself.
+The recommended volume is pure UDF at revision 2.01, built with `mkudffs`.
+ISO 9660 with Rock Ridge also conforms, and so does ISO 9660 at level 4.
+Joliet alone does not conform, because it cuts the names. A UDF bridge on an
+ISO 9660 volume does not conform, because its two directory trees can
+disagree, and a reader reads only one of them.
 
-How much of the image a burner sends to the medium is host behaviour. The
-operations document states it. The mandatory anchor near the start of the
-volume is part of the used prefix of the image, so a disc that received the
-used prefix only still mounts.
+How a writer builds the volume is host behaviour: the tool, its options, the
+image length, and how much of the image a burner sends to the medium. The
+operations document holds it, under the heading "Disc filesystems and image
+building".
 
-The exact UDF metadata bytes depend on the `mkudffs` version. Two writers that
-hold every rule above still differ inside those bytes when their `mkudffs`
-versions differ. The run header records the writer in `tool_version`
-(section 7.5). A golden vector therefore covers the files
-NoahsArk itself writes and the parity computed over the actual FEC stream,
-never the UDF metadata bytes.
+A writer never rewrites or extends a burned disc, whatever the filesystem
+type: one disc holds one run.
 
-UDF may embed the data of a small file inside its File Entry block. The
-format allows that. No rule of this document depends on the medium address of
-a file, a writer adds no padding to prevent the embedding, and a reader reads
-every file by name through the filesystem. A disc whose filesystem does not
-mount counts as lost: this format defines no recovery from the raw medium.
+The filesystem metadata bytes depend on the tool that builds the volume and on
+its version. Two writers that hold every rule of this document still differ
+inside those bytes. The run header records the writer in `tool_version`
+(section 7.5). A golden vector therefore covers the files NoahsArk itself
+writes and the parity computed over the actual FEC stream, never the
+filesystem metadata bytes.
+
+A filesystem may store the data of a small file inside its own metadata
+blocks. The format allows that. No rule of this document depends on the
+medium address of a file, and a writer adds no padding to prevent the
+embedding.
 
 ### 8.2 Files at the volume root
 
@@ -1744,6 +1752,8 @@ Invariants:
 
 ### 8.8 Name and path budget
 
+These limits hold on every filesystem that meets section 8.1.
+
 | Item | Limit |
 |---|---|
 | Object name | 68 characters, charset `[0-9a-f]`. Never stripped. |
@@ -1751,7 +1761,7 @@ Invariants:
 | Any on-disc path | under 220 characters |
 | Forbidden characters in a name | `< > : " / \ \| ? *`, control characters, a trailing space, a trailing dot, and the reserved device names `CON PRN AUX NUL COM1-9 LPT1-9` |
 
-Never rely on case to distinguish two objects.
+Never rely on case to distinguish two names.
 
 ---
 ## 9. Forward error correction
@@ -2340,9 +2350,10 @@ reports the others.
 Among several discs of one repository, the newest catalog is the one whose
 run header has the latest `created_sec`, then `created_nsec`.
 
-A local index is an accelerator only. Everything in it is derived from discs
-and is rebuildable. Every command behaves the same, apart from speed, with the
-local index deleted.
+A host keeps byte copies of these tables and objects in its own catalog.
+That catalog is host state. A reader of this format never needs it: every
+rule of this document reads the disc alone. After the loss of the host, the
+host builds its catalog again from the discs.
 
 ### 11.4 Conformance
 
@@ -2354,7 +2365,7 @@ A conforming reader of format major 1:
    whose `hash_algo` it does not implement, naming the code; it reads
    compression ids 0 and 1 and refuses any other id, naming it;
 3. finds every object through the filesystem, the run header, INDEX and the
-   catalog, with no local index and no disc other than the ones the plan
+   catalog, with no host catalog and no disc other than the ones the plan
    names; a disc whose filesystem does not mount counts as lost;
 4. verifies every CRC, every hash of section 2.7 and every content id before it
    uses the bytes;
