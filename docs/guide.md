@@ -90,7 +90,7 @@ $ noahsark init --source=/srv/data
 initialized repository /srv/ark/repo
 source: /srv/data
 device: /dev/sr0
-next: make the first backup now, run: noahsark commit
+next: noahsark status
 ```
 
 `init` makes the current directory the repository. It writes the source
@@ -150,6 +150,13 @@ interval, for example one month. To leave paths out, give
 the source root.
 
 ### Run status, and paste its block
+
+Each command that changes state ends with the line `next: noahsark status`.
+That line is only a pointer. `status` is the one command that prints the
+lines to run next. A command that changed nothing, because it refused or
+because you answered no, prints no `next:` line. `restore`, `ls`, `log`,
+`image build`, `--dry-run`, `verify --no-mark`, and a `verify` that is not
+counted print none either.
 
 `status` prints the staged total, one line for each disc, and one `next:`
 block. The block holds the lines to run next, with real paths. The lines
@@ -294,7 +301,6 @@ nothing:
 $ noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
 disc 0 "2026-09-14 disc 0": 8 items, ok
 not counted: this is not a disc
-next: noahsark status
 ```
 
 Then load a blank disc, and burn the folder:
@@ -341,7 +347,6 @@ sudo umount /mnt/ark && eject /dev/sr0
 $ noahsark verify --no-mark /mnt/ark
 disc 0 "2026-09-14 disc 0": 8 items, ok
 not marked
-next: noahsark status
 ```
 
 For a disc that you burned from the folder, burn the folder again with the
@@ -413,6 +418,7 @@ Then run `gc`. It asks no question.
 ```
 $ noahsark gc
 gc: freed 8 item(s), 3001350 bytes
+next: noahsark status
 ```
 
 Before the 7 days pass, `gc` holds the data and names the date:
@@ -421,6 +427,7 @@ Before the 7 days pass, `gc` holds the data and names the date:
 $ noahsark gc
 gc: freed 0 item(s), 0 bytes
 gc: disc 0: too soon; 8 item(s) held until 2026-09-21
+next: noahsark status
 ```
 
 After `gc`, the disc is `on disc only`. `gc --force-after=1d` shortens the
@@ -556,6 +563,7 @@ repository directory. `--source` is the source root for your next commits.
 $ sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
 $ noahsark --repo=/srv/ark/repo recover --source=/srv/data --disc=/mnt/ark
 recover: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230) named by another disc, not yet given
+next: noahsark status
 $ sudo umount /mnt/ark && eject /dev/sr0
 ```
 
@@ -664,7 +672,7 @@ warning: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): on d
 the tool stops trusting this disc
 Continue? [y/N] y
 disc 0 "2026-09-14 disc 0": marked lost; 8 item(s) need a new commit
-next: noahsark commit
+next: noahsark status
 ```
 
 For a disc that `gc` did not free yet, the items return to staged at
