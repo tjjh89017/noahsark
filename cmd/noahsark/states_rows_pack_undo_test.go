@@ -54,6 +54,27 @@ func init() {
 			stdout: []string{"nothing changed"},
 			end:    stage.DiscPacked, word: stage.WordPacked,
 		},
+		// Row 12: a later disc exists. After the undo of the later disc,
+		// the older disc is the newest again.
+		stateCase{
+			row: "12", name: "pack undo of an older disc",
+			start: stage.DiscPacked, setup: secondDiscSetup,
+			args:   []string{"--yes", "pack", "--undo", "0"},
+			exit:   1,
+			stderr: []string{"disc 0 is not the newest disc; pack cannot be undone\n"},
+			absent: []string{"warning:"},
+			end:    stage.DiscPacked, word: stage.WordPacked,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				fx.mustRun(t, "--yes", "pack", "--undo", "1")
+				fx.mustRun(t, "--yes", "pack", "--undo", "0")
+				if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscUndone {
+					t.Errorf("disc 0 is %s, want undone", got)
+				}
+				if n := countByState(t, fx.repo, stage.Packed); n != 0 {
+					t.Errorf("%d item(s) still Packed after both undos", n)
+				}
+			},
+		},
 		refused("13", "pack undo of a burned disc", stage.DiscBurned, "has a burn record", stage.WordBurned),
 		refused("14", "pack undo of a verified disc", stage.DiscVerified, "is no longer packed", stage.WordClean),
 		refused("14", "pack undo of an on disc only disc", stage.DiscOnDiscOnly, "is no longer packed", stage.WordOnDisc),
@@ -82,6 +103,19 @@ func init() {
 			end:    stage.DiscPacked, word: stage.WordPacked,
 		},
 	)
+}
+
+// secondDiscSetup adds a file to the source of fx, commits it, and packs
+// disc 1. {UUID1} is the uuid of disc 1, and {ROOT1} is its disc root.
+func secondDiscSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(fx.src, "second.txt"), []byte("content of the second disc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	packOut := fx.mustRun(t, "pack", "--capacity=64MiB")
+	fx.set("{UUID1}", packedDiscUUID(t, packOut))
+	fx.set("{ROOT1}", packedTreeDir(t, fx.repo, packOut))
 }
 
 // undoStdout runs "--yes pack --undo DISC" on the repository of fx and
@@ -198,37 +232,6 @@ func TestPackUndoKeepsTheOutDirectory(t *testing.T) {
 	wantUndoneDiscGone(t, repo, u)
 	if n, err := countFiles(outDir); err != nil || n == 0 {
 		t.Errorf("the --out directory lost its files: %d files, %v", n, err)
-	}
-}
-
-// TestPackUndoRefusesAnOlderDisc is row 12: a later disc exists. After
-// the undo of the later disc, the older disc is the newest again.
-func TestPackUndoRefusesAnOlderDisc(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscPacked)
-	if err := os.WriteFile(filepath.Join(fx.src, "second.txt"), []byte("content of the second disc"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	fx.mustRun(t, "commit", fx.src)
-	fx.mustRun(t, "pack", "--capacity=64MiB")
-
-	code, out := fx.run(t, "--yes", "pack", "--undo", "0")
-	if code != 1 || !strings.Contains(out, "disc 0 is not the newest disc; pack cannot be undone") {
-		t.Fatalf("pack --undo 0: exit %d, want 1 and the refusal: %s", code, out)
-	}
-	if strings.Contains(out, "warning:") || strings.Contains(out, nextStatusLine) {
-		t.Errorf("a refusal printed the warning or the next line: %s", out)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscPacked {
-		t.Errorf("disc 0 is %s after the refusal, want packed", got)
-	}
-
-	fx.mustRun(t, "--yes", "pack", "--undo", "1")
-	fx.mustRun(t, "--yes", "pack", "--undo", "0")
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscUndone {
-		t.Errorf("disc 0 is %s, want undone", got)
-	}
-	if n := countByState(t, fx.repo, stage.Packed); n != 0 {
-		t.Errorf("%d item(s) still Packed after both undos", n)
 	}
 }
 

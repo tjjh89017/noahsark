@@ -115,27 +115,6 @@ func TestLogRefToASnapshotNotHeld(t *testing.T) {
 	}
 }
 
-// TestLogPartialSnapshot checks that log prints every line, then one
-// partial line for each partial snapshot to standard error, and exits 1.
-func TestLogPartialSnapshot(t *testing.T) {
-	repo := commitWithRef(t, "latest")
-	full := fullSnapshotID(t, repo)
-	if err := os.WriteFile(catalog.StatePath(repo), []byte(full+" partial\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	id := full[len(full)-64 : len(full)-52]
-	for _, args := range [][]string{{"log"}, {"log", "latest"}} {
-		code, out, errOut := runLs(t, repo, args...)
-		if code != 1 || !strings.HasPrefix(out, id+"\t") {
-			t.Fatalf("%q: exit %d, output %q; want 1 and the line", args, code, out)
-		}
-		want := "noahsark: log: snapshot " + id + " is partial; run recover with more discs\n"
-		if errOut != want {
-			t.Fatalf("%q: stderr %q, want %q", args, errOut, want)
-		}
-	}
-}
-
 // TestLogEmptyRepository checks that log in a repository with no
 // snapshot prints nothing and exits 0, and that a SNAPSHOT there matches
 // nothing.
@@ -165,15 +144,6 @@ func TestLogUsageErrorsExitTwo(t *testing.T) {
 		if code != 2 || out != "" {
 			t.Fatalf("%q: exit %d, output %q, stderr %q; want 2", args, code, out, errOut)
 		}
-	}
-}
-
-// TestLogNoRepository checks that log with no repository is a usage
-// error that names recover.
-func TestLogNoRepository(t *testing.T) {
-	code, out := runCmd(t, "log")
-	if want := "noahsark: log: no repository; run recover first, one time for each disc\n"; code != 2 || out != want {
-		t.Fatalf("log with no repository: exit %d, output %q; want 2 and %q", code, out, want)
 	}
 }
 

@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
+	"strconv"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -160,19 +160,166 @@ func init() {
 			stdout: []string{"nothing changed"},
 			end:    stage.DiscVerified, word: stage.WordClean,
 		},
+		// Row 57 with the count: the items return to staged, the plan
+		// directory is removed, and the catalog data of the disc stays.
+		stateCase{
+			row: "57", name: "verified disc marked lost, the count",
+			start: stage.DiscVerified, setup: countItemsSetup,
+			args:   []string{"--force-yes", "disc", "lost", "0"},
+			stdout: []string{"{DISC}: marked lost; {N} item(s) returned to staged\n"}, next: true,
+			end: stage.DiscLost,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				u := fx.uuidBytes(t)
+				if got := countByState(t, fx.repo, stage.Staged); got != itemCount(t, fx) {
+					t.Errorf("%d staged items, want %d", got, itemCount(t, fx))
+				}
+				if _, err := os.Lstat(testLayout(t, fx.repo).planDir(u)); !os.IsNotExist(err) {
+					t.Errorf("plan directory stays: %v", err)
+				}
+				c, err := catalog.Open(fx.repo)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := c.IndexForDisc(u); err != nil {
+					t.Errorf("catalog INDEX of the lost disc: %v", err)
+				}
+			},
+		},
+		// Row 58 with the count: each freed item is lost.
+		stateCase{
+			row: "58", name: "on disc only disc marked lost, the count",
+			start: stage.DiscOnDiscOnly, setup: countItemsSetup,
+			args:   []string{"--force-yes", "disc", "lost", "0"},
+			stdout: []string{"{DISC}: marked lost; {N} item(s) need a new commit\n"}, next: true,
+			end: stage.DiscLost, word: stage.WordLost,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if got := countByState(t, fx.repo, stage.Lost); got != itemCount(t, fx) {
+					t.Errorf("%d lost items, want %d", got, itemCount(t, fx))
+				}
+			},
+		},
+		// Row 61 after a real disc lost: the disc is burned with no
+		// verified time, and each item is burned again.
+		stateCase{
+			row: "61", name: "verified disc found, the count",
+			start: stage.DiscVerified, setup: lostSetup,
+			args:   []string{"--yes", "disc", "lost", "--undo", "0"},
+			stderr: lostUndoWarning(stage.DiscBurned),
+			stdout: []string{"{DISC}: lost mark removed; {N} item(s) back on this disc; verify it now\n"}, next: true,
+			end: stage.DiscBurned, word: stage.WordBurned,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if d := discState(t, fx.repo, fx.uuid); !d.VerifiedTime.IsZero() {
+					t.Errorf("verified time %v, want none", d.VerifiedTime)
+				}
+				if words := itemWords(t, fx.repo, fx.uuid); words[stage.WordBurned] != itemCount(t, fx) {
+					t.Errorf("item words %v, want %d burned", words, itemCount(t, fx))
+				}
+			},
+		},
+		// Row 61 when a later pack took the items: they stay on the new
+		// disc.
+		stateCase{
+			row: "61", name: "verified disc found, a later pack took the items",
+			start: stage.DiscVerified,
+			setup: func(t *testing.T, fx *discFixture) {
+				lostSetup(t, fx)
+				fx.mustRun(t, "pack", "--capacity=64MiB")
+			},
+			args:   []string{"--yes", "disc", "lost", "--undo", "0"},
+			stdout: []string{"{DISC}: lost mark removed; 0 item(s) back on this disc; verify it now\n"}, next: true,
+			end: stage.DiscBurned,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if n := len(itemWords(t, fx.repo, fx.uuid)); n != 0 {
+					t.Errorf("the found disc has %d item word(s), want none", n)
+				}
+			},
+		},
+		stateCase{
+			row: "62", name: "on disc only disc found",
+			start: stage.DiscOnDiscOnly, setup: lostSetup,
+			args:   []string{"--yes", "disc", "lost", "--undo", "0"},
+			stderr: lostUndoWarning(stage.DiscOnDiscOnly), absent: []string{confirmQuestion},
+			stdout: []string{"{DISC}: lost mark removed; {N} item(s) back on this disc; verify it now\n"}, next: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if words := itemWords(t, fx.repo, fx.uuid); words[stage.WordOnDisc] != itemCount(t, fx) {
+					t.Errorf("item words %v, want %d on-disc", words, itemCount(t, fx))
+				}
+			},
+		},
+		stateCase{
+			row: "62", name: "on disc only disc found, answer yes",
+			start: stage.DiscOnDiscOnly, setup: lostSetup,
+			args:   []string{"disc", "lost", "--undo", "0"},
+			stdin:  stdinYes,
+			stderr: withQuestion(lostUndoWarning(stage.DiscOnDiscOnly)),
+			stdout: []string{"{DISC}: lost mark removed; {N} item(s) back on this disc; verify it now\n"}, next: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+		},
+		stateCase{
+			row: "63", name: "missing disc found",
+			start: stage.DiscMissing, setup: lostSetup,
+			args:   []string{"--yes", "disc", "lost", "--undo", "{UUID}"},
+			stderr: lostUndoWarning(stage.DiscMissing), absent: []string{confirmQuestion},
+			stdout: []string{"{DISC}: lost mark removed; give it to recover\n"}, next: true,
+			end: stage.DiscMissing,
+		},
+		stateCase{
+			row: "64", name: "on disc only disc found, answer no",
+			start: stage.DiscOnDiscOnly, setup: lostSetup,
+			args:  []string{"disc", "lost", "--undo", "0"},
+			stdin: stdinNo, exit: 1,
+			stderr: withQuestion(lostUndoWarning(stage.DiscOnDiscOnly)),
+			stdout: []string{"nothing changed"},
+			end:    stage.DiscLost,
+		},
 	)
+	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscBurned} {
+		registerStateCases(stateCase{
+			row: "65", name: s.String() + " disc found",
+			start: s, setup: lostSetup,
+			args:   []string{"--force-yes", "disc", "lost", "--undo", "0"},
+			exit:   1,
+			stderr: []string{"disc {SEQ} had no verified record when it was marked lost; its items are staged again; the lost mark stays\n"},
+			absent: []string{"warning:"},
+			end:    stage.DiscLost,
+		})
+	}
 }
 
-// lostFromState returns a repository whose one disc was in state when
-// disc lost marked it.
-func lostFromState(t *testing.T, state stage.DiscState) *discFixture {
+// lostSetup marks the disc of fx lost with disc lost, from the state
+// that repoWithDisc built. It sets {N} to the number of items of the
+// disc in the item state that disc lost changes: Packed for a packed,
+// burned or verified disc, OnDisc for an on disc only disc.
+func lostSetup(t *testing.T, fx *discFixture) {
 	t.Helper()
-	fx := repoWithDisc(t, state)
+	before := discState(t, fx.repo, fx.uuid).State
+	countItemsSetup(t, fx)
 	fx.mustRun(t, "--force-yes", "disc", "lost", fx.uuid)
-	if got := discState(t, fx.repo, fx.uuid); got.State != stage.DiscLost || got.BeforeLost != state {
-		t.Fatalf("disc state %s before lost %s, want lost before lost %s", got.State, got.BeforeLost, state)
+	if got := discState(t, fx.repo, fx.uuid); got.State != stage.DiscLost || got.BeforeLost != before {
+		t.Fatalf("disc state %s before lost %s, want lost before lost %s", got.State, got.BeforeLost, before)
 	}
-	return fx
+}
+
+// countItemsSetup sets {N} to the number of Packed items, or to the
+// number of OnDisc items when no item is Packed.
+func countItemsSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	n := countByState(t, fx.repo, stage.Packed)
+	if n == 0 {
+		n = countByState(t, fx.repo, stage.OnDisc)
+	}
+	fx.set("{N}", strconv.Itoa(n))
+}
+
+// itemCount is the {N} number of countItemsSetup.
+func itemCount(t *testing.T, fx *discFixture) int {
+	t.Helper()
+	n, err := strconv.Atoi(fx.vars["{N}"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // wantLines fails when out does not hold each of want, in order. out is
@@ -180,45 +327,6 @@ func lostFromState(t *testing.T, state stage.DiscState) *discFixture {
 func wantLines(t *testing.T, out string, want ...string) {
 	t.Helper()
 	wantInOrder(t, "output", out, want, func(s string) string { return s })
-}
-
-// TestDiscLostCounts checks the item count of rows 57 and 58, the item
-// records, the removal of the plan directory, and that the catalog data
-// of the disc stays.
-func TestDiscLostCounts(t *testing.T) {
-	t.Run("row 57", func(t *testing.T) {
-		fx := repoWithDisc(t, stage.DiscVerified)
-		n := countByState(t, fx.repo, stage.Packed)
-		if n == 0 {
-			t.Fatal("the fixture disc has no item")
-		}
-		layout := testLayout(t, fx.repo)
-		u := fx.uuidBytes(t)
-		out := fx.mustRun(t, "--force-yes", "disc", "lost", "0")
-		wantLines(t, out, fmt.Sprintf("%s: marked lost; %d item(s) returned to staged\n", fx.name(), n), nextStatusLine)
-		if got := countByState(t, fx.repo, stage.Staged); got != n {
-			t.Errorf("%d staged items, want %d", got, n)
-		}
-		if _, err := os.Lstat(layout.planDir(u)); !os.IsNotExist(err) {
-			t.Errorf("plan directory stays: %v", err)
-		}
-		c, err := catalog.Open(fx.repo)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := c.IndexForDisc(u); err != nil {
-			t.Errorf("catalog INDEX of the lost disc: %v", err)
-		}
-	})
-	t.Run("row 58", func(t *testing.T) {
-		fx := repoWithDisc(t, stage.DiscOnDiscOnly)
-		n := countByState(t, fx.repo, stage.OnDisc)
-		out := fx.mustRun(t, "--force-yes", "disc", "lost", "0")
-		wantLines(t, out, fmt.Sprintf("%s: marked lost; %d item(s) need a new commit\n", fx.name(), n), nextStatusLine)
-		if got := countByState(t, fx.repo, stage.Lost); got != n {
-			t.Errorf("%d lost items, want %d", got, n)
-		}
-	})
 }
 
 // TestDiscLostPackOut checks that disc lost of a pack --out disc removes
@@ -232,81 +340,5 @@ func TestDiscLostPackOut(t *testing.T) {
 	}
 	if _, err := os.Stat(fx.root); err != nil {
 		t.Errorf("the pack --out directory is gone: %v", err)
-	}
-}
-
-// TestDiscLostUndoRows checks rows 61 to 63 and 65 with the state that
-// the disc had when disc lost marked it.
-func TestDiscLostUndoRows(t *testing.T) {
-	t.Run("row 61", func(t *testing.T) {
-		fx := repoWithDisc(t, stage.DiscVerified)
-		n := countByState(t, fx.repo, stage.Packed)
-		fx.mustRun(t, "--force-yes", "disc", "lost", "0")
-		out := fx.mustRun(t, "--yes", "disc", "lost", "--undo", "0")
-		wantLines(t, out, fmt.Sprintf("warning: %s (%s): lost -> burned\n", fx.name(), fx.uuid))
-		wantLines(t, out,
-			fmt.Sprintf("%s: lost mark removed; %d item(s) back on this disc; verify it now\n", fx.name(), n),
-			nextStatusLine)
-		d := discState(t, fx.repo, fx.uuid)
-		if d.State != stage.DiscBurned || !d.VerifiedTime.IsZero() {
-			t.Errorf("disc state %s, verified time %v, want burned with no verified time", d.State, d.VerifiedTime)
-		}
-		if words := itemWords(t, fx.repo, fx.uuid); words[stage.WordBurned] != n || len(words) != 1 {
-			t.Errorf("item words %v, want %d burned", words, n)
-		}
-	})
-	t.Run("row 61, a later pack took the items", func(t *testing.T) {
-		fx := repoWithDisc(t, stage.DiscVerified)
-		fx.mustRun(t, "--force-yes", "disc", "lost", "0")
-		fx.mustRun(t, "pack", "--capacity=64MiB")
-		out := fx.mustRun(t, "--yes", "disc", "lost", "--undo", "0")
-		wantLines(t, out, fmt.Sprintf("%s: lost mark removed; 0 item(s) back on this disc; verify it now\n", fx.name()))
-		if n := len(itemWords(t, fx.repo, fx.uuid)); n != 0 {
-			t.Errorf("the found disc has %d item word(s), want none", n)
-		}
-	})
-	t.Run("row 62", func(t *testing.T) {
-		fx := lostFromState(t, stage.DiscOnDiscOnly)
-		n := countByState(t, fx.repo, stage.Lost)
-		out := fx.mustRun(t, "--yes", "disc", "lost", "--undo", "0")
-		wantLines(t, out,
-			fmt.Sprintf("warning: %s (%s): lost -> on disc only\n", fx.name(), fx.uuid),
-			"the tool trusts this disc again only after a good check; you must run verify on it\n")
-		wantLines(t, out,
-			fmt.Sprintf("%s: lost mark removed; %d item(s) back on this disc; verify it now\n", fx.name(), n),
-			nextStatusLine)
-		if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscOnDiscOnly {
-			t.Errorf("disc state %s, want on disc only", got)
-		}
-		if words := itemWords(t, fx.repo, fx.uuid); words[stage.WordOnDisc] != n || len(words) != 1 {
-			t.Errorf("item words %v, want %d on-disc", words, n)
-		}
-	})
-	t.Run("row 63", func(t *testing.T) {
-		fx := lostFromState(t, stage.DiscMissing)
-		out := fx.mustRun(t, "--yes", "disc", "lost", "--undo", fx.uuid)
-		wantLines(t, out, fmt.Sprintf("warning: %s (%s): lost -> missing\n", fx.name(), fx.uuid))
-		wantLines(t, out,
-			fmt.Sprintf("%s: lost mark removed; give it to recover\n", fx.name()),
-			nextStatusLine)
-		if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscMissing {
-			t.Errorf("disc state %s, want missing", got)
-		}
-	})
-	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscBurned} {
-		t.Run("row 65, "+s.String(), func(t *testing.T) {
-			fx := lostFromState(t, s)
-			code, out := fx.run(t, "--force-yes", "disc", "lost", "--undo", "0")
-			if code != 1 {
-				t.Fatalf("exit %d, want 1: %s", code, out)
-			}
-			wantLines(t, out, "disc 0 had no verified record when it was marked lost; its items are staged again; the lost mark stays\n")
-			if strings.Contains(out, "warning:") || strings.Contains(out, nextStatusLine) {
-				t.Errorf("output holds a warning or the next line: %s", out)
-			}
-			if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscLost {
-				t.Errorf("disc state %s, want lost", got)
-			}
-		})
 	}
 }

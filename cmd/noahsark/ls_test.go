@@ -215,22 +215,10 @@ func TestLsSnapshotArgument(t *testing.T) {
 	}
 }
 
-// TestLsPartialSnapshot checks that a snapshot that the completeness
-// file marks partial, or whose tree the catalog does not hold, exits 1
-// and names recover.
+// TestLsPartialSnapshot checks that a snapshot whose tree the catalog
+// does not hold exits 1 and names recover. The state table test covers a
+// snapshot that the completeness file marks partial.
 func TestLsPartialSnapshot(t *testing.T) {
-	t.Run("marked partial", func(t *testing.T) {
-		repo, _ := initAndCommit(t)
-		full := fullSnapshotID(t, repo)
-		if err := os.WriteFile(catalog.StatePath(repo), []byte(full+" partial\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		code, out, errOut := runLs(t, repo, "ls", defaultRefName())
-		want := "noahsark: ls: snapshot " + full[len(full)-64:len(full)-52] + " is partial; run recover with more discs\n"
-		if code != 1 || out != "" || errOut != want {
-			t.Fatalf("ls: exit %d, output %q, stderr %q; want 1 and %q", code, out, errOut, want)
-		}
-	})
 	t.Run("tree not held", func(t *testing.T) {
 		repo, _ := initAndCommit(t)
 		removeTree(t, repo, "sub")
@@ -285,15 +273,6 @@ func TestLsUsageErrorsExitTwo(t *testing.T) {
 		if code != 2 || out != "" {
 			t.Fatalf("%q: exit %d, output %q, stderr %q; want 2", args, code, out, errOut)
 		}
-	}
-}
-
-// TestLsNoRepository checks that ls with no repository is a usage
-// error that names recover.
-func TestLsNoRepository(t *testing.T) {
-	code, out := runCmd(t, "ls", "latest")
-	if want := "noahsark: ls: no repository; run recover first, one time for each disc\n"; code != 2 || out != want {
-		t.Fatalf("ls with no repository: exit %d, output %q; want 2 and %q", code, out, want)
 	}
 }
 

@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +56,162 @@ func init() {
 			stdout: []string{gcFreedNone}, absent: []string{"gc: disc"}, next: true,
 			end: stage.DiscLost,
 		},
+		// Row 52 with no --force-after: gc runs eight days after the
+		// verify, frees every item of the disc, and names the exact items
+		// and bytes.
+		stateCase{
+			row: "52", name: "verified disc, eight days later",
+			start: stage.DiscVerified, setup: gcClockSetup(8 * 24 * time.Hour),
+			args:   []string{"gc"},
+			stdout: []string{"gc: freed {ITEMS} item(s), {BYTES} bytes\n"}, exact: true, next: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			check: func(t *testing.T, fx *discFixture, _, stderr string) {
+				if stderr != "" {
+					t.Errorf("stderr %q, want none", stderr)
+				}
+				layout := testLayout(t, fx.repo)
+				if files := listFilesUnder(t, layout.chunksDir()); len(files) != 0 {
+					t.Fatalf("staging chunks after gc: %v, want none", files)
+				}
+				if _, err := os.Lstat(layout.planDir(fx.uuidBytes(t))); !os.IsNotExist(err) {
+					t.Fatalf("plan directory after gc: %v, want it removed", err)
+				}
+			},
+		},
+		// Row 53: gc runs one day after the verify, holds every item, and
+		// names the local date at the end of the wait.
+		stateCase{
+			row: "53", name: "verified disc, one day later",
+			start: stage.DiscVerified, setup: gcClockSetup(24 * time.Hour),
+			args:   []string{"gc"},
+			stdout: []string{gcFreedNone, "gc: disc {SEQ}: too soon; {ITEMS} item(s) held until {UNTIL}\n"}, exact: true, next: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: stderrIs(""),
+		},
+		// Row 54: the catalog tables of the disc are removed. gc skips
+		// every item of the disc, keeps each chunk file, and exits 1.
+		stateCase{
+			row: "54", name: "no INDEX of the disc in the catalog",
+			start: stage.DiscVerified, setup: gcRemoveTablesSetup,
+			args:   []string{"gc", "--force-after=0d"},
+			exit:   1,
+			stdout: []string{gcFreedNone, "gc: {ITEMS} item(s) skipped: disc {SEQ}'s table is not in the catalog\n"}, exact: true, next: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: allChecks(stderrIs(""), chunkFilesKept),
+		},
+		// Row 54 with no catalog directory: gc does not create the
+		// catalog directory again.
+		stateCase{
+			row: "54", name: "no catalog directory",
+			start: stage.DiscVerified,
+			setup: func(t *testing.T, fx *discFixture) {
+				if err := os.RemoveAll(testLayout(t, fx.repo).catalogDir()); err != nil {
+					t.Fatal(err)
+				}
+			},
+			args:   []string{"gc", "--force-after=0d"},
+			exit:   1,
+			stdout: []string{gcFreedNone, "skipped: disc {SEQ}'s table is not in the catalog\n"}, next: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if _, err := os.Stat(testLayout(t, fx.repo).catalogDir()); !os.IsNotExist(err) {
+					t.Fatalf("gc created the catalog directory: %v", err)
+				}
+			},
+		},
+		// Row 54 as a dry run: gc --dry-run exits 1 when gc would skip an
+		// item, and prints no next line.
+		stateCase{
+			row: "54", name: "dry run, no INDEX of the disc in the catalog",
+			start: stage.DiscVerified, setup: gcRemoveTablesSetup,
+			args:   []string{"gc", "--dry-run", "--force-after=0d"},
+			exit:   1,
+			stdout: []string{"gc: would free 0 item(s), 0 bytes\n", "gc: {ITEMS} item(s) skipped: disc {SEQ}'s table is not in the catalog\n"}, exact: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: stderrIs(""),
+		},
+		// Row 54a: the disc has one Packed item that its catalog INDEX
+		// does not list. gc frees no item of the disc and appends no
+		// Freed event.
+		stateCase{
+			row: "54a", name: "INDEX does not list an item",
+			start: stage.DiscVerified,
+			setup: func(t *testing.T, fx *discFixture) {
+				extra := object.ComputeID(format.ObjectKindChunk, []byte("an item that the INDEX does not list"))
+				logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := logs.Items.EnsureStaged(extra); err != nil {
+					t.Fatal(err)
+				}
+				if err := logs.Items.MarkPacked(1, fx.uuidBytes(t), extra); err != nil {
+					t.Fatal(err)
+				}
+				gcCountChunks(t, fx)
+			},
+			args:   []string{"gc", "--force-after=0d"},
+			exit:   1,
+			stdout: []string{gcFreedNone, "gc: 1 item(s) skipped: disc {SEQ}'s table does not list them\n"}, exact: true, next: true,
+			end: stage.DiscVerified, word: stage.WordClean,
+			check: allChecks(stderrIs(""), chunkFilesKept, func(t *testing.T, fx *discFixture, _, _ string) {
+				if n := countByState(t, fx.repo, stage.OnDisc); n != 0 {
+					t.Fatalf("%d item(s) OnDisc, want none", n)
+				}
+			}),
+		},
 	)
+}
+
+// gcClockSetup sets the fake clock to the verified time of the disc of
+// fx plus after. It sets {ITEMS} and {BYTES} to what gc can free, and
+// {UNTIL} to the local date when the 7-day wait ends.
+func gcClockSetup(after time.Duration) func(*testing.T, *discFixture) {
+	return func(t *testing.T, fx *discFixture) {
+		t.Helper()
+		verified := discState(t, fx.repo, fx.uuid).VerifiedTime
+		items, bytes := gcFreeableBytes(t, fx)
+		if items == 0 || bytes == 0 {
+			t.Fatalf("the fixture has %d item(s), %d bytes to free; want more", items, bytes)
+		}
+		fx.set("{ITEMS}", strconv.Itoa(items))
+		fx.set("{BYTES}", strconv.FormatUint(bytes, 10))
+		fx.set("{UNTIL}", verified.Add(7*24*time.Hour).Local().Format("2006-01-02"))
+		setFakeNow(t, func() time.Time { return verified.Add(after) })
+	}
+}
+
+// gcRemoveTablesSetup removes the catalog tables of the disc of fx. It
+// sets {ITEMS} to the items of the disc, and {CHUNKS} to the number of
+// chunk files.
+func gcRemoveTablesSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	items, _ := gcFreeableBytes(t, fx)
+	fx.set("{ITEMS}", strconv.Itoa(items))
+	c, err := catalog.Open(fx.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveDisc(fx.uuidBytes(t)); err != nil {
+		t.Fatal(err)
+	}
+	gcCountChunks(t, fx)
+}
+
+// gcCountChunks sets {CHUNKS} to the number of chunk files in staging.
+func gcCountChunks(t *testing.T, fx *discFixture) {
+	t.Helper()
+	fx.set("{CHUNKS}", strconv.Itoa(len(listFilesUnder(t, testLayout(t, fx.repo).chunksDir()))))
+}
+
+// chunkFilesKept is a check: staging holds the {CHUNKS} chunk files
+// that it held before gc.
+func chunkFilesKept(t *testing.T, fx *discFixture, _, _ string) {
+	t.Helper()
+	after := strconv.Itoa(len(listFilesUnder(t, testLayout(t, fx.repo).chunksDir())))
+	if after != fx.vars["{CHUNKS}"] {
+		t.Fatalf("chunk files %s after gc, want the %s kept", after, fx.vars["{CHUNKS}"])
+	}
 }
 
 // gcFreeableBytes sums the chunk files of the Packed items of the disc
@@ -73,148 +228,6 @@ func gcFreeableBytes(t *testing.T, fx *discFixture) (items int, bytes uint64) {
 	}
 	dir, _ := dirBytes(layout.planDir(fx.uuidBytes(t)))
 	return items, bytes + dir
-}
-
-// TestStatesRow52AfterSevenDays runs gc eight days after the verify, with
-// no --force-after. gc frees every item of the disc, and names the exact
-// items and bytes.
-func TestStatesRow52AfterSevenDays(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	verified := discState(t, fx.repo, fx.uuid).VerifiedTime
-	items, bytes := gcFreeableBytes(t, fx)
-	if items == 0 || bytes == 0 {
-		t.Fatalf("the fixture has %d item(s), %d bytes to free; want more", items, bytes)
-	}
-	setFakeNow(t, func() time.Time { return verified.Add(8 * 24 * time.Hour) })
-
-	out := fx.mustRun(t, "gc")
-	want := fmt.Sprintf("gc: freed %d item(s), %d bytes\nnext: noahsark status\n", items, bytes)
-	if out != want {
-		t.Fatalf("gc output %q, want %q", out, want)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscOnDiscOnly {
-		t.Fatalf("disc state %s, want on disc only", got)
-	}
-	layout := testLayout(t, fx.repo)
-	if files := listFilesUnder(t, layout.chunksDir()); len(files) != 0 {
-		t.Fatalf("staging chunks after gc: %v, want none", files)
-	}
-	if _, err := os.Lstat(layout.planDir(fx.uuidBytes(t))); !os.IsNotExist(err) {
-		t.Fatalf("plan directory after gc: %v, want it removed", err)
-	}
-}
-
-// TestStatesRow53NamesTheDate runs gc one day after the verify. gc holds
-// every item and names the local date at the end of the wait.
-func TestStatesRow53NamesTheDate(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	verified := discState(t, fx.repo, fx.uuid).VerifiedTime
-	items, _ := gcFreeableBytes(t, fx)
-	setFakeNow(t, func() time.Time { return verified.Add(24 * time.Hour) })
-
-	code, out := fx.run(t, "gc")
-	until := verified.Add(7 * 24 * time.Hour).Local().Format("2006-01-02")
-	want := fmt.Sprintf("gc: freed 0 item(s), 0 bytes\ngc: disc %d: too soon; %d item(s) held until %s\nnext: noahsark status\n", fx.seq, items, until)
-	if code != 0 || out != want {
-		t.Fatalf("gc: exit %d, output %q; want exit 0, output %q", code, out, want)
-	}
-}
-
-// TestStatesRow54NoIndexInTheCatalog removes the catalog tables of a
-// verified disc. gc skips every item of the disc and exits 1.
-func TestStatesRow54NoIndexInTheCatalog(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	items, _ := gcFreeableBytes(t, fx)
-	c, err := catalog.Open(fx.repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.RemoveDisc(fx.uuidBytes(t)); err != nil {
-		t.Fatal(err)
-	}
-	chunksBefore := listFilesUnder(t, testLayout(t, fx.repo).chunksDir())
-
-	code, out := fx.run(t, "gc", "--force-after=0d")
-	want := fmt.Sprintf("gc: freed 0 item(s), 0 bytes\ngc: %d item(s) skipped: disc %d's table is not in the catalog\nnext: noahsark status\n", items, fx.seq)
-	if code != 1 || out != want {
-		t.Fatalf("gc: exit %d, output %q; want exit 1, output %q", code, out, want)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscVerified {
-		t.Fatalf("disc state %s, want verified", got)
-	}
-	if after := listFilesUnder(t, testLayout(t, fx.repo).chunksDir()); len(after) != len(chunksBefore) {
-		t.Fatalf("chunk files %d after gc, want the %d kept", len(after), len(chunksBefore))
-	}
-}
-
-// TestStatesRow54NoCatalogDirectory removes the whole catalog. gc skips
-// the items, and does not create the catalog directory again.
-func TestStatesRow54NoCatalogDirectory(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	catalogDir := testLayout(t, fx.repo).catalogDir()
-	if err := os.RemoveAll(catalogDir); err != nil {
-		t.Fatal(err)
-	}
-	code, out := fx.run(t, "gc", "--force-after=0d")
-	if code != 1 || !strings.Contains(out, "skipped: disc 0's table is not in the catalog") {
-		t.Fatalf("gc: exit %d, output %q; want exit 1 and the skip line", code, out)
-	}
-	if _, err := os.Stat(catalogDir); !os.IsNotExist(err) {
-		t.Fatalf("gc created the catalog directory: %v", err)
-	}
-}
-
-// TestStatesRow54aIndexDoesNotListAnItem gives a verified disc one Packed
-// item that its catalog INDEX does not list. gc frees no item of the
-// disc, appends no Freed event, reports the skip and exits 1.
-func TestStatesRow54aIndexDoesNotListAnItem(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	extra := object.ComputeID(format.ObjectKindChunk, []byte("an item that the INDEX does not list"))
-	logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := logs.Items.EnsureStaged(extra); err != nil {
-		t.Fatal(err)
-	}
-	if err := logs.Items.MarkPacked(1, fx.uuidBytes(t), extra); err != nil {
-		t.Fatal(err)
-	}
-	chunksBefore := listFilesUnder(t, testLayout(t, fx.repo).chunksDir())
-
-	code, out := fx.run(t, "gc", "--force-after=0d")
-	want := fmt.Sprintf("gc: freed 0 item(s), 0 bytes\ngc: 1 item(s) skipped: disc %d's table does not list them\nnext: noahsark status\n", fx.seq)
-	if code != 1 || out != want {
-		t.Fatalf("gc: exit %d, output %q; want exit 1, output %q", code, out, want)
-	}
-	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscVerified {
-		t.Fatalf("disc state %s, want verified: no Freed event", got)
-	}
-	if n := countByState(t, fx.repo, stage.OnDisc); n != 0 {
-		t.Fatalf("%d item(s) OnDisc, want none", n)
-	}
-	if after := listFilesUnder(t, testLayout(t, fx.repo).chunksDir()); len(after) != len(chunksBefore) {
-		t.Fatalf("chunk files %d after gc, want the %d kept", len(after), len(chunksBefore))
-	}
-}
-
-// TestStatesRow54DryRunExitsOne checks that gc --dry-run exits 1 when gc
-// would skip an item, and prints no next line.
-func TestStatesRow54DryRunExitsOne(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	items, _ := gcFreeableBytes(t, fx)
-	c, err := catalog.Open(fx.repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.RemoveDisc(fx.uuidBytes(t)); err != nil {
-		t.Fatal(err)
-	}
-	code, out := fx.run(t, "gc", "--dry-run", "--force-after=0d")
-	want := fmt.Sprintf("gc: would free 0 item(s), 0 bytes\ngc: %d item(s) skipped: disc %d's table is not in the catalog\n", items, fx.seq)
-	if code != 1 || out != want {
-		t.Fatalf("gc --dry-run: exit %d, output %q; want exit 1, output %q", code, out, want)
-	}
 }
 
 // TestStatesRow52PackOutRemovesTheSymlinkOnly frees a pack --out disc. gc
