@@ -99,7 +99,8 @@ scenario_rebuild() {
 
 	# recover with disc 1 alone: exit 0, and the state
 	# log's on-disc count must equal disc 1's own INDEX object count.
-	"$BIN" --repo="$repo" recover "$mnt1"
+	sudo mount -o remount,ro "$mnt1"
+	"$BIN" --repo="$repo" recover --source="$src" --disc="$mnt1"
 	local index_count1 ondisc_count1
 	index_count1="$(run_tool ci-index-count "$mnt1")"
 	ondisc_count1="$(run_tool ci-state-count "$repo/state")"
@@ -159,7 +160,9 @@ scenario_rebuild() {
 
 	# recover again, with both discs: exit 0, same on-disc count as
 	# the distinct objects that the two discs list.
-	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
+	sudo mount -o remount,ro "$mnt2"
+	"$BIN" --repo="$repo" recover --source="$src" --disc="$mnt1"
+	"$BIN" --repo="$repo" recover --source="$src" --disc="$mnt2"
 	# Both discs carry the snapshot BASE, thus count distinct objects.
 	local ondisc_count2 want_count2
 	ondisc_count2="$(run_tool ci-state-count "$repo/state")"
@@ -169,7 +172,8 @@ scenario_rebuild() {
 	fi
 
 	# A repeat rebuild from the same two discs must be idempotent.
-	"$BIN" --repo="$repo" recover "$mnt1" "$mnt2"
+	"$BIN" --repo="$repo" recover --source="$src" --disc="$mnt1"
+	"$BIN" --repo="$repo" recover --source="$src" --disc="$mnt2"
 	local ondisc_count3
 	ondisc_count3="$(run_tool ci-state-count "$repo/state")"
 	if [ "$ondisc_count3" != "$ondisc_count2" ]; then
@@ -183,7 +187,7 @@ scenario_rebuild() {
 	uuid1="$(run_tool ci-disc-uuid "$mnt1")"
 	local rebuild_out rebuild_code
 	set +e
-	rebuild_out="$("$BIN" --repo="$repo" recover "$mnt2" 2>&1)"
+	rebuild_out="$("$BIN" --repo="$repo" recover --source="$src" --disc="$mnt2" 2>&1)"
 	rebuild_code=$?
 	set -e
 	echo "$rebuild_out"

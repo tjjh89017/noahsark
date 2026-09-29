@@ -278,7 +278,8 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	statusMustRun(t, "--repo="+repo, "recover", treeDir)
+	addFakeMount(t, treeDir, true)
+	statusMustRun(t, "--repo="+repo, "recover", "--source="+src, "--disc="+treeDir)
 
 	lines := statusLines(t, repo)
 	m := statusDiscLineRe.FindStringSubmatch(lines[1])

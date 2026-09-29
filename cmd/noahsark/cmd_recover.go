@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
-	"encoding/hex"
+	"cmp"
+	"errors"
 	"flag"
 	"fmt"
 	"maps"
 	"os"
-	"sort"
-	"time"
+	"path/filepath"
+	"slices"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -17,366 +18,544 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
+const recoverUsage = "recover --source=PATH --disc=DIR"
+
 func init() {
 	register(&command{
 		name:    "recover",
-		usage:   "recover DISC-ROOT...",
-		summary: "Rebuild the repository state from one or more discs.",
-		flags:   func(*flag.FlagSet) runFunc { return cmdRecover },
+		usage:   recoverUsage,
+		summary: "Read one disc into the repository, and create the repository when it is absent.",
+		flags:   recoverFlags,
 	})
 }
 
-// cmdRecover implements "noahsark recover". It rebuilds a repository's
-// state, not a catalog: the repository directory holds the state log, the
-// disc ledger and the refs, and every one of those is exactly what a
-// disc's own INDEX, DISCS and REFS tables already carry. recover is a
-// straight replay of every provided disc's tables into a fresh or
-// existing repository directory.
-func cmdRecover(e *env, args []string) int {
-	stdout, stderr := e.stdout, e.stderr
-	prog := e.progress()
-	discRoots := args
-	if len(discRoots) == 0 {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover: no disc root given")
+// recoverOptions holds the command options of recover.
+type recoverOptions struct {
+	source string
+	disc   onceValue
+}
+
+func recoverFlags(fs *flag.FlagSet) runFunc {
+	o := &recoverOptions{}
+	fs.StringVar(&o.source, "source", "", "the source root; recover stores it as sources.root")
+	fs.Var(&o.disc, "disc", "the mount point of the disc to read; one value")
+	return o.run
+}
+
+// onceValue is a string option that takes one value. A second value is
+// a usage error.
+type onceValue struct {
+	value string
+	set   bool
+}
+
+func (v *onceValue) String() string { return v.value }
+
+func (v *onceValue) Set(s string) error {
+	if v.set {
+		return errors.New("takes one value; give it one time")
+	}
+	v.value, v.set = s, true
+	return nil
+}
+
+// run implements "noahsark recover". docs/states.md, rows 67 to 70d,
+// gives the lines.
+func (o *recoverOptions) run(e *env, args []string) int {
+	stderr := e.stderr
+	const cmd = "recover"
+	if len(args) != 0 || o.source == "" || o.disc.value == "" {
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark "+recoverUsage)
 		return 2
 	}
-
+	source, err := e.abs(o.source)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 2
+	}
 	repoDir, err := e.recoverRepoDir()
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 2
 	}
-
-	// A disc root that fails to read (not mounted, not a NoahsArk tree,
-	// damaged beyond verify) is skipped, not fatal: recover still
-	// uses whatever discs it can read, and only refuses outright when
-	// none of them yielded anything.
-	var results []*image.ReadResult
-	var readRoots []string
-	for _, root := range discRoots {
-		rr, err := image.ReadWithProgress(root, prog)
+	stagingDir := filepath.Join(repoDir, defaultStagingDir)
+	if isRepoDir(repoDir) {
+		cfg, err := readConfig(configPath(repoDir))
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "noahsark: recover: %s: %v\n", root, err)
-			continue
+			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+			return configExitCode(err)
 		}
-		results = append(results, rr)
-		readRoots = append(readRoots, root)
-	}
-	if len(results) == 0 {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover: no usable disc found")
-		return 1
+		stagingDir = cfg.StagingDir
 	}
 
-	repoUUID := results[0].Run.RepoUUID
-	for _, rr := range results {
-		if rr.Run.RepoUUID != repoUUID {
-			_, _ = fmt.Fprintln(stderr, "noahsark: recover: the provided discs do not share one repo_uuid")
-			return 1
-		}
-	}
-
-	cfg, err := ensureRecoverRepo(repoDir, repoUUID)
+	root := o.disc.value
+	verdict, err := countedMount(e, root, repoDir, stagingDir)
 	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		if isConfigError(err) {
-			return 2
-		}
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	}
+	if verdict != mountCounted {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is not counted: %s; recover reads only a read-only mount point outside the repository\n", cmd, root, verdict)
+		return 1
+	}
+	rr, err := image.ReadWithOptions(root, image.ReadOptions{Progress: e.progress(), KeepGoing: true})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s: cannot read the disc: %v\n", cmd, root, err)
+		return 1
+	}
+	if refusal := foreignDiscRefusal(repoDir, rr.Disc); refusal != "" {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, refusal)
 		return 1
 	}
 
-	// OPERATIONS.md's concurrency and locking rules list recover
-	// among the shared-lock, read-only commands on the repository lock,
-	// alongside its own exclusive lock on the catalog directory. This
-	// build has no catalog lock, and recover does write the state
-	// log (EnsurePacked) and the disc and ref ledgers, so
-	// it takes the repository's exclusive lock instead: the repository
-	// lock is the only lock this build has to keep those writes safe
-	// against a concurrent reader or another writer.
-	lk, code, ok := lockRepo("recover", repoDir, stderr)
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	}
+	lk, code, ok := lockRepo(cmd, repoDir, stderr)
 	if !ok {
 		return code
 	}
 	defer releaseLock(lk)
-
-	layout := layoutOf(repoDir, cfg)
-	logs, err := openLogs("recover", layout, true, stderr)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-
-	if err := recoverCatalogFromRoots(repoDir, readRoots); err != nil {
-		// The catalog is only an accelerator: a failure to populate it
-		// never fails recover itself.
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-	}
-
-	// Load every ledger and ref this repository already carries before
-	// writing anything, so a call fed only some of the discs merges into
-	// what earlier calls already recorded instead of erasing it. A
-	// recover call otherwise never sees another call's own state.
-	existingDiscs, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-	existingRefsLedger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-	existingLocalRefs, err := readRefs(layout.refsFile())
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-
-	// The item records and the disc events come before the ledger rows.
-	// A crash between them leaves discs that the log knows, and the next
-	// recover of the same discs writes the ledger rows again.
-	recorded, alreadyKnown, err := recordRecoveredDiscs(logs, results, e.now())
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-
-	discRows := mergeDiscsRows(results, existingDiscs.Rows)
-	if err := image.SaveDiscsLedger(layout.discsLedgerFile(), repoUUID, discRows); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-
-	refRecords := bestRefRecords(results, existingRefsLedger.Records)
-	if err := image.SaveRefsLedger(layout.refsLedgerFile(), repoUUID, refRecords); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-	// A local ref name whose snapshot was never packed onto any disc
-	// never appears in refRecords: keep it, rather than let a disc
-	// replay erase a commit recover has no way to see. A name
-	// a disc does carry always takes the disc's value.
-	refs := existingLocalRefs
-	if refs == nil {
-		refs = make(map[string]string)
-	}
-	maps.Copy(refs, mergeRefs(refRecords))
-	if err := writeRefs(layout.refsFile(), refs); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-		return 1
-	}
-
-	_, _ = fmt.Fprintf(stdout, "recover: %d disc(s) read, repo %s\n", len(results), repoDir)
-	_, _ = fmt.Fprintf(stdout, "objects recorded: %d on disc, %d already known\n", recorded, alreadyKnown)
-	_, _ = fmt.Fprintf(stdout, "discs known: %d, refs restored: %d\n", len(discRows), len(refs))
-
-	notFed := discsNotFed(discRows, logs.Discs)
-	if len(notFed) > 0 {
-		for _, row := range notFed {
-			label := string(row.Label[:row.LabelLen])
-			_, _ = fmt.Fprintf(stdout, "rebuild is partial: %s not fed yet\n", discName(row.DiscSeq, label, row.DiscUUID))
-		}
-		return 1
-	}
-
-	_, _ = fmt.Fprintln(stdout, "recover: ok")
-	return 0
+	return recoverLocked(e, repoDir, source, root, rr)
 }
 
-// discsNotFed returns, sorted by uuid text, every row of the merged
-// ledger whose disc is missing: another disc names it, and no recover
-// has read it yet. "ok" must wait for every one of these to be read at
-// least once, however many separate calls that takes.
-func discsNotFed(rows []format.DiscsRow, discs *stage.DiscLog) []format.DiscsRow {
-	var out []format.DiscsRow
-	for _, row := range rows {
-		if d, ok := discs.Disc(row.DiscUUID); ok && d.State == stage.DiscMissing {
-			out = append(out, row)
+// configExitCode is the exit code of a config file that cannot be read:
+// 2 for a fault in the file, else 1.
+func configExitCode(err error) int {
+	if isConfigError(err) {
+		return 2
+	}
+	return 1
+}
+
+// foreignDiscRefusal returns the refusal for a disc of another
+// repository, or an empty string when repoDir is not a repository yet
+// or the repository uuids match.
+func foreignDiscRefusal(repoDir string, disc format.Disc) string {
+	if !isRepoDir(repoDir) {
+		return ""
+	}
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		return err.Error()
+	}
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		return err.Error()
+	}
+	if repoUUID == disc.RepoUUID {
+		return ""
+	}
+	return fmt.Sprintf("disc %s belongs to repository %s, not to this repository", uuidText(disc.DiscUUID), uuidText(disc.RepoUUID))
+}
+
+// recoverLocked does the work of recover under the repository lock: it
+// makes or updates the repository, writes the catalog, and, for a disc
+// that the repository does not know or that is missing, the ledgers, the
+// refs, the item records and the disc events.
+func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) int {
+	stdout, stderr := e.stdout, e.stderr
+	const cmd = "recover"
+	fail := func(err error) int {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
+	}
+
+	cfg, err := ensureRecoverRepo(repoDir, rr.Disc.RepoUUID)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return configExitCode(err)
+	}
+	layout := layoutOf(repoDir, cfg)
+	if err := makeRepoLayout(layout); err != nil {
+		return fail(err)
+	}
+	logs, err := openLogs(cmd, layout, true, stderr)
+	if err != nil {
+		return fail(err)
+	}
+	discUUID := rr.Disc.DiscUUID
+	disc, known := logs.Discs.Disc(discUUID)
+	if known && disc.State == stage.DiscUndone {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: disc %s was undone by pack --undo; it is not in this repository\n", cmd, uuidText(discUUID))
+		return 1
+	}
+	if cfg.SourceRoot != source {
+		if err := storeSourceRoot(repoDir, source); err != nil {
+			return fail(err)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return uuidText(out[i].DiscUUID) < uuidText(out[j].DiscUUID) })
+
+	if err := catalogFromDisc(repoDir, root, rr); err != nil {
+		return fail(err)
+	}
+
+	isNew := !known || disc.State == stage.DiscMissing
+	var rows []format.DiscsRow
+	if isNew {
+		rows, err = recordRecoveredDisc(e, layout, logs, rr)
+		if err != nil {
+			return fail(err)
+		}
+	}
+
+	name := discNameShort(rr.Disc.DiscSeq, discOwnLabel(rr.Disc))
+	if len(rr.Damaged) > 0 {
+		damagedItems := 0
+		for _, d := range rr.Damaged {
+			if d.ID == "" {
+				_, _ = fmt.Fprintf(stderr, "noahsark: %s: damaged file: %s\n", cmd, d.Error())
+				continue
+			}
+			damagedItems++
+			_, _ = fmt.Fprintf(stdout, "recover: damaged: %s\n", d.ID)
+			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, d.Error())
+		}
+		_, _ = fmt.Fprintf(stdout, "recover: %d item(s) damaged on %s\n", damagedItems, name)
+		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		return 1
+	}
+	if !isNew {
+		_, _ = fmt.Fprintf(stdout, "recover: ok; %s already known\n", name)
+		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		return 0
+	}
+	missing := logs.Discs.InState(stage.DiscMissing)
+	if len(missing) == 0 {
+		_, _ = fmt.Fprintln(stdout, "recover: ok")
+		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		return 0
+	}
+	for _, row := range missingRows(missing, rows) {
+		_, _ = fmt.Fprintf(stdout, "recover: %s named by another disc, not yet given\n", discName(row.DiscSeq, discsRowLabel(row), row.DiscUUID))
+	}
+	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	return 1
+}
+
+// discOwnLabel is the label of a DISC.bin.
+func discOwnLabel(d format.Disc) string {
+	return string(d.Label[:min(int(d.LabelLen), len(d.Label))])
+}
+
+// discsRowLabel is the label of a DISCS row.
+func discsRowLabel(row format.DiscsRow) string {
+	return string(row.Label[:min(int(row.LabelLen), len(row.Label))])
+}
+
+// missingRows returns the ledger row of each missing disc, sorted by the
+// disc number and then by the uuid. A missing disc with no ledger row
+// gets a row with its uuid only.
+func missingRows(missing []stage.DiscInfo, ledger []format.DiscsRow) []format.DiscsRow {
+	out := make([]format.DiscsRow, 0, len(missing))
+	for _, d := range missing {
+		row := format.DiscsRow{DiscUUID: d.UUID}
+		if i := slices.IndexFunc(ledger, func(r format.DiscsRow) bool { return r.DiscUUID == d.UUID }); i >= 0 {
+			row = ledger[i]
+		}
+		out = append(out, row)
+	}
+	slices.SortFunc(out, func(a, b format.DiscsRow) int {
+		return cmp.Or(cmp.Compare(a.DiscSeq, b.DiscSeq), bytes.Compare(a.DiscUUID[:], b.DiscUUID[:]))
+	})
 	return out
 }
 
-// recordRecoveredDiscs writes the records of the discs that recover
-// read. For a disc that the disc state log does not know, or that is
-// missing, it records each item of the disc INDEX that the item log does
-// not know, or that is Lost, as OnDisc, and appends Recovered. A disc
-// that the log knows in another state gets no record. Then it appends
-// NamedMissing for each disc that a DISCS table of a read disc names and
-// that the log does not know. It returns the count of items recorded and
-// the count of items that it did not record.
-func recordRecoveredDiscs(logs *stage.Logs, results []*image.ReadResult, now time.Time) (recorded, alreadyKnown int, err error) {
-	for _, rr := range results {
-		discUUID := rr.Disc.DiscUUID
-		ids := make([]object.ID, 0, len(rr.Index.Objects))
-		for _, row := range rr.Index.Objects {
-			id := object.ID(row.ContentID)
-			if rec, ok := logs.Items.Get(id); ok && rec.State != stage.Lost {
-				alreadyKnown++
-				continue
-			}
+// recordRecoveredDisc writes the records of a disc that the repository
+// does not know, or that is missing. The ledgers and the refs come
+// first. They merge, thus a crash before the events leaves a disc that
+// the next recover reads again. Then it records each intact item that
+// the item log does not know, or that is Lost, as OnDisc, and appends
+// Recovered, CheckFailed for a damaged disc, and NamedMissing for each
+// disc that the DISCS table names and that the disc state log does not
+// know. It returns the rows of the disc ledger.
+func recordRecoveredDisc(e *env, layout repoLayout, logs *stage.Logs, rr *image.ReadResult) ([]format.DiscsRow, error) {
+	repoUUID := rr.Disc.RepoUUID
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
+	if err != nil {
+		return nil, err
+	}
+	rows := mergeDiscsRows(ledger.Rows, rr.Discs.Rows)
+	if err := image.SaveDiscsLedger(layout.discsLedgerFile(), repoUUID, rows); err != nil {
+		return nil, err
+	}
+	if err := recoverRefs(layout, repoUUID, rr.Refs.Records); err != nil {
+		return nil, err
+	}
+
+	discUUID := rr.Disc.DiscUUID
+	ids := make([]object.ID, 0, len(rr.Index.Objects))
+	for _, row := range rr.Index.Objects {
+		if id := object.ID(row.ContentID); rr.ObjectIntact(id) {
 			ids = append(ids, id)
 		}
-		if d, ok := logs.Discs.Disc(discUUID); ok && d.State != stage.DiscMissing {
-			alreadyKnown += len(ids)
+	}
+	if err := logs.Items.EnsureOnDisc(rr.Run.RunSeq, discUUID, ids...); err != nil {
+		return nil, err
+	}
+
+	now := e.now()
+	recovered := discEvent(now, discUUID, stage.EventRecovered)
+	if rr.Run.FECScheme != format.FECSchemeNone {
+		recovered.Flags |= stage.FlagFEC
+	}
+	events := []stage.DiscRecord{recovered}
+	if len(rr.Damaged) > 0 {
+		events = append(events, discEvent(now, discUUID, stage.EventCheckFailed))
+	}
+	named := map[[16]byte]bool{discUUID: true}
+	for _, row := range rr.Discs.Rows {
+		if named[row.DiscUUID] {
 			continue
 		}
-		if err := logs.Items.EnsureOnDisc(rr.Run.RunSeq, discUUID, ids...); err != nil {
-			return 0, 0, err
-		}
-		recorded += len(ids)
-		event := discEvent(now, discUUID, stage.EventRecovered)
-		if rr.Run.FECScheme != format.FECSchemeNone {
-			event.Flags |= stage.FlagFEC
-		}
-		if err := logs.Discs.Append(event); err != nil {
-			return 0, 0, err
+		named[row.DiscUUID] = true
+		if _, ok := logs.Discs.Disc(row.DiscUUID); !ok {
+			events = append(events, discEvent(now, row.DiscUUID, stage.EventNamedMissing))
 		}
 	}
-	for _, rr := range results {
-		for _, row := range rr.Discs.Rows {
-			if _, ok := logs.Discs.Disc(row.DiscUUID); ok {
-				continue
-			}
-			if err := logs.Discs.Append(discEvent(now, row.DiscUUID, stage.EventNamedMissing)); err != nil {
-				return 0, 0, err
-			}
-		}
+	if err := logs.Discs.Append(events...); err != nil {
+		return nil, err
 	}
-	return recorded, alreadyKnown, nil
+	return rows, nil
 }
 
-// recoverCatalogFromRoots copies every one of readRoots' run catalog,
-// snapshots and trees into the catalog, so recover leaves ls
-// and plan able to run with no disc present, the same way pack does
-// right after building a run.
-func recoverCatalogFromRoots(repoDir string, readRoots []string) error {
-	if len(readRoots) == 0 {
-		return nil
-	}
-	c, err := catalog.Open(repoDir)
+// recoverRefs writes the ref records of a disc into the ref ledger and
+// refs.txt. A name that the disc carries takes the value of the newest
+// record of the ledger. A name of refs.txt that no record carries stays.
+func recoverRefs(layout repoLayout, repoUUID [16]byte, records []format.RefRecord) error {
+	ledger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
 	if err != nil {
 		return err
 	}
-	for _, root := range readRoots {
-		if _, err := catalog.WriteFromRoot(c, root); err != nil {
-			return fmt.Errorf("%s: %w", root, err)
-		}
+	all := mergeRefRecords(ledger.Records, records)
+	if err := image.SaveRefsLedger(layout.refsLedgerFile(), repoUUID, all); err != nil {
+		return err
 	}
-	return nil
+	refs, err := readRefs(layout.refsFile())
+	if err != nil {
+		return err
+	}
+	if refs == nil {
+		refs = make(map[string]string)
+	}
+	maps.Copy(refs, newestRefs(all))
+	return writeRefs(layout.refsFile(), refs)
 }
 
-// ensureRecoverRepo loads repoDir's config when it is already a
-// repository, or creates a fresh one with repoUUID otherwise: the config
-// file and the layout that init makes. An existing config's repo.uuid
-// must match repoUUID.
+// ensureRecoverRepo reads the config of repoDir when it is a
+// repository, or writes a new config with repoUUID. An existing config
+// must have repoUUID.
 func ensureRecoverRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
-	if isRepoDir(repoDir) {
-		cfg, err := readConfig(configPath(repoDir))
-		if err != nil {
+	if !isRepoDir(repoDir) {
+		if err := writeConfig(configPath(repoDir), newConfigFile(repoUUID, "")); err != nil {
 			return repoConfig{}, err
 		}
-		existing, err := decodeUUID(cfg.RepoUUID)
-		if err != nil {
-			return repoConfig{}, err
-		}
-		if existing != repoUUID {
-			return repoConfig{}, fmt.Errorf("repository %s has repo.uuid %s, the discs carry %s", repoDir, cfg.RepoUUID, hex.EncodeToString(repoUUID[:]))
-		}
-		return cfg, nil
-	}
-
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		return repoConfig{}, err
-	}
-	if err := writeConfig(configPath(repoDir), newConfigFile(repoUUID, "")); err != nil {
-		return repoConfig{}, err
 	}
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		return repoConfig{}, err
 	}
-	if err := makeRepoLayout(layoutOf(repoDir, cfg)); err != nil {
+	existing, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
 		return repoConfig{}, err
+	}
+	if existing != repoUUID {
+		return repoConfig{}, fmt.Errorf("the repository uuid changed to %s during recover", uuidText(existing))
 	}
 	return cfg, nil
 }
 
-// mergeDiscsRows unions every provided disc's DISCS rows with existing,
-// the rows the local ledger already carried from an earlier call, keyed
-// by DiscUUID. One disc holds one run, thus the disc uuid identifies the
-// run too. Between two rows for the same uuid, rowNewer picks the one to
-// keep. The result is sorted by creation time, and by the uuid bytes on
-// a tie, so the order never depends on a sequence number two discs can
-// share.
-//
-// Whether a rebuild is partial is decided separately, from the state
-// log's fed-disc record: a row this function merges in from a sibling
-// disc's own DISCS table names a disc, but never says that disc's own
-// catalog was ever replayed.
-func mergeDiscsRows(results []*image.ReadResult, existing []format.DiscsRow) []format.DiscsRow {
-	byUUID := make(map[[16]byte]format.DiscsRow, len(existing))
-	for _, row := range existing {
-		byUUID[row.DiscUUID] = row
+// storeSourceRoot sets sources.root of the config of repoDir to source.
+// It keeps every other key.
+func storeSourceRoot(repoDir, source string) error {
+	path := configPath(repoDir)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	f, err := decodeConfig(data)
+	if err != nil {
+		return &configError{path: path, err: err}
+	}
+	f.Sources.Root = source
+	return writeConfig(path, f)
+}
+
+// catalogFromDisc writes into the catalog each snapshot, tree and blob
+// object of the disc that passed its check, and the INDEX, REFS and
+// DISCS tables of the disc when REFS and DISCS passed their check. Then
+// it computes again the completeness of each snapshot that the disc
+// names or that the catalog holds.
+func catalogFromDisc(repoDir, root string, rr *image.ReadResult) error {
+	c, err := catalog.Open(repoDir)
+	if err != nil {
+		return err
+	}
+	names := image.NewNameCache()
+	base, err := image.FindNoahsark(root, names)
+	if err != nil {
+		return err
 	}
 
-	for _, rr := range results {
-		for _, row := range rr.Discs.Rows {
-			if _, ok := byUUID[row.DiscUUID]; !ok {
-				byUUID[row.DiscUUID] = row
+	snapshots := map[object.ID]bool{}
+	for _, row := range rr.Index.Objects {
+		id := object.ID(row.ContentID)
+		if row.Kind == format.ObjectKindSnapshot {
+			snapshots[id] = true
+		}
+		if !rr.ObjectIntact(id) {
+			continue
+		}
+		var dir string
+		switch row.Kind {
+		case format.ObjectKindSnapshot:
+			dir = names.Join(base, "snapshots")
+		case format.ObjectKindTree, format.ObjectKindBlob:
+			dir = names.Join(names.Join(base, "objects"), id.FanoutByte())
+		default:
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, names.Resolve(dir, id.TextForm())))
+		if err != nil {
+			return fmt.Errorf("object %s: %w", id.TextForm(), err)
+		}
+		if err := c.WriteObject(row.Kind, id, raw); err != nil {
+			return err
+		}
+	}
+
+	if rr.RefsIntact && rr.DiscsIntact {
+		if err := writeDiscTables(c, base, names, rr.Disc.DiscUUID); err != nil {
+			return err
+		}
+	}
+
+	for _, rec := range rr.Refs.Records {
+		snapshots[object.ID(rec.SnapshotID)] = true
+	}
+	held, err := c.ListSnapshots()
+	if err != nil {
+		return err
+	}
+	for _, id := range held {
+		snapshots[id] = true
+	}
+	for id := range snapshots {
+		complete, err := snapshotComplete(c, id)
+		if err != nil {
+			return err
+		}
+		mark := c.MarkPartial
+		if complete {
+			mark = c.MarkComplete
+		}
+		if err := mark(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeDiscTables copies the INDEX, REFS and DISCS files of the newest
+// run under base into the catalog.
+func writeDiscTables(c *catalog.Catalog, base string, names *image.NameCache, discUUID [16]byte) error {
+	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
+	if err != nil {
+		return err
+	}
+	catalogDir := names.Join(runDir, "catalog")
+	var bufs [3][]byte
+	for i, p := range []string{
+		filepath.Join(runDir, names.Resolve(runDir, "INDEX.bin")),
+		filepath.Join(catalogDir, names.Resolve(catalogDir, "REFS.bin")),
+		filepath.Join(catalogDir, names.Resolve(catalogDir, "DISCS.bin")),
+	} {
+		if bufs[i], err = os.ReadFile(p); err != nil {
+			return err
+		}
+	}
+	return c.WriteDisc(discUUID, bufs[0], bufs[1], bufs[2])
+}
+
+// snapshotComplete reports whether the catalog holds the snapshot id
+// and every tree and blob object that it reaches.
+func snapshotComplete(c *catalog.Catalog, id object.ID) (bool, error) {
+	snap, err := c.ReadSnapshot(id)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	seen := map[object.ID]bool{}
+	pending := []object.ID{object.ID(snap.RootTree)}
+	for len(pending) > 0 {
+		treeID := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if seen[treeID] {
+			continue
+		}
+		seen[treeID] = true
+		tree, err := c.ReadTree(treeID)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range tree.Entries {
+			switch entry.EntryType {
+			case format.EntryTypeDirectory:
+				pending = append(pending, object.ID(entry.ContentID))
+			case format.EntryTypeRegular:
+				_, err := os.Stat(c.MetaPath(format.ObjectKindBlob, object.ID(entry.ContentID)))
+				if errors.Is(err, os.ErrNotExist) {
+					return false, nil
+				}
+				if err != nil {
+					return false, err
+				}
 			}
 		}
 	}
+	return true, nil
+}
 
-	rows := make([]format.DiscsRow, 0, len(byUUID))
-	for _, row := range byUUID {
-		rows = append(rows, row)
+// mergeDiscsRows unions existing, the rows of the disc ledger, with
+// rows, the DISCS rows of a disc. A row of existing wins for its uuid.
+// The result is sorted by creation time, and by the uuid on a tie.
+func mergeDiscsRows(existing, rows []format.DiscsRow) []format.DiscsRow {
+	byUUID := make(map[[16]byte]format.DiscsRow, len(existing)+len(rows))
+	for _, row := range rows {
+		byUUID[row.DiscUUID] = row
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].CreatedSec != rows[j].CreatedSec {
-			return rows[i].CreatedSec < rows[j].CreatedSec
-		}
-		return bytes.Compare(rows[i].DiscUUID[:], rows[j].DiscUUID[:]) < 0
+	for _, row := range existing {
+		byUUID[row.DiscUUID] = row
+	}
+	return slices.SortedFunc(maps.Values(byUUID), func(a, b format.DiscsRow) int {
+		return cmp.Or(cmp.Compare(a.CreatedSec, b.CreatedSec), bytes.Compare(a.DiscUUID[:], b.DiscUUID[:]))
 	})
-	return rows
 }
 
-// bestRefRecords returns every REFS record the provided discs and
-// existing hold, deduplicated: the ref table only grows from one run to
-// the next, and two equal records keep one copy. recover uses this both
-// to restore the flat local ref file and to restore the refs ledger a
-// later pack extends.
-func bestRefRecords(results []*image.ReadResult, existing []format.RefRecord) []format.RefRecord {
-	seen := make(map[format.RefRecord]bool)
-	var recs []format.RefRecord
-	consider := func(rec format.RefRecord) {
-		if seen[rec] {
-			return
-		}
-		seen[rec] = true
-		recs = append(recs, rec)
-	}
-	for _, rr := range results {
-		for _, rec := range rr.Refs.Records {
-			consider(rec)
+// mergeRefRecords returns the records of existing, then each record of
+// records that existing does not hold.
+func mergeRefRecords(existing, records []format.RefRecord) []format.RefRecord {
+	out := slices.Clone(existing)
+	for _, rec := range records {
+		if !slices.Contains(out, rec) {
+			out = append(out, rec)
 		}
 	}
-	for _, rec := range existing {
-		consider(rec)
-	}
-	return recs
+	return out
 }
 
-// mergeRefs turns REFS records into the name-to-id-text map the flat
-// local ref file holds, taking the newest record of each name.
-func mergeRefs(records []format.RefRecord) map[string]string {
+// newestRefs maps each ref name of records to the text id of the
+// snapshot of its newest record.
+func newestRefs(records []format.RefRecord) map[string]string {
 	best := make(map[string]format.RefRecord, len(records))
 	for _, rec := range records {
-		name := string(rec.Name[:rec.NameLen])
-		if cur, ok := best[name]; ok && !format.NewerRef(rec, cur) {
-			continue
-		}
-		best[name] = rec
+		catalog.MergeRef(best, rec)
 	}
 	out := make(map[string]string, len(best))
 	for name, rec := range best {

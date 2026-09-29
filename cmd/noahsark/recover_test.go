@@ -15,6 +15,14 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
+// recoverDisc registers root as a read-only mount in the fake mount
+// table, and runs recover of root into repo with the source src.
+func recoverDisc(t *testing.T, repo, src, root string) (int, string) {
+	t.Helper()
+	addFakeMount(t, root, true)
+	return runCmd(t, "--repo="+repo, "recover", "--source="+src, "--disc="+root)
+}
+
 // TestRebuildCatalogRestoresCatalogContent deletes the whole catalog pack
 // left behind, along with the repository, and checks recover
 // from the packed tree alone puts back an equally complete catalog.
@@ -53,7 +61,7 @@ func TestRebuildCatalogRestoresCatalogContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+	if code, out := recoverDisc(t, repo, src, treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -114,7 +122,7 @@ func TestRecoverFromDiscRestoresState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out = runCmd(t, "--repo="+repo, "recover", treeDir)
+	code, out = recoverDisc(t, repo, src, treeDir)
 	if code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
@@ -128,8 +136,9 @@ func TestRecoverFromDiscRestoresState(t *testing.T) {
 	}
 }
 
-// TestRecoverIsIdempotent runs recover twice from the same
-// disc and asserts both calls exit 0 with the same packed count.
+// TestRecoverIsIdempotent runs recover twice from the same disc. Both
+// calls exit 0. The second call knows the disc, and writes no item
+// record.
 func TestRecoverIsIdempotent(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -149,27 +158,25 @@ func TestRecoverIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+	if code, out := recoverDisc(t, repo, src, treeDir); code != 0 {
 		t.Fatalf("recover #1: exit %d: %s", code, out)
 	}
-	count1 := countByState(t, repo, stage.Packed)
+	count1 := countByState(t, repo, stage.OnDisc)
 
-	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+	code, out := recoverDisc(t, repo, src, treeDir)
+	if code != 0 {
 		t.Fatalf("recover #2: exit %d: %s", code, out)
 	}
-	count2 := countByState(t, repo, stage.Packed)
-
-	if count1 != count2 {
-		t.Fatalf("packed count changed across a repeat rebuild: %d then %d", count1, count2)
+	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n", nextStatusLine)
+	if count2 := countByState(t, repo, stage.OnDisc); count1 != count2 {
+		t.Fatalf("on-disc count changed across a repeat rebuild: %d then %d", count1, count2)
 	}
 }
 
-// TestRecoverWordingDoesNotClaimClean checks that recover's
-// summary line never claims CLEAN objects are PACKED: after disc burned
-// and a passing verify move a run's objects to CLEAN, a recover
-// of the same disc, with the state log still in place, must report
-// those objects as already past packed, not as newly recorded packed.
-func TestRecoverWordingDoesNotClaimClean(t *testing.T) {
+// TestRecoverOfVerifiedDiscWritesNoEvent recovers a verified disc of
+// the repository: recover says that it knows the disc, and writes no
+// event and no item record.
+func TestRecoverOfVerifiedDiscWritesNoEvent(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -184,7 +191,8 @@ func TestRecoverWordingDoesNotClaimClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	treeDir := packedTreeDir(t, repo, packOut)
+	treeDir := filepath.Join(work, "disc")
+	copyTree(t, packedTreeDir(t, repo, packOut), treeDir)
 	discUUID := packedDiscUUID(t, packOut)
 
 	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
@@ -193,19 +201,18 @@ func TestRecoverWordingDoesNotClaimClean(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "verify", treeDir); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
+	before := discState(t, repo, discUUID)
 
-	code, out := runCmd(t, "--repo="+repo, "recover", treeDir)
+	code, out := recoverDisc(t, repo, src, treeDir)
 	if code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
-	if strings.Contains(out, "recorded packed:") {
-		t.Fatalf("recover output %q uses the old wording, which would claim CLEAN objects are PACKED", out)
+	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n", nextStatusLine)
+	if after := discState(t, repo, discUUID); after != before {
+		t.Fatalf("disc record %+v after recover, want %+v", after, before)
 	}
-	if !strings.Contains(out, "already known") {
-		t.Fatalf("recover output %q missing a count of objects the log already knew", out)
-	}
-	if !strings.Contains(out, "objects recorded: 0 on disc") {
-		t.Fatalf("recover output %q recorded an object the log already knew", out)
+	if n := countByState(t, repo, stage.OnDisc); n != 0 {
+		t.Fatalf("%d on-disc item(s), want 0", n)
 	}
 }
 
@@ -247,16 +254,11 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "recover", discRoots[len(discRoots)-1])
+	code, out := recoverDisc(t, repo, src, discRoots[len(discRoots)-1])
 	if code != 1 {
 		t.Fatalf("recover: exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "partial") {
-		t.Fatalf("output %q does not say the rebuild is partial", out)
-	}
-	if !strings.Contains(out, uuid1) {
-		t.Fatalf("output %q does not name the missing disc %s", out, uuid1)
-	}
+	wantLines(t, out, "recover: disc 0 \"", "\" ("+uuid1+") named by another disc, not yet given\n", nextStatusLine)
 	if strings.Contains(out, "config:") {
 		t.Fatalf("output %q names config keys to complete; recover prints no such hint", out)
 	}
@@ -304,12 +306,12 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	// Feed only the newest disc: its own DISCS table names the earlier
 	// two, but neither was itself read. The rebuild must be partial.
 	newest := discRoots[len(discRoots)-1]
-	code, out := runCmd(t, "--repo="+repo, "recover", newest)
+	code, out := recoverDisc(t, repo, src, newest)
 	if code != 1 {
 		t.Fatalf("recover (newest only): exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "not fed yet") {
-		t.Fatalf("output %q does not say a disc was not fed yet", out)
+	if !strings.Contains(out, " named by another disc, not yet given\n") {
+		t.Fatalf("output %q does not name a disc that was not given yet", out)
 	}
 	if strings.Contains(out, "recover: ok") {
 		t.Fatalf("output %q says ok before every disc was fed", out)
@@ -332,9 +334,13 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 		t.Fatalf("status output %q does not send the operator to recover", out)
 	}
 
-	// Feed the remaining two discs: now every disc named in DISCS has
-	// itself been fed, and the rebuild must say ok.
-	code, out = runCmd(t, "--repo="+repo, "recover", discRoots[0], discRoots[1])
+	// Feed the remaining two discs, one call each: after the second call
+	// every disc named in DISCS has itself been fed, and the rebuild must
+	// say ok.
+	if code, out := recoverDisc(t, repo, src, discRoots[0]); code != 1 {
+		t.Fatalf("recover (disc 0): exit %d, want 1: %s", code, out)
+	}
+	code, out = recoverDisc(t, repo, src, discRoots[1])
 	if code != 0 {
 		t.Fatalf("recover (remaining two): exit %d, want 0: %s", code, out)
 	}
@@ -343,8 +349,8 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	}
 }
 
-// TestRecoverNoUsableDisc asserts exit 3 when every named disc
-// root fails to read.
+// TestRecoverNoUsableDisc checks that a counted mount that holds no disc
+// exits 1 and creates no repository.
 func TestRecoverNoUsableDisc(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -353,9 +359,15 @@ func TestRecoverNoUsableDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "recover", empty)
+	code, out := recoverDisc(t, repo, work, empty)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "cannot read the disc") || strings.Contains(out, nextStatusLine) {
+		t.Fatalf("output %q, want the read failure and no next line", out)
+	}
+	if _, err := os.Stat(repo); !os.IsNotExist(err) {
+		t.Fatalf("the repository directory exists after a refused recover: %v", err)
 	}
 }
 
@@ -405,7 +417,7 @@ func TestCommitAfterRebuildCatalogReportsNoNewObjects(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+	if code, out := recoverDisc(t, repo, src, treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -470,7 +482,7 @@ func TestRecoverOneDiscAtATimeMergesLedger(t *testing.T) {
 			var lastCode int
 			var lastOut string
 			for _, i := range order.seq {
-				lastCode, lastOut = runCmd(t, "--repo="+repo, "recover", discRoots[i])
+				lastCode, lastOut = recoverDisc(t, repo, src, discRoots[i])
 			}
 			if lastCode != 0 {
 				t.Fatalf("last recover call: exit %d, want 0: %s", lastCode, lastOut)
@@ -526,7 +538,7 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 		t.Fatalf("commit X: exit %d: %s", code, out)
 	}
 
-	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+	if code, out := recoverDisc(t, repo, baseSrc, treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -576,7 +588,7 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
+	if code, out := recoverDisc(t, repo, src, treeDir); code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
@@ -643,7 +655,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "recover", discOne); code != 0 {
+	if code, out := recoverDisc(t, repo, src1, discOne); code != 0 {
 		t.Fatalf("recover (disc one only): exit %d: %s", code, out)
 	}
 
@@ -663,7 +675,7 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 
 	// The "lost" second disc turns up after all. Its numbers are the
 	// third disc's numbers; the feed must still be accepted.
-	code, out = runCmd(t, "--repo="+repo, "recover", discTwoLost)
+	code, out = recoverDisc(t, repo, src1, discTwoLost)
 	if code != 0 {
 		t.Fatalf("recover (reintroduced disc two): exit %d, want 0: %s", code, out)
 	}
@@ -763,12 +775,9 @@ func byLabel(t *testing.T, rows []discSummary, label string) int {
 	return 0
 }
 
-// TestRecoverRepeatTwoDiscFeedIsAccepted feeds two discs together
-// in one recover call, then repeats that exact same call: both calls
-// must exit 0 and say ok. A disc named in a call's own disc root list
-// is fed by that call, whether or not it was ever fed before; this
-// must never be refused as though a different disc were reusing its
-// run_seq and disc_seq.
+// TestRecoverRepeatTwoDiscFeedIsAccepted recovers two discs of the
+// repository, one call each, two times. Each call exits 0 and says that
+// it knows the disc.
 func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -788,7 +797,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "recover", tree1); code != 0 {
+	if code, out := recoverDisc(t, repo, src, tree1); code != 0 {
 		t.Fatalf("recover (disc 1 alone): exit %d: %s", code, out)
 	}
 
@@ -803,23 +812,16 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 		t.Fatalf("pack 2: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "recover", tree1, tree2)
-	if code != 0 {
-		t.Fatalf("recover (2-disc #1): exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "recover: ok") {
-		t.Fatalf("2-disc #1 output %q does not say ok", out)
-	}
-
-	code, out = runCmd(t, "--repo="+repo, "recover", tree1, tree2)
-	if code != 0 {
-		t.Fatalf("recover (2-disc #2, repeat): exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "recover: ok") {
-		t.Fatalf("repeat 2-disc output %q does not say ok", out)
-	}
-	if strings.Contains(out, "not fed yet") {
-		t.Fatalf("repeat 2-disc output %q wrongly reports a disc not fed", out)
+	for round := range 2 {
+		for _, tree := range []string{tree1, tree2} {
+			code, out := recoverDisc(t, repo, src, tree)
+			if code != 0 {
+				t.Fatalf("recover %s, round %d: exit %d: %s", tree, round, code, out)
+			}
+			if !strings.Contains(out, "recover: ok; disc ") || !strings.Contains(out, " already known\n") {
+				t.Fatalf("recover %s, round %d: output %q does not say that it knows the disc", tree, round, out)
+			}
+		}
 	}
 }
 
@@ -848,7 +850,7 @@ func TestRebuildCatalogFailsFastWhenRepoLockHeld(t *testing.T) {
 	}
 	defer func() { _ = held.Release() }()
 
-	code, out := runCmd(t, "--repo="+repo, "recover", treeDir)
+	code, out := recoverDisc(t, repo, src, treeDir)
 	if code != 1 {
 		t.Fatalf("recover while locked: exit %d, want 1: %s", code, out)
 	}
@@ -865,11 +867,18 @@ func TestRecoverUsageErrorsExitTwo(t *testing.T) {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
+	disc := t.TempDir()
 	cases := []struct {
 		name string
 		args []string
 	}{
 		{"unknown flag", []string{"--repo=" + repo, "recover", "--no-such-flag"}},
+		{"no --disc", []string{"--repo=" + repo, "recover", "--source=" + disc}},
+		{"no --source", []string{"--repo=" + repo, "recover", "--disc=" + disc}},
+		{"empty --source", []string{"--repo=" + repo, "recover", "--source=", "--disc=" + disc}},
+		{"--disc two times", []string{"--repo=" + repo, "recover", "--source=" + disc, "--disc=" + disc, "--disc=" + disc}},
+		{"a positional argument", []string{"--repo=" + repo, "recover", "--source=" + disc, "--disc=" + disc, disc}},
+		{"the old form", []string{"--repo=" + repo, "recover", disc}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

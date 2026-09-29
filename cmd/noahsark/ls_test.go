@@ -294,7 +294,8 @@ func TestLsFromCatalogReportsPartialSnapshot(t *testing.T) {
 	}
 
 	lastDisc := discRoots[len(discRoots)-1]
-	if code, out := runCmd(t, "--repo="+repo, "recover", lastDisc); code == 2 {
+	addFakeMount(t, lastDisc, true)
+	if code, out := runCmd(t, "--repo="+repo, "recover", "--source="+src, "--disc="+lastDisc); code == 2 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
