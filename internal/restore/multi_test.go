@@ -149,15 +149,15 @@ func catalogOfRoots(t *testing.T, roots []string) *catalog.Catalog {
 	return c
 }
 
-// planDisc is one disc of a multi-disc test: its root, and the chunks
-// that the catalog INDEX of the disc lists.
+// planDisc is one disc of a multi-disc test: its root, and the plan that
+// gives chunks to it.
 type planDisc struct {
 	root string
 	uuid [16]byte
 	p    *plan.Plan
 }
 
-func (d *planDisc) Has(id object.ID) bool { return d.p.Holds(d.uuid, id) }
+func (d *planDisc) Has(id object.ID) bool { return d.p.Owns(d.uuid, id) }
 
 func (d *planDisc) Read(id object.ID) ([]byte, error) { return ReadChunkFromRoot(d.root, id) }
 

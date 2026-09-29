@@ -37,11 +37,6 @@ type table struct {
 	bytes []uint64
 }
 
-// find returns the row of id, or false.
-func (t *table) find(id object.ID) (int, bool) {
-	return slices.BinarySearchFunc(t.ids, id, compareID)
-}
-
 // ownerLen is the size of one record of the owners file: the content id,
 // the disc index as a little-endian uint32, and the byte length as a
 // little-endian uint64.
@@ -68,9 +63,10 @@ type Plan struct {
 	// owners holds one ownerLen record for each counted item.
 	owners  *os.File
 	ownersN int64
-	// held is the table of the disc heldUUID, for Holds.
-	held     *table
-	heldUUID [16]byte
+	// owned is the ids that the plan gives to the disc ownedUUID, in
+	// ascending order, for Owns.
+	owned     []object.ID
+	ownedUUID [16]byte
 }
 
 // New prepares an empty plan for sel over discs. It reads nothing yet.
@@ -237,23 +233,29 @@ func (p *Plan) Close() {
 	}
 }
 
-// Holds reports whether the catalog INDEX of the disc uuid lists id. It
-// keeps the table of the last disc that it was asked about, and reads
-// the INDEX of a new disc when the question moves to that disc. A disc
-// whose INDEX does not read holds nothing.
-func (p *Plan) Holds(uuid [16]byte, id object.ID) bool {
-	if p.held == nil || p.heldUUID != uuid {
-		if !slices.ContainsFunc(p.discs, func(d Disc) bool { return d.DiscUUID == uuid }) {
+// Owns reports whether the plan gives the item id to the disc uuid. The
+// plan gives each item to one disc only, also when several discs hold
+// it. Thus a restore that reads an item only from the disc that owns it
+// writes each item one time. Owns keeps the owned ids of the last disc
+// that it was asked about, and reads the owners file again when the
+// question moves to another disc. It counts the plan first. A plan that
+// does not count gives no item to any disc.
+func (p *Plan) Owns(uuid [16]byte, id object.ID) bool {
+	if p.Count() != nil {
+		return false
+	}
+	if p.owned == nil || p.ownedUUID != uuid {
+		i := slices.IndexFunc(p.discs, func(d Disc) bool { return d.DiscUUID == uuid })
+		if i < 0 {
 			return false
 		}
-		p.held = nil
-		t, err := readTable(p.c, uuid)
-		if err != nil {
-			t = table{}
+		owned := []object.ID{}
+		for _, o := range (DiscEntry{plan: p, index: i}).Objects {
+			owned = append(owned, o.ID)
 		}
-		p.held, p.heldUUID = &t, uuid
+		p.owned, p.ownedUUID = owned, uuid
 	}
-	_, found := p.held.find(id)
+	_, found := slices.BinarySearchFunc(p.owned, id, compareID)
 	return found
 }
 

@@ -57,6 +57,32 @@ func ensureDir(parent string, components []string, wp *writePolicy) (path string
 	return path, true, nil
 }
 
+// enterDir enters every component under parent, with the same Lstat
+// check as ensureDir, and creates nothing. A component that is not a
+// real directory gives ok false, as ensureDir gave it on the first
+// walk. A missing component means that the destination changed after
+// the first walk: the part files below it are gone with it.
+func enterDir(parent string, components []string) (path string, ok bool, err error) {
+	path = parent
+	for _, name := range components {
+		child, err := plan.JoinSafe(path, name)
+		if err != nil {
+			return "", false, err
+		}
+		fi, err := os.Lstat(child)
+		switch {
+		case os.IsNotExist(err):
+			return "", false, errDestChanged
+		case err != nil:
+			return "", false, err
+		case !fi.IsDir():
+			return "", false, nil
+		}
+		path = child
+	}
+	return path, true, nil
+}
+
 // restoreSymlink creates a symlink at path with target. An existing
 // symlink that already has the same target counts as resumed. Any other
 // existing path stays as found and is recorded, unless overwrite is

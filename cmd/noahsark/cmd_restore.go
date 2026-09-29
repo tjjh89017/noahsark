@@ -357,7 +357,7 @@ type mountedDisc struct {
 	found bool
 }
 
-func (m *mountedDisc) Has(id object.ID) bool { return m.swap.plan.Holds(m.disc.DiscUUID, id) }
+func (m *mountedDisc) Has(id object.ID) bool { return m.swap.plan.Owns(m.disc.DiscUUID, id) }
 
 // Read returns one verified chunk payload, after the disc is at the
 // mount point. A disc that the restore cannot get stops the whole

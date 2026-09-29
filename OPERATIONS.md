@@ -913,12 +913,19 @@ When the root tree holds more than one source root ("Source policy"):
 **The plan.** `restore` reads the snapshot, the trees and the blobs from the
 catalog. It finds the disc of each chunk through the catalog INDEX tables and
 the disc ledger. When several discs hold a chunk, the plan takes a disc that
-is not `lost`, the lowest `disc_seq` first. A chunk that no catalog INDEX
-lists has no known disc. This happens when the repository misses the tables
-of a disc, for example a disc that was `missing` and is then marked `lost`.
-`restore` skips each file that `DEST` already holds with the content and the
-type of the snapshot, and each chunk that a part file already holds. The plan
-counts only what is left.
+is not `lost`, the lowest `disc_seq` first. The plan gives each chunk to that
+one disc, and `restore` reads the chunk from that disc only. A chunk that no
+catalog INDEX lists has no known disc. This happens when the repository
+misses the tables of a disc, for example a disc that was `missing` and is
+then marked `lost`. `restore` skips each file that `DEST` already holds with
+the content and the type of the snapshot, and each chunk that a part file
+already holds. The plan counts only what is left.
+
+To find a file that `DEST` already holds, `restore` compares the size, then
+reads the file and checks each chunk against its content id. The size and the
+mtime alone do not decide. Thus a restore that runs again reads each regular
+file that `DEST` already holds two times: one time for the plan and one time
+for the walk of the first disc.
 
 An item of the plan is one chunk that `restore` still needs. The plan counts
 an item one time, on one disc, also when many files hold it. Trees and blobs
@@ -944,8 +951,10 @@ temporary directory (`TMPDIR`). `restore` unlinks each one when it creates
 it. `restore` changes no file of the repository.
 
 While `restore` reads a disc, it decides for each chunk of the walk whether
-the catalog INDEX of this disc lists the chunk. It reads that INDEX one time
-for each disc.
+the plan gives the chunk to this disc. It reads the ids that the plan gives
+to the disc one time for each disc. It writes such a chunk at each position
+of each file that still needs it. Thus `restore` writes each position of a
+file one time, also when several discs hold the chunk.
 
 `restore` prints the plan first, in this form:
 
@@ -1011,8 +1020,9 @@ Nothing that it holds in memory grows with the size of the snapshot.
 temporary file, not in memory. The file has one record of fixed size for each
 regular file, at the number of the file in walk order. Each walk of the
 snapshot meets the files in the same order, thus the number finds the record.
-A record holds the number of chunks that the file still needs, a flag for a
-part file of an earlier run, and a hash of the path. A file that is complete,
+A record holds the number of chunk positions that the file still needs, a
+flag for a part file of an earlier run, and a hash of the path. A chunk that
+the file holds at two positions counts two times. A file that is complete,
 skipped or failed has no pending record, and a later walk reads neither its
 blob nor its bytes.
 
@@ -1024,7 +1034,9 @@ blob nor its bytes.
    against the content ids ("The part file and resume").
 3. A later walk must meet the files of the first walk in the same order. When
    a directory below `DEST` changes between two walks, the order changes.
-   `restore` then stops with `noahsark: restore: the directories below the
+   Only the first walk creates directories. When a later walk finds a
+   directory missing, the part files below it are gone too. In both cases,
+   `restore` stops with `noahsark: restore: the directories below the
    destination changed during the restore; run restore again` and exit
    code 1.
 
@@ -1045,6 +1057,19 @@ links the part file to the final name, then unlinks the part file. A link
 fails when the name already exists, thus the no-overwrite rule holds with no
 race. With `--overwrite` the path in the way is unlinked first. A filesystem
 that has no hard link falls back to a check and a rename.
+
+Before the link, `restore` reads the whole part file. It checks the size and
+each chunk against the blob, then flushes the part file to stable storage
+(`fsync`). Thus a power loss cannot leave a final name with no data. A part
+file that does not match stays, `restore` reports the file as `file not
+restored`, and the next run checks each chunk of the part file again. Before
+a walk of a disc ends, `restore` flushes each directory that got a final name
+in the walk. The cost is one more read of each restored byte, one `fsync` for
+each restored file, and one `fsync` for each directory that gets a final name.
+With many small files, the `fsync` of each file is the main cost.
+
+A blob whose chunk lengths do not add up to the size of its tree entry fails
+its file before `restore` writes a byte of it.
 
 At each open of a part file, `restore` checks each chunk that is already there
 against its content id, and skips the good ones. A stopped run leaves its part

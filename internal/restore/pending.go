@@ -16,8 +16,8 @@ import (
 // A file that the destination already holds needs nothing: without
 // overwrite, the restore leaves it as it is. A chunk whose bytes a part
 // file already holds, checked by its content id, needs nothing either.
-// A file whose blob is not in the catalog needs nothing, because the
-// restore cannot write it. need can get one chunk more than one time.
+// A file whose blob is not in the catalog, or does not have the size of
+// the tree entry, needs nothing, because the restore cannot write it. need can get one chunk more than one time.
 //
 // The walk holds one file at a time: the blob entries of that file and
 // one chunk buffer. It keeps no list of chunks.
@@ -66,6 +66,9 @@ func (s *pendingScan) File(dest, part string, e format.TreeEntry) error {
 		return nil
 	}
 	entries := placeChunks(blob.Entries)
+	if blobSize(entries) != e.Size {
+		return nil
+	}
 	if !s.overwrite {
 		if _, found := existingFileStatus(dest, e, entries); found {
 			return nil
