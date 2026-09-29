@@ -189,6 +189,7 @@ func restoreDiscs(t *testing.T, roots []string, lost map[int]bool, snapID object
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer a.Close()
 	for i, root := range roots {
 		if lost[i] {
 			continue
@@ -197,7 +198,9 @@ func restoreDiscs(t *testing.T, roots []string, lost map[int]bool, snapID object
 			t.Fatal(err)
 		}
 	}
-	a.Finish()
+	if err := a.Finish(); err != nil {
+		t.Fatal(err)
+	}
 	return p, a.Report()
 }
 

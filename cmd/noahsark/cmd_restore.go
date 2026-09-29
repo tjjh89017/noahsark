@@ -157,6 +157,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
 	}
+	defer a.Close()
 	s := &discSwap{
 		e:        e,
 		mountDir: mountDir,
@@ -178,7 +179,10 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	a.Finish()
+	if err := a.Finish(); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
+		return 1
+	}
 	rep := a.Report()
 	printProblems(stderr, rep)
 	_, _ = fmt.Fprintf(stdout, "restored snapshot %s into %s\n", shortID(snapID), destArg)

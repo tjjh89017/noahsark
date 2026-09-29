@@ -38,11 +38,12 @@ func restoreWith(t *testing.T, c *catalog.Catalog, treeDir string, snapID object
 	if err != nil {
 		return Report{}, err
 	}
+	defer a.Close()
 	if err := a.Disc(&treeDisc{root: treeDir}, nil); err != nil {
 		return a.Report(), err
 	}
-	a.Finish()
-	return a.Report(), nil
+	err = a.Finish()
+	return a.Report(), err
 }
 
 // compareRestoredTree compares srcDir, byte for byte including mode bits

@@ -945,6 +945,32 @@ each chunk of this disc into the part file of its own file. A file whose
 chunks lie on two discs is a normal case. `restore` copies each byte one time.
 Nothing that it holds in memory grows with the size of the snapshot.
 
+**The file state.** `restore` keeps the state of each regular file in a
+temporary file, not in memory. The file has one record of fixed size for each
+regular file, at the number of the file in walk order. Each walk of the
+snapshot meets the files in the same order, thus the number finds the record.
+A record holds the number of chunks that the file still needs, a flag for a
+part file of an earlier run, and a hash of the path. A file that is complete,
+skipped or failed has no pending record, and a later walk reads neither its
+blob nor its bytes.
+
+1. The file is in the system temporary directory (`TMPDIR`). `restore`
+   unlinks it when it creates it. Thus nothing of it stays after a normal end
+   or after a crash.
+2. After a crash, or a stop for a disc, only the part files below `DEST`
+   stay. The next run makes a new state file and checks each part file
+   against the content ids ("The part file and resume").
+3. A later walk must meet the files of the first walk in the same order. When
+   a directory below `DEST` changes between two walks, the order changes.
+   `restore` then stops with `noahsark: restore: the directories below the
+   destination changed during the restore; run restore again` and exit
+   code 1.
+
+After the last disc, `restore` walks the snapshot one more time. It reads no
+blob and no disc in this walk. It reports each file that is not complete, and
+applies the metadata of each directory after every entry below it, thus the
+deepest directory first.
+
 ### 14.3 The part file and resume
 
 `restore` writes the bytes of a file into a hidden part file in the directory
@@ -987,6 +1013,13 @@ absolute path below `DEST`.
 | `noahsark: restore: warning: not restored: N KIND, N KIND; see the warning(s) above` | standard error | the summary, after the problem lines, when there is a problem |
 | `restored snapshot ID into DEST` | standard output | after the last disc, also after problem lines |
 | `skipped: N file(s) already restored` | standard output | `DEST` already held N files or symlinks with the content of the snapshot |
+
+The problem lines come in the order that `restore` meets the problems. The
+walk of the first disc reports the paths that exist and the special files.
+The walk of each disc reports the files that fail and the file metadata that
+does not apply. The last walk reports each file that is not complete and each
+directory whose metadata does not apply, in walk order: a file before the
+directory that holds it.
 
 The summary names each kind that has a problem, in this order: `existing
 path(s)`, `path(s) --overwrite could not replace`, `unsupported entry(ies)`,
