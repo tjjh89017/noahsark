@@ -13,6 +13,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // writeCrossDiscFixtureSource writes one file far larger than the
@@ -114,7 +115,7 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
-		if strings.Contains(out, "remaining staged: 0 objects") {
+		if countByState(t, repo, stage.Staged) == 0 {
 			break
 		}
 	}

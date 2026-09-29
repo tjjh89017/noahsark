@@ -418,7 +418,7 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	planDir := filepath.Dir(stagedTree)
 	discUUID := packedDiscUUID(t, packOut)
 

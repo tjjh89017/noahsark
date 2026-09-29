@@ -389,8 +389,8 @@ func TestMultiDiscPackAndRestore(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("pack %d: exit %d, want 0: %s", i, code, out)
 		}
-		if !strings.Contains(out, "remaining staged:") {
-			t.Fatalf("pack %d: output %q missing the remaining-staged report", i, out)
+		if !strings.HasPrefix(out, "packed disc ") {
+			t.Fatalf("pack %d: output %q packed no disc", i, out)
 		}
 		discRoots = append(discRoots, treeDir)
 	}

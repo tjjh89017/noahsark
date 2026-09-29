@@ -40,7 +40,7 @@ func TestStatusReportsPackedDisc(t *testing.T) {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir, "--label=my disc"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
@@ -55,8 +55,8 @@ func TestStatusReportsPackedDisc(t *testing.T) {
 	if m == nil {
 		t.Fatalf("disc line %q does not match the expected shape", lines[1])
 	}
-	if m[1] != "0" || m[2] != "my disc" || m[3] != "packed" {
-		t.Fatalf("disc line = %q, want disc 0 %q packed", lines[1], "my disc")
+	if m[1] != "0" || m[2] != defaultRefName()+" disc 0" || m[3] != "packed" {
+		t.Fatalf("disc line = %q, want disc 0 %q packed", lines[1], defaultRefName()+" disc 0")
 	}
 	if lines[2] != "next: burn disc 0, then run: noahsark disc burned 0" {
 		t.Fatalf("next line = %q", lines[2])
@@ -117,13 +117,13 @@ func TestStatusDiscsKeepsExactNumbers(t *testing.T) {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	treeDir := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir, "--label=json disc"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+treeDir); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
 	discs := statusDiscs(t, repo)
-	if len(discs) != 1 || discs[0].Label != "json disc" {
-		t.Fatalf("status discs = %+v, want one disc labelled %q", discs, "json disc")
+	if len(discs) != 1 || discs[0].Label != defaultRefName()+" disc 0" {
+		t.Fatalf("status discs = %+v, want one disc labelled %q", discs, defaultRefName()+" disc 0")
 	}
 	if discs[0].PackedObjects == 0 {
 		t.Fatalf("packed_objects = 0, want the exact count after a pack")

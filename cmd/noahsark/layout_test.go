@@ -129,7 +129,7 @@ func TestInitCommitPackUseTheLayout(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	l := testLayout(t, repo)
-	tree := packedTreeDir(t, out)
+	tree := packedTreeDir(t, repo, out)
 
 	for _, path := range []string{
 		l.configFile(), l.gitignoreFile(), l.stateLogFile(), l.discsLedgerFile(),

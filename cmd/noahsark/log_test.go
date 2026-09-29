@@ -63,7 +63,7 @@ func TestLogNamesARefOnAnotherDiscAfterGC(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack B: exit %d: %s", code, out)
 	}
-	discB := packedTreeDir(t, out)
+	discB := packedTreeDir(t, repo, out)
 
 	code, out = runCmd(t, "log", discB)
 	if code != 0 {

@@ -187,7 +187,7 @@ func packBurnDisc(t *testing.T, work, repo, src string) string {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
 	mounted := filepath.Join(work, filepath.Base(t.TempDir()))
-	copyTree(t, packedTreeDir(t, packOut), mounted)
+	copyTree(t, packedTreeDir(t, repo, packOut), mounted)
 	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", packedDiscUUID(t, packOut)); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
@@ -207,7 +207,7 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 	mounted := filepath.Join(work, filepath.Base(t.TempDir()))
 	copyTree(t, stagedTree, mounted)
@@ -394,16 +394,30 @@ func statusDiscs(t *testing.T, repo string) []discSummary {
 	return summarizeDiscs(ledger.Rows, stageLog)
 }
 
-// packedTreeDir picks the "tree: DIR" line out of pack's output.
-func packedTreeDir(t *testing.T, output string) string {
+// packedTreeDir returns the disc root of the disc that pack's output
+// names in the repository repo: the tree of its plan directory, or the
+// target of that tree for a pack --out disc.
+func packedTreeDir(t *testing.T, repo, output string) string {
 	t.Helper()
-	for line := range strings.SplitSeq(output, "\n") {
-		if after, found := strings.CutPrefix(line, "tree: "); found {
-			return after
-		}
+	discUUID, err := decodeUUID(strings.ReplaceAll(packedDiscUUID(t, output), "-", ""))
+	if err != nil {
+		t.Fatalf("bad uuid line in pack output: %q: %v", output, err)
 	}
-	t.Fatalf("no tree line in pack output: %q", output)
-	return ""
+	tree := testLayout(t, repo).planTree(discUUID)
+	if target, err := os.Readlink(tree); err == nil {
+		return target
+	}
+	return tree
+}
+
+// readDiscLog replays the disc state log of the repository at repo.
+func readDiscLog(t *testing.T, repo string) *stage.DiscLog {
+	t.Helper()
+	l, err := stage.OpenDiscLogReadOnly(testLayout(t, repo).stateDir())
+	if err != nil {
+		t.Fatalf("stage.OpenDiscLogReadOnly: %v", err)
+	}
+	return l
 }
 
 // packedDiscUUID picks the disc uuid out of pack's "uuid: UUID" line.

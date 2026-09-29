@@ -65,6 +65,13 @@ type PackOptions struct {
 	RepoUUID  [16]byte
 	DiscUUID  [16]byte
 	Label     string
+	// MinRunSeq and MinDiscSeq are the lowest run_seq and disc_seq that
+	// this pack can use. The disc ledger alone does not know a number
+	// that an undone pack used. The caller gives the numbers after the
+	// highest that its other records hold, so that no number is used
+	// again. Zero values add no limit.
+	MinRunSeq  uint64
+	MinDiscSeq uint64
 	// FECEnabled writes a Reed-Solomon checksum column and parity for
 	// this run when true (fec_scheme 1). When false, the default, the
 	// run carries no FEC (fec_scheme 0).
@@ -228,7 +235,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	runSeq, discSeq := NextSeqNumbers(ledger.Rows)
+	runSeq, discSeq := opts.nextSeqNumbers(ledger.Rows)
 
 	discBuf, discHash, err := buildDisc(opts.asBuildOptions(), packTime, discSeq)
 	if err != nil {
@@ -484,7 +491,7 @@ type DryRunDisc struct {
 // for each disc it predicts, against a shrinking in-memory candidate
 // list, so the prediction never depends on a second packing rule.
 //
-// Each predicted disc gets the number the ledger will hand it and the
+// Each predicted disc gets the number that Pack will give it and the
 // label labelFor builds for that number, and the DISCS table grows by
 // one row for each predicted disc, exactly as a real pack grows it. The
 // predicted fixed per-disc overhead is therefore the overhead the real
@@ -561,7 +568,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 	rows := append([]format.DiscsRow(nil), ledger.Rows...)
 	var discs []DryRunDisc
 	for len(candidates) > 0 {
-		runSeq, discSeq := NextSeqNumbers(rows)
+		runSeq, discSeq := opts.nextSeqNumbers(rows)
 		discOpts := opts
 		if labelFor != nil {
 			discOpts.Label = labelFor(discSeq)
@@ -1006,6 +1013,13 @@ func NextSeqNumbers(rows []format.DiscsRow) (runSeq, discSeq uint64) {
 		}
 	}
 	return maxRunSeq + 1, maxDiscSeq + 1
+}
+
+// nextSeqNumbers returns the run_seq and disc_seq of the next run: the
+// numbers after the ledger rows, and not below MinRunSeq and MinDiscSeq.
+func (opts PackOptions) nextSeqNumbers(rows []format.DiscsRow) (runSeq, discSeq uint64) {
+	runSeq, discSeq = NextSeqNumbers(rows)
+	return max(runSeq, opts.MinRunSeq), max(discSeq, opts.MinDiscSeq)
 }
 
 // carriedSnapshots returns the snapshot ids an earlier disc already

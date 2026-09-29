@@ -16,15 +16,14 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 func init() {
 	register(&command{
 		name:    "pack",
-		usage:   "pack --capacity=SIZE [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
-		summary: "Pack staged objects onto the next disc.",
+		usage:   "pack --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]",
+		summary: "Pack staged items onto the next disc.",
 		flags:   packFlags,
 	})
 }
@@ -32,7 +31,6 @@ func init() {
 // packOptions holds the command options of pack.
 type packOptions struct {
 	capacity  string
-	label     string
 	outDir    string
 	fec       bool
 	closeDisc bool
@@ -42,19 +40,20 @@ type packOptions struct {
 func packFlags(fs *flag.FlagSet) runFunc {
 	o := &packOptions{}
 	fs.StringVar(&o.capacity, "capacity", "", "target capacity ("+capacityHelpText()+"); required")
-	fs.StringVar(&o.label, "label", "", "human label for the disc; defaults to the newest ref name and the disc number")
-	fs.StringVar(&o.outDir, "out", "", "output directory for the packed tree; must not already exist or must be empty; default <staging.dir>/plans/<disc uuid>/tree")
-	fs.BoolVar(&o.fec, "fec", false, "write a Reed-Solomon checksum column and parity for this run")
-	fs.BoolVar(&o.closeDisc, "close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
-	fs.BoolVar(&o.dryRun, "dry-run", false, "print the discs the staged data needs at this capacity, and stop; writes nothing")
+	fs.StringVar(&o.outDir, "out", "", "the directory that receives the disc root; it must be empty or absent")
+	fs.BoolVar(&o.fec, "fec", false, "write FEC for this disc")
+	fs.BoolVar(&o.closeDisc, "close", false, "make status print the sealing burn line for this disc")
+	fs.BoolVar(&o.dryRun, "dry-run", false, "print the discs that the staged data needs at this capacity, and stop")
 	return o.run
 }
+
+// packNothingStaged is the line of a pack that finds no staged item.
+const packNothingStaged = "pack: nothing staged"
 
 // run implements "noahsark pack". pack takes every pending ref; there
 // is no way to name a snapshot explicitly. See docs/decisions.md, "Pack".
 func (o *packOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
-	outDir := o.outDir
 
 	repoDir, err := e.findRepo()
 	if err != nil {
@@ -75,49 +74,45 @@ func (o *packOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
+	absOut := ""
+	if o.outDir != "" && !o.dryRun {
+		if absOut, err = e.abs(o.outDir); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+			return 1
+		}
+		if code := checkPackOut(absOut, stderr); code != 0 {
+			return code
+		}
+	}
 
-	// --dry-run only reads the staging store and the ledgers; it takes
-	// no repository lock, matching the rule that a read-only command
-	// takes none. Every other pack path writes the state log, the
-	// staging store or the ledgers, so it takes the lock as usual.
-	var lk *repolock.Lock
+	// A dry run takes no lock, as a command that only reads.
 	if !o.dryRun {
-		var code int
-		var ok bool
-		lk, code, ok = lockRepo("pack", repoDir, stderr)
+		lk, code, ok := lockRepo("pack", repoDir, stderr)
 		if !ok {
 			return code
 		}
 		defer releaseLock(lk)
 	}
 
-	var snapshots []image.SnapshotRef
 	now := e.now()
-
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-
 	layout := layoutOf(repoDir, cfg)
 	c, err := catalog.Open(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-
-	snapshots, err = addPendingRefs(layout, repoUUID, snapshots, now)
+	snapshots, err := addPendingRefs(layout, repoUUID, nil, now)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-
-	// addPendingRefs above already carried forward every ref pack has
-	// not yet moved onto a run. When that left nothing, name the
-	// newest ref of the repository, so a pack after gc reports an
-	// already-packed repository instead of one that never had a
-	// commit.
+	// When no ref moved since the last pack, the run still carries the
+	// newest ref of the repository.
 	if len(snapshots) == 0 {
 		if newest := newestRef(c, allRepoRefs(layout)); newest != nil {
 			newest.Time = now
@@ -125,50 +120,40 @@ func (o *packOptions) run(e *env, args []string) int {
 		}
 	}
 
-	fecEnabled := o.fec
-
-	// labelFor answers what label a disc with this number gets, so a
-	// dry run predicts the same label, and so the same README bytes,
-	// that the real pack of that disc writes.
-	labelFor := func(discSeq uint64) string {
-		if o.label != "" {
-			return o.label
-		}
-		return defaultLabel(layout, c, snapshots, discSeq)
-	}
-
+	var discLog *stage.DiscLog
 	if o.dryRun {
-		return runPackDryRun(stdout, stderr, layout, c, repoUUID, snapshots, capacitySectors, fecEnabled, labelFor)
+		discLog, err = stage.OpenDiscLogReadOnly(layout.stateDir())
+	} else {
+		discLog, err = stage.OpenDiscLog(layout.stateDir())
 	}
-
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	if torn := discLog.TornBytes(); torn > 0 {
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: the disc state log's tail was truncated; %d byte(s) after the last valid record were ignored, matching a crash during an earlier append\n", torn)
+	}
 	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	_, nextDiscSeq := image.NextSeqNumbers(ledger.Rows)
-	discLabel := labelFor(nextDiscSeq)
+	runSeq, discSeq := nextPackSeqNumbers(ledger.Rows, discLog)
 
-	var discUUID [16]byte
-	if _, err := rand.Read(discUUID[:]); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
+	labelName := newestRefName(c, allRepoRefs(layout))
+	labelFor := func(seq uint64) string { return discLabel(labelName, seq) }
 
-	if outDir == "" {
-		outDir = layout.planTree(discUUID)
+	opts := image.PackOptions{
+		Snapshots:             snapshots,
+		TargetCapacitySectors: capacitySectors,
+		RepoUUID:              repoUUID,
+		MinRunSeq:             runSeq,
+		MinDiscSeq:            discSeq,
+		FECEnabled:            o.fec,
+		Now:                   func() time.Time { return now },
 	}
-	absOut, err := filepath.Abs(outDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
-	if empty, err := dirIsEmptyOrMissing(absOut); err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	} else if !empty {
-		_, _ = fmt.Fprintf(stderr, "noahsark: pack: --out=%s already holds files; choose another --out\n", absOut)
-		return 2
+	if o.dryRun {
+		return runPackDryRun(stdout, stderr, layout, c, opts, o.capacity, labelFor)
 	}
 
 	stageLog, err := stage.Open(layout.stateDir())
@@ -178,127 +163,221 @@ func (o *packOptions) run(e *env, args []string) int {
 	}
 	warnIfTruncated("pack", stageLog, stderr)
 
-	opts := image.PackOptions{
-		Store:                 packStore(layout, c, stageLog),
-		Snapshots:             snapshots,
-		TargetCapacitySectors: capacitySectors,
-		OutputDir:             absOut,
-		RepoUUID:              repoUUID,
-		DiscUUID:              discUUID,
-		Label:                 discLabel,
-		FECEnabled:            fecEnabled,
-		StageLog:              stageLog,
-		Progress:              e.progress(),
+	var discUUID [16]byte
+	if _, err := rand.Read(discUUID[:]); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
 	}
-	result, err := image.Pack(opts)
+	label := labelFor(discSeq)
+	root, err := makePackRoot(layout, discUUID, absOut)
 	if err != nil {
-		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) holds not one object; %s\n",
-				o.capacity, capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
-			return 2
-		}
-		if errors.Is(err, image.ErrNothingToPack) {
-			// Nothing left to write is not a failure: pack did
-			// everything the repository's state allows.
-			_, _ = fmt.Fprintln(stdout, "pack:", err)
-			return 0
-		}
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
 
-	if _, err := catalog.WriteTablesFromRoot(c, absOut); err != nil {
-		// The disc root is packed and recorded. A failure to copy its
-		// tables into the catalog does not undo that.
+	opts.Store = packStore(layout, c, stageLog)
+	opts.StageLog = stageLog
+	opts.OutputDir = root
+	opts.DiscUUID = discUUID
+	opts.Label = label
+	opts.Progress = e.progress()
+	result, err := image.Pack(opts)
+	if err != nil {
+		// Pack removes the part-written disc root. The plan directory of
+		// this disc goes too; an --out directory stays.
+		_ = os.RemoveAll(layout.planDir(discUUID))
+		if errors.Is(err, image.ErrNothingToPack) {
+			_, _ = fmt.Fprintln(stdout, packNothingStaged)
+			_, _ = fmt.Fprintln(stdout, nextStatusLine)
+			return 0
+		}
+		return packFailed(stderr, o.capacity, capacitySectors, err)
+	}
+
+	if _, err := catalog.WriteTablesFromRoot(c, root); err != nil {
+		// The Packed event still follows: the ledger row and the item
+		// records already name this disc.
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 	}
+	if err := discLog.Append(packedEvent(now, discUUID, result, o.closeDisc, o.fec)); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
 
-	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d object(s) on the disc, %d bytes\n",
-		result.DiscSeq, discLabel, result.ObjectCount, result.ObjectBytes)
+	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d item(s), %d bytes\n",
+		result.DiscSeq, label, result.ObjectCount, result.ObjectBytes)
 	_, _ = fmt.Fprintf(stdout, "uuid: %s\n", uuidText(discUUID))
-	_, _ = fmt.Fprintf(stdout, "tree: %s\n", absOut)
-	if fecEnabled {
-		_, _ = fmt.Fprintln(stdout, "fec: on")
-	}
-
-	repoArg := ""
-	if e.global.repo != "" {
-		repoArg = " --repo=" + repoDir
-	}
-	printNextSteps(stdout, repoArg, absOut, result.DiscSeq, o.closeDisc)
-
-	// Objects left STAGED after a successful pack are not a failure: the
-	// disc was packed correctly, and the leftover simply waits for the
-	// next disc. This line is how the operator learns to run pack again.
-	if result.RemainingObjects > 0 {
-		_, _ = fmt.Fprintf(stdout, "remaining staged: %d objects, %d bytes; pack again for the next disc\n", result.RemainingObjects, result.RemainingBytes)
-		return 0
-	}
-	_, _ = fmt.Fprintln(stdout, "remaining staged: 0 objects, 0 bytes")
+	_, _ = fmt.Fprintln(stdout, nextStatusLine)
 	return 0
 }
 
-// runPackDryRun implements "pack --dry-run". It answers how many discs
-// the staged data needs at this capacity, and writes nothing: no output
-// tree, no state record, no catalog entry, no ledger row, and no sequence
-// number is used. It takes no repository lock, since it only reads the
-// staging store and the ledgers.
-func runPackDryRun(stdout, stderr io.Writer, layout repoLayout, c *catalog.Catalog, repoUUID [16]byte, snapshots []image.SnapshotRef, capacitySectors uint64, fecEnabled bool, labelFor func(uint64) string) int {
+// nextStatusLine is the last line of a command that changed state.
+const nextStatusLine = "next: noahsark status"
+
+// packedEvent is the Packed event of the disc that result describes.
+func packedEvent(now time.Time, discUUID [16]byte, result *image.PackResult, closeDisc, fec bool) stage.DiscRecord {
+	var flags stage.DiscFlags
+	if closeDisc {
+		flags |= stage.FlagClose
+	}
+	if fec {
+		flags |= stage.FlagFEC
+	}
+	return stage.DiscRecord{
+		TimeSec:  now.Unix(),
+		DiscUUID: discUUID,
+		Event:    stage.EventPacked,
+		Flags:    flags,
+		DiscSeq:  result.DiscSeq,
+		RunSeq:   result.RunSeq,
+	}
+}
+
+// nextPackSeqNumbers returns the run_seq and disc_seq of the next disc:
+// one more than the highest number over the rows of the disc ledger and
+// over all Packed events, undone packs included. A fresh repository
+// starts at run_seq 1 and disc_seq 0.
+func nextPackSeqNumbers(rows []format.DiscsRow, discLog *stage.DiscLog) (runSeq, discSeq uint64) {
+	runSeq, discSeq = image.NextSeqNumbers(rows)
+	// A Packed event always has a run_seq of 1 or more. Thus a highest
+	// run_seq of 0 means that the log has no Packed event.
+	if highDisc, highRun := discLog.HighestPacked(); highRun > 0 {
+		runSeq = max(runSeq, highRun+1)
+		discSeq = max(discSeq, highDisc+1)
+	}
+	return runSeq, discSeq
+}
+
+// discLabel is the label of disc seq: the name of the newest ref, then
+// " disc SEQ". With no ref, it is "disc SEQ".
+func discLabel(newestRef string, seq uint64) string {
+	if newestRef == "" {
+		return fmt.Sprintf("disc %d", seq)
+	}
+	return fmt.Sprintf("%s disc %d", newestRef, seq)
+}
+
+// checkPackOut refuses an --out path that holds files or that is not a
+// directory, with exit code 2. It returns 0 for an empty or absent
+// directory.
+func checkPackOut(absOut string, stderr io.Writer) int {
+	fi, err := os.Stat(absOut)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	if !fi.IsDir() {
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: --out=%s is not a directory\n", absOut)
+		return 2
+	}
+	entries, err := os.ReadDir(absOut)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+		return 1
+	}
+	if len(entries) > 0 {
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: --out=%s holds files; give an empty or absent directory\n", absOut)
+		return 2
+	}
+	return 0
+}
+
+// makePackRoot prepares the disc root of the disc discUUID and returns
+// its path. With no absOut, the disc root is the tree directory of the
+// plan directory. With absOut, the tree is a symlink to absOut, and the
+// disc root is absOut.
+func makePackRoot(layout repoLayout, discUUID [16]byte, absOut string) (string, error) {
+	planDir := layout.planDir(discUUID)
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		return "", err
+	}
+	tree := layout.planTree(discUUID)
+	root := tree
+	if absOut == "" {
+		if err := os.Mkdir(tree, 0o755); err != nil {
+			return "", err
+		}
+	} else {
+		if err := os.Symlink(absOut, tree); err != nil {
+			return "", err
+		}
+		root = absOut
+	}
+	if err := syncDir(planDir); err != nil {
+		return "", err
+	}
+	return root, syncDir(filepath.Dir(planDir))
+}
+
+// syncDir flushes the entries of the directory dir to stable storage.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
+// packFailed prints the refusal or the error of a failed pack and
+// returns its exit code.
+func packFailed(stderr io.Writer, capacity string, capacitySectors uint64, err error) int {
+	if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) holds not one item; %s\n",
+			capacity, capacitySectors*image.SectorSize, smallestItemText(tooSmall))
+		_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
+		return 2
+	}
+	_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
+	return 1
+}
+
+// runPackDryRun implements "pack --dry-run". It prints the discs that
+// the staged data needs, and writes nothing: no disc root, no record,
+// no catalog entry and no ledger row. It uses no sequence number.
+func runPackDryRun(stdout, stderr io.Writer, layout repoLayout, c *catalog.Catalog, opts image.PackOptions, capacity string, labelFor func(uint64) string) int {
 	stageLog, err := stage.OpenReadOnly(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
 	warnIfTruncated("pack", stageLog, stderr)
+	opts.Store = packStore(layout, c, stageLog)
+	opts.StageLog = stageLog
 
-	opts := image.PackOptions{
-		Store:                 packStore(layout, c, stageLog),
-		Snapshots:             snapshots,
-		TargetCapacitySectors: capacitySectors,
-		RepoUUID:              repoUUID,
-		FECEnabled:            fecEnabled,
-		StageLog:              stageLog,
-	}
 	discs, err := image.DryRun(opts, labelFor)
+	if errors.Is(err, image.ErrNothingToPack) || (err == nil && len(discs) == 0) {
+		_, _ = fmt.Fprintln(stdout, packNothingStaged)
+		return 0
+	}
 	printDryRunDiscs(stdout, discs)
 	if err != nil {
-		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity (%d bytes) holds not one object; %s\n",
-				capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
-			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
-			return 2
-		}
-		if errors.Is(err, image.ErrNothingToPack) {
-			_, _ = fmt.Fprintln(stdout, "pack:", err)
-			return 0
-		}
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
+		return packFailed(stderr, capacity, opts.TargetCapacitySectors, err)
 	}
 	return 0
 }
 
 // printDryRunDiscs prints one line for each predicted disc, then the
-// totals and the one action the operator takes next.
+// total. The total uses a fixed plural form, for a program to parse.
 func printDryRunDiscs(stdout io.Writer, discs []image.DryRunDisc) {
-	var totalObjects int
+	var totalItems int
 	var totalBytes uint64
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "disc %d %q: %d object(s) on the disc, %d bytes\n", d.DiscSeq, d.Label, d.ObjectCount, d.ObjectBytes)
-		totalObjects += d.ObjectCount
+		_, _ = fmt.Fprintf(stdout, "disc %d: %d items, %d bytes\n", d.DiscSeq, d.ObjectCount, d.ObjectBytes)
+		totalItems += d.ObjectCount
 		totalBytes += d.ObjectBytes
 	}
-	_, _ = fmt.Fprintf(stdout, "total: %d disc(s), %d object(s) on the discs, %d bytes\n", len(discs), totalObjects, totalBytes)
-	if len(discs) > 0 {
-		_, _ = fmt.Fprintf(stdout, "next: run noahsark pack %d time(s), one disc for each pack\n", len(discs))
-	}
+	_, _ = fmt.Fprintf(stdout, "total: %d discs, %d items, %d bytes\n", len(discs), totalItems, totalBytes)
 }
 
-// smallestObjectText names the smallest staged object of a refused
-// capacity, the one object the capacity must first grow to hold.
-func smallestObjectText(e *image.ErrCapacityTooSmall) string {
-	return fmt.Sprintf("the smallest staged object is %s %s, %d bytes",
+// smallestItemText names the smallest staged item of a refused
+// capacity, the one item the capacity must first grow to hold.
+func smallestItemText(e *image.ErrCapacityTooSmall) string {
+	return fmt.Sprintf("the smallest staged item is %s %s, %d bytes",
 		kindWord(e.SmallestKind), e.SmallestID.TextForm(), e.SmallestBytes)
 }
 
@@ -314,24 +393,8 @@ func kindWord(kind format.ObjectKind) string {
 	case format.ObjectKindSnapshot:
 		return "snapshot"
 	default:
-		return "object"
+		return "item"
 	}
-}
-
-// defaultLabel builds the label a pack uses when --label names none:
-// the name of the newest ref this disc carries, and discSeq. A disc
-// that carries no ref uses the newest ref of the repository instead, so
-// a later disc of the same run of packs keeps a name an operator reads.
-// A repository with no ref at all gets the disc number alone.
-func defaultLabel(layout repoLayout, c *catalog.Catalog, snapshots []image.SnapshotRef, discSeq uint64) string {
-	name := newestRefName(c, snapshots)
-	if name == "" {
-		name = newestRefName(c, allRepoRefs(layout))
-	}
-	if name == "" {
-		return fmt.Sprintf("disc %d", discSeq)
-	}
-	return fmt.Sprintf("%s disc %d", name, discSeq)
 }
 
 // newestRef returns the ref whose snapshot was committed last, by the
@@ -369,9 +432,8 @@ func newestRefName(c *catalog.Catalog, snapshots []image.SnapshotRef) string {
 	return name
 }
 
-// allRepoRefs reads every ref of the repository, for the label of a
-// disc that carries no ref of its own. An unreadable ref file gives no
-// ref, and the label then falls back to the disc number.
+// allRepoRefs reads every ref of the repository. An unreadable ref file
+// gives no ref, and the label then is the disc number alone.
 func allRepoRefs(layout repoLayout) []image.SnapshotRef {
 	refs, err := readRefs(layout.refsFile())
 	if err != nil {
@@ -400,61 +462,6 @@ func (s *stringList) String() string { return fmt.Sprint([]string(*s)) }
 func (s *stringList) Set(v string) error {
 	*s = append(*s, v)
 	return nil
-}
-
-// This build has no burn command and no burner config keys, so the
-// printed burn line always uses these defaults; a user with a different
-// device or speed edits the printed line before running it.
-const (
-	burnerDefaultDevice = "/dev/sr0"
-	burnerDefaultSpeed  = 4
-)
-
-// printNextSteps prints the four copy-ready commands that turn a packed
-// tree into a burned, verified disc: building the UDF image, burning
-// it, telling the staging state machine the burn happened, and
-// verifying the mount. This build stops at pack, so these are printed
-// rather than run. repoArg repeats --repo only when the operator gave
-// it, so a repository found from NOAHSARK_REPO or from the working
-// directory keeps the printed commands free of flags.
-//
-// The burn line follows FORMAT.md's and OPERATIONS.md's open-by-default
-// rule: spare:min and no -dvd-compat, unless close is true, which is the
-// only way this build ever prints -dvd-compat or spare:none.
-//
-// `disc burned` comes before `verify`: verify never moves an object
-// from PACKED to BURNED itself, since a loop-mounted image checked
-// before burning has the same disc uuid and would otherwise look
-// burned too. See docs/decisions.md, "Burning and disc lifecycle".
-func printNextSteps(stdout io.Writer, repoArg, treeDir string, discSeq uint64, sealDisc bool) {
-	imagePath := treeDir + ".img"
-	spareMode := "spare:min"
-	dvdCompat := ""
-	if sealDisc {
-		spareMode = "spare:none"
-		dvdCompat = "-dvd-compat "
-	}
-	_, _ = fmt.Fprintln(stdout, "next steps:")
-	_, _ = fmt.Fprintf(stdout, "  sudo noahsark image build --out=%s %s\n", imagePath, treeDir)
-	_, _ = fmt.Fprintf(stdout, "  growisofs -speed=%d -use-the-force-luke=%s,tty %s-Z %s=%s\n",
-		burnerDefaultSpeed, spareMode, dvdCompat, burnerDefaultDevice, imagePath)
-	_, _ = fmt.Fprintf(stdout, "  noahsark%s disc burned %d\n", repoArg, discSeq)
-	_, _ = fmt.Fprintf(stdout, "  noahsark%s verify <MOUNT>\n", repoArg)
-}
-
-// dirIsEmptyOrMissing reports whether path does not exist yet, or exists
-// as an empty directory. Pack refuses to write into a directory a run is
-// already packed into, so it never rewrites another run's DISC.bin or
-// README.txt.
-func dirIsEmptyOrMissing(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return len(entries) == 0, nil
 }
 
 // addPendingRefs implements OPERATIONS.md's rule that pack carries

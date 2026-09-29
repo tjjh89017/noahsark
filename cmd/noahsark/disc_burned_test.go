@@ -26,7 +26,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 
 	mounted := filepath.Join(work, "mounted")
@@ -81,7 +81,7 @@ func TestDiscBurnedUndo(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 
 	mounted := filepath.Join(work, "mounted")
@@ -126,7 +126,7 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, packOut)
 	}
-	stagedTree := packedTreeDir(t, packOut)
+	stagedTree := packedTreeDir(t, repo, packOut)
 	discUUID := packedDiscUUID(t, packOut)
 
 	mounted := filepath.Join(work, "mounted")
@@ -172,7 +172,7 @@ func TestDiscBurnedBySeqAndUUIDPrefix(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--label=spare-1"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
