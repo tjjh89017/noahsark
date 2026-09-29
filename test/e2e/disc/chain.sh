@@ -5,7 +5,8 @@
 # way. scenario_chain is the real, full-size scenario the CI matrix
 # runs; scenario_chain_small is the same flow at a fast local scale,
 # used by TestChainSmall. See run.sh for the shared scenario dispatch
-# and lib.sh for build_binary, mount_populate and the media_* helpers.
+# and lib.sh for the pack, image, mount and restore helpers and the
+# media_* helpers.
 set -euo pipefail
 
 # pack packs every staged object in the whole repository, from every
@@ -106,15 +107,19 @@ chain_small_order() {
 	esac
 }
 
+# CHAIN_UUIDS holds the uuid of each disc that chain_pack_one packed, in
+# pack order.
+CHAIN_UUIDS=()
+
 # chain_pack_one WORK REPO N PACKFLAGS builds and packs disc N, images
-# it at the capacity its own DISC.bin carries, mounts, populates and
-# verifies it, then
-# unmounts, keeping the image but deleting the packed tree. It also frees
-# the staged copy of each object on this disc. It fails unless pack exits
-# 0 with a packed-disc line and status then reports staged data: every
-# disc in this scenario is sized so real objects remain after it, and
-# leftover staged data is not a pack failure. It sets
-# CHAIN_REMAINING_BYTES from the "staged:" line of status.
+# it at the capacity its own DISC.bin carries, mounts the image
+# read-only and verifies it, then unmounts, keeping the image but
+# deleting the packed tree. gc then frees the staged copy of each item
+# on this disc. It fails unless pack exits 0 with a packed-disc line and
+# status then reports staged data: every disc in this scenario is sized
+# so real objects remain after it, and leftover staged data is not a
+# pack failure. It sets CHAIN_REMAINING_BYTES from the "staged:" line
+# of status, and adds the disc uuid to CHAIN_UUIDS.
 chain_pack_one() {
 	local work="$1" repo="$2" n="$3" packflags="$4"
 	local ddir="$work/disc$n"
@@ -135,37 +140,31 @@ chain_pack_one() {
 	if ! grep -q '^packed disc ' "$logf"; then
 		fail "chain: pack disc $n: missing the packed-disc line"
 	fi
+	local uuid
+	uuid="$(awk '/^uuid: /{print $2}' "$logf")"
+	[ -n "$uuid" ] || fail "chain: pack disc $n: missing the uuid line"
+	CHAIN_UUIDS+=("$uuid")
 	local staged
 	staged="$("$BIN" --repo="$repo" status | grep -E '^staged: [0-9]+ [a-z()]+, [0-9]+ bytes$')" ||
 		fail "chain: status after pack disc $n: missing the staged line"
 	CHAIN_REMAINING_BYTES="$(echo "$staged" | grep -oE '[0-9]+ bytes$' | grep -oE '^[0-9]+')"
 	log "chain: disc $n: $staged"
 
-	image_build "$repo" "$tree" "$image"
-	mount_populate "$image" "$tree" "$mnt"
-	# Unmount whether verify passes or fails: a failure must not leave
-	# the mount busy for the runner's own cleanup.
-	set +e
-	"$BIN" verify "$mnt"
-	code=$?
-	set -e
+	image_build "$repo" "$uuid" "$image"
+	mount_ro "$image" "$mnt"
+	verify_counted "$repo" "$mnt" "$uuid"
 	umount_if_mounted "$mnt"
-	if [ "$code" -ne 0 ]; then
-		fail "chain: verify disc $n: exit $code"
-	fi
 
-	# Free the chunk file in staging of each object on this disc. The
-	# tree uses the same fan-out path as staging/chunks. A later pack
-	# never reads the chunk file of a packed chunk. The full staging copy
-	# plus three disc images does not fit on a CI runner disk. The
+	# Free the chunk files in staging of each item on this disc. A later
+	# pack never reads the chunk file of a packed chunk. The full staging
+	# copy plus three disc images does not fit on a CI runner disk. The
 	# metadata objects stay in the catalog.
-	if [ -d "$tree/NOAHSARK/objects" ]; then
-		local f rel
-		while IFS= read -r -d '' f; do
-			rel="${f#"$tree/NOAHSARK/objects/"}"
-			rm -f "$repo/staging/chunks/$rel"
-		done < <(find "$tree/NOAHSARK/objects" -type f -print0)
-	fi
+	local gc_out
+	gc_out="$("$BIN" --repo="$repo" gc --force-after=0d)"
+	echo "$gc_out"
+	grep -qE '^gc: freed [1-9][0-9]* item\(s\), ' <<<"$gc_out" ||
+		fail "chain: gc after disc $n freed nothing"
+	assert_disc_state "$repo" "$uuid" "on disc only, last check *"
 
 	rm -rf "$tree"
 	df -h
@@ -175,36 +174,6 @@ chain_pack_one() {
 # object ids physically present on that disc's tree.
 chain_object_ids() {
 	find "$1/NOAHSARK/objects" -type f -printf '%f\n' 2>/dev/null | sort
-}
-
-# chain_assert_missing_disc SNAP OUT MISSING_DISC_ROOT DISC... restores
-# from the given disc roots (MISSING_DISC_ROOT itself left out),
-# expecting a nonzero exit and a message naming MISSING_DISC_ROOT's uuid.
-# The message can take either form the restore package prints: a
-# Prereqs-named "disc UUID holds N needed" line, or, when no provided
-# disc's INDEX or Prereqs names the missing objects, the DISCS-table
-# candidate line; either way the omitted disc's uuid must appear.
-chain_assert_missing_disc() {
-	local snap="$1" out="$2" missing_root="$3"
-	shift 3
-	local missing_uuid
-	missing_uuid="$(run_tool ci-disc-uuid "$missing_root")"
-	local args=(restore "$@" "$snap" "$out")
-	local result code
-	set +e
-	result="$("$BIN" "${args[@]}" 2>&1)"
-	code=$?
-	set -e
-	echo "$result"
-	if [ "$code" -eq 0 ]; then
-		fail "chain: restore with a disc missing exited 0, want nonzero"
-	fi
-	if ! grep -qF "$missing_uuid" <<<"$result"; then
-		fail "chain: restore-with-a-disc-missing did not name the missing disc's uuid ($missing_uuid)"
-	fi
-	local matches
-	matches="$(grep -F "$missing_uuid" <<<"$result")"
-	log "chain: missing-disc restore refused as expected, naming disc $missing_uuid: $(head -1 <<<"$matches")"
 }
 
 # chain_commit_fixture LABEL WORK REPO NAME HALF_BYTES SEED builds and
@@ -299,11 +268,10 @@ chain_run() {
 	log "$label: disk after deleting both sources"
 	df -h
 
-	local discroots=()
+	CHAIN_UUIDS=()
 	local i
 	for i in 1 2 3; do
 		chain_pack_one "$work" "$repo" "$i" "${packflags[$((i - 1))]}"
-		discroots+=("$work/disc$i/mnt")
 	done
 
 	local remaining_gib=$((CHAIN_REMAINING_BYTES / 1073741824))
@@ -326,14 +294,19 @@ chain_run() {
 
 	log "$label: object ids per disc:"
 	for i in 1 2 3; do
-		sudo mount -o loop -t udf "$work/disc$i/run.img" "$work/disc$i/mnt"
+		mount_ro "$work/disc$i/run.img" "$work/disc$i/mnt"
 		log "$label: disc $i objects:"
 		chain_object_ids "$work/disc$i/mnt"
+		umount_if_mounted "$work/disc$i/mnt"
 	done
 
+	# restore reads the discs one at a time at one mount point, as with
+	# one drive. restore_loop swaps the disc that restore asks for.
+	local rmnt="$work/rmnt"
 	local restored="$work/restored"
-	"$BIN" restore "${discroots[@]}" "$snap" "$restored"
-	run_tool ci-chain-fixture check "$restored$src" "$sample" "$full"
+	restore_loop "$repo" "$rmnt" "$snap" "$restored"
+	log "$label: restore asked for $RESTORE_SWAPS disc(s)"
+	run_tool ci-chain-fixture check "$restored" "$sample" "$full"
 	log "$label: restored sample and full manifest match"
 
 	# The winner is whichever fixture's snapshot id sorts first, so pack's
@@ -341,15 +314,12 @@ chain_run() {
 	# disc 1 from the very first pack call. Disc 1 is therefore always
 	# among the discs it needs, whatever ENFORCE_BAND or the media sizes
 	# do to how far past disc 1 it spreads; omitting disc 1 is the one
-	# choice guaranteed to break its restore. In this scenario the winner
-	# can fit entirely on disc 1, so discs 2 and 3 never name it in
-	# Prereqs; the restore package then falls back to disc 2 or 3's DISCS
-	# table to name disc 1 as a candidate instead.
-	chain_assert_missing_disc "$snap" "$work/restored-missing" "${discroots[0]}" "${discroots[1]}" "${discroots[2]}"
+	# choice guaranteed to break its restore. The restore starts with
+	# disc 2 at the mount point and must stop and ask for disc 1.
+	disc_insert "${CHAIN_UUIDS[1]}" "$rmnt"
+	restore_expect_missing "$repo" "$rmnt" "${CHAIN_UUIDS[0]}" "$snap" "$work/restored-missing"
 
-	for r in "${discroots[@]}"; do
-		umount_if_mounted "$r"
-	done
+	umount_if_mounted "$rmnt"
 	log "$label: disk after restore"
 	df -h
 	log "$label PASS"

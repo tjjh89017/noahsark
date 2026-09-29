@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared assertions for the disc e2e suite (test/e2e/disc). Sourced by
-# lib.sh, before lib.sh's own functions are defined, so these assertions
-# must not call anything but each other, ROOT, and BIN.
+# lib.sh, before lib.sh's own functions are defined. These assertions
+# call lib.sh's log, fail and run_tool only when they run.
 set -euo pipefail
 
 # assert_dirs_equal GOT WANT fails unless GOT and WANT hold the same
@@ -27,7 +27,7 @@ assert_empty_dir_restored() {
 # mounted disc tree at MOUNT.
 assert_listing_matches() {
 	local mnt="$1" work="$2" snap
-	go run "$ROOT/test/e2e/disc/cmd/ci-list" "$mnt" >"$work/go-list.txt"
+	run_tool ci-list "$mnt" >"$work/go-list.txt"
 	# ci-list names the snapshot it walked, by the digest alone; the
 	# decoder takes the multihash text form, which adds the 1220 prefix.
 	snap="1220$(awk '/^# snapshot /{print $3}' "$work/go-list.txt")"
@@ -60,6 +60,26 @@ assert_refused() {
 		fail "$label: expected the refusal message to name the capacity"
 	fi
 	log "$label: refused as expected: $(echo "$out" | tail -1)"
+}
+
+# expect_exit CODE TEXT CMD... runs CMD with no terminal on standard
+# input. It fails unless CMD exits CODE and its output holds the fixed
+# text TEXT. It sets EXPECT_OUT to the output.
+EXPECT_OUT=""
+expect_exit() {
+	local want="$1" text="$2" code
+	shift 2
+	set +e
+	EXPECT_OUT="$("$@" 2>&1 </dev/null)"
+	code=$?
+	set -e
+	echo "$EXPECT_OUT"
+	if [ "$code" -ne "$want" ]; then
+		fail "$*: exit $code, want $want"
+	fi
+	if ! grep -qF -- "$text" <<<"$EXPECT_OUT"; then
+		fail "$*: the output does not hold: $text"
+	fi
 }
 
 # assert_sparse IMAGE WANT_BYTES fails unless IMAGE's apparent size is

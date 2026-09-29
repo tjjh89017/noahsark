@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Disc e2e scenarios: real mkudffs images, a real loop mount, and, for
-# the cli and media scenarios, the real noahsark binary. Needs root
+# Disc e2e scenarios: real mkudffs images, a real read-only loop mount,
+# and the real noahsark binary. Needs root
 # (loop mount) and udftools (mkudffs). See lib.sh for the shared setup
 # and assert.sh for the shared assertions.
 #
 # Usage: run.sh SCENARIO [MEDIA] [ORDER] [EXTRAS]
 #   SCENARIO  media | corrupt-heal | corrupt-parity | corrupt-max |
 #             corrupt-over | fec | cli | iso | chain | chain-small |
-#             lowmem | incremental | rebuild
+#             lowmem | incremental | rebuild | lifecycle
 #             fec runs corrupt-heal, corrupt-parity, corrupt-max and
 #             corrupt-over in sequence, in one process: the CI matrix
 #             folds the four corrupt-* cells into this one.
@@ -36,6 +36,8 @@ HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 . "$HERE/incremental.sh"
 # shellcheck source=test/e2e/disc/rebuild.sh
 . "$HERE/rebuild.sh"
+# shellcheck source=test/e2e/disc/lifecycle.sh
+. "$HERE/lifecycle.sh"
 
 # FIXED_MEDIA is the media preset every scenario but media builds its
 # fixture at: real, but small enough that fixture size never depends on
@@ -77,51 +79,75 @@ pack_rate_line() {
 		}'
 }
 
+# FIXTURE_REF is the ref name that ci-fixture gives its snapshot.
+FIXTURE_REF="2026-09-13"
+
+# fec_setup WORK EXTRA_BYTES builds a ci-fixture disc with FEC, mounts
+# its image read-only at WORK/mnt, recovers it into the repository
+# WORK/repo, and restores it into WORK/restore-before. ci-fixture writes
+# no repository, thus recover makes one from the disc alone. It sets
+# FEC_IMAGE, FEC_SRC, FEC_MNT and FEC_REPO.
+FEC_IMAGE=""
+FEC_SRC=""
+FEC_MNT=""
+FEC_REPO=""
+fec_setup() {
+	local work="$1" extra="$2" out
+	build_binary
+	out="$(build_fixture "$FIXED_MEDIA" "$work" "$extra" 1)"
+	FEC_IMAGE="$(sed -n '2p' <<<"$out")"
+	FEC_SRC="$(sed -n '3p' <<<"$out")"
+	FEC_MNT="$work/mnt"
+	FEC_REPO="$work/repo"
+
+	mount_ro "$FEC_IMAGE" "$FEC_MNT"
+	recover_disc "$FEC_REPO" "$FEC_SRC" "$FEC_MNT" 0
+	restore_loop "$FEC_REPO" "$FEC_MNT" "$FIXTURE_REF" "$work/restore-before"
+	assert_dirs_equal "$work/restore-before" "$FEC_SRC"
+}
+
+# fec_damage CORRUPT-ARG... mounts the fixture image read-write, writes
+# the damage with ci-corrupt, and mounts the image read-only again.
+fec_damage() {
+	umount_if_mounted "$FEC_MNT"
+	mount_rw "$FEC_IMAGE" "$FEC_MNT"
+	run_tool ci-corrupt "$FEC_MNT" "$@"
+	umount_if_mounted "$FEC_MNT"
+	mount_ro "$FEC_IMAGE" "$FEC_MNT"
+}
+
+# fec_heal_restore WORK heals the damaged disc at FEC_MNT into
+# WORK/healed with verify --heal, checks that restore of the healed disc
+# root gives the source back, and unmounts the disc.
+fec_heal_restore() {
+	local work="$1" healed="$1/healed"
+	expect_exit 0 "healed " "$BIN" --repo="$FEC_REPO" verify --heal --out="$healed" "$FEC_MNT"
+	grep -qE '^disc [0-9]+ ".*": [0-9]+ items, ok$' <<<"$EXPECT_OUT" ||
+		fail "verify --heal: the healed disc root does not check ok"
+	restore_loop "$FEC_REPO" "$healed" "$FIXTURE_REF" "$work/restore-after"
+	assert_dirs_equal "$work/restore-after" "$FEC_SRC"
+	umount_if_mounted "$FEC_MNT"
+}
+
 scenario_corrupt_heal() {
 	local work="$WORK/ch"
-	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work" "" 1)"
-	tree="$(sed -n '1p' <<<"$out")"
-	image="$(sed -n '2p' <<<"$out")"
-	src="$(sed -n '3p' <<<"$out")"
-	mnt="$work/mnt"
-
-	mount_populate "$image" "$tree" "$mnt"
-	run_tool ci-restore "$mnt" "$work/restore-before"
-	assert_dirs_equal "$work/restore-before$src" "$src"
+	fec_setup "$work" ""
 
 	# Column 0 and 1 are INDEX.bin itself and are never corrupted here:
 	# Heal needs a readable INDEX.bin to find anything else to repair.
-	run_tool ci-corrupt "$mnt" 3:0 6:0
-	run_tool ci-heal "$mnt"
-
-	run_tool ci-restore "$mnt" "$work/restore-after"
-	assert_dirs_equal "$work/restore-after$src" "$src"
-	umount_if_mounted "$mnt"
+	fec_damage 3:0 6:0
+	fec_heal_restore "$work"
 	log "corrupt-heal PASS"
 }
 
 scenario_corrupt_parity() {
 	local work="$WORK/cp"
-	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work" "" 1)"
-	tree="$(sed -n '1p' <<<"$out")"
-	image="$(sed -n '2p' <<<"$out")"
-	src="$(sed -n '3p' <<<"$out")"
-	mnt="$work/mnt"
-
-	mount_populate "$image" "$tree" "$mnt"
-	run_tool ci-restore "$mnt" "$work/restore-before"
-	assert_dirs_equal "$work/restore-before$src" "$src"
+	fec_setup "$work" ""
 
 	# Corrupt two parity columns of stripe 0; Heal must rebuild them from
 	# the data columns and the remaining parity.
-	run_tool ci-corrupt "$mnt" p:0:0 p:1:0
-	run_tool ci-heal "$mnt"
-
-	run_tool ci-restore "$mnt" "$work/restore-after"
-	assert_dirs_equal "$work/restore-after$src" "$src"
-	umount_if_mounted "$mnt"
+	fec_damage p:0:0 p:1:0
+	fec_heal_restore "$work"
 	log "corrupt-parity PASS"
 }
 
@@ -132,79 +158,51 @@ scenario_corrupt_parity() {
 # limit; it must still recover every one of them.
 scenario_corrupt_max() {
 	local work="$WORK/cmax"
-	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work" "$MULTI_STRIPE_BYTES" 1)"
-	tree="$(sed -n '1p' <<<"$out")"
-	image="$(sed -n '2p' <<<"$out")"
-	src="$(sed -n '3p' <<<"$out")"
-	mnt="$work/mnt"
-
-	mount_populate "$image" "$tree" "$mnt"
-	run_tool ci-restore "$mnt" "$work/restore-before"
-	assert_dirs_equal "$work/restore-before$src" "$src"
+	fec_setup "$work" "$MULTI_STRIPE_BYTES"
 
 	local args=("2:0")
 	for j in $(seq 1 22); do
 		args+=("p:$j:0")
 	done
-	run_tool ci-corrupt "$mnt" "${args[@]}"
-	run_tool ci-heal "$mnt"
-
-	run_tool ci-restore "$mnt" "$work/restore-after"
-	assert_dirs_equal "$work/restore-after$src" "$src"
-	umount_if_mounted "$mnt"
+	fec_damage "${args[@]}"
+	fec_heal_restore "$work"
 	log "corrupt-max PASS"
 }
 
 # scenario_corrupt_over corrupts m+1=24 data blocks of stripe 0 (columns
-# 2..25, never 0 or 1), one more than Heal's parity can recover. Heal
-# must fail for that stripe, with a message naming the stripe, and exit
-# nonzero, and it must leave every other stripe untouched: this fixture
-# is large enough that stripe 1 also carries real data.
+# 2..25, never 0 or 1), one more than Heal's parity can recover. verify
+# --heal must fail for that stripe, with a message naming the stripe,
+# and exit 1. It must leave every other stripe of the healed copy
+# untouched: this fixture is large enough that stripe 1 also carries
+# real data.
 scenario_corrupt_over() {
 	local work="$WORK/cover"
-	local out tree image src mnt
-	out="$(build_fixture "$FIXED_MEDIA" "$work" "$MULTI_STRIPE_BYTES" 1)"
-	tree="$(sed -n '1p' <<<"$out")"
-	image="$(sed -n '2p' <<<"$out")"
-	src="$(sed -n '3p' <<<"$out")"
-	mnt="$work/mnt"
-
-	mount_populate "$image" "$tree" "$mnt"
+	fec_setup "$work" "$MULTI_STRIPE_BYTES"
 
 	local before after
-	before="$(run_tool ci-corrupt "$mnt" peek:2:1)"
+	before="$(run_tool ci-corrupt "$FEC_MNT" peek:2:1)"
 
 	local args=()
 	for c in $(seq 2 25); do
 		args+=("$c:0")
 	done
-	run_tool ci-corrupt "$mnt" "${args[@]}"
+	fec_damage "${args[@]}"
 
-	local heal_out code
-	set +e
-	heal_out="$(run_tool ci-heal "$mnt" 2>&1)"
-	code=$?
-	set -e
-	echo "$heal_out"
-	if [ "$code" -eq 0 ]; then
-		fail "corrupt-over: expected ci-heal to fail, it exited 0"
-	fi
-	if ! grep -qi "stripe 0" <<<"$heal_out"; then
-		fail "corrupt-over: expected the failure to name stripe 0"
-	fi
+	expect_exit 1 "stripe 0" "$BIN" --repo="$FEC_REPO" verify --heal --out="$work/healed" "$FEC_MNT"
+	grep -qE '^disc [0-9]+ ".*": bad; cannot heal; ' <<<"$EXPECT_OUT" ||
+		fail "corrupt-over: no cannot-heal line"
 
-	after="$(run_tool ci-corrupt "$mnt" peek:2:1)"
+	after="$(run_tool ci-corrupt "$work/healed" peek:2:1)"
 	if [ "$before" != "$after" ]; then
 		fail "corrupt-over: stripe 1 changed after the failed heal of stripe 0: before [$before] after [$after]"
 	fi
-	umount_if_mounted "$mnt"
+	umount_if_mounted "$FEC_MNT"
 	log "corrupt-over PASS"
 }
 
 scenario_cli() {
 	local work="$WORK/cli"
-	local repo src tree image mnt commit_out snap restored
+	local repo src tree image mnt commit_out snap restored uuid items
 	repo="$work/repo"
 	src="$work/src"
 	tree="$work/tree"
@@ -221,13 +219,15 @@ scenario_cli() {
 	snap="$(awk '/^snapshot /{print $2}' <<<"$commit_out")"
 
 	# shellcheck disable=SC2046 # media_capacity_flags is a list of flags
-	"$BIN" --repo="$repo" pack $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
-	image_build "$repo" "$tree" "$image"
+	pack_disc "$repo" $(media_capacity_flags "$FIXED_MEDIA") --out="$tree"
+	uuid="$PACKED_UUID"
+	image_build "$repo" "$uuid" "$image"
 
-	mount_populate "$image" "$tree" "$mnt"
+	mount_ro "$image" "$mnt"
 	assert_listing_matches "$mnt" "$work"
-	"$BIN" verify "$mnt"
-	"$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$restored"
+	items="$(run_tool ci-index-count "$mnt")"
+	verify_counted "$repo" "$mnt" "$uuid" "$items"
+	restore_loop "$repo" "$mnt" "$snap" "$restored"
 	assert_dirs_equal "$restored" "$src"
 	assert_empty_dir_restored "$restored" ""
 	umount_if_mounted "$mnt"
@@ -236,18 +236,17 @@ scenario_cli() {
 
 # scenario_media packs, images, mounts, verifies and restores a sample at
 # MEDIA's real capacity, and, for a forced media, checks DISC's forced
-# capacity fields through verify's output. An over-capacity commit no
-# longer refuses to pack outright: under the multi-disc pack semantics,
-# pack takes what fits onto this disc and reports the remainder for the
-# next one; that spill-across-discs behaviour is covered by the chain
-# scenario, not here. FEC, when non-empty, packs with --fec; lowmem uses
-# this to keep FEC on, every other caller leaves it at the default, off.
+# capacity fields through ci-disc-field. An over-capacity commit does
+# not refuse to pack outright: pack takes what fits onto this disc and
+# leaves the remainder staged for the next one; the chain scenario
+# covers that. FEC, when non-empty, packs with --fec; lowmem uses this
+# to keep FEC on, every other caller leaves it at the default, off.
 scenario_media() {
 	local media="$1" fec="${2:-}" work="$WORK/media"
-	local repo small_src small_src2 tree image mnt restored
-	local capflag small_mb apparent packfec
-	packfec=""
-	[ -n "$fec" ] && packfec="--fec"
+	local repo small_src small_src2 tree image mnt restored uuid
+	local capflag small_mb apparent
+	local packfec=()
+	[ -n "$fec" ] && packfec=(--fec)
 	repo="$work/repo"
 	small_src="$work/small"
 	small_src2="$work/small2"
@@ -282,8 +281,9 @@ scenario_media() {
 	bytes=$((small_mb * 1024 * 1024))
 
 	t0=$(date +%s.%N)
-	"$BIN" --repo="$repo" pack "$capflag" $packfec --out="$tree"
+	pack_disc "$repo" "$capflag" "${packfec[@]}" --out="$tree"
 	t1=$(date +%s.%N)
+	uuid="$PACKED_UUID"
 	if [ -n "$fec" ]; then
 		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
 	else
@@ -296,7 +296,8 @@ scenario_media() {
 		# moved ref SMALL's objects to state PACKED, so a second pack
 		# of the same ref finds nothing left to pack. Both the second
 		# fixture and tree_fec are deleted right after, so this timing
-		# run does not add to the cell's disk use.
+		# run does not add to the cell's disk use. The second disc
+		# stays packed; nothing below reads it.
 		local tree_fec parity_dir checksum_file commit_out2
 		tree_fec="$work/tree-fec"
 		gen_fixture2 "$small_src2/data.bin" "$bytes"
@@ -304,7 +305,7 @@ scenario_media() {
 		echo "$commit_out2"
 
 		t0=$(date +%s.%N)
-		"$BIN" --repo="$repo" pack "$capflag" --fec --out="$tree_fec"
+		pack_disc "$repo" "$capflag" --fec --out="$tree_fec"
 		t1=$(date +%s.%N)
 		pack_rate_line "media/$media: pack (fec on)" "$bytes" "$t0" "$t1"
 
@@ -314,13 +315,11 @@ scenario_media() {
 		rm -rf "$tree_fec" "$small_src2"
 	fi
 
-	image_build "$repo" "$tree" "$image"
+	image_build "$repo" "$uuid" "$image"
 	assert_sparse "$image" "$apparent"
 
-	mount_populate "$image" "$tree" "$mnt"
-	local verify_out
-	verify_out="$("$BIN" verify "$mnt")"
-	echo "$verify_out"
+	mount_ro "$image" "$mnt"
+	verify_counted "$repo" "$mnt" "$uuid"
 	if [ "$media" = "bd25-forced-10g" ]; then
 		# The superblock keeps one capacity: the limit the run was
 		# packed for. Read it straight from DISC.bin with the same Go
@@ -330,7 +329,7 @@ scenario_media() {
 		grep -qE 'capacity 5242880 sectors' <<<"$field_out" \
 			|| fail "media/$media: DISC.bin did not report the packed-for capacity"
 	fi
-	"$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$restored"
+	restore_loop "$repo" "$mnt" "$snap" "$restored"
 	assert_dirs_equal "$restored" "$small_src"
 	umount_if_mounted "$mnt"
 	log "media/$media PASS"
@@ -397,6 +396,7 @@ main() {
 		;;
 	incremental) scenario_incremental ;;
 	rebuild) scenario_rebuild ;;
+	lifecycle) scenario_lifecycle ;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac
 
