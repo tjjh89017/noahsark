@@ -160,7 +160,8 @@ func (o *commitOptions) run(e *env, args []string) int {
 
 	_, _ = fmt.Fprintf(stdout, "snapshot %s\n", snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", ref, snapID.TextForm())
-	_, _ = fmt.Fprintf(stdout, "new objects: %d, existing objects: %d\n", sum.NewObjects, sum.ExistingObjects)
+	_, _ = fmt.Fprintf(stdout, "new items: %d, existing items: %d\n", sum.NewObjects, sum.ExistingObjects)
+	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
 	for _, u := range sum.Unstable {
 		_, _ = fmt.Fprintf(stdout, "unstable %s branch=%s\n", u.Path, u.Branch)
 	}
@@ -171,17 +172,19 @@ func (o *commitOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stdout, "mount point %s: not crossed, recorded as an empty directory\n", p)
 	}
 	printSpecialWarnings(stdout, sum.Special)
-	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
 	if sum.Excluded > 0 {
 		_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
 	}
 
-	stagedObjects, stagedBytes, err := image.StagedTotals(layout.objectPath(c), commitStageLog)
+	stagedItems, stagedBytes, err := image.StagedTotals(layout.objectPath(c), commitStageLog)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
+	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
+	// The snapshot is committed also when a file was skipped or unstable,
+	// so the next line comes before the exit code is chosen.
+	_, _ = fmt.Fprintln(stdout, "next: noahsark status")
 
 	if len(sum.Unstable) > 0 || len(sum.Skipped) > 0 {
 		return 1
