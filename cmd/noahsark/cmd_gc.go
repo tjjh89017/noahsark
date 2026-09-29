@@ -44,12 +44,12 @@ type gcOptions struct {
 func gcFlags(fs *flag.FlagSet) runFunc {
 	o := &gcOptions{}
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print what would be deleted, and free nothing")
-	fs.StringVar(&o.forceAfter, "force-after", "", "shorten the 7-day retention to this duration for this run only; it does not pass by gc.min_verified_copies; requires confirmation")
+	fs.StringVar(&o.forceAfter, "force-after", "", "shorten the 7-day retention to this duration for this run only; requires confirmation")
 	return o.run
 }
 
 // run implements "noahsark gc". It frees the staging bytes of an object
-// that two verified copies already hold, and nothing else: the local
+// that a verified disc already holds, and nothing else: the local
 // catalog is never trimmed. See docs/decisions.md, "Staging and gc".
 func (o *gcOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
@@ -76,9 +76,6 @@ func (o *gcOptions) run(e *env, args []string) int {
 	cfg, err := readConfig(configPath(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
-		return 2
-	}
-	if refuseBadConfig("gc", cfg, stderr, configKeysForGC...) {
 		return 2
 	}
 
@@ -113,7 +110,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 	}
 
 	discNames := discNamesFromLedger(cfg.StagingDir, repoUUID)
-	candidates, uncataloged := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
+	candidates, uncataloged := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, e.now())
 	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
 	if retainAfterCleanOverride >= 0 && !dryRun && len(candidates) > 0 {
 		if code, ok := confirmForceAfter(e.stdin, candidates, stdout, stderr); !ok {
@@ -137,7 +134,6 @@ func (o *gcOptions) run(e *env, args []string) int {
 			_, _ = fmt.Fprintf(stdout, "would delete: %s: plan directory %s, %d bytes\n", discNameOf(discNames, d.discUUID), d.path, d.bytes)
 		}
 	}
-	printHeldForCopies(stdout, stageLog, discNames, cfg.MinVerifiedCopies)
 	if uncataloged > 0 {
 		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncataloged)
 	}
@@ -153,7 +149,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 	}
 
 	if objDeleted == 0 && dirDeleted == 0 && uncataloged == 0 {
-		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
+		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, e.now())
 	}
 	// Nothing eligible, whether reported by --dry-run or found true by a
 	// real run, is success: gc did everything the repository's state
@@ -165,8 +161,8 @@ func (o *gcOptions) run(e *env, args []string) int {
 // where nothing is eligible for deletion yet, naming the earliest date
 // a CLEAN object reaches retainAfterClean and becomes eligible, when the
 // staging log holds a CLEAN object to measure that from.
-func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) {
-	when, ok := earliestEligibleAt(l, retainAfterClean, minCopies, now)
+func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean time.Duration, now time.Time) {
+	when, ok := earliestEligibleAt(l, retainAfterClean, now)
 	if !ok {
 		_, _ = fmt.Fprintln(stdout, "gc: nothing is eligible yet")
 		return
@@ -176,16 +172,11 @@ func printNothingEligibleYet(stdout io.Writer, l *stage.Log, retainAfterClean ti
 
 // earliestEligibleAt returns the earliest time some CLEAN object reaches
 // retainAfterClean and gc may free it, and whether the staging log
-// holds any CLEAN object to measure that from. An object with fewer than
-// minCopies verifies has no such date yet: only another verify, not the
-// passing of time, can free it.
-func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) (time.Time, bool) {
+// holds any CLEAN object to measure that from.
+func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, now time.Time) (time.Time, bool) {
 	var earliest time.Time
 	found := false
 	for _, id := range l.IDsInState(stage.Clean) {
-		if !hasVerifiedCopies(l, id, minCopies) {
-			continue
-		}
 		cleanAt, ok := l.CleanTime(id)
 		if !ok {
 			continue
@@ -200,16 +191,11 @@ func earliestEligibleAt(l *stage.Log, retainAfterClean time.Duration, minCopies 
 }
 
 // gcCandidates returns every object id eligible for deletion: CLEAN for
-// at least retainAfterClean as of now. An object with fewer than
-// minCopies successful verifies is never a candidate: two identical
-// discs are the redundancy, so the staged bytes stay until the second
-// copy has been read back. It changes no state itself.
-func gcCandidates(l *stage.Log, retainAfterClean time.Duration, minCopies int, now time.Time) []object.ID {
+// at least retainAfterClean as of now. A CLEAN object had one good
+// verify, and one verified disc is enough. It changes no state itself.
+func gcCandidates(l *stage.Log, retainAfterClean time.Duration, now time.Time) []object.ID {
 	var ids []object.ID
 	for _, id := range l.IDsInState(stage.Clean) {
-		if !hasVerifiedCopies(l, id, minCopies) {
-			continue
-		}
 		cleanAt, ok := l.CleanTime(id)
 		if !ok {
 			continue
@@ -220,53 +206,6 @@ func gcCandidates(l *stage.Log, retainAfterClean time.Duration, minCopies int, n
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i].TextForm() < ids[j].TextForm() })
 	return ids
-}
-
-// hasVerifiedCopies reports whether id has at least minCopies successful
-// verifies.
-func hasVerifiedCopies(l *stage.Log, id object.ID, minCopies int) bool {
-	rec, ok := l.Get(id)
-	return ok && int(rec.VerifyCount) >= minCopies
-}
-
-// printHeldForCopies prints one line for each disc that holds CLEAN
-// objects back because the disc has fewer than minCopies successful
-// verifies. It names the lowest count of the disc, the number of objects
-// held, and the action that frees them.
-func printHeldForCopies(stdout io.Writer, l *stage.Log, names map[[16]byte]string, minCopies int) {
-	type held struct {
-		objects int
-		lowest  uint8
-	}
-	byDisc := make(map[[16]byte]*held)
-	for _, id := range l.IDsInState(stage.Clean) {
-		rec, ok := l.Get(id)
-		if !ok || int(rec.VerifyCount) >= minCopies {
-			continue
-		}
-		h, ok := byDisc[rec.DiscUUID]
-		if !ok {
-			h = &held{lowest: rec.VerifyCount}
-			byDisc[rec.DiscUUID] = h
-		}
-		h.objects++
-		if rec.VerifyCount < h.lowest {
-			h.lowest = rec.VerifyCount
-		}
-	}
-	uuids := make([]string, 0, len(byDisc))
-	order := make(map[string][16]byte, len(byDisc))
-	for u := range byDisc {
-		text := uuidText(u)
-		uuids = append(uuids, text)
-		order[text] = u
-	}
-	slices.Sort(uuids)
-	for _, text := range uuids {
-		h := byDisc[order[text]]
-		_, _ = fmt.Fprintf(stdout, "gc: %s: %d of %d copies verified; %d object(s) held; verify the second copy\n",
-			discNameOf(names, order[text]), h.lowest, minCopies, h.objects)
-	}
 }
 
 // gcObj is one staging object gc's rules allow deleting: its id, the
@@ -288,8 +227,8 @@ type gcObj struct {
 // catalog index before every delete. The disc uuid of the object's own
 // state record is the key, so an index of another disc that repeats the
 // same run_seq can never stand in for it.
-func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, stagingDir string, retainAfterClean time.Duration, minCopies int, now time.Time) (objs []gcObj, uncataloged int) {
-	for _, id := range gcCandidates(l, retainAfterClean, minCopies, now) {
+func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, stagingDir string, retainAfterClean time.Duration, now time.Time) (objs []gcObj, uncataloged int) {
+	for _, id := range gcCandidates(l, retainAfterClean, now) {
 		rec, ok := l.Get(id)
 		if !ok {
 			continue
@@ -506,9 +445,8 @@ type gcPlanDir struct {
 // itself now holds, thus gc frees it under the same rules as a staged
 // file.
 //
-// A disc that is packed or burned, or that has fewer verifies than
-// gc.min_verified_copies, keeps its directory: the operator may still
-// have to build the image again, or burn the second copy. A pack with
+// A disc that is packed, burned or not verified keeps its directory: the
+// operator may still have to build the image again. A pack with
 // --out outside staging writes no plan directory, so gc never touches
 // the operator's own output.
 func gcPlanDirs(l *stage.Log, stagingDir string, pending []gcObj) []gcPlanDir {

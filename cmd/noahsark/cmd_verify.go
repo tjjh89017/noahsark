@@ -103,16 +103,15 @@ func (o *verifyOptions) run(e *env, args []string) int {
 	var trailingHint string
 	if heal {
 		// A healed tree lives on the hard disk, not on a disc. It is not
-		// a copy the retention count can rely on: only a verify of an
+		// a copy that gc can rely on: only a verify of an
 		// actual disc, burned from this healed tree, moves its objects
 		// on or raises their verify count. Skip the whole repository
 		// state update, whatever --repo names.
 		trailingHint = "heal: burn the healed tree to a new disc, then verify that disc; healing alone does not verify or count as a copy"
 	} else if repoDir, err := e.findRepo(); err == nil {
-		if cfg, cfgErr := readConfig(configPath(repoDir)); cfgErr == nil {
-			if refuseBadConfig("verify", cfg, stderr, configKeysForVerify...) {
-				return 2
-			}
+		if _, err := readConfig(configPath(repoDir)); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
+			return 2
 		}
 		lk, code, ok := lockRepo("verify", repoDir, stderr)
 		if !ok {
@@ -250,7 +249,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return "", false
 	}
-	count, haveClean := discVerifyCount(stageLog, ident.DiscUUID)
+	haveClean := countInState(stageLog, stage.Clean, ident.DiscUUID) > 0
 	if haveClean {
 		if err := catalogRunFromDisc(repoDir, target); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
@@ -260,7 +259,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		_, _ = fmt.Fprintf(stdout, "verify: %d object(s) verified on %s\n", n, ident.name())
 	}
 	if haveClean {
-		_, _ = fmt.Fprintln(stdout, verifyCountLine(count, cfg.MinVerifiedCopies))
+		_, _ = fmt.Fprintln(stdout, "verify: verified")
 	}
 
 	stillPacked := countInState(stageLog, stage.Packed, ident.DiscUUID)
@@ -333,9 +332,7 @@ func countInState(l *stage.Log, state stage.State, discUUID [16]byte) int {
 // markVerifyClean moves every object of disc discUUID that is at
 // BURNED to CLEAN with verify count 1, and adds 1 to the verify count
 // of every object of that disc that is already CLEAN. It reports how
-// many objects it moved from BURNED. The operator verifies the second
-// identical disc this way: the disc uuid is the same, so the count, not
-// the state, is what says both copies read back. A PACKED object of the
+// many objects it moved from BURNED. A PACKED object of the
 // same disc is left untouched: verify never marks anything BURNED
 // itself, only `disc burned` does.
 func markVerifyClean(l *stage.Log, discUUID [16]byte) (int, error) {
@@ -361,39 +358,6 @@ func idsOfDiscInState(l *stage.Log, state stage.State, discUUID [16]byte) []obje
 		ids = append(ids, id)
 	}
 	return ids
-}
-
-// discVerifyCount returns the lowest verify count of the CLEAN objects
-// of disc discUUID, and whether the disc has a CLEAN object at all. gc
-// acts on the lowest count, so verify reports the same one.
-func discVerifyCount(l *stage.Log, discUUID [16]byte) (uint8, bool) {
-	var lowest uint8
-	found := false
-	for _, id := range idsOfDiscInState(l, stage.Clean, discUUID) {
-		rec, ok := l.Get(id)
-		if !ok {
-			continue
-		}
-		if !found || rec.VerifyCount < lowest {
-			lowest = rec.VerifyCount
-			found = true
-		}
-	}
-	return lowest, found
-}
-
-// verifyCountLine is the line verify prints for the verify count of a
-// run: it tells the operator whether gc still waits for another copy.
-func verifyCountLine(count uint8, minCopies int) string {
-	if int(count) < minCopies {
-		return fmt.Sprintf("verify: copy %d of %d verified; verify the second copy before gc", count, minCopies)
-	}
-	if int(count) > minCopies {
-		// A third verify of the same disc passes the count gc asks
-		// for. "3 of 2" reads as a fault; the disc is simply verified.
-		return "verify: verified"
-	}
-	return fmt.Sprintf("verify: %d of %d copies verified", count, minCopies)
 }
 
 // markVerifyFailed moves every object of disc discUUID that is still

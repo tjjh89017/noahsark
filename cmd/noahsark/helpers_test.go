@@ -144,26 +144,10 @@ func packBurnDisc(t *testing.T, work, repo, src string) string {
 	return mounted
 }
 
-// appendConfigLine appends one "key = value" line to repo's config
-// file, the same file format init writes.
-func appendConfigLine(t *testing.T, repo, line string) {
-	t.Helper()
-	f, err := os.OpenFile(configPath(repo), os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.WriteString(line + "\n"); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // packAndVerifyDisc commits src into repo, packs it, copies the packed
 // tree outside the repository's staging directory to stand in for a
-// mounted disc, marks it burned, and verifies it two times, so the run's
-// objects reach CLEAN with the verify count gc's default asks for, and
-// its catalog enters the catalog. The two verifies stand for the two
-// identical discs the operator burns from the same tree.
+// mounted disc, marks it burned, and verifies it, so the objects of the
+// run reach CLEAN and its tables enter the catalog.
 func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	t.Helper()
 	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
@@ -180,10 +164,8 @@ func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
 		t.Fatalf("disc burned: exit %d: %s", code, out)
 	}
-	for copyNumber := 1; copyNumber <= 2; copyNumber++ {
-		if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
-			t.Fatalf("verify copy %d: exit %d: %s", copyNumber, code, out)
-		}
+	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
+		t.Fatalf("verify: exit %d: %s", code, out)
 	}
 }
 
@@ -358,7 +340,7 @@ func statusDiscs(t *testing.T, repo string) []discSummary {
 	if err != nil {
 		t.Fatalf("stage.OpenReadOnly: %v", err)
 	}
-	return summarizeDiscs(ledger.Rows, stageLog, cfg.MinVerifiedCopies)
+	return summarizeDiscs(ledger.Rows, stageLog)
 }
 
 // packedTreeDir picks the "tree: DIR" line out of pack's output.
@@ -518,7 +500,7 @@ func packSectors(bytes uint64) string {
 	return strconv.FormatUint(sectors*2, 10) + "KiB"
 }
 
-// appendConfig adds text to a repository's config file.
+// appendConfig adds YAML text to the end of the config file of repo.
 func appendConfig(t *testing.T, repo, text string) {
 	t.Helper()
 	f, err := os.OpenFile(configPath(repo), os.O_APPEND|os.O_WRONLY, 0o644)

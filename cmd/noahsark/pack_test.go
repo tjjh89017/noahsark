@@ -418,14 +418,14 @@ func TestPackDefaultOutputFollowsStagingDir(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	cfgPath := filepath.Join(repo, "config")
+	cfgPath := configPath(repo)
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	edited := strings.ReplaceAll(string(data), "staging.dir = staging\n", "staging.dir = "+stagingDir+"\n")
+	edited := strings.ReplaceAll(string(data), "  dir: staging\n", "  dir: "+stagingDir+"\n")
 	if edited == string(data) {
-		t.Fatalf("config %q has no staging.dir line to replace: %q", cfgPath, data)
+		t.Fatalf("config %q has no staging.dir key to replace: %q", cfgPath, data)
 	}
 	if err := os.WriteFile(cfgPath, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
@@ -703,8 +703,8 @@ func TestPackWithoutCapacityRefused(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
 	}
-	if !strings.Contains(out, "no capacity") || !strings.Contains(out, "pack.capacity") {
-		t.Fatalf("output = %q, want it to mention the missing capacity", out)
+	if !strings.Contains(out, "pack needs --capacity") {
+		t.Fatalf("output = %q, want the pack needs --capacity line", out)
 	}
 }
 
@@ -900,39 +900,6 @@ func TestPackDryRunPredictsTheRealPacks(t *testing.T) {
 	}
 }
 
-// TestBadPackCapacityStopsPackOnly checks that a pack.capacity value
-// the config cannot parse stops pack and pack --dry-run, and stops no
-// other command.
-func TestBadPackCapacityStopsPackOnly(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "repo")
-	src := writeFixtureSource(t)
-	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit"); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	appendConfig(t, repo, "pack.capacity = 7500000\n")
-
-	for _, args := range [][]string{
-		{"--repo=" + repo, "pack"},
-		{"--repo=" + repo, "pack", "--dry-run"},
-	} {
-		code, out := runCmd(t, args...)
-		if code != 2 || !strings.Contains(out, "pack.capacity") {
-			t.Fatalf("%v: exit %d: %s, want exit 2 naming pack.capacity", args, code, out)
-		}
-	}
-	for _, args := range [][]string{
-		{"--repo=" + repo, "status"},
-		{"--repo=" + repo, "gc", "--dry-run"},
-	} {
-		if code, out := runCmd(t, args...); code != 0 {
-			t.Fatalf("%v: exit %d: %s, want a command that never reads pack.capacity to run", args, code, out)
-		}
-	}
-}
-
 // writeSized writes a file of n bytes whose content depends on seed, so
 // two files of the same size never dedup against each other.
 func writeSized(t *testing.T, path string, n int, seed byte) {
@@ -966,15 +933,6 @@ func TestCapacityRefusesABareNumber(t *testing.T) {
 				t.Fatalf("pack %s: output %q missing %q", arg, out, want)
 			}
 		}
-	}
-
-	appendConfigLine(t, repo, "pack.capacity = 7500000")
-	code, out := runCmd(t, "--repo="+repo, "pack")
-	if code != 2 {
-		t.Fatalf("pack with a bare pack.capacity: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "pack.capacity") || !strings.Contains(out, "has no unit") {
-		t.Fatalf("pack with a bare pack.capacity: output %q", out)
 	}
 }
 
@@ -1081,21 +1039,6 @@ func truncateOneStagedTree(t *testing.T, stagingDir string) string {
 		t.Fatal("no staged object file to damage")
 	}
 	return found
-}
-
-// TestPackCapacityFromConfig checks that pack.capacity lets the normal
-// cycle run with no flag, and that --capacity still overrides it.
-func TestPackCapacityFromConfig(t *testing.T) {
-	repo, _ := initAndCommit(t)
-	appendConfigLine(t, repo, "pack.capacity = 64MiB")
-
-	code, out := runCmd(t, "--repo="+repo, "pack")
-	if code != 0 {
-		t.Fatalf("pack with pack.capacity: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "packed disc 0 ") {
-		t.Fatalf("pack output %q has no packed-disc line", out)
-	}
 }
 
 // TestPackDefaultLabelNamesTheRefAndTheDisc checks the default label: a

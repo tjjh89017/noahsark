@@ -23,7 +23,7 @@ import (
 func init() {
 	register(&command{
 		name:    "pack",
-		usage:   "pack [--capacity=SIZE] [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
+		usage:   "pack --capacity=SIZE [--label=TEXT] [--out=DIR] [--fec] [--close] [--dry-run]",
 		summary: "Pack staged objects onto the next disc.",
 		flags:   packFlags,
 	})
@@ -41,10 +41,10 @@ type packOptions struct {
 
 func packFlags(fs *flag.FlagSet) runFunc {
 	o := &packOptions{}
-	fs.StringVar(&o.capacity, "capacity", "", "target capacity ("+capacityHelpText()+"); defaults to pack.capacity in the config")
+	fs.StringVar(&o.capacity, "capacity", "", "target capacity ("+capacityHelpText()+"); required")
 	fs.StringVar(&o.label, "label", "", "human label for the disc; defaults to the newest ref name and the disc number")
 	fs.StringVar(&o.outDir, "out", "", "output directory for the packed tree; must not already exist or must be empty; default <staging.dir>/plans/<disc uuid>/tree")
-	fs.BoolVar(&o.fec, "fec", false, "write a Reed-Solomon checksum column and parity for this run; overrides fec.scheme")
+	fs.BoolVar(&o.fec, "fec", false, "write a Reed-Solomon checksum column and parity for this run")
 	fs.BoolVar(&o.closeDisc, "close", false, "print a burn command that seals the disc: spare:none and -dvd-compat, with no later append. It changes the printed command only; noahsark does not burn")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the discs the staged data needs at this capacity, and stop; writes nothing")
 	return o.run
@@ -66,7 +66,13 @@ func (o *packOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
-	if refuseBadConfig("pack", cfg, stderr, configKeysForPack...) {
+	if o.capacity == "" {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack needs --capacity")
+		return 2
+	}
+	capacitySectors, err := parseCapacity(o.capacity)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 2
 	}
 
@@ -83,20 +89,6 @@ func (o *packOptions) run(e *env, args []string) int {
 			return code
 		}
 		defer releaseLock(lk)
-	}
-
-	capacityArg := o.capacity
-	if capacityArg == "" {
-		capacityArg = cfg.PackCapacity
-	}
-	if capacityArg == "" {
-		_, _ = fmt.Fprintf(stderr, "noahsark: pack: no capacity: pass --capacity, or put pack.capacity in %s\n", configPath(repoDir))
-		return 2
-	}
-	capacitySectors, err := parseCapacity(capacityArg)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 2
 	}
 
 	var snapshots []image.SnapshotRef
@@ -126,10 +118,7 @@ func (o *packOptions) run(e *env, args []string) int {
 		}
 	}
 
-	fecEnabled := cfg.FECEnabled
-	if o.fec {
-		fecEnabled = true
-	}
+	fecEnabled := o.fec
 
 	// labelFor answers what label a disc with this number gets, so a
 	// dry run predicts the same label, and so the same README bytes,
@@ -200,7 +189,7 @@ func (o *packOptions) run(e *env, args []string) int {
 	if err != nil {
 		if tooSmall, ok := errors.AsType[*image.ErrCapacityTooSmall](err); ok {
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: capacity %s (%d bytes) holds not one object; %s\n",
-				capacityArg, capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
+				o.capacity, capacitySectors*image.SectorSize, smallestObjectText(tooSmall))
 			_, _ = fmt.Fprintf(stderr, "noahsark: pack: use a capacity of %d bytes or more\n", tooSmall.NeededSectors*image.SectorSize)
 			return 2
 		}

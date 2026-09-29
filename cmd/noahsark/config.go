@@ -1,96 +1,87 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.yaml.in/yaml/v4"
 )
 
 // configFileName is the config file name inside a repository directory.
-const configFileName = "config"
+const configFileName = "config.yaml"
 
-// repoConfig holds the config keys this build honours. Every
-// other key OPERATIONS.md's configuration reference names needs behaviour
-// this build does not implement, so the loader refuses it by name rather
-// than silently ignoring it.
-type repoConfig struct {
-	// RepoUUID identifies the repository. Generated once at init.
-	RepoUUID string
-	// StagingDir is staging.dir: the staging store location.
-	StagingDir string
-	// SourceRoot is sources.root: the source directory commit reads
-	// from when its own command line names none. OPERATIONS.md makes
-	// this key repeatable, but this build stores at most one, matching
-	// Writer.Commit's single source directory. Empty means init was
-	// never given --source.
-	SourceRoot string
-	// FECEnabled is fec.scheme != "none": whether pack writes a
-	// Reed-Solomon checksum column and parity. Defaults false: burning
-	// two identical discs is the primary redundancy; FEC is a reserve
-	// feature a repository opts into.
-	FECEnabled bool
-	// PackCapacity is pack.capacity: the capacity pack uses when its own
-	// command line names none. It keeps the text the operator wrote, so
-	// a preset name still selects the media type it names.
-	PackCapacity string
-	// MinVerifiedCopies is gc.min_verified_copies: how many successful
-	// verifies an object needs before gc may delete it. The default of 2
-	// keeps the staged bytes until the second identical disc passes
-	// verify.
-	MinVerifiedCopies int
-	// badKeys holds the error of every key whose value did not parse.
-	// readConfig keeps the default for such a key and reports nothing;
-	// the command that reads the key calls checkKeys and refuses there.
-	// A command that never reads the key runs as usual.
-	badKeys map[string]error
-}
-
-// checkKeys returns the first error of the named keys, in the order
-// given, or nil when every one of them parsed.
-func (c repoConfig) checkKeys(keys ...string) error {
-	for _, k := range keys {
-		if err, ok := c.badKeys[k]; ok {
-			return err
-		}
-	}
-	return nil
-}
-
-// configKeysForCommit, configKeysForPack, configKeysForGC and
-// configKeysForVerify name the keys each command reads. A command
-// refuses a bad value of one of its own keys and runs with a bad value
-// of every other key, so a fault in one key stops one command only.
-var (
-	configKeysForCommit = []string{"sources.root"}
-	configKeysForPack   = []string{"pack.capacity", "fec.scheme"}
-	configKeysForGC     = []string{"gc.min_verified_copies"}
-	configKeysForVerify = []string{"gc.min_verified_copies"}
+// The defaults of the config keys that have one.
+const (
+	defaultStagingDir = "staging"
+	defaultPackDevice = "/dev/sr0"
 )
 
-// knownConfigKeys names every key this build reads. A key present in the
-// file that is not here is unknown.
-var knownConfigKeys = map[string]bool{
-	"repo.uuid":              true,
-	"staging.dir":            true,
-	"sources.root":           true,
-	"fec.scheme":             true,
-	"pack.capacity":          true,
-	"gc.min_verified_copies": true,
+// configFile holds the keys of config.yaml as the file writes them. The
+// field order is the key order of a written file.
+type configFile struct {
+	Repo struct {
+		UUID string `yaml:"uuid"`
+	} `yaml:"repo"`
+	Staging struct {
+		Dir string `yaml:"dir"`
+	} `yaml:"staging"`
+	Sources struct {
+		Root string `yaml:"root,omitempty"`
+	} `yaml:"sources,omitempty"`
+	Pack struct {
+		Device string `yaml:"device"`
+	} `yaml:"pack"`
+}
+
+// newConfigFile returns a configFile with repoUUID and the default of
+// every key that has one.
+func newConfigFile(repoUUID [16]byte, sourceRoot string) configFile {
+	var f configFile
+	f.Repo.UUID = fmt.Sprintf("%x", repoUUID)
+	f.Staging.Dir = defaultStagingDir
+	f.Sources.Root = sourceRoot
+	f.Pack.Device = defaultPackDevice
+	return f
+}
+
+// repoConfig is the config of a repository as the commands use it.
+// StagingDir is absolute.
+type repoConfig struct {
+	RepoUUID   string
+	StagingDir string
+	SourceRoot string
+	PackDevice string
+}
+
+// configError is a fault in the config file. A command that meets one
+// exits with code 2.
+type configError struct {
+	path string
+	err  error
+}
+
+func (e *configError) Error() string {
+	return fmt.Sprintf("%s: %v", e.path, e.err)
+}
+
+func (e *configError) Unwrap() error { return e.err }
+
+// isConfigError reports whether err is a fault in the config file.
+func isConfigError(err error) bool {
+	_, ok := errors.AsType[*configError](err)
+	return ok
 }
 
 // retainAfterClean is how long an object stays CLEAN before gc may
 // free its staged file: a fixed 7 days. gc --force-after shortens this
 // for one run only.
 const retainAfterClean = 7 * 24 * time.Hour
-
-// defaultMinVerifiedCopies is gc.min_verified_copies' default: 2, one
-// verify for each of the two identical discs.
-const defaultMinVerifiedCopies = 2
 
 // parseRetentionDuration parses a duration for gc --force-after: a
 // plain integer with a "d" suffix for whole days, since
@@ -108,123 +99,172 @@ func parseRetentionDuration(s string) (time.Duration, error) {
 	return time.ParseDuration(s)
 }
 
-// writeConfig writes repository config file with the given keys, one
-// key=value pair per line, in a fixed order.
-func writeConfig(path string, c repoConfig) error {
-	var b strings.Builder
-	_, _ = fmt.Fprintf(&b, "repo.uuid = %s\n", c.RepoUUID)
-	_, _ = fmt.Fprintf(&b, "staging.dir = %s\n", c.StagingDir)
-	if c.SourceRoot != "" {
-		_, _ = fmt.Fprintf(&b, "sources.root = %s\n", c.SourceRoot)
-	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+// encodeConfig returns the text of f: the keys in a fixed order, an
+// indent of two spaces, and no line wrap. The same f always gives the
+// same text, so a diff of the file shows only the changed keys.
+func encodeConfig(f configFile) ([]byte, error) {
+	return yaml.Dump(&f, yaml.WithIndent(2), yaml.WithLineWidth(-1))
 }
 
-// readConfig reads and parses a repository's config file.
+// writeConfig replaces the config file at path with f. It writes a
+// temporary file in the same directory, syncs it, and renames it over
+// path, so a crash leaves the old file or the new file, never a part.
+func writeConfig(path string, f configFile) error {
+	data, err := encodeConfig(f)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config.yaml.*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	syncErr := d.Sync()
+	if err := d.Close(); err != nil {
+		return err
+	}
+	return syncErr
+}
+
+// decodeConfig parses the text of a config file. Each key must be a
+// known key, and the text must hold exactly one YAML document. It sets
+// the default of each key that the text does not give, and checks
+// repo.uuid.
+func decodeConfig(data []byte) (configFile, error) {
+	var doc yaml.Node
+	if err := yaml.Load(data, &doc, yaml.WithUniqueKeys()); err != nil {
+		return configFile{}, err
+	}
+	if err := checkConfigKeys(&doc); err != nil {
+		return configFile{}, err
+	}
+	var f configFile
+	if err := doc.Load(&f, yaml.WithKnownFields(), yaml.WithUniqueKeys()); err != nil {
+		return configFile{}, err
+	}
+	if f.Staging.Dir == "" {
+		f.Staging.Dir = defaultStagingDir
+	}
+	if f.Pack.Device == "" {
+		f.Pack.Device = defaultPackDevice
+	}
+	if _, err := parseRepoUUID(f.Repo.UUID); err != nil {
+		return configFile{}, err
+	}
+	return f, nil
+}
+
+// checkConfigKeys returns an error that names the first unknown key of
+// doc in the dotted form, such as repo.name. A value of the wrong
+// kind is left to the decode into configFile.
+func checkConfigKeys(doc *yaml.Node) error {
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
+		return nil
+	}
+	top := doc.Content[0]
+	if top.Kind != yaml.MappingNode {
+		return nil
+	}
+	known := knownConfigKeys()
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		section, value := top.Content[i], top.Content[i+1]
+		if value.Kind != yaml.MappingNode {
+			if !known[section.Value] {
+				return fmt.Errorf("line %d: unknown key %s", section.Line, section.Value)
+			}
+			continue
+		}
+		for j := 0; j+1 < len(value.Content); j += 2 {
+			key := value.Content[j]
+			name := section.Value + "." + key.Value
+			if !known[name] {
+				return fmt.Errorf("line %d: unknown key %s", key.Line, name)
+			}
+		}
+	}
+	return nil
+}
+
+// knownConfigKeys returns the name of each section of configFile, and
+// the dotted name of each key in a section, from the yaml struct tags.
+func knownConfigKeys() map[string]bool {
+	known := make(map[string]bool)
+	top := reflect.TypeFor[configFile]()
+	for sectionField := range top.Fields() {
+		section := yamlTagName(sectionField)
+		known[section] = true
+		for keyField := range sectionField.Type.Fields() {
+			known[section+"."+yamlTagName(keyField)] = true
+		}
+	}
+	return known
+}
+
+// yamlTagName returns the key name that the yaml struct tag of f gives.
+func yamlTagName(f reflect.StructField) string {
+	name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+	return name
+}
+
+// parseRepoUUID parses the value of repo.uuid: 32 hex digits.
+func parseRepoUUID(s string) ([16]byte, error) {
+	if s == "" {
+		return [16]byte{}, errors.New("repo.uuid: missing")
+	}
+	if len(s) != 32 {
+		return [16]byte{}, fmt.Errorf("repo.uuid: %q is not 32 hex digits", s)
+	}
+	u, err := decodeUUID(s)
+	if err != nil {
+		return [16]byte{}, fmt.Errorf("repo.uuid: %q is not 32 hex digits", s)
+	}
+	return u, nil
+}
+
+// readConfig reads the config file at path. A relative staging.dir is
+// made absolute against the directory of path.
 func readConfig(path string) (repoConfig, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return repoConfig{}, err
 	}
-	defer func() { _ = f.Close() }()
-
-	c := repoConfig{
-		MinVerifiedCopies: defaultMinVerifiedCopies,
+	f, err := decodeConfig(data)
+	if err != nil {
+		return repoConfig{}, &configError{path: path, err: err}
 	}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		rawKey, rawValue, ok := strings.Cut(line, "=")
-		if !ok {
-			return repoConfig{}, fmt.Errorf("config: malformed line %q", line)
-		}
-		key := strings.TrimSpace(rawKey)
-		value := strings.TrimSpace(rawValue)
-
-		if !knownConfigKeys[key] {
-			return repoConfig{}, fmt.Errorf("config: unknown key %s in %s", key, path)
-		}
-
-		switch key {
-		case "repo.uuid":
-			c.RepoUUID = value
-		case "staging.dir":
-			c.StagingDir = value
-		case "sources.root":
-			if c.SourceRoot != "" {
-				c.bad(key, fmt.Errorf("config: sources.root: only one source root is supported in this build"))
-				break
-			}
-			c.SourceRoot = value
-		case "fec.scheme":
-			switch value {
-			case "none":
-				c.FECEnabled = false
-			case "rs255-gf8":
-				c.FECEnabled = true
-			default:
-				c.bad(key, fmt.Errorf("config: fec.scheme: unknown value %q, want none or rs255-gf8", value))
-			}
-		case "pack.capacity":
-			if _, err := parseCapacity(value); err != nil {
-				c.bad(key, fmt.Errorf("config: pack.capacity: %w", err))
-				break
-			}
-			c.PackCapacity = value
-		case "gc.min_verified_copies":
-			n, err := strconv.Atoi(value)
-			if err != nil {
-				c.bad(key, fmt.Errorf("config: gc.min_verified_copies: %w", err))
-				break
-			}
-			if n < 1 {
-				c.bad(key, fmt.Errorf("config: gc.min_verified_copies: must be at least 1"))
-				break
-			}
-			c.MinVerifiedCopies = n
-		}
+	stagingDir := f.Staging.Dir
+	if !filepath.IsAbs(stagingDir) {
+		stagingDir = filepath.Join(filepath.Dir(path), stagingDir)
 	}
-	if err := sc.Err(); err != nil {
-		return repoConfig{}, err
-	}
-	// staging.dir defaults to, and init and recover both write,
-	// a bare "staging" relative to the repository directory, so the
-	// staging store follows the repository if its directory is ever
-	// renamed or moved. Resolve it here, against path's own directory,
-	// so every caller of readConfig sees an absolute StagingDir without
-	// needing to know the repository directory separately. An absolute
-	// value some other tool wrote is left exactly as given.
-	if c.StagingDir != "" && !filepath.IsAbs(c.StagingDir) {
-		c.StagingDir = filepath.Join(filepath.Dir(path), c.StagingDir)
-	}
-	return c, nil
-}
-
-// refuseBadConfig prints the fault of the first named key whose value
-// did not parse, and reports whether cmdName must stop. A key cmdName
-// never reads is not named here, so one bad value stops only the
-// commands that need that key.
-func refuseBadConfig(cmdName string, cfg repoConfig, stderr io.Writer, keys ...string) bool {
-	err := cfg.checkKeys(keys...)
-	if err == nil {
-		return false
-	}
-	_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmdName, err)
-	return true
-}
-
-// bad records that key's value did not parse. The first error for a key
-// wins, so a repeated key reports the fault the operator meets first.
-func (c *repoConfig) bad(key string, err error) {
-	if c.badKeys == nil {
-		c.badKeys = make(map[string]error)
-	}
-	if _, ok := c.badKeys[key]; !ok {
-		c.badKeys[key] = err
-	}
+	return repoConfig{
+		RepoUUID:   f.Repo.UUID,
+		StagingDir: stagingDir,
+		SourceRoot: f.Sources.Root,
+		PackDevice: f.Pack.Device,
+	}, nil
 }
 
 // configPath returns the config file path inside a repository directory.

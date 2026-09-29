@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
@@ -26,12 +25,6 @@ type discSummary struct {
 	// no file for: gc freed them, or recover read them from the
 	// disc itself. Such an object waits for no burn and no verify.
 	OnDiscOnlyObjects int
-	// VerifiedCopies is the lowest verify count of the CLEAN objects of
-	// the disc, and 0 when the disc has no CLEAN object. gc frees an
-	// object at gc.min_verified_copies verifies, so this is the number
-	// the operator watches.
-	VerifiedCopies uint8
-	MinCopies      int
 }
 
 func init() {
@@ -65,9 +58,6 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 2
 	}
-	if refuseBadConfig("status", cfg, stderr, "gc.min_verified_copies") {
-		return 2
-	}
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
@@ -87,7 +77,7 @@ func cmdStatus(e *env, args []string) int {
 	}
 	warnIfTruncated("status", stageLog, stderr)
 
-	discs := summarizeDiscs(ledger.Rows, stageLog, cfg.MinVerifiedCopies)
+	discs := summarizeDiscs(ledger.Rows, stageLog)
 
 	stagedObjects, stagedBytes, err := stagedTotals(cfg.StagingDir)
 	if err != nil {
@@ -99,7 +89,7 @@ func cmdStatus(e *env, args []string) int {
 	for _, d := range discs {
 		_, _ = fmt.Fprintf(stdout, "disc %d %q  %s  %s\n", d.Seq, d.Label, discStateWord(d), d.UUID)
 	}
-	_, _ = fmt.Fprintln(stdout, nextStepLine(discs, stagedObjects, cfg))
+	_, _ = fmt.Fprintln(stdout, nextStepLine(discs, stagedObjects))
 	return 0
 }
 
@@ -115,8 +105,6 @@ func discStateWord(d discSummary) string {
 		return "packed"
 	case d.BurnedObjects > 0:
 		return "burned"
-	case d.CleanObjects > 0 && int(d.VerifiedCopies) < d.MinCopies:
-		return fmt.Sprintf("verified %d/%d", d.VerifiedCopies, d.MinCopies)
 	case d.CleanObjects > 0:
 		return "verified"
 	default:
@@ -133,12 +121,8 @@ func notFed(d discSummary) bool {
 }
 
 // nextStepLine names the one action to take next, in the order of the
-// disc cycle: feed a disc to recover, burn, verify, verify the second
-// copy, pack, commit. A repository with nothing waiting, but whose
-// config still needs sources.root or pack.capacity before commit or pack
-// can run (a recover leaves the config this way), says so instead of
-// claiming nothing is left to do.
-func nextStepLine(discs []discSummary, stagedObjects int, cfg repoConfig) string {
+// disc cycle: feed a disc to recover, burn, verify, pack, commit.
+func nextStepLine(discs []discSummary, stagedObjects int) string {
 	for _, d := range discs {
 		if notFed(d) {
 			return fmt.Sprintf("next: mount disc %d, then run: noahsark recover <MOUNT>", d.Seq)
@@ -154,50 +138,26 @@ func nextStepLine(discs []discSummary, stagedObjects int, cfg repoConfig) string
 			return fmt.Sprintf("next: mount disc %d, then run: noahsark verify <MOUNT>", d.Seq)
 		}
 	}
-	for _, d := range discs {
-		if d.CleanObjects > 0 && int(d.VerifiedCopies) < d.MinCopies {
-			return fmt.Sprintf("next: verify the second copy of disc %d", d.Seq)
-		}
-	}
 	if stagedObjects > 0 {
 		return "next: pack a disc, run: noahsark pack"
 	}
 	if len(discs) == 0 {
 		return "next: commit your files, run: noahsark commit <SOURCE>"
 	}
-	if missing := missingConfigKeys(cfg); len(missing) > 0 {
-		return fmt.Sprintf("next: put %s into the config before commit or pack can run", strings.Join(missing, " and "))
-	}
 	return "next: nothing to do"
-}
-
-// missingConfigKeys names sources.root and pack.capacity, whichever the
-// config does not carry. A repository a recover rebuilt leaves both
-// unset: no disc carries the source path or the media size.
-func missingConfigKeys(cfg repoConfig) []string {
-	var missing []string
-	if cfg.SourceRoot == "" {
-		missing = append(missing, "sources.root")
-	}
-	if cfg.PackCapacity == "" {
-		missing = append(missing, "pack.capacity")
-	}
-	return missing
 }
 
 // summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
 // ascending disc_seq order, and folds each disc's rows into one
 // discSummary: the label and forced capacity of its newest run, the sum
 // of used_sectors across every run, the disc's on-disc, packed, burned,
-// clean and on-disc-only object counts, and its verify count against
-// minCopies.
-func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log, minCopies int) []discSummary {
+// clean and on-disc-only object counts.
+func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log) []discSummary {
 	onDiscByDisc := stageLog.OnDiscCountByDisc()
 	packedByDisc := stageLog.PackedCountByDisc()
 	burnedByDisc := stageLog.CountByDiscInState(stage.Burned)
 	cleanByDisc := stageLog.CleanCountByDisc()
 	onDiscOnlyByDisc := stageLog.CountByDiscInState(stage.OnDiscOnly)
-	verifiedByDisc := stageLog.MinCleanVerifyCountByDisc()
 
 	order := make([]string, 0)
 	byUUID := make(map[string][]format.DiscsRow)
@@ -226,8 +186,6 @@ func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log, minCopies int) 
 			BurnedObjects:     burnedByDisc[newest.DiscUUID],
 			CleanObjects:      cleanByDisc[newest.DiscUUID],
 			OnDiscOnlyObjects: onDiscOnlyByDisc[newest.DiscUUID],
-			VerifiedCopies:    verifiedByDisc[newest.DiscUUID],
-			MinCopies:         minCopies,
 		})
 	}
 	return discs
