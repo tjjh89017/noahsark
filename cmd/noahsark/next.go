@@ -32,6 +32,17 @@ type nextRepo struct {
 	// discs are the discs that are not undone, in the order of their
 	// numbers.
 	discs []nextDisc
+	// repairs are the discs whose item records do not follow their
+	// state, in the order of their numbers.
+	repairs []nextRepair
+}
+
+// nextRepair is one disc whose item records do not follow its state.
+type nextRepair struct {
+	// arg names the disc as nextDisc.arg does.
+	arg string
+	// command is the command that stopped after its disc event.
+	command string
 }
 
 // nextDisc is one disc as the next block sees it.
@@ -55,11 +66,19 @@ func (d nextDisc) lastCheckFailed() bool {
 
 // nextBlock returns the lines that status prints after the disc lines:
 // the one next block of the repository, and the lines that go with it.
-// The first match in this order gives the block: a missing disc, an on
-// disc only disc whose last check failed, a packed or burned disc, data
-// that gc can free now, staged data, a verified disc that waits, and
-// nothing. Inside one step the disc with the lowest number wins.
+// The first match in this order gives the block: a disc whose item
+// records do not follow its state, a missing disc, an on disc only disc
+// whose last check failed, a packed or burned disc, data that gc can free
+// now, staged data, a verified disc that waits, and nothing. Inside one
+// step the disc with the lowest number wins.
 func nextBlock(r nextRepo) []string {
+	if len(r.repairs) > 0 {
+		d := r.repairs[0]
+		return []string{
+			fmt.Sprintf("next: disc %s: an earlier %s stopped before it wrote the records of its items; run:", d.arg, d.command),
+			"noahsark gc",
+		}
+	}
 	if d, ok := r.first(func(d nextDisc) bool { return d.info.State == stage.DiscMissing }); ok {
 		return r.missingBlock(d)
 	}

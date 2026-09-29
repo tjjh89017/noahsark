@@ -173,6 +173,13 @@ func TestRollbackWarningWithoutLock(t *testing.T) {
 	if !strings.HasPrefix(te.errOut.String(), "noahsark: restore: warning: "+rollbackRefusal) {
 		t.Fatalf("warning %q", te.errOut.String())
 	}
+	for _, args := range [][]string{{"log"}, {"ls", "any-ref"}} {
+		te := newTestEnv(t.TempDir())
+		te.run(append([]string{"--repo=" + repo}, args...)...)
+		if !strings.Contains(te.errOut.String(), "noahsark: "+args[0]+": warning: "+rollbackRefusal) {
+			t.Errorf("%s stderr %q, want the roll back warning", args[0], te.errOut.String())
+		}
+	}
 }
 
 // TestTornTailWhileAnotherCommandWrites holds the lock while status reads
@@ -211,5 +218,38 @@ func TestTornTailWhileAnotherCommandWrites(t *testing.T) {
 	te.run("--repo="+repo, "status")
 	if !strings.Contains(te.errOut.String(), "matching a crash during an earlier append") {
 		t.Errorf("status stderr with no lock held %q, want the crash warning", te.errOut.String())
+	}
+}
+
+// TestOpenLogsCreatesStateOnlyWithTheLock removes state/, as a clone of
+// a repository with no record lacks it. status, log and ls create
+// nothing. gc holds the lock and creates state/, and no catalog/.
+func TestOpenLogsCreatesStateOnlyWithTheLock(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	l := testLayout(t, repo)
+	for _, dir := range []string{l.stateDir(), l.catalogDir()} {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"status"}, {"log"}} {
+		runCmd(t, append([]string{"--repo=" + repo}, args...)...)
+		for _, dir := range []string{l.stateDir(), l.catalogDir()} {
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Fatalf("%s created %s: %v", args[0], dir, err)
+			}
+		}
+	}
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
+		t.Fatalf("gc: exit %d: %s", code, out)
+	}
+	if fi, err := os.Stat(l.stateDir()); err != nil || !fi.IsDir() {
+		t.Fatalf("gc left no state directory: %v", err)
+	}
+	if _, err := os.Stat(l.catalogDir()); !os.IsNotExist(err) {
+		t.Fatalf("gc created the catalog directory: %v", err)
 	}
 }

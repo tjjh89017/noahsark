@@ -88,6 +88,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		return configExitCode(err)
 	}
 	layout := layoutOf(repoDir, cfg)
+	warnRollback("restore", layout, stderr)
 	c, err := catalog.OpenReadOnly(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)

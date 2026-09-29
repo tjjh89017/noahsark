@@ -295,25 +295,26 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	}
 }
 
-// TestGCAfterACrashBeforeTheFreedEvent writes the OnDisc records of a
-// verified disc and no Freed event, as a crash between the two batches
-// leaves. The next gc appends Freed and unlinks the chunk files.
-func TestGCAfterACrashBeforeTheFreedEvent(t *testing.T) {
+// TestGCAfterACrashAfterTheFreedEvent writes the Freed event of a
+// verified disc and no OnDisc record, as a crash between the two batches
+// leaves. The next gc writes the OnDisc records first, then unlinks the
+// chunk files as orphans.
+func TestGCAfterACrashAfterTheFreedEvent(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscVerified)
-	logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := logs.Items.MarkOnDisc(logs.Items.ItemsOfDiscInState(fx.uuidBytes(t), stage.Packed)...); err != nil {
-		t.Fatal(err)
-	}
+	appendEventOnly(t, fx, stage.EventFreed)
 
 	out := fx.mustRun(t, "gc", "--force-after=0d")
+	if !strings.Contains(out, "an earlier gc stopped before it wrote the records of its items") {
+		t.Fatalf("gc output %q, want the repair note", out)
+	}
 	if strings.HasPrefix(out, gcFreedNone) {
 		t.Fatalf("gc output %q, want the orphans freed", out)
 	}
 	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscOnDiscOnly {
 		t.Fatalf("disc state %s, want on disc only", got)
+	}
+	if n := countByState(t, fx.repo, stage.Packed); n != 0 {
+		t.Fatalf("%d item(s) Packed after gc, want none", n)
 	}
 	if files := listFilesUnder(t, testLayout(t, fx.repo).chunksDir()); len(files) != 0 {
 		t.Fatalf("staging chunks after gc: %v, want none", files)

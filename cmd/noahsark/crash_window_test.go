@@ -110,6 +110,22 @@ var crashCases = []crashCase{
 	{"disc lost --undo of a verified disc", stage.DiscVerified, true, stage.EventLostUndone, []string{"--yes", "disc", "lost", "--undo", "{UUID}"}},
 	{"disc lost --undo of an on disc only disc", stage.DiscOnDiscOnly, true, stage.EventLostUndone, []string{"--yes", "disc", "lost", "--undo", "{UUID}"}},
 	{"pack --undo", stage.DiscPacked, false, stage.EventPackUndone, []string{"--yes", "pack", "--undo", "{UUID}"}},
+	{"gc", stage.DiscVerified, false, stage.EventFreed, []string{"gc", "--force-after=0d"}},
+}
+
+// crashCommand is the command name that the repair note gives for the
+// arguments args of a crash case: the arguments with no answer flag, no
+// gc wait and no disc argument.
+func crashCommand(args []string) string {
+	var words []string
+	for _, a := range args {
+		switch {
+		case a == "--yes", a == "--force-yes", a == "{UUID}", strings.HasPrefix(a, "--force-after="):
+			continue
+		}
+		words = append(words, a)
+	}
+	return strings.Join(words, " ")
 }
 
 // crashFixture builds the start state of c.
@@ -193,7 +209,7 @@ func TestCrashAfterTheDiscEventLogRepairs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantCmd := strings.Join(slices.DeleteFunc(slices.Clone(c.args[1:len(c.args)-1]), func(s string) bool { return s == "--yes" }), " ")
+			wantCmd := crashCommand(c.args)
 			if len(repairs) != 1 || repairs[0].Disc.UUID != fx.uuidBytes(t) || repairs[0].Command != wantCmd || repairs[0].Items == 0 {
 				t.Fatalf("repairs %+v, want one repair of %s for the disc", repairs, wantCmd)
 			}

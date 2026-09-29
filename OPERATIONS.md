@@ -363,8 +363,8 @@ one time, before the next step that depends on the records. An error from a
 write, a sync or a close stops the command.
 
 A command that changes the state of a disc and the records of its items
-(`disc lost`, `disc lost --undo`, `pack --undo`) writes the disc event first,
-as one synced append. Then it writes the item records that the new state of
+(`disc lost`, `disc lost --undo`, `pack --undo`, `gc`) writes the disc event
+first, as one synced append. Then it writes the item records that the new state of
 the disc asks for, as one synced batch. The event is the intent. A command
 that stops between the two leaves a disc whose items do not follow its
 state. The item records that each disc state asks for:
@@ -401,8 +401,9 @@ in its `next:` block (`docs/states.md`, "State to `next:` block").
    does not list some items of a `verified` disc, `gc` frees no item of that
    disc, appends no `Freed` event for it, and reports the skip. `Freed` moves
    the whole disc, thus `gc` never frees a part of a disc.
-5. `gc` writes the OnDisc records and the `Freed` event and syncs them before
-   it unlinks a chunk file. A crash between the two leaves an orphan.
+5. `gc` writes the `Freed` events, then the OnDisc records, and syncs them
+   before it unlinks a chunk file ("State log replay"). A crash after the
+   records and before the unlink leaves an orphan.
 6. `gc` removes `staging/plans/<disc-uuid>/` of a freed disc. For a `pack
    --out=DIR` disc, it removes the symlink `tree` and never touches `DIR`.
    It also removes a plan directory that remains for an `on disc only` disc.

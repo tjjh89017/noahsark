@@ -66,8 +66,16 @@ func markFile(layout repoLayout) string {
 // A log that went back to an older version stops a holder of the lock
 // with an error. A command without the lock prints a warning and goes
 // on. A holder of the lock then writes the item records that an earlier
-// command did not write after its disc event.
+// command did not write after its disc event. A holder of the lock
+// creates state/ when it does not exist, because each append of a log
+// needs it. It leaves catalog/ to the commands that write the catalog. A
+// command without the lock creates nothing.
 func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (*stage.Logs, error) {
+	if holdsLock {
+		if err := mkdirDurable(layout.stateDir()); err != nil {
+			return nil, err
+		}
+	}
 	logs, err := stage.OpenLogs(layout.stateDir(), holdsLock)
 	if err != nil {
 		return nil, err

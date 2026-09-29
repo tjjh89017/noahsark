@@ -10,7 +10,7 @@ import (
 // as testdata/discstate_golden.bin holds them. Record i has sequence i,
 // time 1790000000 + 60*i, and a disc uuid with each byte 0x10 + i.
 // Packed carries both flags and the numbers 4 and 9. Recovered carries
-// the close flag.
+// the fec flag.
 func goldenDiscRecords() []DiscRecord {
 	var recs []DiscRecord
 	for i := uint64(1); i <= 13; i++ {
@@ -26,7 +26,7 @@ func goldenDiscRecords() []DiscRecord {
 			rec.DiscSeq = 4
 			rec.RunSeq = 9
 		case EventRecovered:
-			rec.Flags = FlagClose
+			rec.Flags = FlagFEC
 		}
 		recs = append(recs, rec)
 	}
@@ -65,13 +65,7 @@ func TestDiscRecordGolden(t *testing.T) {
 		if gotRec := decodeDiscRecord(buf); gotRec != wantRec {
 			t.Fatalf("record %d: decoded %+v, want %+v", i+1, gotRec, wantRec)
 		}
-		// The golden Recovered record carries the close bit, which the
-		// record check refuses: only the fec bit is valid in Recovered.
-		err := wantRec.check()
-		switch {
-		case wantRec.Event == EventRecovered && err == nil:
-			t.Fatalf("record %d: check accepts the close bit in Recovered", i+1)
-		case wantRec.Event != EventRecovered && err != nil:
+		if err := wantRec.check(); err != nil {
 			t.Fatalf("record %d: check: %v", i+1, err)
 		}
 	}

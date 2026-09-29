@@ -14,12 +14,12 @@ set -euo pipefail
 # commit; it takes what is staged and names no snapshot of its own. So
 # this scenario commits two independent fixtures, A and then B, each its
 # own snapshot, each sized to CHAIN_HALF_BYTES.
-# pack's candidate order takes a snapshot that is packed in parts first,
-# then the other snapshots, the oldest snapshot time first. A is older
-# than B, thus pack takes all of A first, then B. A is far under the
-# three discs' combined capacity, thus the three discs hold all of A and
-# a part of B. After the third pack, status names B as packed in parts,
-# and the rest of B stays staged. The fourth disc takes that rest.
+# pack takes the snapshots in snapshot time order, the oldest first. A
+# is older than B, thus pack takes all of A first, then B. A is far
+# under the three discs' combined capacity, thus the three discs hold all
+# of A and a part of B. After the third pack, status names B as not
+# complete on discs, and the rest of B stays staged. The fourth disc
+# takes that rest.
 #
 # CHAIN_HALF_BYTES is scenario_chain's default size for each of A and B:
 # together big enough that three discs (dvd+r, bd25, bd25 forced to
@@ -214,7 +214,7 @@ chain_commit_fixture() {
 }
 
 # chain_assert_parts LABEL REPO PARTS DONE... fails unless the status of
-# REPO names the snapshot PARTS as packed in parts, and names no snapshot
+# REPO names the snapshot PARTS as not complete on discs, and names no snapshot
 # of DONE. An empty PARTS asks for no snapshot line at all. Each id is
 # the full text form; status names a snapshot by the 12 characters after
 # the multihash prefix 1220.
@@ -225,13 +225,13 @@ chain_assert_parts() {
 	echo "$out"
 	if [ -n "$parts" ]; then
 		grep -qxE "snapshot ${parts:4:12}: [0-9]+ items staged, not complete on discs; recover cannot find it from the discs alone" <<<"$out" ||
-			fail "$label: status does not name snapshot ${parts:4:12} as packed in parts"
+			fail "$label: status does not name snapshot ${parts:4:12} as not complete on discs"
 	elif grep -q '^snapshot ' <<<"$out"; then
-		fail "$label: status names a snapshot as packed in parts, want none"
+		fail "$label: status names a snapshot as not complete on discs, want none"
 	fi
 	for id in "$@"; do
 		if grep -q "^snapshot ${id:4:12}: " <<<"$out"; then
-			fail "$label: status names snapshot ${id:4:12} as packed in parts, want it complete on discs"
+			fail "$label: status names snapshot ${id:4:12} as not complete on discs, want it complete on discs"
 		fi
 	done
 }
@@ -240,7 +240,7 @@ chain_assert_parts() {
 # the flow every chain scenario shares: commit two independent fixtures
 # (A, then B, each HALF_BYTES), delete both sources, pack three discs (K
 # name, F pack flags, one pair per disc), and check the staged bytes and
-# that status names B as packed in parts. Then pack the rest of B on the
+# that status names B as not complete on discs. Then pack the rest of B on the
 # fourth disc, list each disc's object ids, delete the repository,
 # recover it from the four discs, restore A and B from the discs and
 # check each against its fixture's manifests, and check that a restore

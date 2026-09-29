@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
@@ -448,29 +449,34 @@ func TestNextBlockOrder(t *testing.T) {
 		return d
 	}
 	cases := []struct {
-		name   string
-		staged int
-		discs  []nextDisc
-		first  string
+		name    string
+		staged  int
+		discs   []nextDisc
+		repairs []nextRepair
+		first   string
 	}{
-		{"missing first", 1, []nextDisc{failed(disc("1", stage.DiscOnDiscOnly)), disc("2", stage.DiscPacked), disc("3", stage.DiscMissing)},
+		{"repair before missing", 1, []nextDisc{disc("1", stage.DiscMissing), disc("2", stage.DiscLost)}, []nextRepair{{arg: "2", command: "disc lost"}},
+			"next: disc 2: an earlier disc lost stopped before it wrote the records of its items; run:"},
+		{"repair instead of nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly)}, []nextRepair{{arg: "1", command: "gc"}},
+			"next: disc 1: an earlier gc stopped before it wrote the records of its items; run:"},
+		{"missing first", 1, []nextDisc{failed(disc("1", stage.DiscOnDiscOnly)), disc("2", stage.DiscPacked), disc("3", stage.DiscMissing)}, nil,
 			`next: load disc 3 "L3", then run:`},
-		{"on disc only failed before packed", 1, []nextDisc{disc("1", stage.DiscPacked), failed(disc("2", stage.DiscOnDiscOnly))},
+		{"on disc only failed before packed", 1, []nextDisc{disc("1", stage.DiscPacked), failed(disc("2", stage.DiscOnDiscOnly))}, nil,
 			"next: disc 2 failed its last check."},
-		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)},
+		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)}, nil,
 			"next: load disc 2, then run:"},
-		{"gc before staged", 1, []nextDisc{old(disc("1", stage.DiscVerified))},
+		{"gc before staged", 1, []nextDisc{old(disc("1", stage.DiscVerified))}, nil,
 			"advice: burn a second copy of /img1 before gc"},
-		{"staged before waiting", 1, []nextDisc{disc("1", stage.DiscVerified)},
+		{"staged before waiting", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil,
 			"next: load a blank disc, then run:"},
-		{"waiting", 0, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscOnDiscOnly), disc("3", stage.DiscLost)},
+		{"waiting", 0, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscOnDiscOnly), disc("3", stage.DiscLost)}, nil,
 			"next: nothing to do; gc can free disc 1 after 2026-10-06"},
-		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)},
+		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil,
 			"next: nothing to do"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			lines := nextBlock(nextRepo{repo: "/r", device: "/dev/sr0", source: "/src", staged: c.staged, now: now, discs: c.discs})
+			lines := nextBlock(nextRepo{repo: "/r", device: "/dev/sr0", source: "/src", staged: c.staged, now: now, discs: c.discs, repairs: c.repairs})
 			if !strings.HasPrefix(lines[0], c.first) {
 				t.Fatalf("block %q, want the first line %q", lines, c.first)
 			}
@@ -506,6 +512,64 @@ func TestNextDiscsNamesAnAmbiguousNumberByUUID(t *testing.T) {
 	got := nextDiscs(layout, discs)
 	if got[0].arg != a || got[1].arg != b || got[2].arg != "1" {
 		t.Fatalf("args %q %q %q, want %q %q 1", got[0].arg, got[1].arg, got[2].arg, a, b)
+	}
+}
+
+// TestStatusNamesARepair stops a command after its disc event. status
+// names the disc and the stopped command as the first step, and never
+// prints next: nothing to do. It writes no record: a second status prints
+// the same block.
+func TestStatusNamesARepair(t *testing.T) {
+	cases := []struct {
+		name  string
+		start stage.DiscState
+		event stage.DiscEvent
+		cmd   string
+	}{
+		{"disc lost", stage.DiscVerified, stage.EventLost, "disc lost"},
+		{"pack --undo", stage.DiscPacked, stage.EventPackUndone, "pack --undo"},
+		{"gc", stage.DiscVerified, stage.EventFreed, "gc"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx := repoWithDisc(t, c.start)
+			appendEventOnly(t, fx, c.event)
+			want := []string{
+				"next: disc 0: an earlier " + c.cmd + " stopped before it wrote the records of its items; run:",
+				"noahsark gc",
+			}
+			for range 2 {
+				lines := statusLines(t, fx.repo)
+				if got := lines[len(lines)-2:]; !slices.Equal(got, want) {
+					t.Fatalf("status:\n%s\nwant the last lines:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+				}
+			}
+			fx.mustRun(t, "gc", "--force-after=0d")
+			for _, line := range statusLines(t, fx.repo) {
+				if strings.Contains(line, "stopped before it wrote") {
+					t.Fatalf("status after gc still names the repair: %s", line)
+				}
+			}
+		})
+	}
+}
+
+// TestNextRepairsNamesAnAmbiguousNumberByUUID checks the disc argument
+// of a repair: the number of its ledger row, the full uuid when another
+// disc has the same number, and the full uuid with no ledger row.
+func TestNextRepairsNamesAnAmbiguousNumberByUUID(t *testing.T) {
+	a, b, c := [16]byte{15: 1}, [16]byte{15: 2}, [16]byte{15: 3}
+	rows := []format.DiscsRow{{DiscUUID: a, DiscSeq: 0}, {DiscUUID: b, DiscSeq: 0}, {DiscUUID: c, DiscSeq: 1}}
+	discs := []discSummary{{Seq: 0, Info: stage.DiscInfo{UUID: a}}, {Seq: 0, Info: stage.DiscInfo{UUID: b}}, {Seq: 1, Info: stage.DiscInfo{UUID: c}}}
+	d := [16]byte{15: 4}
+	got := nextRepairs(rows, discs, []stage.Repair{
+		{Disc: stage.DiscInfo{UUID: a}, Command: "disc lost"},
+		{Disc: stage.DiscInfo{UUID: c}, Command: "gc"},
+		{Disc: stage.DiscInfo{UUID: d}, Command: "pack --undo"},
+	})
+	want := []nextRepair{{uuidText(a), "disc lost"}, {"1", "gc"}, {uuidText(d), "pack --undo"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("repairs %+v, want %+v", got, want)
 	}
 }
 
