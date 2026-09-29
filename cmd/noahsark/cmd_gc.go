@@ -1,11 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,8 +49,9 @@ func gcFlags(fs *flag.FlagSet) runFunc {
 // run implements "noahsark gc". It frees the chunk files and the plan
 // directory of a verified disc after the wait since its verified time,
 // and the chunk file of an item that is already OnDisc. It never
-// removes a file of the catalog or of the state directory. See
-// OPERATIONS.md, "GC rules".
+// removes a file of the catalog or of the state directory. A dry run
+// takes no lock and writes no file. docs/states.md, rows 52 to 56, gives
+// the lines.
 func (o *gcOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "gc"
@@ -79,11 +80,13 @@ func (o *gcOptions) run(e *env, args []string) int {
 		return 2
 	}
 
-	lk, code, ok := lockRepo(cmd, repoDir, stderr)
-	if !ok {
-		return code
+	if !o.dryRun {
+		lk, code, ok := lockRepo(cmd, repoDir, stderr)
+		if !ok {
+			return code
+		}
+		defer releaseLock(lk)
 	}
-	defer releaseLock(lk)
 
 	repoUUID, err := decodeUUID(cfg.RepoUUID)
 	if err != nil {
@@ -91,60 +94,44 @@ func (o *gcOptions) run(e *env, args []string) int {
 		return 1
 	}
 	layout := layoutOf(repoDir, cfg)
-	logs, err := openLogs(cmd, layout, true, stderr)
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1
 	}
-	c, err := catalog.Open(repoDir)
+	logs, err := openLogs(cmd, layout, !o.dryRun, stderr)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
+		return 1
+	}
+	indexOf, err := gcIndexReader(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1
 	}
 
 	now := e.now()
-	plan := planGC(logs, c, layout, wait, now)
-	var failures []gcFailure
-	if !o.dryRun {
-		if err := recordGC(logs, plan, now); err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
+	plan := planGC(logs, indexOf, layout, gcDiscSeqs(ledger.Rows), wait, now)
+	if o.dryRun {
+		printGCPlan(stdout, plan, "would free", plan.itemCount(), plan.byteCount())
+		if len(plan.skipped) > 0 {
 			return 1
 		}
-	}
-	objDeleted, objBytes, objFailures := gcApplyStagingObjects(plan.files(), o.dryRun)
-	dirDeleted, dirBytes, dirFailures := gcApplyPlanDirs(plan.planDirs, o.dryRun)
-	failures = append(append(failures, objFailures...), dirFailures...)
-
-	verb := "deleted"
-	if o.dryRun {
-		verb = "would delete"
-	}
-	_, _ = fmt.Fprintf(stdout, "gc: staging: %s %d staged object(s), %d bytes\n", verb, objDeleted, objBytes)
-	_, _ = fmt.Fprintf(stdout, "gc: plans: %s %d disc plan directory(ies), %d bytes\n", verb, dirDeleted, dirBytes)
-	if o.dryRun {
-		names := discNamesFromLedger(layout.discsLedgerFile(), repoUUID)
-		printDryRunGroupSummary(plan.files(), names, stdout)
-		for _, d := range plan.planDirs {
-			_, _ = fmt.Fprintf(stdout, "would delete: %s: plan directory %s, %d bytes\n", discNameOf(names, d.discUUID), d.path, d.bytes)
-		}
-	}
-	if plan.noIndex > 0 {
-		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not in the catalog\n", plan.noIndex)
-	}
-	if plan.unlisted > 0 {
-		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX does not list them\n", plan.unlisted)
+		return 0
 	}
 
-	// A staged file gc could not unlink is a failure at run time, named
-	// by its path and the underlying error.
+	if err := recordGC(logs, plan, now); err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
+		return 1
+	}
+	items, bytes, failures := applyGC(plan)
+	printGCPlan(stdout, plan, "freed", items, bytes)
 	for _, f := range failures {
 		_, _ = fmt.Fprintf(stderr, "noahsark: gc: %s: %v\n", f.path, f.err)
 	}
-	if len(failures) > 0 {
+	_, _ = fmt.Fprintln(stdout, "next: noahsark status")
+	if len(failures) > 0 || len(plan.skipped) > 0 {
 		return 1
-	}
-	if objDeleted == 0 && dirDeleted == 0 && plan.noIndex == 0 && plan.unlisted == 0 {
-		printNothingEligibleYet(stdout, plan)
 	}
 	return 0
 }
@@ -157,7 +144,28 @@ type gcDiscPlan struct {
 	objs  []gcObj
 }
 
-// gcPlan is what one gc run frees.
+// gcHeld is one disc whose Packed items gc keeps: a verified disc whose
+// wait is not over, or a packed or burned disc.
+type gcHeld struct {
+	seq   uint64
+	items int
+	// verified is true for a verified disc. until is then the end of its
+	// wait.
+	verified bool
+	until    time.Time
+}
+
+// gcSkip is one verified disc whose wait is over and whose items gc
+// cannot confirm against the catalog INDEX of the disc.
+type gcSkip struct {
+	seq   uint64
+	items int
+	// noIndex is true when the catalog holds no INDEX of the disc. It is
+	// false when the INDEX does not list items items of the disc.
+	noIndex bool
+}
+
+// gcPlan is what one gc run frees, holds and skips.
 type gcPlan struct {
 	// discs are the verified discs whose wait is over and whose items
 	// the catalog INDEX of the disc lists.
@@ -167,14 +175,31 @@ type gcPlan struct {
 	// planDirs are the plan directories of the discs in discs and of
 	// the on disc only discs.
 	planDirs []gcPlanDir
-	// noIndex counts the items of a ready disc whose INDEX is not in
-	// the catalog. unlisted counts the items of a ready disc that its
-	// INDEX does not list.
-	noIndex, unlisted int
-	// nextFree is the earliest time at which the wait of a verified
-	// disc is over, when hasNext is true.
-	nextFree time.Time
-	hasNext  bool
+	held     []gcHeld
+	skipped  []gcSkip
+}
+
+// itemCount is the number of items that the plan frees: the items that
+// it records OnDisc, and the orphans.
+func (p *gcPlan) itemCount() int {
+	n := len(p.orphans)
+	for _, d := range p.discs {
+		n += len(d.items)
+	}
+	return n
+}
+
+// byteCount is the number of bytes that the plan frees: the chunk files
+// and the plan directories.
+func (p *gcPlan) byteCount() uint64 {
+	var n uint64
+	for _, o := range p.files() {
+		n += o.size
+	}
+	for _, d := range p.planDirs {
+		n += d.bytes
+	}
+	return n
 }
 
 // files returns every chunk file that the plan frees.
@@ -186,44 +211,112 @@ func (p *gcPlan) files() []gcObj {
 	return append(out, p.orphans...)
 }
 
-// planGC lists what gc frees at the time now, and changes nothing. A
-// disc is ready when it is verified and wait has passed since its
-// verified time. gc frees no item of a ready disc when the catalog does
-// not hold the INDEX of the disc, or when that INDEX does not list every
-// Packed item of the disc: Freed moves the whole disc.
-func planGC(logs *stage.Logs, c *catalog.Catalog, layout repoLayout, wait time.Duration, now time.Time) *gcPlan {
-	p := &gcPlan{}
-	for _, d := range logs.Discs.InState(stage.DiscVerified) {
-		freeAt := d.VerifiedTime.Add(wait)
-		if now.Before(freeAt) {
-			if !p.hasNext || freeAt.Before(p.nextFree) {
-				p.nextFree, p.hasNext = freeAt, true
-			}
-			continue
-		}
-		items := logs.Items.ItemsOfDiscInState(d.UUID, stage.Packed)
-		var objs []gcObj
-		if len(items) > 0 {
-			idx, err := c.IndexForDisc(d.UUID)
-			if err != nil {
-				p.noIndex += len(items)
-				continue
-			}
-			var unlisted int
-			objs, unlisted = gcPlanDisc(d.UUID, items, idx, layout)
-			if unlisted > 0 {
-				p.unlisted += unlisted
-				continue
-			}
-		}
-		p.discs = append(p.discs, gcDiscPlan{uuid: d.UUID, items: items, objs: objs})
-		p.planDirs = appendPlanDir(p.planDirs, layout, d.UUID)
+// gcIndexFunc returns the catalog INDEX of one disc.
+type gcIndexFunc func(discUUID [16]byte) (*format.Index, error)
+
+// errNoCatalog is the error of gcIndexFunc when the repository has no
+// catalog directory.
+var errNoCatalog = errors.New("the repository has no catalog directory")
+
+// gcIndexReader returns the INDEX reader of the catalog of repoDir. It
+// does not create the catalog directory: gc writes no file of the
+// catalog.
+func gcIndexReader(repoDir string) (gcIndexFunc, error) {
+	if _, err := os.Stat(catalog.Dir(repoDir)); errors.Is(err, fs.ErrNotExist) {
+		return func([16]byte) (*format.Index, error) { return nil, errNoCatalog }, nil
 	}
-	for _, d := range logs.Discs.InState(stage.DiscOnDiscOnly) {
-		p.planDirs = appendPlanDir(p.planDirs, layout, d.UUID)
+	c, err := catalog.Open(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	return c.IndexForDisc, nil
+}
+
+// gcDiscSeqs maps each disc of the disc ledger to its disc number.
+func gcDiscSeqs(rows []format.DiscsRow) map[[16]byte]uint64 {
+	seqs := make(map[[16]byte]uint64, len(rows))
+	for _, r := range rows {
+		seqs[r.DiscUUID] = r.DiscSeq
+	}
+	return seqs
+}
+
+// planGC lists what gc frees, holds and skips at the time now, and
+// changes nothing. A verified disc is ready when wait has passed since
+// its verified time. gc frees no item of a ready disc when the catalog
+// does not hold the INDEX of the disc, or when that INDEX does not list
+// every Packed item of the disc: Freed moves the whole disc.
+func planGC(logs *stage.Logs, indexOf gcIndexFunc, layout repoLayout, seqs map[[16]byte]uint64, wait time.Duration, now time.Time) *gcPlan {
+	p := &gcPlan{}
+	for _, d := range logs.Discs.Discs() {
+		seq, ok := seqs[d.UUID]
+		if !ok {
+			seq = d.DiscSeq
+		}
+		switch d.State {
+		case stage.DiscPacked, stage.DiscBurned:
+			if items := logs.Items.ItemsOfDiscInState(d.UUID, stage.Packed); len(items) > 0 {
+				p.held = append(p.held, gcHeld{seq: seq, items: len(items)})
+			}
+		case stage.DiscVerified:
+			p.planVerified(logs.Items, indexOf, layout, d, seq, wait, now)
+		case stage.DiscOnDiscOnly:
+			p.planDirs = appendPlanDir(p.planDirs, layout, d.UUID)
+		}
 	}
 	p.orphans = gcOrphans(logs.Items, layout)
 	return p
+}
+
+// planVerified adds the verified disc d to p: to the held discs while
+// its wait lasts, to the skipped discs when its catalog INDEX does not
+// confirm its items, and else to the freed discs.
+func (p *gcPlan) planVerified(items *stage.Log, indexOf gcIndexFunc, layout repoLayout, d stage.DiscInfo, seq uint64, wait time.Duration, now time.Time) {
+	packed := items.ItemsOfDiscInState(d.UUID, stage.Packed)
+	freeAt := d.VerifiedTime.Add(wait)
+	if now.Before(freeAt) {
+		if len(packed) > 0 {
+			p.held = append(p.held, gcHeld{seq: seq, items: len(packed), verified: true, until: freeAt})
+		}
+		return
+	}
+	var objs []gcObj
+	if len(packed) > 0 {
+		idx, err := indexOf(d.UUID)
+		if err != nil {
+			p.skipped = append(p.skipped, gcSkip{seq: seq, items: len(packed), noIndex: true})
+			return
+		}
+		var unlisted int
+		objs, unlisted = gcPlanDisc(d.UUID, packed, idx, layout)
+		if unlisted > 0 {
+			p.skipped = append(p.skipped, gcSkip{seq: seq, items: unlisted})
+			return
+		}
+	}
+	p.discs = append(p.discs, gcDiscPlan{uuid: d.UUID, items: packed, objs: objs})
+	p.planDirs = appendPlanDir(p.planDirs, layout, d.UUID)
+}
+
+// printGCPlan prints the lines of gc: the freed line with verb, items
+// and bytes, then one line for each held disc, then one line for each
+// skipped disc.
+func printGCPlan(stdout io.Writer, p *gcPlan, verb string, items int, bytes uint64) {
+	_, _ = fmt.Fprintf(stdout, "gc: %s %d item(s), %d bytes\n", verb, items, bytes)
+	for _, h := range p.held {
+		if h.verified {
+			_, _ = fmt.Fprintf(stdout, "gc: disc %d: too soon; %d item(s) held until %s\n", h.seq, h.items, h.until.Local().Format("2006-01-02"))
+			continue
+		}
+		_, _ = fmt.Fprintf(stdout, "gc: disc %d: not verified; %d item(s) held\n", h.seq, h.items)
+	}
+	for _, s := range p.skipped {
+		if s.noIndex {
+			_, _ = fmt.Fprintf(stdout, "gc: %d item(s) skipped: disc %d's table is not in the catalog\n", s.items, s.seq)
+			continue
+		}
+		_, _ = fmt.Fprintf(stdout, "gc: %d item(s) skipped: disc %d's table does not list them\n", s.items, s.seq)
+	}
 }
 
 // appendPlanDir adds the plan directory of the disc discUUID to dirs,
@@ -262,30 +355,49 @@ func gcPlanDisc(discUUID [16]byte, items []object.ID, idx *format.Index, layout 
 	return objs, unlisted
 }
 
-// recordGC writes the records of the discs of p: the OnDisc records of
-// the items of each disc as one durable batch, then the Freed event of
-// the disc. Both are synced before gc unlinks a chunk file. A crash
-// after them leaves the chunk files as orphans, which the next gc frees.
+// recordGC writes the records of the discs of p before gc unlinks a
+// chunk file: the OnDisc records of the items of every disc as one
+// synced batch, then the Freed events as one synced batch. A crash
+// after the OnDisc records leaves a verified disc with no Packed item,
+// which the next gc frees with no INDEX check. A crash after the Freed
+// events leaves orphans, which the next gc frees.
 func recordGC(logs *stage.Logs, p *gcPlan, now time.Time) error {
+	if len(p.discs) == 0 {
+		return nil
+	}
+	var items []object.ID
+	events := make([]stage.DiscRecord, 0, len(p.discs))
 	for _, d := range p.discs {
-		if err := logs.Items.MarkOnDisc(d.items...); err != nil {
-			return err
-		}
-		if err := logs.Discs.Append(discEvent(now, d.uuid, stage.EventFreed)); err != nil {
+		items = append(items, d.items...)
+		events = append(events, discEvent(now, d.uuid, stage.EventFreed))
+	}
+	if len(items) > 0 {
+		if err := logs.Items.MarkOnDisc(items...); err != nil {
 			return err
 		}
 	}
-	return nil
+	return logs.Discs.Append(events...)
 }
 
-// printNothingEligibleYet prints the line of a gc that frees nothing. It
-// names the earliest time at which the wait of a verified disc is over.
-func printNothingEligibleYet(stdout io.Writer, p *gcPlan) {
-	if !p.hasNext {
-		_, _ = fmt.Fprintln(stdout, "gc: nothing is eligible yet")
-		return
+// applyGC unlinks the chunk files and removes the plan directories of p.
+// It returns the items it freed, the bytes it freed, and every path it
+// could not remove. An item of a freed disc counts as freed: its OnDisc
+// record is durable. An orphan counts when gc unlinked its file.
+func applyGC(p *gcPlan) (items int, bytes uint64, failures []gcFailure) {
+	for _, d := range p.discs {
+		items += len(d.items)
+		_, b, f := gcApplyStagingObjects(d.objs)
+		bytes += b
+		failures = append(failures, f...)
 	}
-	_, _ = fmt.Fprintf(stdout, "gc: nothing is eligible yet; earliest eligible date: %s\n", p.nextFree.Format(time.RFC3339))
+	n, b, f := gcApplyStagingObjects(p.orphans)
+	items += n
+	bytes += b
+	failures = append(failures, f...)
+	b, f = gcApplyPlanDirs(p.planDirs)
+	bytes += b
+	failures = append(failures, f...)
+	return items, bytes, failures
 }
 
 // gcObj is one chunk file that gc frees: the item, the path of its file,
@@ -317,25 +429,19 @@ func gcOrphans(l *stage.Log, layout repoLayout) []gcObj {
 	return objs
 }
 
-// gcFailure names one staging object gc could not free, and why, so the
-// operator sees a reason instead of a bare zero count.
+// gcFailure names one path that gc could not remove, and why.
 type gcFailure struct {
 	path string
 	err  error
 }
 
-// gcApplyStagingObjects unlinks (or, under dryRun, only counts) every
-// file of objs. It reports every file it could not unlink. A file that
-// is already gone frees nothing and is not a failure.
-func gcApplyStagingObjects(objs []gcObj, dryRun bool) (deleted int, bytesFreed uint64, failures []gcFailure) {
+// gcApplyStagingObjects unlinks every file of objs. It reports every
+// file it could not unlink. A file that is already gone frees nothing
+// and is not a failure.
+func gcApplyStagingObjects(objs []gcObj) (deleted int, bytesFreed uint64, failures []gcFailure) {
 	for _, o := range objs {
-		if dryRun {
-			deleted++
-			bytesFreed += o.size
-			continue
-		}
 		removeErr := gcRemove(o.path)
-		if removeErr != nil && !os.IsNotExist(removeErr) {
+		if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 			failures = append(failures, gcFailure{path: o.path, err: removeErr})
 			continue
 		}
@@ -345,31 +451,6 @@ func gcApplyStagingObjects(objs []gcObj, dryRun bool) (deleted int, bytesFreed u
 		}
 	}
 	return deleted, bytesFreed, failures
-}
-
-// printDryRunGroupSummary prints one line for each disc that objs
-// groups by, each with the file count and the bytes of that disc, in
-// uuid text order. It is the report of gc --dry-run.
-func printDryRunGroupSummary(objs []gcObj, names map[[16]byte]string, stdout io.Writer) {
-	type group struct {
-		objects int
-		bytes   uint64
-	}
-	byDisc := make(map[[16]byte]*group)
-	for _, o := range objs {
-		g, ok := byDisc[o.discUUID]
-		if !ok {
-			g = &group{}
-			byDisc[o.discUUID] = g
-		}
-		g.objects++
-		g.bytes += o.size
-	}
-	discs := slices.SortedFunc(maps.Keys(byDisc), func(a, b [16]byte) int { return strings.Compare(uuidText(a), uuidText(b)) })
-	for _, u := range discs {
-		g := byDisc[u]
-		_, _ = fmt.Fprintf(stdout, "would delete: %s: %d object(s), %d bytes\n", discNameOf(names, u), g.objects, g.bytes)
-	}
 }
 
 // findObjectRow returns idx's Objects row for id, and the length of the
@@ -393,30 +474,6 @@ func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, u
 		return row, fileRows[i].ByteLen, true
 	}
 	return format.IndexObjectRecord{}, 0, false
-}
-
-// discNamesFromLedger maps each disc uuid the local ledger knows to the
-// name an operator reads: the number, the label and the uuid.
-func discNamesFromLedger(ledgerPath string, repoUUID [16]byte) map[[16]byte]string {
-	names := make(map[[16]byte]string)
-	ledger, err := image.LoadDiscsLedger(ledgerPath, repoUUID)
-	if err != nil {
-		return names
-	}
-	for _, row := range ledger.Rows {
-		n := min(int(row.LabelLen), len(row.Label))
-		names[row.DiscUUID] = discName(row.DiscSeq, string(row.Label[:n]), row.DiscUUID)
-	}
-	return names
-}
-
-// discNameOf returns the name of uuid, or the uuid alone when the
-// ledger has no row for it.
-func discNameOf(names map[[16]byte]string, uuid [16]byte) string {
-	if name, ok := names[uuid]; ok {
-		return name
-	}
-	return "disc " + uuidText(uuid)
 }
 
 // gcPlanDir is one disc's plan directory: the disc root that pack wrote
@@ -448,18 +505,15 @@ func dirBytes(path string) (uint64, bool) {
 	return total, true
 }
 
-// gcApplyPlanDirs removes (or, under dryRun, only counts) every plan
-// directory of dirs.
-func gcApplyPlanDirs(dirs []gcPlanDir, dryRun bool) (deleted int, bytesFreed uint64, failures []gcFailure) {
+// gcApplyPlanDirs removes every plan directory of dirs. os.RemoveAll
+// removes a symlink and does not follow it.
+func gcApplyPlanDirs(dirs []gcPlanDir) (bytesFreed uint64, failures []gcFailure) {
 	for _, d := range dirs {
-		if !dryRun {
-			if err := os.RemoveAll(d.path); err != nil {
-				failures = append(failures, gcFailure{path: d.path, err: err})
-				continue
-			}
+		if err := os.RemoveAll(d.path); err != nil {
+			failures = append(failures, gcFailure{path: d.path, err: err})
+			continue
 		}
-		deleted++
 		bytesFreed += d.bytes
 	}
-	return deleted, bytesFreed, failures
+	return bytesFreed, failures
 }
