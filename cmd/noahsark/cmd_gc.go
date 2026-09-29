@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -189,8 +190,8 @@ func (p *gcPlan) itemCount() int {
 	return n
 }
 
-// byteCount is the number of bytes that the plan frees: the chunk files
-// and the plan directories.
+// byteCount is the number of bytes that the plan frees: the disk space
+// of the chunk files and of the plan directories.
 func (p *gcPlan) byteCount() uint64 {
 	var n uint64
 	for _, o := range p.files() {
@@ -337,7 +338,7 @@ func appendPlanDir(dirs []gcPlanDir, layout repoLayout, discUUID [16]byte) []gcP
 // INDEX of another disc with the same run_seq never stands in for it.
 func gcPlanDisc(discUUID [16]byte, items []object.ID, idx *format.Index, layout repoLayout) (objs []gcObj, unlisted int) {
 	for _, id := range items {
-		row, byteLen, found := findObjectRow(idx, id)
+		row, found := findObjectRow(idx, id)
 		if !found {
 			unlisted++
 			continue
@@ -346,9 +347,9 @@ func gcPlanDisc(discUUID [16]byte, items []object.ID, idx *format.Index, layout 
 			continue
 		}
 		path := layout.chunkFile(id)
-		size := byteLen
+		var size uint64
 		if fi, err := os.Stat(path); err == nil {
-			size = uint64(fi.Size())
+			size = diskBytes(fi)
 		}
 		objs = append(objs, gcObj{id: id, path: path, size: size, discUUID: discUUID})
 	}
@@ -401,7 +402,7 @@ func applyGC(p *gcPlan) (items int, bytes uint64, failures []gcFailure) {
 }
 
 // gcObj is one chunk file that gc frees: the item, the path of its file,
-// the size to report, and the disc that holds the item.
+// the disk space of the file, and the disc that holds the item.
 type gcObj struct {
 	id       object.ID
 	path     string
@@ -423,7 +424,7 @@ func gcOrphans(l *stage.Log, layout repoLayout) []gcObj {
 		if err != nil {
 			continue
 		}
-		objs = append(objs, gcObj{id: id, path: path, size: uint64(fi.Size()), discUUID: rec.DiscUUID})
+		objs = append(objs, gcObj{id: id, path: path, size: diskBytes(fi), discUUID: rec.DiscUUID})
 	}
 	slices.SortFunc(objs, func(a, b gcObj) int { return strings.Compare(a.path, b.path) })
 	return objs
@@ -453,27 +454,15 @@ func gcApplyStagingObjects(objs []gcObj) (deleted int, bytesFreed uint64, failur
 	return deleted, bytesFreed, failures
 }
 
-// findObjectRow returns idx's Objects row for id, and the length of the
-// object's file from the role 13 Files row that pairs with it. It
-// confirms the object is actually present in the run gc is about to
-// delete its staging copy of.
-func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, uint64, bool) {
-	var fileRows []format.IndexFileRecord
-	for _, row := range idx.Files {
-		if row.Role == format.FileRoleObject {
-			fileRows = append(fileRows, row)
+// findObjectRow returns idx's Objects row for id. It confirms that the
+// run holds the object before gc removes the staged copy.
+func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, bool) {
+	for _, row := range idx.Objects {
+		if object.ID(row.ContentID) == id {
+			return row, true
 		}
 	}
-	for i, row := range idx.Objects {
-		if object.ID(row.ContentID) != id {
-			continue
-		}
-		if i >= len(fileRows) {
-			return row, 0, true
-		}
-		return row, fileRows[i].ByteLen, true
-	}
-	return format.IndexObjectRecord{}, 0, false
+	return format.IndexObjectRecord{}, false
 }
 
 // gcPlanDir is one disc's plan directory: the disc root that pack wrote
@@ -486,8 +475,8 @@ type gcPlanDir struct {
 	bytes    uint64
 }
 
-// dirBytes sums the size of every regular file below path. It does not
-// follow a symlink. It reports ok false when path does not exist.
+// dirBytes sums the disk space of every regular file below path. It does
+// not follow a symlink. It reports ok false when path does not exist.
 func dirBytes(path string) (uint64, bool) {
 	if _, err := os.Lstat(path); err != nil {
 		return 0, false
@@ -498,7 +487,7 @@ func dirBytes(path string) (uint64, bool) {
 			return nil
 		}
 		if info, err := d.Info(); err == nil && info.Mode().IsRegular() {
-			total += uint64(info.Size())
+			total += diskBytes(info)
 		}
 		return nil
 	})
@@ -516,4 +505,14 @@ func gcApplyPlanDirs(dirs []gcPlanDir) (bytesFreed uint64, failures []gcFailure)
 		bytesFreed += d.bytes
 	}
 	return bytesFreed, failures
+}
+
+// diskBytes is the disk space that removing the file of fi frees: its
+// allocated blocks. A sparse file, such as an image, frees less than its
+// apparent size. It is the apparent size when fi has no block count.
+func diskBytes(fi fs.FileInfo) uint64 {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return uint64(st.Blocks) * 512
+	}
+	return uint64(fi.Size())
 }

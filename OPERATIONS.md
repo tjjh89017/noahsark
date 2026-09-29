@@ -294,6 +294,9 @@ write, a sync or a close stops the command.
    It also removes a plan directory that remains for an `on disc only` disc.
 7. `gc --dry-run` prints what `gc` would free, writes nothing and takes no
    lock ("Command notes" gives the lines).
+8. `gc` reports the disk space that it frees: the allocated blocks of each
+   file that it removes, not the apparent size. A sparse image counts only
+   its allocated blocks. The dry run uses the same count.
 
 ## 5. Refs
 
@@ -316,11 +319,15 @@ snapshot. No ref name is reserved.
 
 A `SNAPSHOT` argument is a ref name, a full snapshot id, or a prefix of the
 digest part of a snapshot id. "Commands and global options" gives the rules
-of the match. The tool prints a snapshot id as the first 12 hex characters of
-its digest, without the constant multihash prefix. This short form is for the
-output of `commit`, `ls`, `log`, `restore` and `status` only. A file of
-`state/`, the line `recover: damaged: ID` and the candidate list of an
-ambiguous prefix use the full text form of an id.
+of the match. The tool prints a snapshot id in one of two forms:
+
+- The full text form. `commit` prints it in its `snapshot` and `ref` lines,
+  because a script reads the id from these lines. A file of `state/`, the
+  line `recover: damaged: ID` and the candidate list of an ambiguous prefix
+  also use it.
+- The short form: the first 12 hex characters of the digest, without the
+  constant multihash prefix. `ls`, `log`, `restore`, `status` and the
+  messages use it.
 
 Each snapshot is a root snapshot: the build writes no parent id. `log` orders
 snapshots by their time.
@@ -803,6 +810,14 @@ The operator tries the heal sources in this order.
    cannot repair the damage, it prints `disc SEQ "LABEL": bad; cannot heal;
    REASON` and exits with code 1. With no repository, it names the disc by
    uuid, as a plain `verify` does.
+
+   The parity heals less damage than its count of parity blocks can. The
+   decode uses the lowest-indexed parity blocks that are present, and a
+   retry drops one parity block at a time (FORMAT.md's "Decode rule").
+   Thus, when two or more damaged parity blocks are among the
+   blocks that the decode must use, `--heal` refuses the stripe, also when
+   the number of damaged blocks is not above the number of parity blocks. It writes no wrong
+   byte. The second copy is the main redundancy; the parity is an aid.
 3. **Another disc that holds the same content id.** The `restore` plan finds
    it through the catalog INDEX tables.
 4. **The original source path**, if it still exists. `commit` stores it again.
@@ -1243,7 +1258,8 @@ repository. Do not run `init` to recover a lost repository.
 
 **`commit`** prints `snapshot ID`, `ref NAME -> ID`, `new items: N, existing
 items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped or
-special path, `staged: N items, B bytes`, and `next: noahsark status`. `B` is
+special path, `staged: N items, B bytes`, and `next: noahsark status`. `ID`
+is the full text form of the snapshot id ("Refs"). `B` is
 the sum of the stored file sizes of the Staged items: the chunk files in
 `staging/chunks/` and the metadata object files in `catalog/`. Exit: 1
 when a file was skipped or unstable; the snapshot is committed all the same,
@@ -1325,8 +1341,11 @@ for it.
 
 In the freed line, `N` counts every item that `gc` records OnDisc, also an
 item with no chunk file, and each orphan whose chunk file it unlinked. `B`
-counts the bytes of the chunk files that it unlinked and of the regular files
-in the plan directories that it removed. A symlink adds nothing. A held line
+is the disk space that `gc` frees: the allocated blocks of the chunk files
+that it unlinked and of the regular files in the plan directories that it
+removed. A sparse image thus counts its allocated blocks, not its apparent
+size. On a platform with no block count, a file counts its apparent size. A
+symlink adds nothing. A held line
 appears only for a disc that still has a Packed item: a `packed` or a
 `burned` disc, or a `verified` disc whose wait is not over.
 
@@ -1343,7 +1362,7 @@ INDEX is not in the catalog or does not list it.
 
 `gc --dry-run` prints the same lines, with `gc: would free N item(s), B
 bytes` in place of the freed line. It counts every orphan and every file
-that `gc` would remove. It prints no `next:` line. It exits with code 1 when `gc` would skip
+that `gc` would remove, with the same rule for `B`. It prints no `next:` line. It exits with code 1 when `gc` would skip
 an item, else 0.
 
 **`restore`** takes a snapshot id prefix or a ref name. For a `partial`
