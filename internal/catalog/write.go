@@ -1,4 +1,4 @@
-package cache
+package catalog
 
 import (
 	"fmt"
@@ -10,9 +10,9 @@ import (
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// WriteDisc copies one disc's three catalog files into the cache, byte
+// WriteDisc copies one disc's three catalog files into the catalog, byte
 // for byte, replacing whatever discs/<disc-uuid>/ already holds.
-func (c *Cache) WriteDisc(uuid [16]byte, indexBuf, refsBuf, discsBuf []byte) error {
+func (c *Catalog) WriteDisc(uuid [16]byte, indexBuf, refsBuf, discsBuf []byte) error {
 	dir := c.discDir(uuid)
 	if err := atomicWriteFile(filepath.Join(dir, IndexFileName), indexBuf); err != nil {
 		return fmt.Errorf("cache: disc %s: INDEX.bin: %w", uuidText(uuid), err)
@@ -27,8 +27,8 @@ func (c *Cache) WriteDisc(uuid [16]byte, indexBuf, refsBuf, discsBuf []byte) err
 }
 
 // WriteSnapshot copies one snapshot object's whole encoded bytes into
-// the cache.
-func (c *Cache) WriteSnapshot(id object.ID, raw []byte) error {
+// the catalog.
+func (c *Catalog) WriteSnapshot(id object.ID, raw []byte) error {
 	if err := atomicWriteFile(filepath.Join(c.snapshotsDir(), id.TextForm()), raw); err != nil {
 		return fmt.Errorf("cache: snapshot %s: %w", id.TextForm(), err)
 	}
@@ -36,8 +36,8 @@ func (c *Cache) WriteSnapshot(id object.ID, raw []byte) error {
 }
 
 // WriteTree copies one tree object's whole encoded bytes into the
-// cache.
-func (c *Cache) WriteTree(id object.ID, raw []byte) error {
+// catalog.
+func (c *Catalog) WriteTree(id object.ID, raw []byte) error {
 	if err := atomicWriteFile(filepath.Join(c.treesDir(), id.TextForm()), raw); err != nil {
 		return fmt.Errorf("cache: tree %s: %w", id.TextForm(), err)
 	}
@@ -45,8 +45,8 @@ func (c *Cache) WriteTree(id object.ID, raw []byte) error {
 }
 
 // WriteBlob copies one blob object's whole encoded bytes into the
-// cache.
-func (c *Cache) WriteBlob(id object.ID, raw []byte) error {
+// catalog.
+func (c *Catalog) WriteBlob(id object.ID, raw []byte) error {
 	if err := atomicWriteFile(filepath.Join(c.blobsDir(), id.TextForm()), raw); err != nil {
 		return fmt.Errorf("cache: blob %s: %w", id.TextForm(), err)
 	}
@@ -55,13 +55,13 @@ func (c *Cache) WriteBlob(id object.ID, raw []byte) error {
 
 // WriteFromRoot copies one run's catalog, every snapshot object under
 // snapshots/, and every object its own INDEX lists as a tree,
-// into the cache. root is a freshly packed run tree or a mounted disc
+// into the catalog. root is a freshly packed run tree or a mounted disc
 // root; both share one on-disc layout (FORMAT.md "Disc and run model"),
 // so the same read and copy path serves pack, right after it builds a
 // run, and recover, for every disc it is given. It recomputes and
 // persists the completeness of every snapshot it copied, and returns
 // the read result so the caller can report what it found.
-func WriteFromRoot(c *Cache, root string) (*image.ReadResult, error) {
+func WriteFromRoot(c *Catalog, root string) (*image.ReadResult, error) {
 	rr, err := image.Read(root)
 	if err != nil {
 		return nil, fmt.Errorf("cache: %s: %w", root, err)

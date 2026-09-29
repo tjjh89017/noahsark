@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -50,7 +50,7 @@ func gcFlags(fs *flag.FlagSet) runFunc {
 
 // run implements "noahsark gc". It frees the staging bytes of an object
 // that two verified copies already hold, and nothing else: the local
-// cache is never trimmed. See docs/decisions.md, "Staging and gc".
+// catalog is never trimmed. See docs/decisions.md, "Staging and gc".
 func (o *gcOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	dryRun := o.dryRun
@@ -101,7 +101,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 		return 1
 	}
 	warnIfTruncated("gc", stageLog, stderr)
-	c, err := cache.Open(cache.Dir(repoDir))
+	c, err := catalog.Open(catalog.Dir(repoDir))
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1
@@ -113,7 +113,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 	}
 
 	discNames := discNamesFromLedger(cfg.StagingDir, repoUUID)
-	candidates, uncached := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
+	candidates, uncataloged := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
 	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
 	if retainAfterCleanOverride >= 0 && !dryRun && len(candidates) > 0 {
 		if code, ok := confirmForceAfter(e.stdin, candidates, stdout, stderr); !ok {
@@ -138,8 +138,8 @@ func (o *gcOptions) run(e *env, args []string) int {
 		}
 	}
 	printHeldForCopies(stdout, stageLog, discNames, cfg.MinVerifiedCopies)
-	if uncached > 0 {
-		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncached)
+	if uncataloged > 0 {
+		_, _ = fmt.Fprintf(stdout, "gc: %d object(s) skipped: their disc's INDEX is not cached\n", uncataloged)
 	}
 
 	// A staged file gc could not unlink is a failure at run time, named
@@ -152,7 +152,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	if objDeleted == 0 && dirDeleted == 0 && uncached == 0 {
+	if objDeleted == 0 && dirDeleted == 0 && uncataloged == 0 {
 		printNothingEligibleYet(stdout, stageLog, effectiveRetainAfterClean, cfg.MinVerifiedCopies, e.now())
 	}
 	// Nothing eligible, whether reported by --dry-run or found true by a
@@ -283,12 +283,12 @@ type gcObj struct {
 
 // gcPlanStagingObjects lists every staging object gc's rules allow
 // deleting as of now, without changing any state. An object whose own
-// disc has no cached INDEX is left off the list and counted separately:
+// disc has no catalog INDEX is left off the list and counted separately:
 // OPERATIONS.md's GC rules require confirming presence through the
-// cached index before every delete. The disc uuid of the object's own
+// catalog index before every delete. The disc uuid of the object's own
 // state record is the key, so an index of another disc that repeats the
 // same run_seq can never stand in for it.
-func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retainAfterClean time.Duration, minCopies int, now time.Time) (objs []gcObj, uncached int) {
+func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, stagingDir string, retainAfterClean time.Duration, minCopies int, now time.Time) (objs []gcObj, uncataloged int) {
 	for _, id := range gcCandidates(l, retainAfterClean, minCopies, now) {
 		rec, ok := l.Get(id)
 		if !ok {
@@ -296,12 +296,12 @@ func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retai
 		}
 		idx, err := c.IndexForDisc(rec.DiscUUID)
 		if err != nil {
-			uncached++
+			uncataloged++
 			continue
 		}
 		row, byteLen, found := findObjectRow(idx, id)
 		if !found {
-			uncached++
+			uncataloged++
 			continue
 		}
 
@@ -312,7 +312,7 @@ func gcPlanStagingObjects(l *stage.Log, c *cache.Cache, stagingDir string, retai
 		}
 		objs = append(objs, gcObj{id: id, path: path, size: size, discUUID: rec.DiscUUID, needsRecord: true})
 	}
-	return objs, uncached
+	return objs, uncataloged
 }
 
 // gcOrphans lists every ON-DISC object whose staged file is still on the

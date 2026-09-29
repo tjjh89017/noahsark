@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 )
 
 // multiDiscPlanFixture packs writeMultiDiscFixtureSource's tree across
@@ -137,15 +137,15 @@ func dryRunTotalObjects(t *testing.T, out string) int {
 	return 0
 }
 
-// TestRestoreDryRunMissingDisc deletes one cached disc's INDEX after a
+// TestRestoreDryRunMissingDisc deletes one catalog disc's INDEX after a
 // two-disc pack, so some objects that disc alone stored become
 // unresolvable, and checks restore --dry-run reports them under
 // "missing:" and exits 1.
 func TestRestoreDryRunMissingDisc(t *testing.T) {
 	repo, snapID, _, _ := multiDiscPlanFixture(t)
 
-	cacheDir := repoCacheDir(t, repo)
-	if err := os.RemoveAll(filepath.Join(cacheDir, "discs", firstCachedDiscUUID(t, cacheDir))); err != nil {
+	catalogDir := repoCatalogDir(t, repo)
+	if err := os.RemoveAll(filepath.Join(catalogDir, "discs", firstCatalogDiscUUID(t, catalogDir))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,11 +161,11 @@ func TestRestoreDryRunMissingDisc(t *testing.T) {
 	}
 }
 
-// firstCachedDiscUUID returns the text form of the uuid of the disc
+// firstCatalogDiscUUID returns the text form of the uuid of the disc
 // with disc_seq 0, the first disc the fixture packed.
-func firstCachedDiscUUID(t *testing.T, cacheDir string) string {
+func firstCatalogDiscUUID(t *testing.T, catalogDir string) string {
 	t.Helper()
-	c, err := cache.Open(cacheDir)
+	c, err := catalog.Open(catalogDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func firstCachedDiscUUID(t *testing.T, cacheDir string) string {
 // against a repository that has never packed or rebuilt anything fails
 // with a message naming the fix, not a bare "no run is cached" with no
 // next step.
-func TestRestoreDryRunEmptyCacheNamesTheFix(t *testing.T) {
+func TestRestoreDryRunEmptyCatalogNamesTheFix(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {

@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/repolock"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// TestRebuildCacheRestoresCacheContent deletes the whole cache pack
+// TestRebuildCacheRestoresCacheContent deletes the whole catalog pack
 // left behind, along with the repository, and checks recover
-// from the packed tree alone puts back an equally complete cache.
-func TestRebuildCacheRestoresCacheContent(t *testing.T) {
+// from the packed tree alone puts back an equally complete catalog.
+func TestRebuildCacheRestoresCatalogContent(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -41,14 +41,14 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	beforeTrees, err := os.ReadDir(filepath.Join(repoCacheDir(t, repo), "trees"))
+	beforeTrees, err := os.ReadDir(filepath.Join(repoCatalogDir(t, repo), "trees"))
 	if err != nil {
 		t.Fatalf("read trees before: %v", err)
 	}
 
-	// The cache lives inside the repository directory, so removing the
-	// repository removes the cache with it: this is the rebuild case
-	// recover must handle, the cache lost along with everything else.
+	// The catalog lives inside the repository directory, so removing the
+	// repository removes the catalog with it: this is the rebuild case
+	// recover must handle, the catalog lost along with everything else.
 	if err := os.RemoveAll(repo); err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +57,9 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	c, err := cache.Open(repoCacheDir(t, repo))
+	c, err := catalog.Open(repoCatalogDir(t, repo))
 	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
+		t.Fatalf("catalog.Open: %v", err)
 	}
 	ids, err := c.ListSnapshots()
 	if err != nil {
@@ -72,7 +72,7 @@ func TestRebuildCacheRestoresCacheContent(t *testing.T) {
 		t.Fatalf("Complete(%s) = false, want true", snapID.TextForm())
 	}
 
-	afterTrees, err := os.ReadDir(filepath.Join(repoCacheDir(t, repo), "trees"))
+	afterTrees, err := os.ReadDir(filepath.Join(repoCatalogDir(t, repo), "trees"))
 	if err != nil {
 		t.Fatalf("read trees after: %v", err)
 	}
@@ -398,7 +398,7 @@ func newObjectsFromCommit(t *testing.T, output string) int {
 // again: every object the disc already carries must count as existing,
 // not new, even though recover never restored the staging bytes
 // for them.
-func TestCommitAfterRebuildCacheReportsNoNewObjects(t *testing.T) {
+func TestCommitAfterRebuildCatalogReportsNoNewObjects(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -855,7 +855,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 // takes the repository's exclusive lock: recover writes the state
 // log and the disc and ref ledgers, so it must not run alongside
 // another state-writing command, or another recover.
-func TestRebuildCacheFailsFastWhenRepoLockHeld(t *testing.T) {
+func TestRebuildCatalogFailsFastWhenRepoLockHeld(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)

@@ -1,29 +1,29 @@
-package cache_test
+package catalog_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// TestDirIsCacheInsideTheRepository checks that the cache directory is
-// always "cache" inside the repository directory, matching OPERATIONS.md's
-// local cache layout rules.
-func TestDirIsCacheInsideTheRepository(t *testing.T) {
+// TestDirIsCacheInsideTheRepository checks that the catalog directory is
+// always "catalog" inside the repository directory, matching OPERATIONS.md's
+// catalog layout rules.
+func TestDirIsCatalogInsideTheRepository(t *testing.T) {
 	want := filepath.Join("/repo", "cache")
-	if got := cache.Dir("/repo"); got != want {
+	if got := catalog.Dir("/repo"); got != want {
 		t.Fatalf("Dir(%q) = %q, want %q", "/repo", got, want)
 	}
 }
 
 // TestWriteFromRootPopulatesCache packs one run and copies it into the
-// cache, then checks every read method resolves the same content.
-func TestWriteFromRootPopulatesCache(t *testing.T) {
+// catalog, then checks every read method resolves the same content.
+func TestWriteFromRootPopulatesCatalog(t *testing.T) {
 	runRoot, snapID := buildFixtureRun(t)
 
 	rr, err := image.Read(runRoot)
@@ -31,11 +31,11 @@ func TestWriteFromRootPopulatesCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, err := cache.Open(t.TempDir())
+	c, err := catalog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.WriteFromRoot(c, runRoot); err != nil {
+	if _, err := catalog.WriteFromRoot(c, runRoot); err != nil {
 		t.Fatalf("WriteFromRoot: %v", err)
 	}
 
@@ -93,17 +93,17 @@ func TestWriteFromRootPopulatesCache(t *testing.T) {
 }
 
 // TestWriteFromRootIsIdempotent runs WriteFromRoot twice over the same
-// run and checks the cache ends up with the same content, not
+// run and checks the catalog ends up with the same content, not
 // duplicated or corrupted entries.
 func TestWriteFromRootIsIdempotent(t *testing.T) {
 	runRoot, snapID := buildFixtureRun(t)
 	dir := t.TempDir()
 
-	c, err := cache.Open(dir)
+	c, err := catalog.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.WriteFromRoot(c, runRoot); err != nil {
+	if _, err := catalog.WriteFromRoot(c, runRoot); err != nil {
 		t.Fatal(err)
 	}
 	treesBefore, err := os.ReadDir(filepath.Join(dir, "trees"))
@@ -111,11 +111,11 @@ func TestWriteFromRootIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c2, err := cache.Open(dir)
+	c2, err := catalog.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.WriteFromRoot(c2, runRoot); err != nil {
+	if _, err := catalog.WriteFromRoot(c2, runRoot); err != nil {
 		t.Fatal(err)
 	}
 	treesAfter, err := os.ReadDir(filepath.Join(dir, "trees"))
@@ -130,12 +130,12 @@ func TestWriteFromRootIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestCheckCompleteReportsMissingTree builds a cache holding a
-// snapshot whose root tree references a child tree the cache never
+// TestCheckCompleteReportsMissingTree builds a catalog holding a
+// snapshot whose root tree references a child tree the catalog never
 // received, and checks CheckComplete reports an *IncompleteError
 // naming that child.
 func TestCheckCompleteReportsMissingTree(t *testing.T) {
-	c, err := cache.Open(t.TempDir())
+	c, err := catalog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,9 +161,9 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	if err == nil {
 		t.Fatal("CheckComplete = nil, want an *IncompleteError")
 	}
-	incomplete, ok := err.(*cache.IncompleteError)
+	incomplete, ok := err.(*catalog.IncompleteError)
 	if !ok {
-		t.Fatalf("CheckComplete error type = %T, want *cache.IncompleteError", err)
+		t.Fatalf("CheckComplete error type = %T, want *catalog.IncompleteError", err)
 	}
 	if incomplete.Snapshot != snapID {
 		t.Fatalf("IncompleteError.Snapshot = %s, want %s", incomplete.Snapshot.TextForm(), snapID.TextForm())
@@ -179,11 +179,11 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	}
 }
 
-// TestCheckCompleteResolvesDisc plants one cached disc whose INDEX
+// TestCheckCompleteResolvesDisc plants one catalog disc whose INDEX
 // Prereqs table and whose own DISCS table together name the disc that
 // holds a missing tree, and checks CheckComplete resolves that disc.
 func TestCheckCompleteResolvesDisc(t *testing.T) {
-	c, err := cache.Open(t.TempDir())
+	c, err := catalog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,9 +215,9 @@ func TestCheckCompleteResolvesDisc(t *testing.T) {
 	}
 
 	err = c.CheckComplete(snapID)
-	incomplete, ok := err.(*cache.IncompleteError)
+	incomplete, ok := err.(*catalog.IncompleteError)
 	if !ok {
-		t.Fatalf("CheckComplete error type = %T, want *cache.IncompleteError", err)
+		t.Fatalf("CheckComplete error type = %T, want *catalog.IncompleteError", err)
 	}
 	if !incomplete.HasDiscUUID || incomplete.DiscUUID != holderDisc {
 		t.Fatalf("IncompleteError disc = %v (has=%v), want %v", incomplete.DiscUUID, incomplete.HasDiscUUID, holderDisc)
@@ -230,7 +230,7 @@ func TestCheckCompleteResolvesDisc(t *testing.T) {
 // disc must resolve through that disc's own DISCS table, never through
 // the other disc's table.
 func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
-	c, err := cache.Open(t.TempDir())
+	c, err := catalog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestLocateObjectKeysByDiscNotRunSeq(t *testing.T) {
 }
 
 // encodeTestIndex builds a minimal, valid INDEX holding the given
-// Objects and Prereqs rows, encoded ready for cache.WriteDisc.
+// Objects and Prereqs rows, encoded ready for catalog.WriteDisc.
 func encodeTestIndex(t *testing.T, runSeq uint64, objects []format.IndexObjectRecord, objectByteLens []uint64, prereqs []format.IndexPrereqRecord) []byte {
 	t.Helper()
 	// The j-th role 13 Files row describes the file of Objects row j,
@@ -337,7 +337,7 @@ func encodeTestRefs(t *testing.T) []byte {
 }
 
 // encodeTestTree builds a minimal, valid Tree object with one entry,
-// encoded ready for cache.WriteTree.
+// encoded ready for catalog.WriteTree.
 func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
 	t.Helper()
 	tree := &format.Tree{
@@ -353,7 +353,7 @@ func encodeTestTree(t *testing.T, entry format.TreeEntry) []byte {
 }
 
 // encodeTestSnapshot builds a minimal, valid Snapshot object pointing
-// at rootTree, encoded ready for cache.WriteSnapshot.
+// at rootTree, encoded ready for catalog.WriteSnapshot.
 func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
 	t.Helper()
 	snap := &format.Snapshot{
@@ -371,14 +371,14 @@ func encodeTestSnapshot(t *testing.T, rootTree object.ID) []byte {
 // both of: the newest is the one whose own DISCS table has more rows,
 // whatever the uuid order. A tie on the row count too takes the higher
 // uuid, so the answer never changes between runs.
-func TestNewestCachedDiscBreaksATie(t *testing.T) {
+func TestNewestCatalogdDiscBreaksATie(t *testing.T) {
 	const sameSecond = 1_700_000_000
 
 	low := [16]byte{0x11}
 	high := [16]byte{0xee}
 
 	t.Run("more rows wins over a higher uuid", func(t *testing.T) {
-		c, err := cache.Open(t.TempDir())
+		c, err := catalog.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -397,7 +397,7 @@ func TestNewestCachedDiscBreaksATie(t *testing.T) {
 	})
 
 	t.Run("the higher uuid is the last rule", func(t *testing.T) {
-		c, err := cache.Open(t.TempDir())
+		c, err := catalog.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -414,7 +414,7 @@ func TestNewestCachedDiscBreaksATie(t *testing.T) {
 }
 
 // writeTieDisc caches one disc whose own DISCS table holds rows.
-func writeTieDisc(t *testing.T, c *cache.Cache, uuid [16]byte, runSeq uint64, rows []format.DiscsRow) {
+func writeTieDisc(t *testing.T, c *catalog.Catalog, uuid [16]byte, runSeq uint64, rows []format.DiscsRow) {
 	t.Helper()
 	idx := encodeTestIndex(t, runSeq, nil, nil, nil)
 	if err := c.WriteDisc(uuid, idx, encodeTestRefs(t), encodeTestDiscs(t, rows)); err != nil {

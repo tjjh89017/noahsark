@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
 )
@@ -141,7 +141,7 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 // discs by number instead, for the operator to look up on a sleeve.
 func planDiscSeqs(t *testing.T, repo, snapID string) []int {
 	t.Helper()
-	c, err := cache.Open(repoCacheDir(t, repo))
+	c, err := catalog.Open(repoCatalogDir(t, repo))
 	if err != nil {
 		t.Fatal(err)
 	}

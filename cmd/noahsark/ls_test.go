@@ -236,9 +236,9 @@ func TestLsExitsThreeOnAMissingDisc(t *testing.T) {
 
 // TestLsFromCacheWithNoDisc packs a repository, then runs ls with no
 // disc given at all: it must resolve the snapshot and list its root
-// entries from the local cache pack left behind, the same as the
+// entries from the catalog pack left behind, the same as the
 // disc-based listing.
-func TestLsFromCacheWithNoDisc(t *testing.T) {
+func TestLsFromCatalogWithNoDisc(t *testing.T) {
 	treeDir, snapID, src := lsFixture(t)
 
 	repo := repoDirFromTreeDir(t, treeDir)
@@ -247,22 +247,22 @@ func TestLsFromCacheWithNoDisc(t *testing.T) {
 		t.Fatalf("ls (disc): exit %d: %s", discCode, discOut)
 	}
 
-	cacheCode, cacheOut := runCmd(t, "--repo="+repo, "ls", snapID)
-	if cacheCode != 0 {
-		t.Fatalf("ls (cache): exit %d: %s", cacheCode, cacheOut)
+	catalogCode, catalogOut := runCmd(t, "--repo="+repo, "ls", snapID)
+	if catalogCode != 0 {
+		t.Fatalf("ls (cache): exit %d: %s", catalogCode, catalogOut)
 	}
-	if cacheOut != discOut {
-		t.Fatalf("ls from cache = %q, want %q (same as disc)", cacheOut, discOut)
+	if catalogOut != discOut {
+		t.Fatalf("ls from cache = %q, want %q (same as disc)", catalogOut, discOut)
 	}
 	_ = src
 }
 
 // TestLsFromCacheReportsIncompleteSnapshot builds a multi-disc
-// repository, wipes the cache, then rebuilds it from only the last
-// disc: the snapshot's tree spans earlier discs too, so the cache ends
+// repository, wipes the catalog, then rebuilds it from only the last
+// disc: the snapshot's tree spans earlier discs too, so the catalog ends
 // up genuinely incomplete. ls with no disc given must exit 3 and name
 // recover as the fix.
-func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
+func TestLsFromCatalogReportsIncompleteSnapshot(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeMultiDiscFixtureSource(t)
@@ -288,8 +288,8 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 		discRoots = append(discRoots, treeDir)
 	}
 
-	cacheDir := repoCacheDir(t, repo)
-	if err := os.RemoveAll(cacheDir); err != nil {
+	catalogDir := repoCatalogDir(t, repo)
+	if err := os.RemoveAll(catalogDir); err != nil {
 		t.Fatal(err)
 	}
 	// ls reads the staging store first, so the staged trees must go
@@ -312,10 +312,10 @@ func TestLsFromCacheReportsIncompleteSnapshot(t *testing.T) {
 	}
 }
 
-// TestLsAndLogAgreeOnAnEmptyCache checks that ls and log report a cache
+// TestLsAndLogAgreeOnAnEmptyCache checks that ls and log report a catalog
 // with no disc in it the same way: it is a failure at run time, exit 1,
 // for the listing form and for the one-snapshot form alike.
-func TestLsAndLogAgreeOnAnEmptyCache(t *testing.T) {
+func TestLsAndLogAgreeOnAnEmptyCatalog(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
@@ -339,7 +339,7 @@ func TestLsAndLogAgreeOnAnEmptyCache(t *testing.T) {
 
 // TestLsNonexistentPathReportsNoSuchDiscRoot checks that a nonexistent
 // path given as ls's first positional is reported as a missing disc
-// root, not resolved as a SNAPSHOT arg through cache mode.
+// root, not resolved as a SNAPSHOT arg through catalog mode.
 func TestLsNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-disc")
 	code, out := runCmd(t, "ls", missing, "SOMESNAP")
@@ -353,7 +353,7 @@ func TestLsNonexistentPathReportsNoSuchDiscRoot(t *testing.T) {
 
 // TestLsAndLogBeforeTheFirstPack checks that log and ls -r resolve a
 // just-committed ref and its trees from the staging store, before any
-// pack has filled the local cache.
+// pack has filled the catalog.
 func TestLsAndLogBeforeTheFirstPack(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
@@ -381,7 +381,7 @@ func TestLsAndLogBeforeTheFirstPack(t *testing.T) {
 	}
 
 	// A second commit with a pack in between: the first snapshot comes
-	// from the cache, the second one from staging, and log lists both.
+	// from the catalog, the second one from staging, and log lists both.
 	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}

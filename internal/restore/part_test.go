@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -31,15 +31,15 @@ func (d *treeDisc) Read(id object.ID) ([]byte, error) {
 	return ReadChunkFromRoot(d.root, id)
 }
 
-// cacheOfTree builds the local cache of treeDir's one run, the cache an
+// catalogOfTree builds the catalog of treeDir's one run, the catalog an
 // assembler reads every tree and blob from.
-func cacheOfTree(t *testing.T, treeDir string) *cache.Cache {
+func catalogOfTree(t *testing.T, treeDir string) *catalog.Catalog {
 	t.Helper()
-	c, err := cache.Open(t.TempDir())
+	c, err := catalog.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cache.WriteFromRoot(c, treeDir); err != nil {
+	if _, err := catalog.WriteFromRoot(c, treeDir); err != nil {
 		t.Fatal(err)
 	}
 	return c
@@ -47,7 +47,7 @@ func cacheOfTree(t *testing.T, treeDir string) *cache.Cache {
 
 // chunkIDs returns every chunk id the snapshot under c needs, in the
 // blob order of the tree walk.
-func chunkIDs(t *testing.T, c *cache.Cache, snap *format.Snapshot) []object.ID {
+func chunkIDs(t *testing.T, c *catalog.Catalog, snap *format.Snapshot) []object.ID {
 	t.Helper()
 	var out []object.ID
 	var walk func(id object.ID)
@@ -81,7 +81,7 @@ func chunkIDs(t *testing.T, c *cache.Cache, snap *format.Snapshot) []object.ID {
 func TestAssemblerSpansTwoDiscs(t *testing.T) {
 	srcDir := buildSpanFixtureSrc(t)
 	_, treeDir, snapID := buildFixtureTree(t, srcDir)
-	c := cacheOfTree(t, treeDir)
+	c := catalogOfTree(t, treeDir)
 	snap, err := c.ReadSnapshot(snapID)
 	if err != nil {
 		t.Fatal(err)

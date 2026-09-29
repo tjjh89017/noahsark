@@ -11,16 +11,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/repolock"
 )
 
 // TestPackPopulatesCache runs init, commit and pack, then checks pack
-// left a local cache behind that ls and plan could use with no disc
+// left a catalog behind that ls and plan could use with no disc
 // present: the run's catalog, the snapshot object, at least one tree,
 // and a completeness record.
-func TestPackPopulatesCache(t *testing.T) {
+func TestPackPopulatesCatalog(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -43,9 +43,9 @@ func TestPackPopulatesCache(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 
-	c, err := cache.Open(repoCacheDir(t, repo))
+	c, err := catalog.Open(repoCatalogDir(t, repo))
 	if err != nil {
-		t.Fatalf("cache.Open: %v", err)
+		t.Fatalf("catalog.Open: %v", err)
 	}
 
 	ids, err := c.ListSnapshots()
@@ -90,7 +90,7 @@ var dryRunTotalRe = regexp.MustCompile(`total: (\d+) disc\(s\), (\d+) object\(s\
 
 // TestPackDryRunWritesNothing checks that --dry-run leaves the repository
 // exactly as a plain "commit" left it: no packed tree, no state record,
-// no cache entry, no ledger row, and the staging total unchanged.
+// no catalog entry, no ledger row, and the staging total unchanged.
 func TestPackDryRunWritesNothing(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")

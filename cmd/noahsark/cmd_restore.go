@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/plan"
 	"github.com/tjjh89017/noahsark/internal/progress"
@@ -50,7 +50,7 @@ func restoreFlags(fs *flag.FlagSet) runFunc {
 // list.
 //
 // With none, and exactly SNAPSHOT and OUT-DIR left over, restore
-// resolves SNAPSHOT through the local cache and walks the disc-swap
+// resolves SNAPSHOT through the catalog and walks the disc-swap
 // loop one disc at a time, by disc number, prompting the operator to
 // insert the next one. This is the single-drive path; see
 // docs/decisions.md, "Restore".
@@ -189,7 +189,7 @@ func cmdRestoreDiscSwap(e *env, includes stringList, overwrite bool, mountDir st
 		return 2
 	}
 
-	src, c, err := openCacheSource(e)
+	src, c, err := openCatalogSource(e)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
@@ -198,7 +198,7 @@ func cmdRestoreDiscSwap(e *env, includes stringList, overwrite bool, mountDir st
 	snapID, err := src.ParseSnapshotArg(snapshotArg)
 	if err != nil {
 		// --mount names a disc to swap discs through, so a ref this
-		// build's cache does not know is reported as possibly on a
+		// repository's catalog does not know is reported as possibly on a
 		// disc not yet inserted, not as an unknown name outright,
 		// unless it looks like a truncated snapshot id, which
 		// *refNotFoundError already reports as that.
@@ -213,9 +213,9 @@ func cmdRestoreDiscSwap(e *env, includes stringList, overwrite bool, mountDir st
 
 // cmdRestoreDiscSwapRun is cmdRestoreDiscSwap's body once snapID and
 // includes are known.
-func cmdRestoreDiscSwapRun(stdin io.Reader, c *cache.Cache, snapID object.ID, includes []string, overwrite bool, mountDir string, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
+func cmdRestoreDiscSwapRun(stdin io.Reader, c *catalog.Catalog, snapID object.ID, includes []string, overwrite bool, mountDir string, dryRun bool, outDir string, stdout, stderr io.Writer, prog *progress.Reporter) int {
 	if err := c.CheckComplete(snapID); err != nil {
-		if ie, ok := err.(*cache.IncompleteError); ok {
+		if ie, ok := err.(*catalog.IncompleteError); ok {
 			_, _ = fmt.Fprintln(stderr, formatIncompleteError("restore", ie))
 			return 1
 		}
@@ -383,11 +383,11 @@ var discSwapRetryPause = 300 * time.Millisecond
 // disc the operator inserted. A later look reports it the normal way.
 //
 // needed holds every disc uuid this restore's plan asks for. A disc this
-// repository's cache knows, left in the drive from an earlier run, but
+// repository's catalog knows, left in the drive from an earlier run, but
 // outside that set, is not a mismatch: it is simply not wanted this time,
 // and detectDisc says so calmly instead of reporting an expected/found
 // pair.
-func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, scanner *bufio.Scanner, stdout, stderr io.Writer, done, needed map[[16]byte]bool) error {
+func detectDisc(mountDir string, c *catalog.Catalog, d plan.DiscEntry, scanner *bufio.Scanner, stdout, stderr io.Writer, done, needed map[[16]byte]bool) error {
 	unreadable := 0
 	promptedOnce := false
 	for {
@@ -428,8 +428,8 @@ func detectDisc(mountDir string, c *cache.Cache, d plan.DiscEntry, scanner *bufi
 }
 
 // discKnownToRepo reports whether uuid names a disc this repository's
-// cache has a DISCS row for, whatever that row's label holds.
-func discKnownToRepo(c *cache.Cache, uuid [16]byte) bool {
+// catalog has a DISCS row for, whatever that row's label holds.
+func discKnownToRepo(c *catalog.Catalog, uuid [16]byte) bool {
 	discs, err := c.Discs()
 	if err != nil {
 		return false
@@ -444,9 +444,9 @@ func discKnownToRepo(c *cache.Cache, uuid [16]byte) bool {
 
 // discNameFound names the disc that is in the drive. Its own DISC.bin
 // carries the number and the label, so the name is complete even for a
-// disc of another repository; the cache fills in a label DISC.bin left
+// disc of another repository; the catalog fills in a label DISC.bin left
 // empty.
-func discNameFound(c *cache.Cache, found restore.DiscIdentity) string {
+func discNameFound(c *catalog.Catalog, found restore.DiscIdentity) string {
 	label := found.Label
 	if label == "" {
 		label = labelForUUID(c, found.UUID)
@@ -454,9 +454,9 @@ func discNameFound(c *cache.Cache, found restore.DiscIdentity) string {
 	return discName(found.Seq, label, found.UUID)
 }
 
-// labelForUUID looks up a disc's label in the cache's DISCS table. It
-// returns "" when the cache does not know uuid.
-func labelForUUID(c *cache.Cache, uuid [16]byte) string {
+// labelForUUID looks up a disc's label in the catalog's DISCS table. It
+// returns "" when the catalog does not know uuid.
+func labelForUUID(c *catalog.Catalog, uuid [16]byte) string {
 	discs, err := c.Discs()
 	if err != nil {
 		return ""

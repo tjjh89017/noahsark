@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/restore"
@@ -25,7 +25,7 @@ func init() {
 
 // cmdLog implements "noahsark log". With no DISC-ROOT, it resolves
 // REF|SNAPSHOT, and lists every known snapshot with none given, through
-// the local cache, so log needs no disc present; give one or more
+// the catalog, so log needs no disc present; give one or more
 // DISC-ROOT positionals to read straight from a disc instead, the same
 // way ls, restore and verify do.
 func cmdLog(e *env, args []string) int {
@@ -48,7 +48,7 @@ func cmdLog(e *env, args []string) int {
 	cacheMode := !discRootGiven
 
 	var src snapshotSource
-	var cacheObj *cache.Cache
+	var cacheObj *catalog.Catalog
 	var positional []string
 	switch {
 	case cacheMode:
@@ -57,7 +57,7 @@ func cmdLog(e *env, args []string) int {
 			return 2
 		}
 		positional = args
-		cs, c, err := openCacheSource(e)
+		cs, c, err := openCatalogSource(e)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)
 			return 1
@@ -180,7 +180,7 @@ func printRefsOnAnotherDisc(stdout io.Writer, ids []object.ID, refs *format.Refs
 }
 
 // logOne prints one snapshot's own details.
-func logOne(src snapshotSource, cacheObj *cache.Cache, arg string, stdout, stderr io.Writer) int {
+func logOne(src snapshotSource, cacheObj *catalog.Catalog, arg string, stdout, stderr io.Writer) int {
 	id, err := src.ParseSnapshotArg(arg)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: log:", err)

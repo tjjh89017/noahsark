@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -18,8 +18,8 @@ import (
 
 // snapshotSource resolves tree, blob and snapshot objects, and REFS,
 // well enough for ls, log and plan to read a snapshot's tree. Both
-// *restore.Source (reading one or more disc roots) and *cacheSource
-// (reading the local cache, no disc present) implement it.
+// *restore.Source (reading one or more disc roots) and *catalogSource
+// (reading the catalog, no disc present) implement it.
 type snapshotSource interface {
 	Tree(object.ID) (*format.Tree, error)
 	Snapshot(object.ID) (*format.Snapshot, error)
@@ -28,20 +28,20 @@ type snapshotSource interface {
 	ParseSnapshotArg(string) (object.ID, error)
 }
 
-// cacheSource resolves a snapshot from the repository alone, with no
+// catalogSource resolves a snapshot from the repository alone, with no
 // disc present. It looks in the staging store first and in the local
-// cache second, so a snapshot that commit has just written lists before
+// catalog second, so a snapshot that commit has just written lists before
 // the first pack. ls, log and plan use it.
-type cacheSource struct {
-	c          *cache.Cache
+type catalogSource struct {
+	c          *catalog.Catalog
 	repoDir    string
 	stagingDir string
 }
 
-// Tree reads one tree object: the staged file first, then the cache. An
+// Tree reads one tree object: the staged file first, then the catalog. An
 // id that neither holds names both places, so the operator knows
 // whether to pack or to recover.
-func (s *cacheSource) Tree(id object.ID) (*format.Tree, error) {
+func (s *catalogSource) Tree(id object.ID) (*format.Tree, error) {
 	if buf, err := os.ReadFile(image.StagedPath(s.stagingDir, id, format.ObjectKindTree)); err == nil {
 		var t format.Tree
 		if _, err := t.Decode(buf); err != nil {
@@ -57,8 +57,8 @@ func (s *cacheSource) Tree(id object.ID) (*format.Tree, error) {
 }
 
 // Snapshot reads one snapshot object: the staged file first, then the
-// cache.
-func (s *cacheSource) Snapshot(id object.ID) (*format.Snapshot, error) {
+// catalog.
+func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 	if buf, err := os.ReadFile(image.StagedPath(s.stagingDir, id, format.ObjectKindSnapshot)); err == nil {
 		var snap format.Snapshot
 		if _, err := snap.Decode(buf); err != nil {
@@ -73,16 +73,16 @@ func (s *cacheSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 	return snap, nil
 }
 
-// Refs merges the repository's own ref file over the cached REFS table.
+// Refs merges the repository's own ref file over the catalog REFS table.
 // The ref file is the authoritative local state: commit writes it, and
 // a pack has not yet carried the newest names into any disc's REFS.
-func (s *cacheSource) Refs() (*format.RefsTable, error) {
-	cached, cacheErr := s.c.Refs()
+func (s *catalogSource) Refs() (*format.RefsTable, error) {
+	cached, catalogErr := s.c.Refs()
 	local, localErr := readRefs(s.repoDir)
-	if cacheErr != nil && (localErr != nil || len(local) == 0) {
-		// Nothing local and nothing cached: the repository holds no ref
-		// at all, and the cache's own message names the fix.
-		return nil, cacheErr
+	if catalogErr != nil && (localErr != nil || len(local) == 0) {
+		// Nothing local and nothing in the catalog: the repository holds no ref
+		// at all, and the catalog's own message names the fix.
+		return nil, catalogErr
 	}
 	merged := cached
 	if merged == nil {
@@ -120,8 +120,8 @@ func (s *cacheSource) Refs() (*format.RefsTable, error) {
 }
 
 // SnapshotIDs lists every snapshot the repository knows: the staged
-// ones and the cached ones, deduplicated.
-func (s *cacheSource) SnapshotIDs() ([]object.ID, error) {
+// ones and the catalog ones, deduplicated.
+func (s *catalogSource) SnapshotIDs() ([]object.ID, error) {
 	seen := make(map[object.ID]bool)
 	var ids []object.ID
 	add := func(id object.ID) {
@@ -150,7 +150,7 @@ func (s *cacheSource) SnapshotIDs() ([]object.ID, error) {
 }
 
 // notHeldError reports an object that neither the staging store nor the
-// local cache holds. It names both places, because the fix differs: an
+// catalog holds. It names both places, because the fix differs: an
 // object that was never packed waits for pack, and one that was packed
 // and freed comes back with recover.
 type notHeldError struct {
@@ -168,7 +168,7 @@ func (e *notHeldError) Error() string {
 // that knows discs were named on the command line (restore --mount) can
 // reword the message; ls, log and plan, which never name a disc here,
 // print it as returned.
-func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
+func (s *catalogSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	if arg == "" {
 		return object.ID{}, restore.ErrNoSnapshotArg
 	}
@@ -177,7 +177,7 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	}
 	refs, err := s.Refs()
 	if err != nil {
-		return object.ID{}, &cacheReadError{err: err}
+		return object.ID{}, &catalogReadError{err: err}
 	}
 	for _, r := range refs.Records {
 		if string(r.Name[:r.NameLen]) == arg {
@@ -187,30 +187,30 @@ func (s *cacheSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	return object.ID{}, &refNotFoundError{arg: arg}
 }
 
-// cacheReadError marks a snapshot argument that did not resolve because
-// the cache itself could not be read: an empty cache holds no REFS
+// catalogReadError marks a snapshot argument that did not resolve because
+// the catalog itself could not be read: an empty catalog holds no REFS
 // table. The argument may well be good, thus this is a failure at run
 // time, not a usage error.
-type cacheReadError struct{ err error }
+type catalogReadError struct{ err error }
 
-func (e *cacheReadError) Error() string { return e.err.Error() }
+func (e *catalogReadError) Error() string { return e.err.Error() }
 
-func (e *cacheReadError) Unwrap() error { return e.err }
+func (e *catalogReadError) Unwrap() error { return e.err }
 
 // exitForSnapshotArg gives the exit code for a SNAPSHOT argument that
 // did not resolve. A malformed id, and a name that matches no ref, are
-// usage errors, code 2. A cache that could not be read is a failure at
+// usage errors, code 2. A catalog that could not be read is a failure at
 // run time, code 1, the code every other read failure takes; ls and log
-// then report an empty cache the same way.
+// then report an empty catalog the same way.
 func exitForSnapshotArg(err error) int {
-	if _, ok := errors.AsType[*cacheReadError](err); ok {
+	if _, ok := errors.AsType[*catalogReadError](err); ok {
 		return 1
 	}
 	return 2
 }
 
 // refNotFoundError reports that arg matched no snapshot id and no name
-// in a *cacheSource's cached REFS table.
+// in a *catalogSource's catalog REFS table.
 type refNotFoundError struct{ arg string }
 
 func (e *refNotFoundError) Error() string {
@@ -220,11 +220,11 @@ func (e *refNotFoundError) Error() string {
 	return fmt.Sprintf("%q is neither a snapshot id nor a known ref name", e.arg)
 }
 
-// openCacheSource opens the local cache of the repository that e
+// openCatalogSource opens the catalog of the repository that e
 // finds, and
-// returns it wrapped as a snapshotSource plus the *cache.Cache itself,
+// returns it wrapped as a snapshotSource plus the *catalog.Catalog itself,
 // so a caller can also call CheckComplete on it.
-func openCacheSource(e *env) (*cacheSource, *cache.Cache, error) {
+func openCatalogSource(e *env) (*catalogSource, *catalog.Catalog, error) {
 	repoDir, err := e.findRepo()
 	if err != nil {
 		return nil, nil, err
@@ -233,11 +233,11 @@ func openCacheSource(e *env) (*cacheSource, *cache.Cache, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	c, err := cache.Open(cache.Dir(repoDir))
+	c, err := catalog.Open(catalog.Dir(repoDir))
 	if err != nil {
 		return nil, nil, err
 	}
-	return &cacheSource{c: c, repoDir: repoDir, stagingDir: cfg.StagingDir}, c, nil
+	return &catalogSource{c: c, repoDir: repoDir, stagingDir: cfg.StagingDir}, c, nil
 }
 
 // looksLikeDiscRoot reports whether s names an existing directory: a
@@ -256,7 +256,7 @@ func looksLikeDiscRoot(s string) bool {
 // contains a slash and never already exists as a file, so this tells
 // apart a mistyped or missing DISC-ROOT from an ordinary SNAPSHOT
 // argument, letting log and ls report the mistake by name instead of
-// falling into cache mode and resolving it as a ref.
+// falling into catalog mode and resolving it as a ref.
 func looksLikePathNotDisc(s string) bool {
 	if strings.ContainsRune(s, '/') {
 		return true
@@ -265,35 +265,35 @@ func looksLikePathNotDisc(s string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// formatIncompleteError renders a *cache.IncompleteError the way ls,
+// formatIncompleteError renders a *catalog.IncompleteError the way ls,
 // log and plan all report it: naming the snapshot and, when it can be
 // resolved, the disc to insert and the command that would fix it.
-func formatIncompleteError(cmd string, e *cache.IncompleteError) string {
+func formatIncompleteError(cmd string, e *catalog.IncompleteError) string {
 	return fmt.Sprintf("noahsark: %s: %s", cmd, incompleteErrorBody(e))
 }
 
-// incompleteErrorBody renders a *cache.IncompleteError with no
+// incompleteErrorBody renders a *catalog.IncompleteError with no
 // "noahsark: <cmd>:" prefix, for a caller that wraps it inside its own
 // already-prefixed message instead of printing it standalone.
-func incompleteErrorBody(e *cache.IncompleteError) string {
+func incompleteErrorBody(e *catalog.IncompleteError) string {
 	if e.HasDiscUUID {
 		return fmt.Sprintf("snapshot %s is not complete in the cache; insert disc %s%s and run recover",
-			e.Snapshot.TextForm(), uuidText(e.DiscUUID), cache.LabelSuffix(e.Label))
+			e.Snapshot.TextForm(), uuidText(e.DiscUUID), catalog.LabelSuffix(e.Label))
 	}
 	return fmt.Sprintf("snapshot %s is not complete in the cache; run recover with the disc that holds it",
 		e.Snapshot.TextForm())
 }
 
 // reportSourceError prints err the way ls, log and plan all report a
-// read failure. An incomplete cached snapshot and a missing disc are
+// read failure. An incomplete catalog snapshot and a missing disc are
 // both a failure at run time, exit code 1, the same as any other read
-// failure here; a missing disc or an incomplete cache is not a bad
+// failure here; a missing disc or an incomplete catalog is not a bad
 // argument, so it never takes the usage-error code. c is nil in disc
 // mode.
-func reportSourceError(cmd string, stderr io.Writer, err error, c *cache.Cache, snapID object.ID) int {
+func reportSourceError(cmd string, stderr io.Writer, err error, c *catalog.Catalog, snapID object.ID) int {
 	if c != nil {
 		if ce := c.CheckComplete(snapID); ce != nil {
-			if ie, ok := errors.AsType[*cache.IncompleteError](ce); ok {
+			if ie, ok := errors.AsType[*catalog.IncompleteError](ce); ok {
 				_, _ = fmt.Fprintln(stderr, formatIncompleteError(cmd, ie))
 				return 1
 			}

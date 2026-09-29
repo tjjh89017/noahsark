@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tjjh89017/noahsark/internal/cache"
+	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -252,7 +252,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	}
 	count, haveClean := discVerifyCount(stageLog, ident.DiscUUID)
 	if haveClean {
-		if err := cacheRunFromDisc(repoDir, target); err != nil {
+		if err := catalogRunFromDisc(repoDir, target); err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		}
 	}
@@ -413,15 +413,15 @@ func markVerifyFailed(l *stage.Log, discUUID [16]byte) int {
 	return n
 }
 
-// cacheRunFromDisc copies target's run catalog, snapshots and trees
-// into the local cache, the same way recover does, so gc can
-// later confirm an object's presence through the cached INDEX without
+// catalogRunFromDisc copies target's run catalog, snapshots and trees
+// into the catalog, the same way recover does, so gc can
+// later confirm an object's presence through the catalog INDEX without
 // asking for the disc again.
-func cacheRunFromDisc(repoDir, target string) error {
-	c, err := cache.Open(cache.Dir(repoDir))
+func catalogRunFromDisc(repoDir, target string) error {
+	c, err := catalog.Open(catalog.Dir(repoDir))
 	if err != nil {
 		return err
 	}
-	_, err = cache.WriteFromRoot(c, target)
+	_, err = catalog.WriteFromRoot(c, target)
 	return err
 }
