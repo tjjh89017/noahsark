@@ -367,6 +367,12 @@ that can be wrong.
 `YYYY-MM-DD`. No ref name is reserved, and there is no `LATEST`. A reader
 takes the record with the highest time.
 
+**A ref name wins over a prefix of a snapshot id.** Reason: a name is what
+the operator chose.
+
+**The candidate list of an ambiguous prefix uses the full id.** Reason: the
+12-character forms of two candidates can be equal.
+
 **`commit -m` stays.** A ref moves to a later snapshot. A message stays with
 its snapshot, so it records why that snapshot exists.
 
@@ -404,6 +410,10 @@ An undone disc is out of both, thus its hole never counts as the newest disc.
 **pack --undo leaves the ref ledger.** The ledger is an append-only history
 of refs that a disc carried. A ref that a later `pack` writes again is
 harmless, and a rewrite of the ledger would add a failure point.
+
+**Each disc carries every snapshot object of the catalog.** Reason: each
+single disc then names the full history. The snapshots stay in the catalog
+after `gc`, thus a later disc carries the old snapshots too.
 
 **`pack` takes the whole Staged pool.** It has no option that selects a
 snapshot or a ref. Every run carries every pending ref and every snapshot
