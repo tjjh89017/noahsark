@@ -727,7 +727,8 @@ There is one `disc` line for each disc that the plan needs. A `lost` disc that
 the plan still needs has ` (lost)` at the end of its line. The `restore:` line
 is present only when a needed chunk has no known disc. The `totals:` line is
 always the last line of the plan: `D` is the number of `disc` lines, and `N`
-and `B` are the sums of their counts. `--dry-run` prints the plan and stops.
+and `B` are the sums of their counts. Its form is fixed: it uses `discs` and
+`items` also for the value 1, because a program parses it. `--dry-run` prints the plan and stops.
 
 `restore` does not ask for a `lost` disc, and it cannot ask for a chunk that
 has no known disc. It handles the two cases in the same way: it does not stop
@@ -860,6 +861,19 @@ subcommands `burned`, `verified` and `lost`, and `image`, with the subcommand
   group, and exit with code 0.
 - The tool checks the syntax before it reads the repository. A usage error
   changes nothing.
+- `status` prints the full `next:` block. The block holds the exact command
+  lines for the next step. `status` is the one source of that step.
+- A command that changes state ends its output with one line: `next:
+  noahsark status`. These commands are `init`, `commit`, `pack`, `pack
+  --undo`, `disc burned`, `disc verified`, `disc lost`, `verify`, `verify
+  --undo`, `gc` and `recover`. `disc burned --undo` and `disc lost --undo`
+  also print it. A `verify` that is counted prints it, also when the check
+  fails. The line goes to standard output, and it is the last line.
+- A command that changed nothing because it was refused, or because the
+  operator answered no, prints no `next:` line. `restore`, `ls`, `log`,
+  `image build` and every `--dry-run` run print none. `verify --no-mark`
+  and a `verify` that is not counted change no state, and print none.
+  `docs/states.md`, "State x event table", gives the rule for each row.
 
 | Global option | Meaning |
 |---|---|
@@ -939,8 +953,7 @@ Each line takes the global options before the command name.
 with a new `repo.uuid`, `staging.dir: staging`, `sources.root` from
 `--source`, and `pack.device: /dev/sr0`. It writes `.gitignore` and creates
 `state/`, `catalog/` and `staging/`. It prints `initialized repository PATH`,
-`source: PATH`, `device: DEV`, and `next: make the first backup now, run:
-noahsark commit`. To use another device, the operator edits `pack.device` in
+`source: PATH`, `device: DEV`, and `next: noahsark status`. To use another device, the operator edits `pack.device` in
 `config.yaml`. `init` exits with code 2 when the directory already is a
 repository. Do not run `init` to recover a lost repository.
 
@@ -956,10 +969,12 @@ nothing staged` and exits 0. Exit: 2 for a missing capacity, an `--out`
 directory that holds files, or a capacity too small for one item. 1 while a
 disc is `missing`.
 
-**`image build`** is "Disc filesystems and image building".
+**`image build`** is "Disc filesystems and image building". It prints no
+`next:` line.
 
 **`disc burned`**, **`disc verified`** and **`disc lost`** change the
-records of one disc, as `docs/states.md` gives. `disc verified` and `disc
+records of one disc, as `docs/states.md` gives. Each ends with `next:
+noahsark status` after it changed a record. `disc verified` and `disc
 lost` ask a critical confirmation. `disc burned --undo` and `disc lost
 --undo` ask an ordinary confirmation. `disc lost` removes
 `staging/plans/<disc-uuid>/` (for a `pack --out` disc, the symlink only), and
@@ -967,7 +982,9 @@ keeps the catalog data of the disc.
 
 **`verify`** prints `disc SEQ "LABEL": N items, ok` or `disc SEQ "LABEL":
 bad; REASON`, then one line that names what changed, as `docs/states.md`,
-rows 31 to 46, gives. With no repository, it names the disc by uuid. "Verify
+rows 31 to 46, gives. It ends with `next: noahsark status` when it wrote a
+record or a verify log event. `--no-mark` and a `verify` that is not counted
+print no `next:` line. With no repository, it names the disc by uuid. "Verify
 and heal" gives the lines of `--heal`. Exit: 1 when the check or the heal
 failed, or when the state refused the command. 2 for `--heal` with no
 `--out`.
@@ -995,19 +1012,22 @@ gc: disc SEQ: not verified; N item(s) held
 gc: N item(s) skipped: disc SEQ's table is not in the catalog
 ```
 
-The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`. A
+The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`.
+The last line is `next: noahsark status`. `--dry-run` prints no `next:`
+line. A
 `missing` or `lost` disc gets no line. It asks no confirmation. Exit: 0 when
 nothing was eligible. 1 when a chunk file could not be unlinked, or when an
 item was skipped because its INDEX is not in the catalog.
 
 `gc --dry-run` prints the same lines, with `gc: would free N item(s), B
-bytes` in place of the freed line. It exits with code 1 when `gc` would skip
+bytes` in place of the freed line. It prints no `next:` line. It exits with code 1 when `gc` would skip
 an item, else 0.
 
 **`restore`** takes a snapshot id prefix or a ref name. It prints the plan,
 the disc lines, the problem lines as `noahsark: restore: warning: PATH:
 REASON`, then `restored snapshot ID into DEST`, then `skipped: N file(s)
-already restored` when `DEST` already held a file. Exit: see "Failure
+already restored` when `DEST` already held a file. It prints no `next:`
+line. Exit: see "Failure
 policy". 1 also when it stops for the next disc with no terminal.
 
 **`recover`** reads one disc for each call, from `--disc=DIR`. It creates the
@@ -1035,7 +1055,8 @@ recover: N item(s) damaged on disc SEQ "LABEL"
 There is one `damaged:` line for each damaged object, then the count line.
 Then it exits with code 1. Else it prints `recover: ok`, or one `recover:
 disc SEQ "LABEL" (UUID) named by another disc, not yet given` line for each
-`missing` disc, and then exits with code 1. Do not run `disc burned` or
+`missing` disc, and then exits with code 1. Each of these ends with `next:
+noahsark status`, unless `recover` refused the disc. Do not run `disc burned` or
 `verify` for a recovered disc to raise its state: it is `on disc only`.
 
 **`ls`** lists the entries of a snapshot below `PATH`, or below the source

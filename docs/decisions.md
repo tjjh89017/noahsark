@@ -513,9 +513,20 @@ repository directory.
 
 **`status` prints a state word and one `next:` block.** A counter answers a
 question that the operator did not ask. The `next:` block answers the one
-that they did. `status` is the one place that prints a burn line; `pack` and
-`image build` print `next: noahsark status`. The lines of a block are joined
+that they did. `status` is the one place that prints a burn line; `pack` prints
+`next: noahsark status`, and `image build` prints no `next:` line. The lines of a block are joined
 with `&&`, so a failed line stops the lines after it.
+
+**One source gives the full next step, and that source is `status`.** A
+command that changes state ends with the one line `next: noahsark status`. It
+does not print its own block. Two sources would drift apart: the block of a
+command would say one thing, and `status` would say another after a later
+change. A command that changed nothing prints no `next:` line, because a
+refusal or a no answer leaves the step the same. `restore`, `ls`, `log`,
+`image build` and `--dry-run` runs are not steps of the cycle. `verify
+--no-mark` and a `verify` that is not counted change no state, thus they
+print none. The `totals:` line of the restore plan has a fixed plural form,
+`totals: D discs, N items, B bytes`, also for 1, because a program parses it.
 
 ## Locking
 
