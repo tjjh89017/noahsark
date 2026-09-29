@@ -118,38 +118,6 @@ func TestGroupHelp(t *testing.T) {
 	}
 }
 
-// TestInitRefusesRepo is row 77.
-func TestInitRefusesRepo(t *testing.T) {
-	dir := t.TempDir()
-	code, out := runIn(t, dir, "--repo="+dir, "init")
-	if code != 2 {
-		t.Fatalf("--repo init: exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "init makes the current directory the repository; it does not take --repo") {
-		t.Fatalf("--repo init: output %q", out)
-	}
-	if isRepoDir(dir) {
-		t.Fatal("--repo init wrote a repository")
-	}
-}
-
-// TestInitMakesTheWorkingDirectoryTheRepository checks that init uses
-// the working directory, and refuses a directory that already is a
-// repository.
-func TestInitMakesTheWorkingDirectoryTheRepository(t *testing.T) {
-	dir := t.TempDir()
-	if code, out := runIn(t, dir, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if !isRepoDir(dir) {
-		t.Fatal("init did not make the working directory a repository")
-	}
-	code, out := runIn(t, dir, "init")
-	if code != 2 || !strings.Contains(out, "already a noahsark repository") {
-		t.Fatalf("second init: exit %d, output %q", code, out)
-	}
-}
-
 // TestCommandHelpInBothPositions checks that -h before and after the
 // command name prints the help of the command on standard output.
 func TestCommandHelpInBothPositions(t *testing.T) {
@@ -289,5 +257,148 @@ func TestRepositoryDiscoveryOrder(t *testing.T) {
 	te.global.repo = filepath.Join(work, "none")
 	if _, err := te.findRepo(); err == nil || !strings.Contains(err.Error(), "is not a noahsark repository") {
 		t.Errorf("--repo of a directory that is not a repository: %v", err)
+	}
+}
+
+// TestDiscGlobalOptionBeforeSubcommandNamesTheFix checks that a global
+// option between disc and its subcommand ("disc --repo=X burned") is
+// reported with the corrected command line, not as an unknown
+// subcommand.
+func TestDiscGlobalOptionBeforeSubcommandNamesTheFix(t *testing.T) {
+	code, out := runCmd(t, "disc", "--repo=X", "burned")
+	if code != 2 {
+		t.Fatalf("disc --repo=X burned: exit %d, want 2: %s", code, out)
+	}
+	if !strings.Contains(out, "--repo is a global option; give it before the command name: noahsark --repo=X disc burned") {
+		t.Fatalf("disc --repo=X burned: output %q, want the corrected command line", out)
+	}
+	if strings.Contains(out, "unknown subcommand") {
+		t.Fatalf("disc --repo=X burned: output %q, want no unknown-subcommand wording", out)
+	}
+}
+
+// TestDiscUnknownSubcommandRefused checks that a subcommand this build
+// does not have, such as the old "label" and "mark-degraded", is
+// refused as an unknown subcommand rather than silently ignored.
+func TestDiscUnknownSubcommandRefused(t *testing.T) {
+	for _, args := range [][]string{
+		{"disc", "label", "00000000-0000-0000-0000-000000000000", "TEXT"},
+		{"disc", "mark-degraded", "00000000-0000-0000-0000-000000000000"},
+	} {
+		code, out := runCmd(t, args...)
+		if code != 2 {
+			t.Fatalf("%v: exit %d, want 2: %s", args, code, out)
+		}
+		if !strings.Contains(out, "unknown subcommand") {
+			t.Fatalf("%v: output %q, want \"unknown subcommand\"", args, out)
+		}
+	}
+}
+
+// TestUnknownCommandRefused asserts that an unrecognized command name
+// exits 2 with a message naming it, matching an unknown flag's exit
+// code.
+func TestUnknownCommandRefused(t *testing.T) {
+	code, out := runCmd(t, "sync", "/nowhere")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
+	}
+	if !strings.Contains(out, `unknown command "sync"`) {
+		t.Fatalf("output = %q, want it to name the unknown command", out)
+	}
+}
+
+// TestUnknownFlagRefused asserts that a flag no command defines exits 2,
+// not the process crashing or a silent success.
+func TestUnknownFlagRefused(t *testing.T) {
+	code, _ := runCmd(t, "commit", "--no-such-flag", "/nowhere")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+}
+
+// TestNoArgsPrintsUsage asserts the exit-code and usage contract for no
+// arguments and -h.
+func TestNoArgsPrintsUsage(t *testing.T) {
+	if code, out := runCmd(t); code != 2 || !strings.Contains(out, "usage:") {
+		t.Fatalf("no args: exit %d, output %q", code, out)
+	}
+	if code, out := runCmd(t, "-h"); code != 0 || !strings.Contains(out, "usage:") {
+		t.Fatalf("-h: exit %d, output %q", code, out)
+	}
+}
+
+// TestRepoFromEnvironment checks NOAHSARK_REPO: the normal cycle runs
+// with no --repo at all.
+func TestRepoFromEnvironment(t *testing.T) {
+	repo, src := initAndCommit(t)
+	te := newTestEnv(t.TempDir())
+	te.vars["NOAHSARK_REPO"] = repo
+	appendConfigLine(t, repo, "sources.root = "+src)
+	appendConfigLine(t, repo, "pack.capacity = 64MiB")
+
+	if code, out := te.run("commit"); code != 0 {
+		t.Fatalf("commit with no flag: exit %d: %s", code, out)
+	}
+	if code, out := te.run("pack"); code != 0 {
+		t.Fatalf("pack with no flag: exit %d: %s", code, out)
+	}
+	code, out := te.run("status")
+	if code != 0 {
+		t.Fatalf("status with no flag: exit %d: %s", code, out)
+	}
+	if !strings.Contains(out, "next: burn disc 0") {
+		t.Fatalf("status output %q does not name the burn", out)
+	}
+	if code, out := te.run("disc", "burned", "0"); code != 0 {
+		t.Fatalf("disc burned 0 with no flag: exit %d: %s", code, out)
+	}
+}
+
+// TestGlobalFlagBeforeCommand asserts that -q works before the command
+// name, not only after it.
+func TestGlobalFlagBeforeCommand(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	if code, out := runIn(t, repo, "-q", "init"); code != 0 {
+		t.Fatalf("-q init: exit %d: %s", code, out)
+	}
+}
+
+// TestCommandHelpExitsZeroAndShowsPositionals asserts that a command's
+// own -h prints its usage line, including its positional arguments, and
+// exits 0.
+func TestCommandHelpExitsZeroAndShowsPositionals(t *testing.T) {
+	code, out := runCmd(t, "commit", "-h")
+	if code != 0 {
+		t.Fatalf("commit -h: exit %d, want 0; output: %s", code, out)
+	}
+	if !strings.Contains(out, "SOURCE") {
+		t.Fatalf("commit -h output = %q, want it to mention SOURCE", out)
+	}
+	if !strings.Contains(out, "-ref") {
+		t.Fatalf("commit -h output = %q, want it to list -ref", out)
+	}
+}
+
+// TestUsageErrorsExitTwo checks the usage-error convention of the exit
+// code registry for the top-level command line: each case exits 2, never
+// 0 or 1.
+func TestUsageErrorsExitTwo(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no args", nil},
+		{"unknown top-level command", []string{"bogus"}},
+		{"disc: unknown subcommand", []string{"disc", "bogus"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, out := runCmd(t, c.args...)
+			if code != 2 {
+				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
+			}
+		})
 	}
 }

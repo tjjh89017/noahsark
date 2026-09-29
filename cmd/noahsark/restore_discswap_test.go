@@ -2,18 +2,12 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/tjjh89017/noahsark/internal/cache"
-	"github.com/tjjh89017/noahsark/internal/format"
-	"github.com/tjjh89017/noahsark/internal/object"
-	"github.com/tjjh89017/noahsark/internal/plan"
 )
 
 // discSwapFixture packs writeMultiDiscFixtureSource's tree across two
@@ -80,77 +74,6 @@ func restoreDryRunDiscSeqs(t *testing.T, repo string, flagsAndSnapshot ...string
 		t.Fatalf("no disc line in restore --dry-run output %q", out)
 	}
 	return seqs
-}
-
-// chunkDiscSeqs opens repo's cache directly and builds the same plan
-// restore --dry-run would, restricted to include, returning the
-// disc_seq of every disc that plan assigns at least one chunk object
-// to. A disc the plan names only for a tree or blob object never needs
-// a physical visit: the assembler resolves those from the cache, so
-// this is the set of discs a disc-swap restore of include would
-// actually prompt for.
-func chunkDiscSeqs(t *testing.T, repo, snapID, include string) []int {
-	t.Helper()
-	c, err := cache.Open(repoCacheDir(t, repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := object.ParseID(snapID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap, err := c.ReadSnapshot(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := plan.Build(c, snap, id, []string{include})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var seqs []int
-	for _, d := range result.Discs {
-		for _, o := range d.Objects {
-			if o.Kind == format.ObjectKindChunk {
-				seqs = append(seqs, int(d.DiscSeq))
-				break
-			}
-		}
-	}
-	return seqs
-}
-
-// mountDisc replaces mountDir with a symlink to discRoot, standing in
-// for an operator swapping the disc a real drive has mounted there.
-func mountDisc(t *testing.T, mountDir, discRoot string) {
-	t.Helper()
-	if err := os.RemoveAll(mountDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(discRoot, mountDir); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// scriptedStdin feeds one newline per Scan, running a step first so a
-// test can swap the mount directory's contents right where a real
-// operator would, between the prompt and pressing Enter. Reading past
-// the last step reports EOF, the same as a closed terminal.
-type scriptedStdin struct {
-	steps []func()
-	next  int
-}
-
-func (s *scriptedStdin) Read(p []byte) (int, error) {
-	if s.next >= len(s.steps) {
-		return 0, io.EOF
-	}
-	s.steps[s.next]()
-	s.next++
-	if len(p) == 0 {
-		return 0, nil
-	}
-	p[0] = '\n'
-	return 1, nil
 }
 
 // TestRestoreDiscSwapTwoDiscChain drives the disc-swap loop through a

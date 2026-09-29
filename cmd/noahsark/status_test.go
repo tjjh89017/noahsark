@@ -7,8 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/image"
-	"github.com/tjjh89017/noahsark/internal/stage"
+	"github.com/tjjh89017/noahsark/internal/repolock"
 )
 
 // statusDiscLineRe matches one disc line of "status": the disc number,
@@ -239,26 +238,47 @@ func TestStatusAfterCommitAsksForAPack(t *testing.T) {
 	}
 }
 
-// statusDiscs reads repo's disc summaries the same way "status"
-// computes them, straight through the internal packages: there is no
-// --json to shell out through and parse.
-func statusDiscs(t *testing.T, repo string) []discSummary {
-	t.Helper()
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatalf("readConfig: %v", err)
+// TestStatusRunsWhileRepoLockHeld checks that a read-only command
+// takes no lock: status must still run, and must not report the
+// held exclusive lock, while a writer holds it.
+func TestStatusRunsWhileRepoLockHeld(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
+
+	held, err := repolock.Acquire(repo)
 	if err != nil {
-		t.Fatalf("decodeUUID: %v", err)
+		t.Fatalf("hold lock: %v", err)
 	}
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
-	if err != nil {
-		t.Fatalf("LoadDiscsLedger: %v", err)
+	defer func() { _ = held.Release() }()
+
+	code, out := runCmd(t, "--repo="+repo, "status")
+	if code != 0 {
+		t.Fatalf("status while a writer holds the lock: exit %d, want 0: %s", code, out)
 	}
-	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
-	if err != nil {
-		t.Fatalf("stage.OpenReadOnly: %v", err)
+}
+
+// TestStatusUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
+// status: each case exits 2, never 0 or 1.
+func TestStatusUsageErrorsExitTwo(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	return summarizeDiscs(ledger.Rows, stageLog, cfg.MinVerifiedCopies)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"unexpected positional argument", []string{"--repo=" + repo, "status", "extra"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, out := runCmd(t, c.args...)
+			if code != 2 {
+				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
+			}
+		})
+	}
 }
