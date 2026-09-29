@@ -643,8 +643,9 @@ disc 1 "2026-10-12 disc 1": pack undone, 12 item(s) returned to staged
 next: noahsark status
 ```
 
-Only `y` or `yes` continues. Any other answer, or an empty line, prints
-`nothing changed`, and the command exits with code 1.
+The answers `y` and `yes` continue, in any letter case. Spaces around the
+answer are ignored. Every other answer, an empty line, and the end of input
+print `nothing changed`, and the command exits with code 1.
 
 | Step | Undo |
 |---|---|
@@ -793,4 +794,6 @@ comes after the command name, or after the subcommand word in a group.
 | `recover --source=PATH --disc=DIR` | Make a lost repository again from one disc. Run it for each disc. |
 
 A `DISC` argument is the disc number, the full uuid, or the start of the
-uuid.
+uuid. A value of 1 to 7 decimal digits is always a disc number. A value of 8
+or more digits, or a value with a letter or a hyphen, is a uuid or the start
+of a uuid.

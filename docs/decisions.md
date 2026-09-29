@@ -214,8 +214,11 @@ prints the exact `sudo noahsark --repo=REPO image build SEQ` line and stops.
 assigns `run_seq` and `disc_seq` from local state. After a lost repository two
 discs can carry the same number. The state logs, the catalog and the Prereqs
 table all name the disc uuid. A disc argument accepts the disc number, the
-full uuid or a uuid prefix. It refuses an ambiguous number and lists the
-uuids. The label match is deleted: a label is free text and can match two
+full uuid or a uuid prefix. A value of 1 to 7 decimal digits is a disc number
+and nothing else. A number with a typing error must never select a disc by
+the start of its uuid, because a command such as `disc lost` would then act
+on a wrong disc. The tool refuses an ambiguous value and lists the uuids.
+A value that matches no disc lists nothing. The label match is deleted: a label is free text and can match two
 discs.
 
 **The disc ledger is a local `DISCS.bin`.** `<repo>/state/discs.bin` uses the
@@ -524,7 +527,9 @@ no option of its own, other than `-h`.
 ordinary confirmation. `--force-yes` answers a critical confirmation, and
 includes the effect of `--yes`. The critical confirmations are `disc
 verified` and `disc lost`; all other confirmations are ordinary. With no
-terminal and no answer flag, the answer is no, and the command exits 1. There
+terminal and no answer flag, the answer is no, and the command exits 1. The
+answers `y` and `yes` continue in any letter case, because the question shows
+`[y/N]` and an operator who types `Y` means yes. There
 is no `--no` flag. Reasons: every command must be usable from a script, and a
 critical confirmation protects data that `gc` can free.
 

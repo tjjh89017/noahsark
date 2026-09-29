@@ -920,10 +920,16 @@ subcommands `burned`, `verified` and `lost`, and `image`, with the subcommand
 | `-h` | Print help and exit. |
 | `--version` | Print the version and exit. |
 
-A `DISC` argument names one disc of the repository: the `disc_seq`, the full
-uuid, or a uuid prefix. A value that matches no disc, or more than one disc,
-is a usage error: the tool lists the candidates and exits with code 2. An
-undone disc matches nothing.
+A `DISC` argument names one disc of the repository. A value of 1 to 7
+decimal digits is a disc number and nothing else; a leading zero is allowed.
+Every other value is a uuid prefix: a value of 8 or more decimal digits, or a
+value that holds a hexadecimal letter or a hyphen. A uuid and a uuid prefix
+can have hyphens and can use any letter case. A value that matches no disc is
+a usage error: the tool prints `no disc matches ARG` and exits with code 2. A
+value that matches more than one disc is a usage error: the tool lists the
+candidates and exits with code 2. Each candidate line has the form
+`disc SEQ "LABEL"  UUID`, with two spaces before the uuid. The uuid is in
+lower case, with hyphens. An undone disc matches nothing.
 
 A `DISC-ROOT` argument and `--disc=DIR` name one directory that holds
 `NOAHSARK/`: the mount point of a disc, or a copy of a disc root.
@@ -1158,7 +1164,9 @@ Six commands ask before they change a record. `pack --undo`, `disc burned
 1. The command prints a warning to standard error. It names the disc (number,
    label, uuid), the state now, the state after, and the effect.
 2. The command prints `Continue? [y/N]` to standard error and reads one line
-   from standard input. Only `y` or `yes` continues.
+   from standard input. The answers `y` and `yes` continue, in any letter case.
+   Spaces around the answer are ignored. Every other answer, an empty line,
+   and the end of input change nothing.
 3. `--yes` answers an ordinary confirmation. `--force-yes` answers both kinds.
    With an answer flag, the command prints the warning and does not ask.
 4. With no terminal on standard input and no answer flag that covers the
