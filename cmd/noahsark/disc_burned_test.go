@@ -158,9 +158,10 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 	}
 }
 
-// TestDiscBurnedBySeqAndLabel checks that "disc burned" accepts the
-// disc_seq and the on-disc label in place of the full uuid.
-func TestDiscBurnedBySeqAndLabel(t *testing.T) {
+// TestDiscBurnedBySeqAndUUIDPrefix checks that "disc burned" accepts
+// the disc number and an upper case uuid prefix with a hyphen in place
+// of the full uuid.
+func TestDiscBurnedBySeqAndUUIDPrefix(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -183,21 +184,22 @@ func TestDiscBurnedBySeqAndLabel(t *testing.T) {
 		t.Fatalf("disc burned 0 output %q did not mark objects burned", out)
 	}
 
-	code, out = runCmd(t, "--repo="+repo, "disc", "burned", "--undo", defaultDiscLabel(t, repo, 0))
+	prefix := strings.ToUpper(defaultDiscUUID(t, repo, 0)[:13])
+	code, out = runCmd(t, "--repo="+repo, "disc", "burned", "--undo", prefix)
 	if code != 0 {
-		t.Fatalf("disc burned --undo (by label): exit %d: %s", code, out)
+		t.Fatalf("disc burned --undo %s (by uuid prefix): exit %d: %s", prefix, code, out)
 	}
 	if !strings.Contains(out, "returned to packed") || strings.Contains(out, "returned to packed, 0 objects") {
-		t.Fatalf("disc burned --undo (by label) output %q did not return objects to packed", out)
+		t.Fatalf("disc burned --undo (by uuid prefix) output %q did not return objects to packed", out)
 	}
 }
 
-// defaultDiscLabel returns disc seq's on-disc label from "status".
-func defaultDiscLabel(t *testing.T, repo string, seq uint64) string {
+// defaultDiscUUID returns the uuid text of disc seq from "status".
+func defaultDiscUUID(t *testing.T, repo string, seq uint64) string {
 	t.Helper()
 	for _, r := range statusDiscs(t, repo) {
 		if r.Seq == seq {
-			return r.Label
+			return r.UUID
 		}
 	}
 	t.Fatalf("status --json names no disc %d", seq)
