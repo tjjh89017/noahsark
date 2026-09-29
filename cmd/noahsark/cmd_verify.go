@@ -226,11 +226,12 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 		_, _ = fmt.Fprintln(stdout, "verify: this tree is not a burned disc; the staging state was not changed")
 		return "", false
 	}
-	if !ledgerHasDiscUUID(cfg.StagingDir, repoUUID, ident.DiscUUID) {
+	layout := layoutOf(repoDir, cfg)
+	if !ledgerHasDiscUUID(layout.discsLedgerFile(), repoUUID, ident.DiscUUID) {
 		return "", true
 	}
 
-	stageLog, err := stage.Open(cfg.StagingDir)
+	stageLog, err := stage.Open(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: verify:", err)
 		return "", false
@@ -274,7 +275,7 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	if stillPacked == 0 {
 		return "", false
 	}
-	row, found := ledgerRow(cfg.StagingDir, repoUUID, ident.DiscUUID)
+	row, found := ledgerRow(layout.discsLedgerFile(), repoUUID, ident.DiscUUID)
 	discSeq := uint64(0)
 	if found {
 		discSeq = row.DiscSeq
@@ -287,10 +288,10 @@ func applyVerifyOutcome(repoDir, target string, ident discIdentity, identOK bool
 	return hintLine, false
 }
 
-// ledgerHasDiscUUID reports whether stagingDir's disc ledger names a
-// row for discUUID.
-func ledgerHasDiscUUID(stagingDir string, repoUUID, discUUID [16]byte) bool {
-	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+// ledgerHasDiscUUID reports whether the disc ledger at ledgerPath names
+// a row for discUUID.
+func ledgerHasDiscUUID(ledgerPath string, repoUUID, discUUID [16]byte) bool {
+	ledger, err := image.LoadDiscsLedger(ledgerPath, repoUUID)
 	if err != nil {
 		return false
 	}
@@ -302,9 +303,10 @@ func ledgerHasDiscUUID(stagingDir string, repoUUID, discUUID [16]byte) bool {
 	return false
 }
 
-// ledgerRow returns stagingDir's ledger row for discUUID.
-func ledgerRow(stagingDir string, repoUUID, discUUID [16]byte) (format.DiscsRow, bool) {
-	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+// ledgerRow returns the row for discUUID of the disc ledger at
+// ledgerPath.
+func ledgerRow(ledgerPath string, repoUUID, discUUID [16]byte) (format.DiscsRow, bool) {
+	ledger, err := image.LoadDiscsLedger(ledgerPath, repoUUID)
 	if err != nil {
 		return format.DiscsRow{}, false
 	}

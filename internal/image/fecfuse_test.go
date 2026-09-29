@@ -79,7 +79,7 @@ func TestBuildFECToDiskDigestsMatchHashing(t *testing.T) {
 func stageMixedFixture(t *testing.T) (string, []SnapshotRef) {
 	t.Helper()
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 
 	build := func(seed int64, extra bool) object.ID {
@@ -133,7 +133,7 @@ func TestBuildMixedFixtureFusedIsDeterministicAndVerifies(t *testing.T) {
 
 	opts := func(outDir string) BuildOptions {
 		return BuildOptions{
-			StagingDir:            stagingDir,
+			ObjectPath:            testObjectPath(stagingDir),
 			Snapshots:             snaps,
 			TargetCapacitySectors: 1 << 22,
 			OutputDir:             outDir,
@@ -167,7 +167,7 @@ func TestBuildMixedFixtureFusedIsDeterministicAndVerifies(t *testing.T) {
 func TestBuildMixedFixtureFECOffMatchesFECOn(t *testing.T) {
 	stagingDir, snaps := stageMixedFixture(t)
 	base := BuildOptions{
-		StagingDir:            stagingDir,
+		ObjectPath:            testObjectPath(stagingDir),
 		Snapshots:             snaps,
 		TargetCapacitySectors: 1 << 22,
 		RepoUUID:              [16]byte{1, 2, 3, 4},
@@ -258,7 +258,7 @@ func TestPackTiming512MiB(t *testing.T) {
 		srcDir := t.TempDir()
 		writeStreamedRandomFile(t, filepath.Join(srcDir, "big.bin"), timingFixtureBytes)
 		stagingDir := t.TempDir()
-		w := object.NewWriter(stagingDir)
+		w := testWriter(stagingDir)
 		w.Now = fixedClock
 		snapID, _, err := w.Commit(srcDir)
 		if err != nil {

@@ -137,7 +137,7 @@ func stageMemoryFixture(t *testing.T) (string, object.ID) {
 	writeStreamedRandomFile(t, filepath.Join(srcDir, "big.bin"), memFixtureBytes)
 
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {

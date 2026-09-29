@@ -150,15 +150,16 @@ chain_pack_one() {
 		fail "chain: verify disc $n: exit $code"
 	fi
 
-	# Free the staged copy of each object on this disc. The tree uses the
-	# same fan-out path as staging. A later pack never reads the staged
-	# bytes of a packed object. The full staging copy plus three disc
-	# images does not fit on a CI runner disk.
+	# Free the chunk file in staging of each object on this disc. The
+	# tree uses the same fan-out path as staging/chunks. A later pack
+	# never reads the chunk file of a packed chunk. The full staging copy
+	# plus three disc images does not fit on a CI runner disk. The
+	# metadata objects stay in the catalog.
 	if [ -d "$tree/NOAHSARK/objects" ]; then
 		local f rel
 		while IFS= read -r -d '' f; do
 			rel="${f#"$tree/NOAHSARK/objects/"}"
-			rm -f "$repo/staging/objects/$rel"
+			rm -f "$repo/staging/chunks/$rel"
 		done < <(find "$tree/NOAHSARK/objects" -type f -print0)
 	fi
 
@@ -237,7 +238,7 @@ chain_commit_fixture() {
 # flow every chain scenario shares: commit two independent fixtures (A
 # and B, each HALF_BYTES), delete both sources, pack three discs (K
 # name, F pack flags, one pair per disc), check the remaining-staged
-# bytes, delete the staging objects, list
+# bytes, delete the chunk files of staging, list
 # each disc's object ids, restore the winner (the fixture pack's
 # candidate order packs first, so the one the three discs fully hold)
 # from all three discs and check it against that fixture's manifests,
@@ -315,8 +316,8 @@ chain_run() {
 		fi
 	fi
 
-	rm -rf "$repo/staging/objects"
-	log "$label: disk after deleting staging objects"
+	rm -rf "$repo/staging/chunks"
+	log "$label: disk after deleting the chunk files of staging"
 	df -h
 
 	log "$label: object ids per disc:"

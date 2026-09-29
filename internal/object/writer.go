@@ -64,9 +64,8 @@ type Summary struct {
 	// Reachable lists every chunk, blob and tree id this commit's root
 	// tree reaches, whether or not the writer actually staged its file.
 	// A caller that needs the commit's full object graph must read it
-	// here rather than walking the graph back off disk: an object
-	// OnDisc reported as already on a disc never gets a staging file to
-	// walk into.
+	// here rather than walking the graph back off disk: a chunk that
+	// OnDisc reported as already on a disc gets no chunk file.
 	Reachable []ID
 	// Excluded counts every path an exclude pattern kept out of the
 	// tree: a file, or a directory whose contents were never walked.
@@ -103,12 +102,9 @@ type SkippedPath struct {
 // PathFunc returns the file path of the object with this kind and id.
 type PathFunc func(kind format.ObjectKind, id ID) string
 
-// Writer commits one source directory tree into a staging directory as
-// chunk, blob, tree and snapshot object files.
+// Writer commits one source directory tree as chunk, blob, tree and
+// snapshot object files. ChunkPath and MetaPath give every file path.
 type Writer struct {
-	// StagingDir is the staging directory objects and snapshots are
-	// written under. Only the default path functions read it.
-	StagingDir string
 	// ChunkPath returns the file path of a chunk object. The writer
 	// calls it with the chunk kind and the chunk id.
 	ChunkPath PathFunc
@@ -174,11 +170,12 @@ type Writer struct {
 	Known func(id ID) bool
 
 	// OnDisc reports whether id already has its data on some disc:
-	// stage.State.OnDisc is true for its staging state log record.
-	// writeChunk, writeBlob and writeTree consult it before writing a
-	// staging file, and skip the write when it reports true. A commit
-	// that re-references an object gc already freed must never refill
-	// staging with it; the object stays on the disc that holds it.
+	// stage.State.OnDisc is true for its state log record. writeChunk
+	// consults it before it writes a chunk file, and skips the write
+	// when it reports true. A commit that re-references a chunk gc
+	// already freed must never refill staging with it; the chunk stays
+	// on the disc that holds it. A blob, tree or snapshot object is
+	// always written: MetaPath names the permanent catalog.
 	OnDisc func(id ID) bool
 
 	reachable  map[ID]uint64
@@ -188,13 +185,14 @@ type Writer struct {
 	ownerNames *nameCache
 }
 
-// NewWriter returns a Writer that stages objects under stagingDir using
-// the default chunker profile and the system clock.
-func NewWriter(stagingDir string) *Writer {
+// NewWriter returns a Writer that writes chunk objects to the paths
+// that chunkPath gives and blob, tree and snapshot objects to the paths
+// that metaPath gives. It uses the default chunker profile and the
+// system clock.
+func NewWriter(chunkPath, metaPath PathFunc) *Writer {
 	return &Writer{
-		StagingDir:      stagingDir,
-		ChunkPath:       stagingObjectPath(stagingDir),
-		MetaPath:        stagingMetaPath(stagingDir),
+		ChunkPath:       chunkPath,
+		MetaPath:        metaPath,
 		Profile:         chunker.DefaultProfile,
 		Now:             time.Now,
 		RestatAfterRead: true,
@@ -541,11 +539,6 @@ func (w *Writer) writeBlob(entries []format.BlobEntry, totalSize uint64, sum *Su
 	id := ComputeID(format.ObjectKindBlob, payload)
 	w.recordReachable(id, uint64(len(payload)))
 
-	if w.OnDisc != nil && w.OnDisc(id) {
-		w.countObject(sum, id, false)
-		return id, nil
-	}
-
 	b.ObjectHeader.PayloadLen = uint64(len(payload))
 	b.ObjectHeader.StoredLen = uint64(len(payload))
 	if _, err := b.Encode(buf); err != nil {
@@ -576,11 +569,6 @@ func (w *Writer) writeTree(entries []format.TreeEntry, sum *Summary) (ID, error)
 	payload := buf[format.CommonHeaderLen+format.ObjectHeaderLen:]
 	id := ComputeID(format.ObjectKindTree, payload)
 	w.recordReachable(id, uint64(len(payload)))
-
-	if w.OnDisc != nil && w.OnDisc(id) {
-		w.countObject(sum, id, false)
-		return id, nil
-	}
 
 	t.ObjectHeader.PayloadLen = uint64(len(payload))
 	t.ObjectHeader.StoredLen = uint64(len(payload))
@@ -653,27 +641,6 @@ func (w *Writer) totalReachableSize() uint64 {
 		total += n
 	}
 	return total
-}
-
-// stagingObjectPath returns the default path function for objects: a
-// file under objects/ in stagingDir, in a fanout directory.
-func stagingObjectPath(stagingDir string) PathFunc {
-	return func(_ format.ObjectKind, id ID) string {
-		return filepath.Join(stagingDir, "objects", id.FanoutByte(), id.TextForm())
-	}
-}
-
-// stagingMetaPath returns the default path function for metadata
-// objects. A snapshot goes under snapshots/ in stagingDir. A tree or a
-// blob goes to the same path as a chunk.
-func stagingMetaPath(stagingDir string) PathFunc {
-	objects := stagingObjectPath(stagingDir)
-	return func(kind format.ObjectKind, id ID) string {
-		if kind == format.ObjectKindSnapshot {
-			return filepath.Join(stagingDir, "snapshots", id.TextForm())
-		}
-		return objects(kind, id)
-	}
 }
 
 // commonHeader builds the common header every object file starts with.

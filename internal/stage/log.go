@@ -154,9 +154,10 @@ func (l *Log) Truncated() (truncated bool, ignoredBytes int64) {
 	return l.truncated, l.ignoredBytes
 }
 
-// Open reads and replays stagingDir's state.db, if one exists, and
-// returns a Log ready to query and append to. A missing file is an empty
-// log, matching a fresh repository.
+// Open reads and replays the file state.db in the state directory
+// stateDir, if the file exists, and returns a Log ready to query and
+// append to. A missing file is an empty log, matching a fresh
+// repository.
 //
 // Open applies one torn-tail rule. A partial record at the end, or a
 // last record with a bad CRC, is what a crash during an append leaves:
@@ -170,24 +171,24 @@ func (l *Log) Truncated() (truncated bool, ignoredBytes int64) {
 // nothing else appends to state.db while it runs, so cutting a torn
 // tail here can never race a concurrent append. A command with no such
 // lock must call OpenReadOnly instead.
-func Open(stagingDir string) (*Log, error) {
-	return open(stagingDir, true)
+func Open(stateDir string) (*Log, error) {
+	return open(stateDir, true)
 }
 
-// OpenReadOnly reads and replays stagingDir's state.db the same way Open
+// OpenReadOnly reads and replays state.db in stateDir the same way Open
 // does, for a command that holds no exclusive lock on the repository. A
 // writer may be appending to the file at the same time, so a torn tail
 // found here is left on disk untouched: OpenReadOnly still drops it from
 // the replayed state and reports it through Truncated, but it never
 // writes to state.db, and so can never cut off a record a concurrent
 // writer has not finished appending.
-func OpenReadOnly(stagingDir string) (*Log, error) {
-	return open(stagingDir, false)
+func OpenReadOnly(stateDir string) (*Log, error) {
+	return open(stateDir, false)
 }
 
-func open(stagingDir string, truncateTornTail bool) (*Log, error) {
+func open(stateDir string, truncateTornTail bool) (*Log, error) {
 	l := &Log{
-		path:    filepath.Join(stagingDir, stateFileName),
+		path:    filepath.Join(stateDir, stateFileName),
 		current: make(map[object.ID]Record),
 		nextSeq: 1,
 	}

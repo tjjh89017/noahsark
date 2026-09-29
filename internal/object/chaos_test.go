@@ -109,7 +109,7 @@ func TestChaosDuringCommit(t *testing.T) {
 	}
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 
 	stop := make(chan struct{})

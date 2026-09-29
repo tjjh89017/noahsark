@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -92,7 +91,8 @@ func (o *gcOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1
 	}
-	stageLog, err := stage.Open(cfg.StagingDir)
+	layout := layoutOf(repoDir, cfg)
+	stageLog, err := stage.Open(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: gc:", err)
 		return 1
@@ -109,15 +109,15 @@ func (o *gcOptions) run(e *env, args []string) int {
 		effectiveRetainAfterClean = retainAfterCleanOverride
 	}
 
-	discNames := discNamesFromLedger(cfg.StagingDir, repoUUID)
-	candidates, uncataloged := gcPlanStagingObjects(stageLog, c, cfg.StagingDir, effectiveRetainAfterClean, e.now())
-	candidates = append(candidates, gcOrphans(stageLog, cfg.StagingDir)...)
+	discNames := discNamesFromLedger(layout.discsLedgerFile(), repoUUID)
+	candidates, uncataloged := gcPlanStagingObjects(stageLog, c, layout, effectiveRetainAfterClean, e.now())
+	candidates = append(candidates, gcOrphans(stageLog, layout)...)
 	if retainAfterCleanOverride >= 0 && !dryRun && len(candidates) > 0 {
 		if code, ok := confirmForceAfter(e.stdin, candidates, stdout, stderr); !ok {
 			return code
 		}
 	}
-	planDirs := gcPlanDirs(stageLog, cfg.StagingDir, candidates)
+	planDirs := gcPlanDirs(stageLog, layout, candidates)
 	objDeleted, objBytes, failures := gcApplyStagingObjects(stageLog, candidates, dryRun)
 	dirDeleted, dirBytes, dirFailures := gcApplyPlanDirs(planDirs, dryRun)
 	failures = append(failures, dirFailures...)
@@ -208,10 +208,12 @@ func gcCandidates(l *stage.Log, retainAfterClean time.Duration, now time.Time) [
 	return ids
 }
 
-// gcObj is one staging object gc's rules allow deleting: its id, the
-// path to its staged file, the size to report and free, the disc it
-// belongs to, and whether gc must still record it ON-DISC before it
-// unlinks the file. An orphan left by a crash already has that record.
+// gcObj is one item gc's rules allow freeing: its id, the path to its
+// chunk file, the size to report and free, the disc it belongs to, and
+// whether gc must still record it ON-DISC before it unlinks the file.
+// An orphan left by a crash already has that record. A snapshot, tree
+// or blob item has no path: its file is in the catalog, and gc never
+// removes a file of the catalog. gc records such an item ON-DISC only.
 type gcObj struct {
 	id          object.ID
 	path        string
@@ -227,7 +229,7 @@ type gcObj struct {
 // catalog index before every delete. The disc uuid of the object's own
 // state record is the key, so an index of another disc that repeats the
 // same run_seq can never stand in for it.
-func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, stagingDir string, retainAfterClean time.Duration, now time.Time) (objs []gcObj, uncataloged int) {
+func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, layout repoLayout, retainAfterClean time.Duration, now time.Time) (objs []gcObj, uncataloged int) {
 	for _, id := range gcCandidates(l, retainAfterClean, now) {
 		rec, ok := l.Get(id)
 		if !ok {
@@ -244,7 +246,11 @@ func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, stagingDir string, r
 			continue
 		}
 
-		path := image.StagedPath(stagingDir, id, row.Kind)
+		if row.Kind != format.ObjectKindChunk {
+			objs = append(objs, gcObj{id: id, discUUID: rec.DiscUUID, needsRecord: true})
+			continue
+		}
+		path := layout.chunkFile(id)
 		size := byteLen
 		if fi, err := os.Stat(path); err == nil {
 			size = uint64(fi.Size())
@@ -254,26 +260,24 @@ func gcPlanStagingObjects(l *stage.Log, c *catalog.Catalog, stagingDir string, r
 	return objs, uncataloged
 }
 
-// gcOrphans lists every ON-DISC object whose staged file is still on the
+// gcOrphans lists every ON-DISC chunk whose chunk file is still on the
 // disk. gc writes the ON-DISC record, flushes it, and only then unlinks
 // the file, so a crash between the two leaves exactly this: a file with
 // no owner. The durable record already proves a disc holds the object,
 // thus the next gc run frees the file with no further check.
-func gcOrphans(l *stage.Log, stagingDir string) []gcObj {
+func gcOrphans(l *stage.Log, layout repoLayout) []gcObj {
 	var objs []gcObj
 	for _, id := range l.IDsInState(stage.OnDiscOnly) {
 		rec, ok := l.Get(id)
 		if !ok {
 			continue
 		}
-		for _, kind := range []format.ObjectKind{format.ObjectKindChunk, format.ObjectKindSnapshot} {
-			path := image.StagedPath(stagingDir, id, kind)
-			fi, err := os.Stat(path)
-			if err != nil {
-				continue
-			}
-			objs = append(objs, gcObj{id: id, path: path, size: uint64(fi.Size()), discUUID: rec.DiscUUID})
+		path := layout.chunkFile(id)
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
 		}
+		objs = append(objs, gcObj{id: id, path: path, size: uint64(fi.Size()), discUUID: rec.DiscUUID})
 	}
 	sort.Slice(objs, func(i, j int) bool { return objs[i].path < objs[j].path })
 	return objs
@@ -295,8 +299,10 @@ type gcFailure struct {
 func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int, bytesFreed uint64, failures []gcFailure) {
 	for _, o := range objs {
 		if dryRun {
-			deleted++
-			bytesFreed += o.size
+			if o.path != "" {
+				deleted++
+				bytesFreed += o.size
+			}
 			continue
 		}
 
@@ -309,6 +315,9 @@ func gcApplyStagingObjects(l *stage.Log, objs []gcObj, dryRun bool) (deleted int
 				failures = append(failures, gcFailure{path: o.path, err: fmt.Errorf("recording it ON-DISC: %w", err)})
 				continue
 			}
+		}
+		if o.path == "" {
+			continue
 		}
 		removeErr := gcRemove(o.path)
 		if removeErr != nil && !os.IsNotExist(removeErr) {
@@ -337,6 +346,9 @@ func printDryRunGroupSummary(objs []gcObj, names map[[16]byte]string, stdout io.
 	order := make(map[string][16]byte)
 	var uuids []string
 	for _, o := range objs {
+		if o.path == "" {
+			continue
+		}
 		text := uuidText(o.discUUID)
 		g, ok := byDisc[text]
 		if !ok {
@@ -409,9 +421,9 @@ func findObjectRow(idx *format.Index, id object.ID) (format.IndexObjectRecord, u
 
 // discNamesFromLedger maps each disc uuid the local ledger knows to the
 // name an operator reads: the number, the label and the uuid.
-func discNamesFromLedger(stagingDir string, repoUUID [16]byte) map[[16]byte]string {
+func discNamesFromLedger(ledgerPath string, repoUUID [16]byte) map[[16]byte]string {
 	names := make(map[[16]byte]string)
-	ledger, err := image.LoadDiscsLedger(stagingDir, repoUUID)
+	ledger, err := image.LoadDiscsLedger(ledgerPath, repoUUID)
 	if err != nil {
 		return names
 	}
@@ -449,7 +461,7 @@ type gcPlanDir struct {
 // operator may still have to build the image again. A pack with
 // --out outside staging writes no plan directory, so gc never touches
 // the operator's own output.
-func gcPlanDirs(l *stage.Log, stagingDir string, pending []gcObj) []gcPlanDir {
+func gcPlanDirs(l *stage.Log, layout repoLayout, pending []gcObj) []gcPlanDir {
 	total := l.OnDiscCountByDisc()
 	done := l.CountByDiscInState(stage.OnDiscOnly)
 	for _, o := range pending {
@@ -462,7 +474,7 @@ func gcPlanDirs(l *stage.Log, stagingDir string, pending []gcObj) []gcPlanDir {
 		if n == 0 || done[uuid] != n {
 			continue
 		}
-		path := planDirPath(stagingDir, uuid)
+		path := layout.planDir(uuid)
 		bytes, ok := dirBytes(path)
 		if !ok {
 			continue
@@ -471,12 +483,6 @@ func gcPlanDirs(l *stage.Log, stagingDir string, pending []gcObj) []gcPlanDir {
 	}
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].path < dirs[j].path })
 	return dirs
-}
-
-// planDirPath is the directory pack writes a disc's tree under, by
-// default.
-func planDirPath(stagingDir string, discUUID [16]byte) string {
-	return filepath.Join(stagingDir, "plans", hex.EncodeToString(discUUID[:]))
 }
 
 // dirBytes sums the size of every regular file below path. It reports

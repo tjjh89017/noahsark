@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -112,11 +113,60 @@ func repoCatalogDir(t *testing.T, repo string) string {
 	return catalog.Dir(repo)
 }
 
-// countByState opens repo's staging state log and counts every object
+// testLayout returns the layout of the repository at repo, from its
+// config. A test takes every path of a repository from it.
+func testLayout(t *testing.T, repo string) repoLayout {
+	t.Helper()
+	cfg, err := readConfig(configPath(repo))
+	if err != nil {
+		t.Fatalf("readConfig: %v", err)
+	}
+	return layoutOf(repo, cfg)
+}
+
+// openTestLog opens the state log of the repository at repo.
+func openTestLog(t *testing.T, repo string) *stage.Log {
+	t.Helper()
+	l, err := stage.Open(testLayout(t, repo).stateDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// listFilesUnder returns the path of every regular file below dir,
+// relative to dir, sorted. A missing dir gives no file.
+func listFilesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && path == dir {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if d.Type().IsRegular() {
+			rel, err := filepath.Rel(dir, path)
+			if err != nil {
+				return err
+			}
+			files = append(files, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(files)
+	return files
+}
+
+// countByState opens repo's state log and counts every object
 // currently in state.
 func countByState(t *testing.T, repo string, state stage.State) int {
 	t.Helper()
-	l, err := stage.Open(filepath.Join(repo, "staging"))
+	l, err := stage.Open(testLayout(t, repo).stateDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,11 +382,12 @@ func statusDiscs(t *testing.T, repo string) []discSummary {
 	if err != nil {
 		t.Fatalf("decodeUUID: %v", err)
 	}
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	layout := layoutOf(repo, cfg)
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		t.Fatalf("LoadDiscsLedger: %v", err)
 	}
-	stageLog, err := stage.OpenReadOnly(cfg.StagingDir)
+	stageLog, err := stage.OpenReadOnly(layout.stateDir())
 	if err != nil {
 		t.Fatalf("stage.OpenReadOnly: %v", err)
 	}

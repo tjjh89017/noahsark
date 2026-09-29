@@ -68,12 +68,13 @@ func (o *discBurnedOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 		return 1
 	}
-	ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	layout := layoutOf(repoDir, cfg)
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 		return 1
 	}
-	stageLog, err := stage.Open(cfg.StagingDir)
+	stageLog, err := stage.Open(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: disc burned:", err)
 		return 1

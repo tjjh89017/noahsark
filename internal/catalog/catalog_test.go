@@ -90,6 +90,33 @@ func TestWriteFromRootPopulatesCatalog(t *testing.T) {
 	}
 }
 
+// TestWriteTablesFromRootCopiesOnlyTheTables copies the tables of one
+// run into an empty catalog, and checks that the catalog holds the
+// three tables of the disc and no object.
+func TestWriteTablesFromRootCopiesOnlyTheTables(t *testing.T) {
+	runRoot, snapID := buildFixtureRun(t)
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, err := catalog.WriteTablesFromRoot(c, runRoot)
+	if err != nil {
+		t.Fatalf("WriteTablesFromRoot: %v", err)
+	}
+	if _, err := c.IndexForDisc(rr.Disc.DiscUUID); err != nil {
+		t.Fatalf("IndexForDisc: %v", err)
+	}
+	if _, err := c.Refs(); err != nil {
+		t.Fatalf("Refs: %v", err)
+	}
+	if ids, err := c.ListSnapshots(); err != nil || len(ids) != 0 {
+		t.Fatalf("ListSnapshots = %v, %v; want no snapshot", ids, err)
+	}
+	if _, err := c.ReadSnapshot(snapID); err == nil {
+		t.Fatal("the catalog holds the snapshot object; want the tables only")
+	}
+}
+
 // TestWriteFromRootIsIdempotent runs WriteFromRoot twice over the same
 // run and checks the catalog ends up with the same content, not
 // duplicated or corrupted entries.

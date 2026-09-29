@@ -124,7 +124,7 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 	writeStreamedRandomFile(t, filepath.Join(srcDir, "big.bin"), memFixtureBytes)
 
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -134,7 +134,7 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 	treeDir = t.TempDir()
 	capSectors := (uint64(768<<20) + image.SectorSize - 1) / image.SectorSize
 	opts := image.BuildOptions{
-		StagingDir:            stagingDir,
+		ObjectPath:            testObjectPath(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors: capSectors,
 		OutputDir:             treeDir,

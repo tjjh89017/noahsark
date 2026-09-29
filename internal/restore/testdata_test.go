@@ -54,7 +54,7 @@ func buildFixtureSrc(t *testing.T) string {
 func buildFixtureTree(t *testing.T, srcDir string) (stagingDir, treeDir string, snapID object.ID) {
 	t.Helper()
 	stagingDir = t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -63,7 +63,7 @@ func buildFixtureTree(t *testing.T, srcDir string) (stagingDir, treeDir string, 
 
 	treeDir = t.TempDir()
 	opts := image.BuildOptions{
-		StagingDir:            stagingDir,
+		ObjectPath:            testObjectPath(stagingDir),
 		Snapshots:             []image.SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors: 1 << 21,
 		OutputDir:             treeDir,

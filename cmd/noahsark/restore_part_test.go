@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -49,28 +48,23 @@ func writeCrossDiscFixtureSource(t *testing.T) string {
 	return src
 }
 
-// largestStagedObject returns the size of the largest object file
-// staging holds. A forced capacity must be above it, or pack refuses
+// largestStagedObject returns the size of the largest object file of
+// the repository: a chunk file in staging or a metadata file in the
+// catalog. A forced capacity must be above it, or pack refuses
 // the run, so the fixture below sizes its discs from the chunks commit
 // actually cut.
 func largestStagedObject(t *testing.T, repo string) uint64 {
 	t.Helper()
 	var largest uint64
-	err := filepath.WalkDir(filepath.Join(repo, "staging", "objects"), func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
+	layout := testLayout(t, repo)
+	for _, dir := range []string{layout.chunksDir(), layout.catalogDir()} {
+		for _, rel := range listFilesUnder(t, dir) {
+			info, err := os.Stat(filepath.Join(dir, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			largest = max(largest, uint64(info.Size()))
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if uint64(info.Size()) > largest {
-			largest = uint64(info.Size())
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
 	}
 	if largest == 0 {
 		t.Fatal("staging holds no object")

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -98,7 +97,8 @@ func cmdRecover(e *env, args []string) int {
 	}
 	defer releaseLock(lk)
 
-	stageLog, err := stage.Open(cfg.StagingDir)
+	layout := layoutOf(repoDir, cfg)
+	stageLog, err := stage.Open(layout.stateDir())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
@@ -115,17 +115,17 @@ func cmdRecover(e *env, args []string) int {
 	// writing anything, so a call fed only some of the discs merges into
 	// what earlier calls already recorded instead of erasing it. A
 	// recover call otherwise never sees another call's own state.
-	existingDiscs, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID)
+	existingDiscs, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
-	existingRefsLedger, err := image.LoadRefsLedger(cfg.StagingDir, repoUUID)
+	existingRefsLedger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
-	existingLocalRefs, err := readRefs(repoDir)
+	existingLocalRefs, err := readRefs(layout.refsFile())
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
@@ -152,13 +152,13 @@ func cmdRecover(e *env, args []string) int {
 	}
 
 	discRows := mergeDiscsRows(results, existingDiscs.Rows)
-	if err := image.SaveDiscsLedger(cfg.StagingDir, repoUUID, discRows); err != nil {
+	if err := image.SaveDiscsLedger(layout.discsLedgerFile(), repoUUID, discRows); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
 
 	refRecords := bestRefRecords(results, existingRefsLedger.Records)
-	if err := image.SaveRefsLedger(cfg.StagingDir, repoUUID, refRecords); err != nil {
+	if err := image.SaveRefsLedger(layout.refsLedgerFile(), repoUUID, refRecords); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
@@ -171,7 +171,7 @@ func cmdRecover(e *env, args []string) int {
 		refs = make(map[string]string)
 	}
 	maps.Copy(refs, mergeRefs(refRecords))
-	if err := writeRefs(repoDir, refs); err != nil {
+	if err := writeRefs(layout.refsFile(), refs); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
@@ -231,8 +231,8 @@ func recoverCatalogFromRoots(repoDir string, readRoots []string) error {
 
 // ensureRecoverRepo loads repoDir's config when it is already a
 // repository, or creates a fresh one with repoUUID otherwise: the config
-// file, an empty staging store, and nothing else, matching cmdInit's
-// layout. An existing config's repo.uuid must match repoUUID.
+// file and the layout that init makes. An existing config's repo.uuid
+// must match repoUUID.
 func ensureRecoverRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 	if isRepoDir(repoDir) {
 		cfg, err := readConfig(configPath(repoDir))
@@ -252,17 +252,17 @@ func ensureRecoverRepo(repoDir string, repoUUID [16]byte) (repoConfig, error) {
 	if err := os.MkdirAll(repoDir, 0o755); err != nil {
 		return repoConfig{}, err
 	}
-	stagingDir := filepath.Join(repoDir, "staging")
-	if err := os.MkdirAll(filepath.Join(stagingDir, "objects"), 0o755); err != nil {
-		return repoConfig{}, err
-	}
-	if err := os.MkdirAll(filepath.Join(stagingDir, "snapshots"), 0o755); err != nil {
-		return repoConfig{}, err
-	}
 	if err := writeConfig(configPath(repoDir), newConfigFile(repoUUID, "")); err != nil {
 		return repoConfig{}, err
 	}
-	return readConfig(configPath(repoDir))
+	cfg, err := readConfig(configPath(repoDir))
+	if err != nil {
+		return repoConfig{}, err
+	}
+	if err := makeRepoLayout(layoutOf(repoDir, cfg)); err != nil {
+		return repoConfig{}, err
+	}
+	return cfg, nil
 }
 
 // mergeDiscsRows unions every provided disc's DISCS rows with existing,
@@ -346,11 +346,4 @@ func mergeRefs(records []format.RefRecord) map[string]string {
 		out[name] = object.ID(rec.SnapshotID).TextForm()
 	}
 	return out
-}
-
-// uuidText formats a 16-byte uuid as hyphenated lowercase text, matching
-// restore's own missing-disc error format.
-func uuidText(u [16]byte) string {
-	h := hex.EncodeToString(u[:])
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }

@@ -29,7 +29,7 @@ func knownDiscsForRepo(e *env) map[[16]byte]restore.DiscName {
 		return nil
 	}
 
-	if ledger, err := image.LoadDiscsLedger(cfg.StagingDir, repoUUID); err == nil && len(ledger.Rows) > 0 {
+	if ledger, err := image.LoadDiscsLedger(layoutOf(repoDir, cfg).discsLedgerFile(), repoUUID); err == nil && len(ledger.Rows) > 0 {
 		return discNamesByUUID(ledger.Rows)
 	}
 

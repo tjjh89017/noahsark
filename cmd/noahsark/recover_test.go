@@ -119,19 +119,11 @@ func TestRecoverFromDiscRestoresState(t *testing.T) {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatalf("readConfig: %v", err)
-	}
-	log, err := stage.Open(cfg.StagingDir)
-	if err != nil {
-		t.Fatalf("stage.Open: %v", err)
-	}
-	if got := log.CountState(stage.OnDiscOnly); got != wantOnDisc {
+	if got := countByState(t, repo, stage.OnDiscOnly); got != wantOnDisc {
 		t.Fatalf("on-disc-only count = %d, want %d (disc INDEX object count)", got, wantOnDisc)
 	}
 
-	if id, err := resolveRef(repo, "BASE"); err != nil || id.TextForm() != snapID {
+	if id, err := resolveRef(testLayout(t, repo).refsFile(), "BASE"); err != nil || id.TextForm() != snapID {
 		t.Fatalf("resolveRef(BASE) = %v, %v, want %s", id, err, snapID)
 	}
 }
@@ -160,24 +152,12 @@ func TestRecoverIsIdempotent(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover #1: exit %d: %s", code, out)
 	}
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	log1, err := stage.Open(cfg.StagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	count1 := log1.CountState(stage.Packed)
+	count1 := countByState(t, repo, stage.Packed)
 
 	if code, out := runCmd(t, "--repo="+repo, "recover", treeDir); code != 0 {
 		t.Fatalf("recover #2: exit %d: %s", code, out)
 	}
-	log2, err := stage.Open(cfg.StagingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	count2 := log2.CountState(stage.Packed)
+	count2 := countByState(t, repo, stage.Packed)
 
 	if count1 != count2 {
 		t.Fatalf("packed count changed across a repeat rebuild: %d then %d", count1, count2)
@@ -408,13 +388,7 @@ func TestCommitAfterRebuildCatalogReportsNoNewObjects(t *testing.T) {
 	// content only produce byte-identical objects, snapshot included,
 	// when both run under the same fixed clock.
 	fixed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	oldNewWriter := newWriter
-	defer func() { newWriter = oldNewWriter }()
-	newWriter = func(stagingDir string) *object.Writer {
-		w := object.NewWriter(stagingDir)
-		w.Now = func() time.Time { return fixed }
-		return w
-	}
+	setFakeNow(t, func() time.Time { return fixed })
 
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
@@ -556,7 +530,7 @@ func TestRecoverKeepsUnpackedRef(t *testing.T) {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	if _, err := resolveRef(repo, "X"); err != nil {
+	if _, err := resolveRef(testLayout(t, repo).refsFile(), "X"); err != nil {
 		t.Fatalf("resolveRef(X) after recover: %v, want the unpacked ref to survive", err)
 	}
 
@@ -613,18 +587,12 @@ func TestConfigStagingDirSurvivesRepositoryRename(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+lost, "commit", src2); code != 0 {
 		t.Fatalf("--repo=%s commit: exit %d: %s", lost, code, out)
 	}
-	if entries, err := os.ReadDir(filepath.Join(lost, "staging", "objects")); err != nil {
-		t.Fatalf("read %s/staging/objects: %v", lost, err)
-	} else if len(entries) == 0 {
-		t.Fatalf("%s/staging/objects is empty; the commit staged somewhere else", lost)
+	if files := listFilesUnder(t, testLayout(t, lost).chunksDir()); len(files) == 0 {
+		t.Fatalf("%s holds no chunk file; the commit staged somewhere else", lost)
 	}
 
-	rebuiltCount, err := countFiles(filepath.Join(repo, "staging", "objects"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rebuiltCount != 0 {
-		t.Fatalf("the rebuilt repository's own staging/objects has %d file(s); the commit against --repo=%s leaked into it", rebuiltCount, lost)
+	if files := listFilesUnder(t, testLayout(t, repo).chunksDir()); len(files) != 0 {
+		t.Fatalf("the rebuilt repository's own staging holds %d chunk file(s); the commit against --repo=%s leaked into it", len(files), lost)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/repolock"
 )
@@ -123,10 +124,11 @@ func TestPackDryRunWritesNothing(t *testing.T) {
 	}
 
 	// No ledger file, no run tree, and the same staged total.
-	if _, err := os.Stat(filepath.Join(repo, "staging", "discs.bin")); !os.IsNotExist(err) {
+	layout := testLayout(t, repo)
+	if _, err := os.Stat(layout.discsLedgerFile()); !os.IsNotExist(err) {
 		t.Fatalf("pack --dry-run wrote a disc ledger: %v", err)
 	}
-	entries, err := os.ReadDir(filepath.Join(repo, "staging", "plans"))
+	entries, err := os.ReadDir(layout.plansDir())
 	if err == nil && len(entries) != 0 {
 		t.Fatalf("pack --dry-run wrote a plan tree under staging/plans: %v", entries)
 	}
@@ -269,7 +271,7 @@ func TestPackWithNothingStagedSucceeds(t *testing.T) {
 
 // TestPackAfterGCSaysNothingToPackNotNeverCommitted packs, burns and
 // verifies a disc, then runs gc with retention forced to zero so every
-// staging object, snapshot files included, is deleted. A pack run
+// chunk file of staging is deleted. A pack run
 // after that still has a ref naming the old snapshot, so it must say
 // "nothing to pack", the same as an ordinary already-packed
 // repository, not "no snapshot has been committed".
@@ -287,10 +289,8 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
 		t.Fatalf("gc: exit %d, want 0: %s", code, out)
 	}
-	if entries, err := os.ReadDir(filepath.Join(repo, "staging", "snapshots")); err != nil {
-		t.Fatal(err)
-	} else if len(entries) != 0 {
-		t.Fatalf("staging/snapshots still holds %d entries after gc; test fixture did not empty it", len(entries))
+	if files := listFilesUnder(t, testLayout(t, repo).chunksDir()); len(files) != 0 {
+		t.Fatalf("staging still holds %d chunk files after gc; test fixture did not empty it", len(files))
 	}
 
 	secondTree := filepath.Join(work, "tree2")
@@ -400,7 +400,7 @@ func TestPackDefaultOutputPathsDoNotCollide(t *testing.T) {
 	if firstPath == secondPath {
 		t.Fatalf("both packs used the same default --out: %s", firstPath)
 	}
-	if !strings.Contains(firstPath, filepath.Join(repo, "staging", "plans")) {
+	if !strings.HasPrefix(firstPath, testLayout(t, repo).plansDir()) {
 		t.Fatalf("default --out %q is not under staging/plans", firstPath)
 	}
 }
@@ -418,6 +418,7 @@ func TestPackDefaultOutputFollowsStagingDir(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
+	oldStaging := testLayout(t, repo).stagingDir()
 	cfgPath := configPath(repo)
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -430,7 +431,7 @@ func TestPackDefaultOutputFollowsStagingDir(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(filepath.Join(repo, "staging"), stagingDir); err != nil {
+	if err := os.Rename(oldStaging, stagingDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -442,7 +443,7 @@ func TestPackDefaultOutputFollowsStagingDir(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	path := packedIntoPath(t, out)
-	if !strings.HasPrefix(path, filepath.Join(stagingDir, "plans")) {
+	if !strings.HasPrefix(path, testLayout(t, repo).plansDir()) || testLayout(t, repo).stagingDir() != stagingDir {
 		t.Fatalf("default --out %q is not under the moved staging.dir %q", path, stagingDir)
 	}
 }
@@ -996,12 +997,7 @@ func TestPackTooSmallNamesTheSmallestObject(t *testing.T) {
 // the operator nothing to do.
 func TestPackNamesADamagedStagedObject(t *testing.T) {
 	repo, _ := initAndCommit(t)
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	damaged := truncateOneStagedTree(t, cfg.StagingDir)
+	damaged := truncateOneStagedTree(t, repo)
 	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+filepath.Join(t.TempDir(), "tree"))
 	if code == 0 {
 		t.Fatalf("pack over a damaged staged object: exit 0, want a failure: %s", out)
@@ -1016,29 +1012,28 @@ func TestPackNamesADamagedStagedObject(t *testing.T) {
 	}
 }
 
-// truncateOneStagedTree cuts one staged object file to a few bytes and
-// returns its id text.
-func truncateOneStagedTree(t *testing.T, stagingDir string) string {
+// truncateOneStagedTree cuts the root tree object file of the one
+// snapshot of the catalog of repo to a few bytes, and returns its id
+// text.
+func truncateOneStagedTree(t *testing.T, repo string) string {
 	t.Helper()
-	objects := filepath.Join(stagingDir, "objects")
-	var found string
-	err := filepath.Walk(objects, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || found != "" {
-			return err
-		}
-		if err := os.Truncate(path, 4); err != nil {
-			return err
-		}
-		found = filepath.Base(path)
-		return nil
-	})
+	c, err := catalog.Open(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if found == "" {
-		t.Fatal("no staged object file to damage")
+	ids, err := c.ListSnapshots()
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("catalog snapshots = %v, %v; want one", ids, err)
 	}
-	return found
+	snap, err := c.ReadSnapshot(ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := object.ID(snap.RootTree)
+	if err := os.Truncate(c.MetaPath(format.ObjectKindTree, root), 4); err != nil {
+		t.Fatal(err)
+	}
+	return root.TextForm()
 }
 
 // TestPackDefaultLabelNamesTheRefAndTheDisc checks the default label: a

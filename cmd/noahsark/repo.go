@@ -16,7 +16,7 @@ const repoEnvVar = "NOAHSARK_REPO"
 
 // isRepoDir reports whether dir holds a readable config file.
 func isRepoDir(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, configFileName))
+	_, err := os.Stat(configPath(dir))
 	return err == nil
 }
 

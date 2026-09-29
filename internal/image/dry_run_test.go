@@ -34,7 +34,7 @@ func TestDryRunMatchesRealPackDiscCount(t *testing.T) {
 	if n := dryLog.CountState(stage.Packed); n != 0 {
 		t.Fatalf("DryRun marked %d object(s) Packed, want 0", n)
 	}
-	if ledger, err := LoadDiscsLedger(stagingDir, dryOpts.RepoUUID); err != nil {
+	if ledger, err := LoadDiscsLedger(testDiscsLedger(stagingDir), dryOpts.RepoUUID); err != nil {
 		t.Fatal(err)
 	} else if len(ledger.Rows) != 0 {
 		t.Fatalf("DryRun wrote %d disc ledger row(s), want 0", len(ledger.Rows))

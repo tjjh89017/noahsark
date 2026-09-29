@@ -77,7 +77,7 @@ func packFixture(t *testing.T) (string, object.ID) {
 	}
 
 	stagingDir := t.TempDir()
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	w.Profile = packFixtureChunkProfile
 	snapID, _, err := w.Commit(srcDir)
@@ -91,7 +91,7 @@ func packFixture(t *testing.T) (string, object.ID) {
 // Staged, the way cmd_commit does after a real commit.
 func markStagedFromCommit(t *testing.T, stagingDir string, snapID object.ID, l *stage.Log) {
 	t.Helper()
-	objs, err := CollectReachable(stagingDir, []object.ID{snapID})
+	objs, err := CollectReachable(testObjectPath(stagingDir), []object.ID{snapID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func markStagedFromCommit(t *testing.T, stagingDir string, snapID object.ID, l *
 
 func packOpts(stagingDir string, snapID object.ID, outDir string, capacitySectors uint64, discUUID byte, l *stage.Log) PackOptions {
 	return PackOptions{
-		StagingDir:            stagingDir,
+		Store:                 testStore(stagingDir),
 		Snapshots:             []SnapshotRef{{Name: "2026-09-13", ID: snapID, Time: fixedClock()}},
 		TargetCapacitySectors: capacitySectors,
 		OutputDir:             outDir,
@@ -137,7 +137,7 @@ func commitNamedFixture(t *testing.T, stagingDir, name string) object.ID {
 	if err := os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("more content, fixture "+name), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w := object.NewWriter(stagingDir)
+	w := testWriter(stagingDir)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(srcDir)
 	if err != nil {
@@ -321,7 +321,7 @@ func TestPackNothingToPackRefusesEmptyRun(t *testing.T) {
 		t.Fatalf("second pack: %s is not empty, a run was written despite the error", secondOut)
 	}
 
-	ledger, err := LoadDiscsLedger(stagingDir, opts.RepoUUID)
+	ledger, err := LoadDiscsLedger(testDiscsLedger(stagingDir), opts.RepoUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestPackRefusesATruncatedStagedChunk(t *testing.T) {
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
 	chunkID := object.ComputeID(format.ObjectKindChunk, []byte("content of only"))
-	chunkPath := filepath.Join(stagingDir, "objects", chunkID.FanoutByte(), chunkID.TextForm())
+	chunkPath := testObjectPath(stagingDir)(format.ObjectKindChunk, chunkID)
 	if _, err := os.Stat(chunkPath); err != nil {
 		t.Fatalf("fixture assumption failed, no chunk at %s: %v", chunkPath, err)
 	}
@@ -382,7 +382,7 @@ func TestPackRefusesAStagedChunkWithAFlippedByte(t *testing.T) {
 	markStagedFromCommit(t, stagingDir, snapID, l)
 
 	chunkID := object.ComputeID(format.ObjectKindChunk, []byte("content of only"))
-	chunkPath := filepath.Join(stagingDir, "objects", chunkID.FanoutByte(), chunkID.TextForm())
+	chunkPath := testObjectPath(stagingDir)(format.ObjectKindChunk, chunkID)
 	data, err := os.ReadFile(chunkPath)
 	if err != nil {
 		t.Fatal(err)

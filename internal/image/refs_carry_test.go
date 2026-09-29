@@ -23,7 +23,7 @@ func TestPackCarriesRefsForward(t *testing.T) {
 
 	firstOut := t.TempDir()
 	firstOpts := PackOptions{
-		StagingDir: stagingDir, Snapshots: []SnapshotRef{{Name: "run1", ID: firstSnap, Time: fixedClock()}},
+		Store: testStore(stagingDir), Snapshots: []SnapshotRef{{Name: "run1", ID: firstSnap, Time: fixedClock()}},
 		TargetCapacitySectors: sectorsFor(50_000_000),
 		OutputDir:             firstOut, RepoUUID: [16]byte{1, 2, 3, 4}, DiscUUID: [16]byte{1}, Label: "disc-1",
 		Now: fixedClock, StageLog: l,
@@ -37,7 +37,7 @@ func TestPackCarriesRefsForward(t *testing.T) {
 
 	secondOut := t.TempDir()
 	secondOpts := PackOptions{
-		StagingDir: stagingDir, Snapshots: []SnapshotRef{{Name: "run2", ID: secondSnap, Time: fixedClock()}},
+		Store: testStore(stagingDir), Snapshots: []SnapshotRef{{Name: "run2", ID: secondSnap, Time: fixedClock()}},
 		TargetCapacitySectors: sectorsFor(50_000_000),
 		OutputDir:             secondOut, RepoUUID: [16]byte{1, 2, 3, 4}, DiscUUID: [16]byte{2}, Label: "disc-2",
 		Now: fixedClock, StageLog: l,
@@ -66,7 +66,7 @@ func TestPackCarriesRefsForward(t *testing.T) {
 
 	// The local refs ledger on disk must hold the same union, so a
 	// third pack would carry both refs forward again.
-	ledger, err := LoadRefsLedger(stagingDir, [16]byte{1, 2, 3, 4})
+	ledger, err := LoadRefsLedger(testRefsLedger(stagingDir), [16]byte{1, 2, 3, 4})
 	if err != nil {
 		t.Fatalf("LoadRefsLedger: %v", err)
 	}

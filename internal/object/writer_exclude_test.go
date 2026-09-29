@@ -27,7 +27,7 @@ func TestExcludeKeepsMatchedFileOutOfTree(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "a.tmp"), "drop")
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	pat, err := ParsePattern("*.tmp")
 	if err != nil {
@@ -54,7 +54,7 @@ func TestExcludeKeepsMatchedDirectoryOutOfTreeAndUnwalked(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "keep.txt"), "keep")
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	pat, err := ParsePattern("node_modules/")
 	if err != nil {
@@ -81,7 +81,7 @@ func TestNilExcludeExcludesNothing(t *testing.T) {
 	src := t.TempDir()
 	buildFixture(t, src)
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	_, sum, err := w.Commit(src)
 	if err != nil {
@@ -99,7 +99,7 @@ func TestOneFileSystemRecordsMountPointAsEmptyDirectory(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "keep.txt"), "keep")
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	w.OneFileSystem = true
 	// The seam: the root and keep.txt report device 1; mnt and
@@ -133,7 +133,7 @@ func TestOneFileSystemDoesNotCrossRootItself(t *testing.T) {
 	src := t.TempDir()
 	buildFixture(t, src)
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	w.OneFileSystem = true
 	w.DeviceID = func(info os.FileInfo) (uint64, bool) { return 1, true }
@@ -156,7 +156,7 @@ func TestOneFileSystemRefusedWhenDeviceIDUnavailable(t *testing.T) {
 	src := t.TempDir()
 	buildFixture(t, src)
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	w.OneFileSystem = true
 	w.DeviceID = func(info os.FileInfo) (uint64, bool) { return 0, false }

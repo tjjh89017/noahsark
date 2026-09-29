@@ -59,7 +59,7 @@ func TestCommitRecordsUIDAndGID(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "a.txt"), "hello")
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	w.Stat = ownerStatSeam(t, 4242, 4343)
 	snapID, _, err := w.Commit(src)
@@ -98,7 +98,7 @@ func TestCommitRecordsOwnerNames(t *testing.T) {
 	mustWrite(t, filepath.Join(src, "a.txt"), "hello")
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(src)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestCommitKeepsTLVAreaSorted(t *testing.T) {
 	}
 
 	staging := t.TempDir()
-	w := NewWriter(staging)
+	w := testWriter(staging)
 	w.Now = fixedClock
 	snapID, _, err := w.Commit(src)
 	if err != nil {

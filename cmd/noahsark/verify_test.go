@@ -20,11 +20,7 @@ func discVerifyState(t *testing.T, repo string) (clean int, verifyCount uint8) {
 	if len(discs) == 0 {
 		t.Fatalf("status names no disc")
 	}
-	cfg, err := readConfig(configPath(repo))
-	if err != nil {
-		t.Fatal(err)
-	}
-	l, err := stage.OpenReadOnly(cfg.StagingDir)
+	l, err := stage.OpenReadOnly(testLayout(t, repo).stateDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +222,7 @@ func TestVerifyIgnoresATreeWithNoLedgerRow(t *testing.T) {
 	if strings.Contains(out, "verify: ok") {
 		t.Fatalf("verify output %q, want no ok line for a disc not in this repository", out)
 	}
-	if _, err := os.Stat(filepath.Join(repoA, "staging", "state.db")); err == nil {
+	if _, err := os.Stat(testLayout(t, repoA).stateLogFile()); err == nil {
 		t.Fatal("verify against an unknown disc wrote a state log")
 	}
 }
