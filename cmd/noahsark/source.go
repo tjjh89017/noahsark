@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -53,49 +56,44 @@ func (s *catalogSource) Snapshot(id object.ID) (*format.Snapshot, error) {
 	return snap, nil
 }
 
-// Refs merges the repository's own ref file over the catalog REFS table.
-// The ref file is the authoritative local state: commit writes it, and
-// a pack has not yet carried the newest names into any disc's REFS.
+// Refs merges the local ref file over the REFS tables of every disc in
+// the catalog. For each name, the newest record wins. A line of the
+// local ref file has no time of its own: it takes the time of its
+// snapshot, or no time when the catalog does not hold that snapshot.
+// With no disc in the catalog and no local ref, it returns
+// catalog.ErrNoDisc.
 func (s *catalogSource) Refs() (*format.RefsTable, error) {
-	catalogRefs, catalogErr := s.c.Refs()
+	newest, err := s.c.MergedRefs()
+	if err != nil && !errors.Is(err, catalog.ErrNoDisc) {
+		return nil, err
+	}
 	local, localErr := readRefs(s.refsPath)
-	if catalogErr != nil && (localErr != nil || len(local) == 0) {
-		// Nothing local and nothing in the catalog: the repository holds no ref
-		// at all, and the catalog's own message names the fix.
-		return nil, catalogErr
-	}
-	merged := catalogRefs
-	if merged == nil {
-		merged = &format.RefsTable{}
-	}
 	if localErr != nil {
-		return merged, nil
+		return nil, localErr
 	}
-	byName := make(map[string]int, len(merged.Records))
-	for i, r := range merged.Records {
-		byName[string(r.Name[:r.NameLen])] = i
+	if err != nil && len(local) == 0 {
+		return nil, err
+	}
+	if newest == nil {
+		newest = make(map[string]format.RefRecord, len(local))
 	}
 	for name, text := range local {
 		id, err := parseSnapshotID(text)
-		if err != nil {
+		if err != nil || len(name) > format.RefNameLen {
 			continue
 		}
-		rec := format.RefRecord{SnapshotID: id, NameLen: uint16(min(len(name), format.RefNameLen))}
+		rec := format.RefRecord{SnapshotID: id, NameLen: uint16(len(name))}
 		copy(rec.Name[:], name)
-		if snap, err := s.Snapshot(id); err == nil {
+		if snap, err := s.c.ReadSnapshot(id); err == nil {
 			rec.TimeSec, rec.TimeNsec = snap.TimeSec, snap.TimeNsec
 		}
-		if i, ok := byName[name]; ok {
-			merged.Records[i] = rec
-			continue
-		}
-		merged.Records = append(merged.Records, rec)
+		catalog.MergeRef(newest, rec)
 	}
-	sort.Slice(merged.Records, func(i, j int) bool {
-		a, b := merged.Records[i], merged.Records[j]
-		return string(a.Name[:a.NameLen]) < string(b.Name[:b.NameLen])
-	})
-	merged.RecordCount = uint64(len(merged.Records))
+	names := slices.Sorted(maps.Keys(newest))
+	merged := &format.RefsTable{RecordCount: uint64(len(names)), Records: make([]format.RefRecord, 0, len(names))}
+	for _, name := range names {
+		merged.Records = append(merged.Records, newest[name])
+	}
 	return merged, nil
 }
 
@@ -115,29 +113,93 @@ func (e *notHeldError) Error() string {
 	return fmt.Sprintf("%s %s is not in the catalog; run recover with the disc that holds it", e.kind, e.id.TextForm())
 }
 
-// ParseSnapshotArg resolves arg as a snapshot id, or, failing that, as a
-// name in the merged ref set, the same rule restore.Source uses. A
-// ref found in neither is reported as a *refNotFoundError, so a caller
-// that knows discs were named on the command line (restore --mount) can
-// reword the message; ls, log and plan, which never name a disc here,
-// print it as returned.
+// ParseSnapshotArg resolves a SNAPSHOT argument. A ref name wins, also
+// when the name is a valid id prefix. Else arg is the full text form of
+// an id, or a unique prefix of the hexadecimal digest in any letter
+// case. The candidates of a prefix are the snapshot file names of the
+// catalog and the snapshots that the refs name. It reads no snapshot
+// object.
 func (s *catalogSource) ParseSnapshotArg(arg string) (object.ID, error) {
 	if arg == "" {
 		return object.ID{}, restore.ErrNoSnapshotArg
 	}
-	if id, err := object.ParseID(arg); err == nil {
+	refs, refsErr := s.Refs()
+	if refsErr != nil && !errors.Is(refsErr, catalog.ErrNoDisc) {
+		return object.ID{}, &catalogReadError{err: refsErr}
+	}
+	var candidates []object.ID
+	if refsErr == nil {
+		for _, r := range refs.Records {
+			if catalog.RefName(r) == arg {
+				return object.ID(r.SnapshotID), nil
+			}
+			candidates = append(candidates, object.ID(r.SnapshotID))
+		}
+	}
+	if id, err := object.ParseID(strings.ToLower(arg)); err == nil {
 		return id, nil
 	}
-	refs, err := s.Refs()
+	ids, err := s.c.ListSnapshots()
 	if err != nil {
 		return object.ID{}, &catalogReadError{err: err}
 	}
-	for _, r := range refs.Records {
-		if string(r.Name[:r.NameLen]) == arg {
-			return object.ID(r.SnapshotID), nil
+	candidates = append(candidates, ids...)
+	matches := matchDigestPrefix(arg, candidates)
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		if refsErr != nil {
+			// The empty catalog is the reason that nothing matches.
+			return object.ID{}, &catalogReadError{err: refsErr}
+		}
+		return object.ID{}, &refNotFoundError{arg: arg}
+	}
+	return object.ID{}, &ambiguousSnapshotError{arg: arg, candidates: matches}
+}
+
+// matchDigestPrefix returns each id of ids, once and in text form order,
+// whose hexadecimal digest starts with arg in any letter case. A value
+// that is not 1 to 64 hexadecimal characters matches nothing.
+func matchDigestPrefix(arg string, ids []object.ID) []object.ID {
+	prefix := strings.ToLower(arg)
+	if prefix == "" || len(prefix) > 2*len(object.ID{}) {
+		return nil
+	}
+	if strings.Trim(prefix, "0123456789abcdef") != "" {
+		return nil
+	}
+	var matches []object.ID
+	for _, id := range ids {
+		if strings.HasPrefix(hex.EncodeToString(id[:]), prefix) && !slices.Contains(matches, id) {
+			matches = append(matches, id)
 		}
 	}
-	return object.ID{}, &refNotFoundError{arg: arg}
+	slices.SortFunc(matches, func(a, b object.ID) int { return bytes.Compare(a[:], b[:]) })
+	return matches
+}
+
+// shortID gives the print form of a snapshot id: the first 12
+// hexadecimal characters of its digest, without the multihash prefix.
+// A file of state/ and a damaged line use the full text form.
+func shortID(id object.ID) string {
+	return hex.EncodeToString(id[:6])
+}
+
+// ambiguousSnapshotError reports a prefix that matches more than one
+// snapshot. It lists each candidate in its full text form.
+type ambiguousSnapshotError struct {
+	arg        string
+	candidates []object.ID
+}
+
+func (e *ambiguousSnapshotError) Error() string {
+	var b strings.Builder
+	_, _ = fmt.Fprintf(&b, "%s matches more than one snapshot:", e.arg)
+	for _, id := range e.candidates {
+		_, _ = fmt.Fprintf(&b, "\nsnapshot %s", id.TextForm())
+	}
+	return b.String()
 }
 
 // catalogReadError marks a snapshot argument that did not resolve because
@@ -162,15 +224,12 @@ func exitForSnapshotArg(err error) int {
 	return 2
 }
 
-// refNotFoundError reports that arg matched no snapshot id and no name
-// in a *catalogSource's catalog REFS table.
+// refNotFoundError reports that arg matched no ref name and no
+// snapshot id of the catalog.
 type refNotFoundError struct{ arg string }
 
 func (e *refNotFoundError) Error() string {
-	if restore.LooksLikeSnapshotIDPrefix(e.arg) {
-		return fmt.Sprintf("%q looks like a snapshot id prefix; give the full snapshot id from noahsark log", e.arg)
-	}
-	return fmt.Sprintf("%q is neither a snapshot id nor a known ref name", e.arg)
+	return fmt.Sprintf("no snapshot matches %s", e.arg)
 }
 
 // openCatalogSource opens the catalog of the repository that e
