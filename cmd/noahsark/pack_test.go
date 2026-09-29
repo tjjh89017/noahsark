@@ -855,13 +855,13 @@ func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 		t.Fatalf("commit run2: exit %d: %s", code, out)
 	}
 	discB := filepath.Join(work, "disc-b")
-	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discB)
+	code, packOut2 := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+discB)
 	if code != 0 {
-		t.Fatalf("pack run2: exit %d: %s", code, out)
+		t.Fatalf("pack run2: exit %d: %s", code, packOut2)
 	}
-	m := packedDiscRe.FindStringSubmatch(strings.SplitN(out, "\n", 2)[0])
+	m := packedDiscRe.FindStringSubmatch(strings.SplitN(packOut2, "\n", 2)[0])
 	if m == nil {
-		t.Fatalf("pack run2: first line of %q is not a packed-disc line", out)
+		t.Fatalf("pack run2: first line of %q is not a packed-disc line", packOut2)
 	}
 	packedCount, err := strconv.Atoi(m[3])
 	if err != nil {
@@ -870,19 +870,19 @@ func TestPackObjectCountMatchesBurnedAndVerify(t *testing.T) {
 
 	// disc-b is the second, and only the second, disc this repository has
 	// ever packed, so its disc_seq is 1.
-	code, out = runCmd(t, "--repo="+repo, "disc", "burned", "1")
+	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "1")
 	if code != 0 {
 		t.Fatalf("disc burned disc-b: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, strconv.Itoa(packedCount)+" object(s) marked") {
-		t.Fatalf("disc burned output %q does not mark the %d object(s) pack reported", out, packedCount)
+	if words := itemWords(t, repo, packedDiscUUID(t, packOut2)); words[stage.WordBurned] != packedCount || len(words) != 1 {
+		t.Fatalf("item words %v after disc burned, want the %d burned item(s) pack reported", words, packedCount)
 	}
 
 	code, out = runCmd(t, "--repo="+repo, "verify", discB)
 	if code != 0 {
 		t.Fatalf("verify disc-b: exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, strconv.Itoa(packedCount)+" object(s) verified") {
+	if !strings.Contains(out, ": "+strconv.Itoa(packedCount)+" items, ok") {
 		t.Fatalf("verify output %q does not verify the %d object(s) pack reported", out, packedCount)
 	}
 }
@@ -931,7 +931,7 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 	if len(discs) != 1 {
 		t.Fatalf("status names %d disc(s) after the first pack, want 1", len(discs))
 	}
-	firstObjects := discs[0].OnDiscObjects
+	firstObjects := discs[0].Items
 
 	// Commit a one-line change: most objects (the unchanged file, every
 	// tree above it) are unchanged content, already CLEAN.
@@ -950,10 +950,10 @@ func TestPackKeepsCrossDiscDedupAfterBurnAndVerify(t *testing.T) {
 	if len(discs) != 2 {
 		t.Fatalf("status names %d disc(s) after the second pack, want 2", len(discs))
 	}
-	if discs[0].OnDiscObjects != firstObjects {
-		t.Fatalf("first disc objects = %d after the second pack, want unchanged %d: a CLEAN object was rebound", discs[0].OnDiscObjects, firstObjects)
+	if discs[0].Items != firstObjects {
+		t.Fatalf("first disc objects = %d after the second pack, want unchanged %d: a CLEAN object was rebound", discs[0].Items, firstObjects)
 	}
-	if discs[1].OnDiscObjects == 0 {
+	if discs[1].Items == 0 {
 		t.Fatal("second disc objects = 0, want nonzero for the new file's objects")
 	}
 }
@@ -1306,5 +1306,91 @@ func TestPackUsageErrorsExitTwo(t *testing.T) {
 				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
 			}
 		})
+	}
+}
+
+// truncateBy cuts n bytes off the end of the file at path.
+func truncateBy(t *testing.T, path string, n int64) {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, fi.Size()-n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPackFinishesAnInterruptedPack makes the state of two packs that
+// stopped: one stopped after its ledger row, before its item records and
+// its Packed event. The other stopped before its ledger row, and left
+// only its catalog and plan directories. The next pack must complete the
+// records of the first, and remove the directories of the second.
+func TestPackFinishesAnInterruptedPack(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscPacked)
+	layout := testLayout(t, fx.repo)
+	items := itemWords(t, fx.repo, fx.uuid)[stage.WordPacked]
+	if items == 0 {
+		t.Fatal("the packed disc holds no item")
+	}
+	truncateBy(t, layout.stateLogFile(), int64(items)*70)
+	truncateBy(t, layout.discLogFile(), 54)
+	if _, known := readDiscLog(t, fx.repo).Disc(fx.uuidBytes(t)); known {
+		t.Fatal("the disc state log still knows the disc after the cut")
+	}
+
+	orphan := "0badc0de-0000-4000-8000-000000000001"
+	orphanDirs := []string{filepath.Join(layout.catalogDir(), "discs", orphan), filepath.Join(layout.plansDir(), orphan)}
+	for _, d := range orphanDirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(fx.src, "more.txt"), []byte("content of the next disc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	out := fx.mustRun(t, "pack", "--capacity=64MiB")
+	if !strings.Contains(out, fx.name()+": an earlier pack stopped before it recorded the disc; its records are now complete") {
+		t.Fatalf("pack output %q, want the completed-records line", out)
+	}
+	if d := discState(t, fx.repo, fx.uuid); d.State != stage.DiscPacked {
+		t.Fatalf("disc state %s after the repair, want packed", d.State)
+	}
+	if got := itemWords(t, fx.repo, fx.uuid); len(got) != 1 || got[stage.WordPacked] != items {
+		t.Fatalf("item words %v after the repair, want %d packed items", got, items)
+	}
+	for _, d := range orphanDirs {
+		if _, err := os.Stat(d); !os.IsNotExist(err) {
+			t.Fatalf("pack kept %s of a pack that stopped before its ledger row: %v", d, err)
+		}
+	}
+	if n := len(statusDiscs(t, fx.repo)); n != 2 {
+		t.Fatalf("status names %d disc(s), want 2", n)
+	}
+}
+
+// TestCommitAndPackRefuseWhileADiscIsMissing checks that a missing disc
+// refuses commit and pack, and that neither writes the state log.
+func TestCommitAndPackRefuseWhileADiscIsMissing(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscMissing)
+	stateLog := testLayout(t, fx.repo).stateLogFile()
+	before, err := os.ReadFile(stateLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"commit", fx.src}, {"pack", "--capacity=64MiB"}, {"pack", "--capacity=64MiB", "--dry-run"}} {
+		code, out := fx.run(t, args...)
+		if code != 1 || !strings.Contains(out, fx.name()+" is missing") {
+			t.Fatalf("%v: exit %d, want 1 and the missing refusal: %s", args, code, out)
+		}
+	}
+	after, err := os.ReadFile(stateLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("a refused command wrote the state log")
 	}
 }

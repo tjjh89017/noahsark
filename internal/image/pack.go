@@ -82,6 +82,10 @@ type PackOptions struct {
 	// select STAGED objects and appends a Packed record for every
 	// object this run stores.
 	StageLog *stage.Log
+	// WriteCatalog writes the catalog tables of the disc from OutputDir.
+	// Pack calls it after the disc root is synced, and before it writes
+	// the disc ledger row. A nil WriteCatalog writes nothing.
+	WriteCatalog func() error
 	// Progress reports bytes of object content placed into the run's
 	// tree, and FEC stripes encoded when FECEnabled. A nil Progress
 	// reports nothing.
@@ -400,26 +404,30 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	rows[run2RowIdx].data = runBuf
 	plan.rows = rows
 
-	if err := writeRunTree(opts.OutputDir, runSeq, plan, opts.Progress); err != nil {
-		// A staged object that does not match its own content is caught
-		// while its bytes are copied, so the output tree is already part
-		// written when this fails. Take the part-written tree away again:
-		// nothing below has run yet, so no object is recorded Packed, no
-		// ledger is saved, and this run and disc sequence number stay
-		// free for the next pack.
+	// A staged object that does not match its own content is caught while
+	// its bytes are copied, so the output tree is already part written
+	// when this fails. The same holds when the catalog tables cannot be
+	// written. Take the part-written tree away again: nothing below has
+	// run yet, so no object is recorded Packed, no ledger is saved, and
+	// this run and disc sequence number stay free for the next pack.
+	removeTree := func(err error) error {
 		if rmErr := os.RemoveAll(filepath.Join(opts.OutputDir, "NOAHSARK")); rmErr != nil {
-			return nil, fmt.Errorf("%w; the part-written run could not be removed either: %v", err, rmErr)
+			return fmt.Errorf("%w; the part-written run could not be removed either: %v", err, rmErr)
 		}
-		return nil, err
+		return err
+	}
+	if err := writeRunTree(opts.OutputDir, runSeq, plan, opts.Progress); err != nil {
+		return nil, removeTree(err)
 	}
 
-	// Record every packed object as Packed, and this disc's row into the
-	// local ledger, only once the run's files are all on local disk.
-	// Only the objects this run is the first to store change state. A
-	// carried snapshot stays bound to the disc that first stored it.
-	for _, h := range selected {
-		if err := opts.StageLog.MarkPacked(h.ID, runSeq, opts.DiscUUID); err != nil {
-			return nil, err
+	// The durable writes follow the synced disc root in this order: the
+	// catalog tables, the disc ledger row, then the item records. The
+	// caller appends the Packed event last. Only the objects this run is
+	// the first to store change state. A carried snapshot stays bound to
+	// the disc that first stored it.
+	if opts.WriteCatalog != nil {
+		if err := opts.WriteCatalog(); err != nil {
+			return nil, removeTree(fmt.Errorf("catalog tables: %w", err))
 		}
 	}
 	newRow := newDiscsRow(opts.asBuildOptions(), packTime, runSeq, discSeq)
@@ -433,6 +441,13 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, err
 	}
 	if err := SaveRefsLedger(opts.RefsLedger, opts.RepoUUID, mergedRefRecords); err != nil {
+		return nil, err
+	}
+	selectedIDs := make([]object.ID, len(selected))
+	for i, h := range selected {
+		selectedIDs[i] = h.ID
+	}
+	if err := opts.StageLog.MarkPacked(runSeq, opts.DiscUUID, selectedIDs...); err != nil {
 		return nil, err
 	}
 

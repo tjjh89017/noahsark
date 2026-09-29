@@ -1,93 +1,78 @@
-// Package stage implements the staging state machine: an object is
-// STAGED after commit, PACKED once a run includes it, BURNED once that
-// run has been written to a disc, CLEAN once a read-back verify has
-// checked it, and ON-DISC once a disc alone holds it and staging holds
-// no file for it.
-//
-// The state log is a fixed-width, append-only file. Each record carries
-// a CRC-32C, so a reader replays it and stops cleanly at a torn tail.
-// See docs/decisions.md, "Staging and gc".
+// Package stage holds the two state logs of a repository: the item log
+// state.db, one record for each change of an item, and the disc state
+// log discstate.db, one event for each change of a disc. OPERATIONS.md,
+// "Local file formats", gives the bytes. docs/states.md gives the state
+// machines.
 package stage
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"hash/crc32"
-	"io"
-	"os"
+	"maps"
 	"path/filepath"
-	"time"
+	"slices"
 
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// State is one object's position in the staging state machine.
+// State is the stored state of an item.
 type State uint8
 
+// The stored states of an item.
 const (
-	// Staged is an object's state right after commit.
 	Staged State = 1
-	// Packed is an object's state once a run includes it.
 	Packed State = 2
-	// Burned is an object's state once the run that holds it has been
-	// written to a disc.
-	Burned State = 3
-	// Clean is an object's state once a read-back verify of the disc
-	// that holds it has checked out.
-	Clean State = 4
-	// OnDiscOnly is an object's state once a disc alone holds it. gc
-	// records it before it unlinks the staged file, and recover
-	// records it for every object it reads from a disc's own catalog.
-	// It is terminal: the object needs no staging file any more.
-	OnDiscOnly State = 5
+	OnDisc State = 3
+	Lost   State = 4
 )
 
-// OnDisc reports whether an object in this state already has its data
-// written to some disc. Packed, Burned, Clean and OnDiscOnly all name an
-// object a disc holds; only Staged does not. A caller asking "is this
-// object already on a disc" must use this, not a direct comparison
-// against Packed, so pack never copies or rebinds an object a disc
-// already holds.
-func (s State) OnDisc() bool {
-	switch s {
-	case Packed, Burned, Clean, OnDiscOnly:
-		return true
-	default:
-		return false
-	}
+var stateNames = map[State]string{
+	Staged: "Staged",
+	Packed: "Packed",
+	OnDisc: "OnDisc",
+	Lost:   "Lost",
 }
 
-// Reason is why a record's transition happened.
+// String returns the name of the state, or the code for an unknown
+// state.
+func (s State) String() string {
+	if name, ok := stateNames[s]; ok {
+		return name
+	}
+	return fmt.Sprintf("state %d", uint8(s))
+}
+
+// OnDisc reports whether a record in state s names the disc that took
+// the item: Packed, OnDisc or Lost. pack takes no such item again, and
+// names that disc as a prerequisite of a later disc.
+func (s State) OnDisc() bool {
+	return s == Packed || s == OnDisc || s == Lost
+}
+
+// Reason is why a record was written.
 type Reason uint8
 
+// The reasons of an item record.
 const (
-	// ReasonNormal is an ordinary transition.
-	ReasonNormal Reason = 0
-	// ReasonBurnFailed marks a run's objects returned from Packed to
-	// Staged after a failed burn.
-	ReasonBurnFailed Reason = 1
-	// ReasonVerifyFailed marks a run's objects returned from Burned to
-	// Packed after a failed verify.
-	ReasonVerifyFailed Reason = 2
+	ReasonNormal     Reason = 0
+	ReasonPackUndone Reason = 1
+	ReasonDiscLost   Reason = 2
+	ReasonLostUndone Reason = 3
 )
 
-// recordLen is the fixed size of one state.db record: sequence (8),
-// content id (32), state (1), run_seq (8), disc_uuid (16), reason (1),
-// verify_count (1), clean_sec (8), crc32c (4).
-const recordLen = 8 + 32 + 1 + 8 + 16 + 1 + 1 + 8 + 4
+// recordLen is the size of one item record.
+const recordLen = 70
 
-// maxVerifyCount is the largest value VerifyCount holds. A further
-// verify keeps the count there instead of wrapping to zero.
-const maxVerifyCount = 255
-
-// stateFileName is the state log's file name inside a staging directory,
-// matching OPERATIONS.md's staging store layout.
+// stateFileName is the name of the item log in the state directory of a
+// repository.
 const stateFileName = "state.db"
 
-var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+// ErrItemTransition is the error for an item record that the current
+// record of the item does not permit.
+var ErrItemTransition = errors.New("item change not permitted")
 
-// Record is one state.db record: an object's state as of Sequence, and,
-// for a Packed record or a later one, the run and disc that hold it.
+// Record is one record of the item log.
 type Record struct {
 	Sequence  uint64
 	ContentID object.ID
@@ -95,18 +80,10 @@ type Record struct {
 	RunSeq    uint64
 	DiscUUID  [16]byte
 	Reason    Reason
-	// VerifyCount is how many successful verifies the object has had.
-	// gc deletes an object only at gc.min_verified_copies verifies, so
-	// the staged bytes stay until the second identical disc passes
-	// verify.
-	VerifyCount uint8
-	// CleanSec is the unix time of the first successful verify, and 0
-	// before that verify. Every later record carries it forward, so the
-	// retention period counts from the first verify and a second verify
-	// never restarts it.
-	CleanSec int64
 }
 
+// encode writes r into buf, which is recordLen bytes, and seals it with
+// its CRC.
 func (r *Record) encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[0:8], r.Sequence)
 	copy(buf[8:40], r.ContentID[:])
@@ -114,166 +91,285 @@ func (r *Record) encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[41:49], r.RunSeq)
 	copy(buf[49:65], r.DiscUUID[:])
 	buf[65] = byte(r.Reason)
-	buf[66] = r.VerifyCount
-	binary.LittleEndian.PutUint64(buf[67:75], uint64(r.CleanSec))
-	crc := crc32.Checksum(buf[0:75], crc32cTable)
-	binary.LittleEndian.PutUint32(buf[75:79], crc)
+	sealRecord(buf[:recordLen])
 }
 
-// decodeRecord reads one record from buf, which must be exactly
-// recordLen bytes, and reports whether its CRC checks out.
-func decodeRecord(buf []byte) (Record, bool) {
-	var r Record
-	r.Sequence = binary.LittleEndian.Uint64(buf[0:8])
-	copy(r.ContentID[:], buf[8:40])
-	r.State = State(buf[40])
-	r.RunSeq = binary.LittleEndian.Uint64(buf[41:49])
-	copy(r.DiscUUID[:], buf[49:65])
-	r.Reason = Reason(buf[65])
-	r.VerifyCount = buf[66]
-	r.CleanSec = int64(binary.LittleEndian.Uint64(buf[67:75]))
-	crc := binary.LittleEndian.Uint32(buf[75:79])
-	ok := crc == crc32.Checksum(buf[0:75], crc32cTable)
-	return r, ok
+// decodeRecord reads one record from buf, which is recordLen bytes. It
+// does not check the CRC.
+func decodeRecord(buf []byte) Record {
+	return Record{
+		Sequence:  binary.LittleEndian.Uint64(buf[0:8]),
+		ContentID: object.ID(buf[8:40]),
+		State:     State(buf[40]),
+		RunSeq:    binary.LittleEndian.Uint64(buf[41:49]),
+		DiscUUID:  [16]byte(buf[49:65]),
+		Reason:    Reason(buf[65]),
+	}
 }
 
-// Log is one repository's staging state log: the replayed current state
-// of every object it has seen, plus the file new records append to.
+// check returns an error when the fields of r break the rules of the
+// record: a known state and reason, no disc for Staged, and a disc for
+// every other state.
+func (r *Record) check() error {
+	if _, ok := stateNames[r.State]; !ok {
+		return fmt.Errorf("unknown state code %d", uint8(r.State))
+	}
+	if r.Reason > ReasonLostUndone {
+		return fmt.Errorf("unknown reason code %d", uint8(r.Reason))
+	}
+	if r.State == Staged {
+		if r.RunSeq != 0 || r.DiscUUID != [16]byte{} {
+			return errors.New("a Staged record names a run or a disc")
+		}
+		return nil
+	}
+	if r.DiscUUID == [16]byte{} {
+		return fmt.Errorf("a %s record names no disc", r.State)
+	}
+	return nil
+}
+
+// Log is the replayed item log of one repository: the newest record of
+// each item.
 type Log struct {
-	path         string
-	current      map[object.ID]Record
-	nextSeq      uint64
-	truncated    bool
-	ignoredBytes int64
+	file    *recFile
+	current map[object.ID]Record
 }
 
-// Truncated reports whether Open cut a torn tail off the state log, and
-// how many bytes it cut. Every command that opens the log checks this
-// and prints one warning.
-func (l *Log) Truncated() (truncated bool, ignoredBytes int64) {
-	return l.truncated, l.ignoredBytes
-}
-
-// Open reads and replays the file state.db in the state directory
-// stateDir, if the file exists, and returns a Log ready to query and
-// append to. A missing file is an empty log, matching a fresh
-// repository.
-//
-// Open applies one torn-tail rule. A partial record at the end, or a
-// last record with a bad CRC, is what a crash during an append leaves:
-// Open cuts the file back to the last good record and reports the cut
-// through Truncated. A bad record anywhere else is damage, not a torn
-// tail, because good records follow it. Open returns an error there and
-// changes nothing, so no command silently drops the good records behind
-// the damage.
-//
-// Only a command that holds the repository's exclusive lock calls Open:
-// nothing else appends to state.db while it runs, so cutting a torn
-// tail here can never race a concurrent append. A command with no such
-// lock must call OpenReadOnly instead.
+// Open reads and replays the item log in stateDir for a command that
+// holds the repository lock. It cuts a torn tail; TornBytes reports the
+// cut. A missing file is an empty log.
 func Open(stateDir string) (*Log, error) {
-	return open(stateDir, true)
+	return openLog(stateDir, true)
 }
 
-// OpenReadOnly reads and replays state.db in stateDir the same way Open
-// does, for a command that holds no exclusive lock on the repository. A
-// writer may be appending to the file at the same time, so a torn tail
-// found here is left on disk untouched: OpenReadOnly still drops it from
-// the replayed state and reports it through Truncated, but it never
-// writes to state.db, and so can never cut off a record a concurrent
-// writer has not finished appending.
+// OpenReadOnly reads and replays the item log in stateDir for a command
+// that takes no lock. It ignores a torn tail and never changes the file.
+// Every append on the returned log fails.
 func OpenReadOnly(stateDir string) (*Log, error) {
-	return open(stateDir, false)
+	return openLog(stateDir, false)
 }
 
-func open(stateDir string, truncateTornTail bool) (*Log, error) {
-	l := &Log{
-		path:    filepath.Join(stateDir, stateFileName),
-		current: make(map[object.ID]Record),
-		nextSeq: 1,
-	}
-	data, err := os.ReadFile(l.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return l, nil
+func openLog(stateDir string, writable bool) (*Log, error) {
+	l := &Log{current: make(map[object.ID]Record)}
+	f, err := openRecFile(filepath.Join(stateDir, stateFileName), recordLen, writable, func(buf []byte) error {
+		rec := decodeRecord(buf)
+		if err := rec.check(); err != nil {
+			return err
 		}
-		return nil, fmt.Errorf("stage: %w", err)
-	}
-
-	full := len(data) / recordLen
-	recs := make([]Record, 0, full)
-	for i := range full {
-		off := i * recordLen
-		rec, ok := decodeRecord(data[off : off+recordLen])
-		if !ok {
-			if i != full-1 {
-				return nil, fmt.Errorf("stage: %s: record %d of %d has a bad CRC; the log is damaged", l.path, i+1, full)
-			}
-			break
-		}
-		recs = append(recs, rec)
-	}
-
-	for _, rec := range recs {
 		l.current[rec.ContentID] = rec
-		if rec.Sequence >= l.nextSeq {
-			l.nextSeq = rec.Sequence + 1
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	validLen := int64(len(recs) * recordLen)
-	if validLen != int64(len(data)) {
-		l.truncated = true
-		l.ignoredBytes = int64(len(data)) - validLen
-		if truncateTornTail {
-			if err := os.Truncate(l.path, validLen); err != nil {
-				return nil, fmt.Errorf("stage: %w", err)
-			}
-		}
-	}
+	l.file = f
 	return l, nil
 }
 
-// Get returns the current record for id and whether one exists. An id
-// with no record has never been staged.
+// TornBytes returns the size of the torn tail that the open found: cut
+// by Open, ignored by OpenReadOnly. It is 0 for a clean log.
+func (l *Log) TornBytes() int64 {
+	return l.file.tornBytes
+}
+
+// Path returns the path of the item log file.
+func (l *Log) Path() string {
+	return l.file.path
+}
+
+// Get returns the newest record of id, and whether the log knows id.
 func (l *Log) Get(id object.ID) (Record, bool) {
 	rec, ok := l.current[id]
 	return rec, ok
 }
 
-// EnsureStaged appends a Staged record for id if it has no record yet.
-// It does nothing when id is already known, so a re-commit of the same
-// content never resets a Packed object back to Staged.
-func (l *Log) EnsureStaged(id object.ID) error {
-	if _, ok := l.current[id]; ok {
-		return nil
-	}
-	return l.append(Record{ContentID: id, State: Staged})
-}
-
-// MarkPacked appends a Packed record for id, naming the run and disc
-// that now hold it.
-func (l *Log) MarkPacked(id object.ID, runSeq uint64, discUUID [16]byte) error {
-	return l.append(Record{ContentID: id, State: Packed, RunSeq: runSeq, DiscUUID: discUUID})
-}
-
-// EnsureOnDisc appends an OnDiscOnly record for id, naming the run and
-// disc that hold it, unless the log already has a record for id.
-// recover is the only caller: it reads a disc's own catalog into a
-// repository whose staging is empty, so the objects of that disc need no
-// staging file and no further burn or verify. An object the log already
-// knows keeps its own state, because that state says more than a disc
-// catalog can. A repeat rebuild from the same discs therefore appends
+// appendRecords writes recs as one batch with one sync, and then makes
+// them the newest records. It sets the sequence of each record. It
+// checks every record first; when one breaks the rules, it writes
 // nothing.
-func (l *Log) EnsureOnDisc(id object.ID, runSeq uint64, discUUID [16]byte) error {
-	if _, ok := l.current[id]; ok {
+func (l *Log) appendRecords(recs []Record) error {
+	if len(recs) == 0 {
 		return nil
 	}
-	return l.appendRecord(Record{ContentID: id, State: OnDiscOnly, RunSeq: runSeq, DiscUUID: discUUID}, false)
+	batch := make([]byte, len(recs)*recordLen)
+	seq := l.file.nextSeq()
+	for i := range recs {
+		recs[i].Sequence = seq + uint64(i)
+		if err := recs[i].check(); err != nil {
+			return fmt.Errorf("stage: item %s: %w", recs[i].ContentID.TextForm(), err)
+		}
+		recs[i].encode(batch[i*recordLen : (i+1)*recordLen])
+	}
+	if err := l.file.appendBatch(batch); err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		l.current[rec.ContentID] = rec
+	}
+	return nil
 }
 
-// CountState returns the number of distinct objects whose current state
-// is state.
+// change builds one record for each id from its current record, and
+// appends them as one batch. from lists the states that permit the
+// change; an item with no record permits it only when unknownOK is true.
+// build gives the new record from the current one. Every id must permit
+// the change, or change writes nothing and returns an error that wraps
+// ErrItemTransition. An id that occurs more than once gets one record.
+func (l *Log) change(ids []object.ID, from []State, unknownOK bool, build func(cur Record) Record) error {
+	seen := make(map[object.ID]bool, len(ids))
+	recs := make([]Record, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		cur, ok := l.current[id]
+		switch {
+		case !ok && !unknownOK:
+			return fmt.Errorf("stage: item %s has no record: %w", id.TextForm(), ErrItemTransition)
+		case ok && !slices.Contains(from, cur.State):
+			return fmt.Errorf("stage: item %s is %s: %w", id.TextForm(), cur.State, ErrItemTransition)
+		}
+		cur.ContentID = id
+		recs = append(recs, build(cur))
+	}
+	return l.appendRecords(recs)
+}
+
+// EnsureStaged is the rule of commit. It records each id that the log
+// does not know, or that is Lost, as Staged. An id in another state
+// keeps its record. The ids go to the log as one batch with one sync.
+func (l *Log) EnsureStaged(ids ...object.ID) error {
+	var todo []object.ID
+	for _, id := range ids {
+		if rec, ok := l.current[id]; !ok || rec.State == Lost {
+			todo = append(todo, id)
+		}
+	}
+	return l.change(todo, []State{Lost}, true, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: Staged}
+	})
+}
+
+// MarkStaged records each id as Staged with reason: the items of a pack
+// that pack --undo removes (ReasonPackUndone), and the Packed items of a
+// disc that disc lost marks (ReasonDiscLost). Each id must be Packed.
+func (l *Log) MarkStaged(reason Reason, ids ...object.ID) error {
+	return l.change(ids, []State{Packed}, false, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: Staged, Reason: reason}
+	})
+}
+
+// MarkPackUndone records each id as Staged with ReasonPackUndone. Each
+// id must be Packed.
+func (l *Log) MarkPackUndone(ids ...object.ID) error {
+	return l.MarkStaged(ReasonPackUndone, ids...)
+}
+
+// MarkPacked records each id as Packed on the disc discUUID, with the
+// run runSeq. Each id must be Staged.
+func (l *Log) MarkPacked(runSeq uint64, discUUID [16]byte, ids ...object.ID) error {
+	return l.change(ids, []State{Staged}, false, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: Packed, RunSeq: runSeq, DiscUUID: discUUID}
+	})
+}
+
+// MarkOnDisc records each id as OnDisc on the disc of its Packed record.
+// gc calls it before it unlinks a chunk file. Each id must be Packed.
+func (l *Log) MarkOnDisc(ids ...object.ID) error {
+	return l.change(ids, []State{Packed}, false, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: OnDisc, RunSeq: cur.RunSeq, DiscUUID: cur.DiscUUID}
+	})
+}
+
+// EnsureOnDisc is the rule of recover. It records each id that the log
+// does not know, or that is Lost, as OnDisc on the disc discUUID, with
+// the run runSeq. An id in another state keeps its record.
+func (l *Log) EnsureOnDisc(runSeq uint64, discUUID [16]byte, ids ...object.ID) error {
+	var todo []object.ID
+	for _, id := range ids {
+		if rec, ok := l.current[id]; !ok || rec.State == Lost {
+			todo = append(todo, id)
+		}
+	}
+	return l.change(todo, []State{Lost}, true, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: OnDisc, RunSeq: runSeq, DiscUUID: discUUID}
+	})
+}
+
+// MarkLost records each id as Lost, with ReasonDiscLost, on the disc of
+// its OnDisc record. disc lost calls it for the items of an on disc only
+// disc. Each id must be OnDisc.
+func (l *Log) MarkLost(ids ...object.ID) error {
+	return l.change(ids, []State{OnDisc}, false, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: Lost, RunSeq: cur.RunSeq, DiscUUID: cur.DiscUUID, Reason: ReasonDiscLost}
+	})
+}
+
+// MarkLostUndone records each id as OnDisc, with ReasonLostUndone, on
+// the disc of its Lost record. disc lost --undo calls it for a disc that
+// was on disc only. Each id must be Lost.
+func (l *Log) MarkLostUndone(ids ...object.ID) error {
+	return l.change(ids, []State{Lost}, false, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: OnDisc, RunSeq: cur.RunSeq, DiscUUID: cur.DiscUUID, Reason: ReasonLostUndone}
+	})
+}
+
+// ReturnToDisc records each id as Packed, with ReasonLostUndone, on the
+// disc discUUID with the run runSeq. disc lost --undo calls it for the
+// staged items that no later pack took, of a disc that was verified.
+// Each id must be Staged.
+func (l *Log) ReturnToDisc(runSeq uint64, discUUID [16]byte, ids ...object.ID) error {
+	return l.change(ids, []State{Staged}, false, func(cur Record) Record {
+		return Record{ContentID: cur.ContentID, State: Packed, RunSeq: runSeq, DiscUUID: discUUID, Reason: ReasonLostUndone}
+	})
+}
+
+// sortedIDs returns ids sorted by their bytes.
+func sortedIDs(ids []object.ID) []object.ID {
+	slices.SortFunc(ids, func(a, b object.ID) int { return slices.Compare(a[:], b[:]) })
+	return ids
+}
+
+// IDsInState returns every id whose newest record is in state, sorted by
+// id bytes.
+func (l *Log) IDsInState(state State) []object.ID {
+	var ids []object.ID
+	for id, rec := range l.current {
+		if rec.State == state {
+			ids = append(ids, id)
+		}
+	}
+	return sortedIDs(ids)
+}
+
+// ItemsOfDisc returns every id whose newest record names the disc
+// discUUID, in any state, sorted by id bytes.
+func (l *Log) ItemsOfDisc(discUUID [16]byte) []object.ID {
+	var ids []object.ID
+	for id, rec := range l.current {
+		if rec.State != Staged && rec.DiscUUID == discUUID {
+			ids = append(ids, id)
+		}
+	}
+	return sortedIDs(ids)
+}
+
+// ItemsOfDiscInState returns every id whose newest record is in state
+// and names the disc discUUID, sorted by id bytes.
+func (l *Log) ItemsOfDiscInState(discUUID [16]byte, state State) []object.ID {
+	var ids []object.ID
+	for id, rec := range l.current {
+		if rec.State == state && rec.DiscUUID == discUUID {
+			ids = append(ids, id)
+		}
+	}
+	return sortedIDs(ids)
+}
+
+// CountState returns the number of items whose newest record is in
+// state.
 func (l *Log) CountState(state State) int {
 	n := 0
 	for _, rec := range l.current {
@@ -284,8 +380,8 @@ func (l *Log) CountState(state State) int {
 	return n
 }
 
-// CountOnDisc returns the number of distinct objects the log places on
-// some disc, whatever their state.
+// CountOnDisc returns the number of items whose newest record names a
+// disc: Packed, OnDisc or Lost.
 func (l *Log) CountOnDisc() int {
 	n := 0
 	for _, rec := range l.current {
@@ -296,238 +392,78 @@ func (l *Log) CountOnDisc() int {
 	return n
 }
 
-// IDsInState returns every object id whose current state is state, in
-// no particular order.
-func (l *Log) IDsInState(state State) []object.ID {
-	var ids []object.ID
-	for id, rec := range l.current {
-		if rec.State == state {
-			ids = append(ids, id)
-		}
-	}
-	return ids
-}
-
-// PackedCountByDisc returns, for every disc uuid the log has a Packed
-// record for, the number of distinct objects currently Packed onto it.
-func (l *Log) PackedCountByDisc() map[[16]byte]int {
-	return l.CountByDiscInState(Packed)
-}
-
-// CleanCountByDisc returns, for every disc uuid the log has a Clean
-// record for, the number of distinct objects currently Clean on it.
-func (l *Log) CleanCountByDisc() map[[16]byte]int {
-	return l.CountByDiscInState(Clean)
-}
-
-// MinCleanVerifyCountByDisc returns, for every disc uuid the log has a
-// Clean record for, the lowest verify count of the objects currently
-// Clean on it. That lowest count is what gc acts on, so it is what "disc
-// list" reports for the disc.
-func (l *Log) MinCleanVerifyCountByDisc() map[[16]byte]uint8 {
-	counts := make(map[[16]byte]uint8)
-	for _, rec := range l.current {
-		if rec.State != Clean {
-			continue
-		}
-		if lowest, ok := counts[rec.DiscUUID]; ok && lowest <= rec.VerifyCount {
-			continue
-		}
-		counts[rec.DiscUUID] = rec.VerifyCount
-	}
-	return counts
-}
-
-// CountByDiscInState returns, for every disc uuid the log has a record
-// for at state, the number of distinct objects currently at state on
-// that disc.
-func (l *Log) CountByDiscInState(state State) map[[16]byte]int {
+// CountByDisc returns, for each disc, the number of items whose newest
+// record is in state and names that disc.
+func (l *Log) CountByDisc(state State) map[[16]byte]int {
 	counts := make(map[[16]byte]int)
 	for _, rec := range l.current {
-		if rec.State == state {
+		if rec.State == state && rec.State != Staged {
 			counts[rec.DiscUUID]++
 		}
 	}
 	return counts
 }
 
-// OnDiscCountByDisc returns, for every disc uuid the log has an on-disc
-// record for, the number of distinct objects the log currently places
-// on that disc.
-func (l *Log) OnDiscCountByDisc() map[[16]byte]int {
-	counts := make(map[[16]byte]int)
+// DiscsNamed returns every disc that a newest record names, sorted by
+// uuid bytes.
+func (l *Log) DiscsNamed() [][16]byte {
+	set := make(map[[16]byte]bool)
 	for _, rec := range l.current {
-		if rec.State.OnDisc() {
-			counts[rec.DiscUUID]++
+		if rec.State != Staged {
+			set[rec.DiscUUID] = true
 		}
 	}
-	return counts
+	return slices.SortedFunc(maps.Keys(set), func(a, b [16]byte) int { return slices.Compare(a[:], b[:]) })
 }
 
-// MarkBurned appends a Burned record for id, naming the run and disc
-// its data now lives on. It is the transition from Packed to Burned,
-// once the run has been written to a disc.
-func (l *Log) MarkBurned(id object.ID, runSeq uint64, discUUID [16]byte) error {
-	return l.append(Record{ContentID: id, State: Burned, RunSeq: runSeq, DiscUUID: discUUID})
-}
-
-// MarkVerified appends a Clean record for id, carrying forward its
-// current run and disc, and adds 1 to its verify count. verify is the
-// only caller. It marks the Burned to Clean transition, and it also
-// marks a verify of an object that is already Clean: the operator
-// verifies the second identical disc that way, and the count is what
-// tells gc that both copies are readable.
-//
-// The clean time is set once, at the first verify, so the retention
-// period counts from the first verify and a later verify never restarts
-// it.
-func (l *Log) MarkVerified(id object.ID) error {
-	rec := l.current[id]
-	rec.ContentID = id
-	rec.State = Clean
-	rec.Reason = ReasonNormal
-	if rec.VerifyCount < maxVerifyCount {
-		rec.VerifyCount++
-	}
-	if rec.CleanSec == 0 {
-		rec.CleanSec = time.Now().Unix()
-	}
-	return l.append(rec)
-}
-
-// MarkVerifyFailed appends a Packed record for id with ReasonVerifyFailed,
-// carrying forward its current run and disc. This is the Burned to
-// Packed transition a failed verify drives; the run stays named until
-// the next pack withdraws it and returns its objects to Staged.
-func (l *Log) MarkVerifyFailed(id object.ID) error {
-	rec := l.current[id]
-	rec.ContentID = id
-	rec.State = Packed
-	rec.Reason = ReasonVerifyFailed
-	return l.append(rec)
-}
-
-// MarkBurnUndone appends a Packed record for id with ReasonBurnFailed,
-// carrying forward its current run and disc. This is the Burned to
-// Packed transition "disc burned --undo" drives, for a burn that
-// turned out bad after it was marked burned.
-func (l *Log) MarkBurnUndone(id object.ID) error {
-	rec := l.current[id]
-	rec.ContentID = id
-	rec.State = Packed
-	rec.Reason = ReasonBurnFailed
-	return l.append(rec)
-}
-
-// MarkOnDisc appends an OnDiscOnly record for id, carrying forward its
-// current run, disc, verify count and clean time. gc calls it for a
-// CLEAN object it is about to free, and then unlinks the staged file.
-// The record is flushed to stable storage before it counts as written:
-// it must be on the disk before the bytes it accounts for go away.
-func (l *Log) MarkOnDisc(id object.ID) error {
-	rec := l.current[id]
-	rec.ContentID = id
-	rec.State = OnDiscOnly
-	rec.Reason = ReasonNormal
-	return l.appendRecord(rec, true)
-}
-
-// CleanTime returns the time id first passed verify, and whether it has
-// passed one at all.
-func (l *Log) CleanTime(id object.ID) (time.Time, bool) {
-	rec, ok := l.current[id]
-	if !ok || rec.CleanSec == 0 {
-		return time.Time{}, false
-	}
-	return time.Unix(rec.CleanSec, 0), true
-}
-
-// FedDiscs reports whether the state log holds a current on-disc record
-// naming discUUID as the disc that holds it. recover records every
-// object of a disc's own catalog before asking this, and pack always
-// refuses to create a run with no objects, so every disc that was ever
-// packed leaves at least one such record.
-func (l *Log) FedDiscs(discUUID [16]byte) bool {
-	for _, rec := range l.current {
-		if rec.State.OnDisc() && rec.DiscUUID == discUUID {
-			return true
+// Totals returns the number of items whose newest record is in state,
+// and the sum of their sizes. size gives the size of one item; an error
+// from it stops the sum.
+func (l *Log) Totals(state State, size func(id object.ID) (uint64, error)) (count int, bytes uint64, err error) {
+	for _, id := range l.IDsInState(state) {
+		n, err := size(id)
+		if err != nil {
+			return 0, 0, err
 		}
+		count++
+		bytes += n
 	}
-	return false
+	return count, bytes, nil
 }
 
-// appendCloser is the file-like value openAppend returns: enough to
-// write one record, flush it to stable storage and close it. *os.File
-// satisfies it.
-type appendCloser interface {
-	io.Writer
-	Sync() error
-	Close() error
-}
+// ItemWord is the derived word of an item, as docs/states.md, "Item
+// states", defines it. status never prints it.
+type ItemWord string
 
-// openAppend opens path for appending, creating it and its parent
-// directory as needed. Tests replace it to check that a durable append
-// flushes before it closes, and that a Close failure reaches the caller.
-var openAppend = func(path string) (appendCloser, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+// The derived item words.
+const (
+	WordStaged ItemWord = "staged"
+	WordPacked ItemWord = "packed"
+	WordBurned ItemWord = "burned"
+	WordClean  ItemWord = "clean"
+	WordOnDisc ItemWord = "on-disc"
+	WordLost   ItemWord = "lost"
+)
+
+// Word returns the derived word of the item of rec. disc is the replayed
+// record of the disc that rec names; Word reads it only for a Packed
+// record. A Packed item takes its word from the state of its disc:
+// burned for a burned disc, clean for a verified disc, and packed for
+// every other state.
+func Word(rec Record, disc DiscInfo) ItemWord {
+	switch rec.State {
+	case Staged:
+		return WordStaged
+	case OnDisc:
+		return WordOnDisc
+	case Lost:
+		return WordLost
 	}
-	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-}
-
-// writeRecord appends buf to path and reports whether it reached the
-// operating system. A record is not written until Close succeeds: a
-// buffered write can still be sitting in memory when Write returns, so
-// no caller may treat a record as written, or update its own in-memory
-// state, until writeRecord returns nil.
-//
-// A durable write also flushes the record to the disk. gc unlinks a
-// staged object's bytes only after its ON-DISC record is durable:
-// without the flush, a crash could take the record away and leave the
-// bytes gone, an object the log still calls CLEAN with nothing behind
-// it. No other append flushes, because commit writes one record per
-// object and a flush per object would set its pace; a lost tail there
-// only replays as an object still STAGED, which the next pack heals.
-func writeRecord(path string, buf []byte, durable bool) error {
-	f, err := openAppend(path)
-	if err != nil {
-		return fmt.Errorf("stage: %w", err)
+	switch disc.State {
+	case DiscBurned:
+		return WordBurned
+	case DiscVerified:
+		return WordClean
 	}
-	_, writeErr := f.Write(buf)
-	var syncErr error
-	if durable && writeErr == nil {
-		syncErr = f.Sync()
-	}
-	closeErr := f.Close()
-	switch {
-	case writeErr != nil:
-		return fmt.Errorf("stage: %w", writeErr)
-	case syncErr != nil:
-		return fmt.Errorf("stage: %w", syncErr)
-	case closeErr != nil:
-		return fmt.Errorf("stage: %w", closeErr)
-	}
-	return nil
-}
-
-// append writes one record to state.db and updates the replayed state.
-func (l *Log) append(rec Record) error {
-	return l.appendRecord(rec, false)
-}
-
-// appendRecord writes one record to state.db and updates the replayed
-// state. A durable record is flushed to the disk before it counts as
-// written.
-func (l *Log) appendRecord(rec Record, durable bool) error {
-	rec.Sequence = l.nextSeq
-	buf := make([]byte, recordLen)
-	rec.encode(buf)
-
-	if err := writeRecord(l.path, buf, durable); err != nil {
-		return err
-	}
-
-	l.current[rec.ContentID] = rec
-	l.nextSeq++
-	return nil
+	return WordPacked
 }

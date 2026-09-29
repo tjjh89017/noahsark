@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -98,12 +99,11 @@ func cmdRecover(e *env, args []string) int {
 	defer releaseLock(lk)
 
 	layout := layoutOf(repoDir, cfg)
-	stageLog, err := stage.Open(layout.stateDir())
+	logs, err := openLogs("recover", layout, true, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
 		return 1
 	}
-	warnIfTruncated("recover", stageLog, stderr)
 
 	if err := recoverCatalogFromRoots(repoDir, readRoots); err != nil {
 		// The catalog is only an accelerator: a failure to populate it
@@ -131,24 +131,13 @@ func cmdRecover(e *env, args []string) int {
 		return 1
 	}
 
-	// A disc's own catalog proves only that the disc holds the object.
-	// Record that, and nothing more: the object needs no staging file,
-	// no burn and no verify. An object the log already knows keeps its
-	// own state, which says more than the catalog can.
-	var recorded, alreadyKnown int
-	for _, rr := range results {
-		for _, row := range rr.Index.Objects {
-			id := object.ID(row.ContentID)
-			if _, ok := stageLog.Get(id); ok {
-				alreadyKnown++
-				continue
-			}
-			if err := stageLog.EnsureOnDisc(id, rr.Run.RunSeq, rr.Disc.DiscUUID); err != nil {
-				_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
-				return 1
-			}
-			recorded++
-		}
+	// The item records and the disc events come before the ledger rows.
+	// A crash between them leaves discs that the log knows, and the next
+	// recover of the same discs writes the ledger rows again.
+	recorded, alreadyKnown, err := recordRecoveredDiscs(logs, results, e.now())
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: recover:", err)
+		return 1
 	}
 
 	discRows := mergeDiscsRows(results, existingDiscs.Rows)
@@ -180,7 +169,7 @@ func cmdRecover(e *env, args []string) int {
 	_, _ = fmt.Fprintf(stdout, "objects recorded: %d on disc, %d already known\n", recorded, alreadyKnown)
 	_, _ = fmt.Fprintf(stdout, "discs known: %d, refs restored: %d\n", len(discRows), len(refs))
 
-	notFed := discsNotFed(discRows, stageLog)
+	notFed := discsNotFed(discRows, logs.Discs)
 	if len(notFed) > 0 {
 		for _, row := range notFed {
 			label := string(row.Label[:row.LabelLen])
@@ -194,19 +183,67 @@ func cmdRecover(e *env, args []string) int {
 }
 
 // discsNotFed returns, sorted by uuid text, every row of the merged
-// ledger whose own disc has never itself been fed to recover: its
-// row may only have arrived here as a copy carried in a sibling disc's
-// own DISCS table. "ok" must wait for every one of these to be read at
+// ledger whose disc is missing: another disc names it, and no recover
+// has read it yet. "ok" must wait for every one of these to be read at
 // least once, however many separate calls that takes.
-func discsNotFed(rows []format.DiscsRow, l *stage.Log) []format.DiscsRow {
+func discsNotFed(rows []format.DiscsRow, discs *stage.DiscLog) []format.DiscsRow {
 	var out []format.DiscsRow
 	for _, row := range rows {
-		if !l.FedDiscs(row.DiscUUID) {
+		if d, ok := discs.Disc(row.DiscUUID); ok && d.State == stage.DiscMissing {
 			out = append(out, row)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return uuidText(out[i].DiscUUID) < uuidText(out[j].DiscUUID) })
 	return out
+}
+
+// recordRecoveredDiscs writes the records of the discs that recover
+// read. For a disc that the disc state log does not know, or that is
+// missing, it records each item of the disc INDEX that the item log does
+// not know, or that is Lost, as OnDisc, and appends Recovered. A disc
+// that the log knows in another state gets no record. Then it appends
+// NamedMissing for each disc that a DISCS table of a read disc names and
+// that the log does not know. It returns the count of items recorded and
+// the count of items that it did not record.
+func recordRecoveredDiscs(logs *stage.Logs, results []*image.ReadResult, now time.Time) (recorded, alreadyKnown int, err error) {
+	for _, rr := range results {
+		discUUID := rr.Disc.DiscUUID
+		ids := make([]object.ID, 0, len(rr.Index.Objects))
+		for _, row := range rr.Index.Objects {
+			id := object.ID(row.ContentID)
+			if rec, ok := logs.Items.Get(id); ok && rec.State != stage.Lost {
+				alreadyKnown++
+				continue
+			}
+			ids = append(ids, id)
+		}
+		if d, ok := logs.Discs.Disc(discUUID); ok && d.State != stage.DiscMissing {
+			alreadyKnown += len(ids)
+			continue
+		}
+		if err := logs.Items.EnsureOnDisc(rr.Run.RunSeq, discUUID, ids...); err != nil {
+			return 0, 0, err
+		}
+		recorded += len(ids)
+		event := discEvent(now, discUUID, stage.EventRecovered)
+		if rr.Run.FECScheme != format.FECSchemeNone {
+			event.Flags |= stage.FlagFEC
+		}
+		if err := logs.Discs.Append(event); err != nil {
+			return 0, 0, err
+		}
+	}
+	for _, rr := range results {
+		for _, row := range rr.Discs.Rows {
+			if _, ok := logs.Discs.Disc(row.DiscUUID); ok {
+				continue
+			}
+			if err := logs.Discs.Append(discEvent(now, row.DiscUUID, stage.EventNamedMissing)); err != nil {
+				return 0, 0, err
+			}
+		}
+	}
+	return recorded, alreadyKnown, nil
 }
 
 // recoverCatalogFromRoots copies every one of readRoots' run catalog,

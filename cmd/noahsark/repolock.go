@@ -28,12 +28,28 @@ func releaseLock(lk *repolock.Lock) {
 	_ = lk.Release()
 }
 
-// warnIfTruncated prints one warning line on stderr when l's state log
-// tail was truncated: OPERATIONS.md requires the tool to report a
-// truncated log, and every command that opens the log calls this right
-// after stage.Open or stage.OpenReadOnly succeeds.
-func warnIfTruncated(cmd string, l *stage.Log, stderr io.Writer) {
-	if truncated, ignoredBytes := l.Truncated(); truncated {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: the state log's tail was truncated; %d byte(s) after the last valid record were ignored, matching a crash during an earlier append\n", cmd, ignoredBytes)
+// openLogs opens the item log and the disc state log of the repository
+// for the command cmd, and prints the torn-tail warnings. holdsLock
+// tells whether cmd holds the repository lock: a holder cuts a torn
+// tail, and a command without the lock changes no file.
+func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (*stage.Logs, error) {
+	logs, err := stage.OpenLogs(layout.stateDir(), holdsLock)
+	if err != nil {
+		return nil, err
+	}
+	warnTornTails(cmd, logs, holdsLock, stderr)
+	return logs, nil
+}
+
+// warnTornTails prints one warning line on stderr for each log whose
+// open found a torn tail: a crash during an earlier append leaves one.
+func warnTornTails(cmd string, logs *stage.Logs, holdsLock bool, stderr io.Writer) {
+	verb := "ignored"
+	if holdsLock {
+		verb = "cut off"
+	}
+	for _, tail := range logs.TornTails() {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: the %s's tail was truncated; %d byte(s) after the last valid record were %s, matching a crash during an earlier append\n",
+			cmd, tail.Name, tail.Bytes, verb)
 	}
 }

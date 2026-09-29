@@ -119,7 +119,7 @@ func TestRecoverFromDiscRestoresState(t *testing.T) {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
 
-	if got := countByState(t, repo, stage.OnDiscOnly); got != wantOnDisc {
+	if got := countByState(t, repo, stage.OnDisc); got != wantOnDisc {
 		t.Fatalf("on-disc-only count = %d, want %d (disc INDEX object count)", got, wantOnDisc)
 	}
 
@@ -316,14 +316,14 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	}
 
 	// A disc the ledger names but recover never read holds no known
-	// object. status must call it "not fed", never "packed", and must
+	// object. status must call it "missing", never "packed", and must
 	// name recover as the next step.
 	code, out = runCmd(t, "--repo="+repo, "status")
 	if code != 0 {
 		t.Fatalf("status (partial): exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "not fed") {
-		t.Fatalf("status output %q does not call the unfed disc \"not fed\"", out)
+	if !strings.Contains(out, "  missing  ") {
+		t.Fatalf("status output %q does not call the unfed disc missing", out)
 	}
 	if strings.Contains(out, "  packed  ") {
 		t.Fatalf("status output %q calls an unfed disc packed", out)
@@ -685,39 +685,40 @@ func TestRecoverAcceptsAReintroducedLostDisc(t *testing.T) {
 		t.Fatalf("disc burned %d output %q does not refuse the shared number as ambiguous", shared, out)
 	}
 
+	// Discs one and two came back from their own discs: they are on disc
+	// only, so disc burned refuses them. Disc three was packed here, and
+	// disc burned records its burn.
+	roots := map[string]string{"one disc 0": discOne, "two disc 1": discTwoLost, "three disc 1": discThree}
 	for _, d := range discs {
-		if code, out := runCmd(t, "--repo="+repo, "disc", "burned", d.UUID[:8]); code != 0 {
-			t.Fatalf("disc burned %s: exit %d: %s", d.UUID[:8], code, out)
+		code, out := runCmd(t, "--repo="+repo, "disc", "burned", d.UUID[:8])
+		if d.Label == "three disc 1" {
+			if code != 0 {
+				t.Fatalf("disc burned %s: exit %d: %s", d.UUID[:8], code, out)
+			}
+			continue
+		}
+		if code != 1 || !strings.Contains(out, "is already verified") {
+			t.Fatalf("disc burned %s (%s): exit %d, want 1 and the already-verified refusal: %s", d.UUID[:8], d.Label, code, out)
+		}
+		if d.Info.State != stage.DiscOnDiscOnly || d.Items == 0 {
+			t.Fatalf("disc %s (%s): state %s with %d item(s), want on disc only with items", d.UUID, d.Label, d.Info.State, d.Items)
 		}
 	}
 
-	// Discs one and two came back from their own catalogs: staging holds
-	// no file for them, so they are on disc only and no verify can mark
-	// them CLEAN. Disc three was packed here, thus a verify of disc
-	// three, and only disc three, marks objects CLEAN.
-	roots := map[string]string{"one disc 0": discOne, "two disc 1": discTwoLost, "three disc 1": discThree}
-	for _, label := range []string{"one disc 0", "two disc 1"} {
-		d := discs[byLabel(t, discs, label)]
-		if d.OnDiscOnlyObjects == 0 || d.OnDiscOnlyObjects != d.OnDiscObjects {
-			t.Fatalf("disc %s (%s): %d of %d objects on disc only, want all of them", d.UUID, d.Label, d.OnDiscOnlyObjects, d.OnDiscObjects)
-		}
-	}
+	// A verify of disc three moves disc three, and only disc three.
 	verified := discs[byLabel(t, discs, "three disc 1")]
 	if code, out := runCmd(t, "--repo="+repo, "verify", roots["three disc 1"]); code != 0 {
 		t.Fatalf("verify disc three: exit %d: %s", code, out)
 	}
 	for _, d := range discListRows(t, repo) {
+		want := stage.DiscOnDiscOnly
 		if d.UUID == verified.UUID {
-			if d.CleanObjects == 0 {
-				t.Fatalf("disc %s (%s) has 0 clean objects after its own verify", d.UUID, d.Label)
-			}
-			continue
+			want = stage.DiscVerified
 		}
-		if d.CleanObjects != 0 {
-			t.Fatalf("disc %s (%s) has %d clean object(s); the verify of disc three marked another disc", d.UUID, d.Label, d.CleanObjects)
+		if d.Info.State != want {
+			t.Fatalf("disc %s (%s) is %s after the verify of disc three, want %s", d.UUID, d.Label, d.Info.State, want)
 		}
 	}
-
 	for _, d := range discs {
 		if d.UUID == verified.UUID {
 			continue

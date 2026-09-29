@@ -1,90 +1,75 @@
 package stage
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/object"
 )
 
-// fillID returns a 32-byte content id with every byte set to b, and
-// fillDisc a 16-byte disc uuid the same way: simple, deterministic test
-// fixtures, not real content ids.
+// fillID returns a content id with every byte set to b, and fillDisc a
+// disc uuid the same way: simple test values, not real content ids.
 func fillID(b byte) object.ID {
-	var id object.ID
-	for i := range id {
-		id[i] = b
-	}
-	return id
+	return object.ID(bytes.Repeat([]byte{b}, len(object.ID{})))
 }
 
 func fillDisc(b byte) [16]byte {
-	var d [16]byte
-	for i := range d {
-		d[i] = b
-	}
-	return d
+	return [16]byte(bytes.Repeat([]byte{b}, 16))
 }
 
-// goldenCleanSec is a fixed clean time for the golden records, so the
-// checked-in bytes never depend on the clock.
-const goldenCleanSec = int64(1700000000)
-
-// goldenRecords is one record per state, plus one Staged record per
-// reason code, in a fixed order matching
-// testdata/state_records_golden.bin. The two Clean records are the two
-// verifies of the two identical discs; the second one keeps the clean
-// time of the first, and the ON-DISC record carries both forward. The
-// last record is the ON-DISC record recover writes: a disc holds
-// the object, and no verify has happened here.
+// goldenRecords is one record for each state and for each reason, in the
+// order of testdata/state_records_golden.bin. A separate script with its
+// own CRC-32C code wrote that file.
 func goldenRecords() []Record {
-	discA := fillDisc(0xAA)
+	discA, discB := fillDisc(0xAA), fillDisc(0xBB)
 	return []Record{
 		{Sequence: 1, ContentID: fillID(0x11), State: Staged},
 		{Sequence: 2, ContentID: fillID(0x22), State: Packed, RunSeq: 7, DiscUUID: discA},
-		{Sequence: 3, ContentID: fillID(0x22), State: Burned, RunSeq: 7, DiscUUID: discA},
-		{Sequence: 4, ContentID: fillID(0x22), State: Clean, RunSeq: 7, DiscUUID: discA, VerifyCount: 1, CleanSec: goldenCleanSec},
-		{Sequence: 5, ContentID: fillID(0x22), State: Clean, RunSeq: 7, DiscUUID: discA, VerifyCount: 2, CleanSec: goldenCleanSec},
-		{Sequence: 6, ContentID: fillID(0x22), State: OnDiscOnly, RunSeq: 7, DiscUUID: discA, VerifyCount: 2, CleanSec: goldenCleanSec},
-		{Sequence: 7, ContentID: fillID(0x33), State: Staged, Reason: ReasonBurnFailed},
-		{Sequence: 8, ContentID: fillID(0x44), State: Packed, RunSeq: 9, DiscUUID: fillDisc(0xBB), Reason: ReasonVerifyFailed},
-		{Sequence: 9, ContentID: fillID(0x77), State: OnDiscOnly, RunSeq: 3, DiscUUID: fillDisc(0xCC)},
+		{Sequence: 3, ContentID: fillID(0x22), State: OnDisc, RunSeq: 7, DiscUUID: discA},
+		{Sequence: 4, ContentID: fillID(0x22), State: Lost, RunSeq: 7, DiscUUID: discA, Reason: ReasonDiscLost},
+		{Sequence: 5, ContentID: fillID(0x33), State: Staged, Reason: ReasonPackUndone},
+		{Sequence: 6, ContentID: fillID(0x44), State: Staged, Reason: ReasonDiscLost},
+		{Sequence: 7, ContentID: fillID(0x55), State: Packed, RunSeq: 9, DiscUUID: discB, Reason: ReasonLostUndone},
+		{Sequence: 8, ContentID: fillID(0x22), State: OnDisc, RunSeq: 7, DiscUUID: discA, Reason: ReasonLostUndone},
 	}
 }
 
-// TestStateRecordGolden encodes one record per state and per reason
-// code and compares the bytes to a checked-in golden file, then decodes
-// that file and compares the fields back.
+// TestStateRecordGolden encodes the golden records and compares the
+// bytes to the golden file. Then it decodes the golden file and compares
+// the fields.
 func TestStateRecordGolden(t *testing.T) {
-	recs := goldenRecords()
-	var got []byte
-	buf := make([]byte, recordLen)
-	for i := range recs {
-		recs[i].encode(buf)
-		got = append(got, buf...)
-	}
-
 	want, err := os.ReadFile("testdata/state_records_golden.bin")
 	if err != nil {
 		t.Fatalf("read golden: %v", err)
 	}
+	recs := goldenRecords()
+
+	got := make([]byte, len(recs)*recordLen)
+	for i := range recs {
+		recs[i].encode(got[i*recordLen : (i+1)*recordLen])
+	}
 	if len(got) != len(want) {
-		t.Fatalf("length mismatch: got %d, want %d", len(got), len(want))
+		t.Fatalf("length: got %d, want %d", len(got), len(want))
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("first differing byte at offset %d: got 0x%02x, want 0x%02x", i, got[i], want[i])
+			t.Fatalf("first different byte at offset %d (record %d, field offset %d): got 0x%02x, want 0x%02x",
+				i, i/recordLen+1, i%recordLen, got[i], want[i])
 		}
 	}
 
-	for i, r := range recs {
-		off := i * recordLen
-		decoded, ok := decodeRecord(want[off : off+recordLen])
-		if !ok {
-			t.Fatalf("record %d: decode reported a bad CRC", i)
+	for i, wantRec := range recs {
+		buf := want[i*recordLen : (i+1)*recordLen]
+		if !recordIntact(buf) {
+			t.Fatalf("record %d: bad CRC in the golden file", i+1)
 		}
-		if decoded != r {
-			t.Fatalf("record %d: got %+v, want %+v", i, decoded, r)
+		gotRec := decodeRecord(buf)
+		if gotRec != wantRec {
+			t.Fatalf("record %d: decoded %+v, want %+v", i+1, gotRec, wantRec)
+		}
+		if err := gotRec.check(); err != nil {
+			t.Fatalf("record %d: check: %v", i+1, err)
 		}
 	}
 }

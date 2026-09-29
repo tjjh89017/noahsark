@@ -32,6 +32,10 @@ var fakeNow = time.Now
 // with setFakeStdin. nil gives an empty standard input.
 var fakeStdin io.Reader
 
+// fakeStdinTTY tells every fake env that its standard input is a
+// terminal. A test sets it with setFakeTerminal.
+var fakeStdinTTY bool
+
 // setFakeStdin makes r the standard input of every fake env until the
 // test ends.
 func setFakeStdin(t *testing.T, r io.Reader) {
@@ -39,6 +43,17 @@ func setFakeStdin(t *testing.T, r io.Reader) {
 	old := fakeStdin
 	fakeStdin = r
 	t.Cleanup(func() { fakeStdin = old })
+}
+
+// setFakeTerminal makes standard input of every fake env a terminal that
+// holds answer, until the test ends. answer is the text that the
+// operator types, for example "y\n".
+func setFakeTerminal(t *testing.T, answer string) {
+	t.Helper()
+	setFakeStdin(t, strings.NewReader(answer))
+	old := fakeStdinTTY
+	fakeStdinTTY = true
+	t.Cleanup(func() { fakeStdinTTY = old })
 }
 
 // defaultRefName is the ref a commit moves with no --ref under the fake
@@ -56,8 +71,9 @@ type testEnv struct {
 }
 
 // newTestEnv returns a fake env whose working directory is dir. It has
-// no terminal, no environment variables, the clock fakeNow and the
-// standard input fakeStdin.
+// no environment variables, the clock fakeNow, the standard input
+// fakeStdin, a terminal on standard input when fakeStdinTTY is true, and
+// no mount table.
 func newTestEnv(dir string) *testEnv {
 	te := &testEnv{vars: map[string]string{}}
 	stdin := fakeStdin
@@ -68,6 +84,7 @@ func newTestEnv(dir string) *testEnv {
 		stdout:    &te.out,
 		stderr:    &te.errOut,
 		stdin:     stdin,
+		stdinTTY:  fakeStdinTTY,
 		getwd:     func() (string, error) { return dir, nil },
 		getenv:    func(k string) string { return te.vars[k] },
 		now:       func() time.Time { return fakeNow() },
@@ -175,8 +192,7 @@ func countByState(t *testing.T, repo string, state stage.State) int {
 
 // packBurnDisc commits src into repo, packs it, copies the packed tree
 // outside the staging directory to stand in for a mounted disc, and
-// marks the disc burned. It runs no verify, so each test drives the
-// verify count itself.
+// marks the disc burned. It runs no verify.
 func packBurnDisc(t *testing.T, work, repo, src string) string {
 	t.Helper()
 	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
@@ -196,8 +212,8 @@ func packBurnDisc(t *testing.T, work, repo, src string) string {
 
 // packAndVerifyDisc commits src into repo, packs it, copies the packed
 // tree outside the repository's staging directory to stand in for a
-// mounted disc, marks it burned, and verifies it, so the objects of the
-// run reach CLEAN and its tables enter the catalog.
+// mounted disc, marks it burned, and verifies it, so the disc is
+// verified and its tables enter the catalog.
 func packAndVerifyDisc(t *testing.T, work, repo, src string) {
 	t.Helper()
 	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
@@ -387,11 +403,7 @@ func statusDiscs(t *testing.T, repo string) []discSummary {
 	if err != nil {
 		t.Fatalf("LoadDiscsLedger: %v", err)
 	}
-	stageLog, err := stage.OpenReadOnly(layout.stateDir())
-	if err != nil {
-		t.Fatalf("stage.OpenReadOnly: %v", err)
-	}
-	return summarizeDiscs(ledger.Rows, stageLog)
+	return summarizeDiscs(ledger.Rows, readLogs(t, repo))
 }
 
 // packedTreeDir returns the disc root of the disc that pack's output
@@ -408,6 +420,46 @@ func packedTreeDir(t *testing.T, repo, output string) string {
 		return target
 	}
 	return tree
+}
+
+// readLogs replays the item log and the disc state log of the
+// repository at repo, read-only.
+func readLogs(t *testing.T, repo string) *stage.Logs {
+	t.Helper()
+	logs, err := stage.OpenLogs(testLayout(t, repo).stateDir(), false)
+	if err != nil {
+		t.Fatalf("stage.OpenLogs: %v", err)
+	}
+	return logs
+}
+
+// discState returns the record of the disc uuidText in the disc state
+// log of repo.
+func discState(t *testing.T, repo, uuidText string) stage.DiscInfo {
+	t.Helper()
+	u, err := decodeUUID(strings.ReplaceAll(uuidText, "-", ""))
+	if err != nil {
+		t.Fatalf("bad disc uuid %q: %v", uuidText, err)
+	}
+	d, _ := readDiscLog(t, repo).Disc(u)
+	return d
+}
+
+// itemWords counts the derived words of the items whose newest record
+// names the disc uuidText in repo.
+func itemWords(t *testing.T, repo, uuidText string) map[stage.ItemWord]int {
+	t.Helper()
+	u, err := decodeUUID(strings.ReplaceAll(uuidText, "-", ""))
+	if err != nil {
+		t.Fatalf("bad disc uuid %q: %v", uuidText, err)
+	}
+	logs := readLogs(t, repo)
+	words := make(map[stage.ItemWord]int)
+	for _, id := range logs.Items.ItemsOfDisc(u) {
+		w, _ := logs.Word(id)
+		words[w]++
+	}
+	return words
 }
 
 // readDiscLog replays the disc state log of the repository at repo.
@@ -633,4 +685,206 @@ func setFakeNow(t *testing.T, now func() time.Time) {
 	old := fakeNow
 	t.Cleanup(func() { fakeNow = old })
 	fakeNow = now
+}
+
+// discFixture is a repository with one disc in a chosen state. The
+// helpers build it through the CLI with the fake env, where a command
+// exists for the step.
+type discFixture struct {
+	work string
+	repo string
+	src  string
+	// uuid is the uuid text of the disc. seq and label name it.
+	uuid  string
+	seq   uint64
+	label string
+	// root is a copy of the disc root outside the repository: the
+	// stand-in for the mounted disc.
+	root string
+}
+
+// name is the disc name of a message that reports a change:
+// disc SEQ "LABEL".
+func (fx *discFixture) name() string { return discNameShort(fx.seq, fx.label) }
+
+// uuidBytes is the uuid of the disc.
+func (fx *discFixture) uuidBytes(t *testing.T) [16]byte {
+	t.Helper()
+	u, err := decodeUUID(strings.ReplaceAll(fx.uuid, "-", ""))
+	if err != nil {
+		t.Fatalf("bad disc uuid %q: %v", fx.uuid, err)
+	}
+	return u
+}
+
+// run runs the CLI with --repo of the fixture, then args.
+func (fx *discFixture) run(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	return runCmd(t, append([]string{"--repo=" + fx.repo}, args...)...)
+}
+
+// mustRun runs the CLI like run, and fails the test on an exit code
+// other than 0.
+func (fx *discFixture) mustRun(t *testing.T, args ...string) string {
+	t.Helper()
+	code, out := fx.run(t, args...)
+	if code != 0 {
+		t.Fatalf("%v: exit %d: %s", args, code, out)
+	}
+	return out
+}
+
+// repoWithDisc returns a repository with one disc in state, and nothing
+// staged:
+//
+//   - packed: init, commit, pack.
+//   - burned: then disc burned.
+//   - verified: then a verify of the copy of the disc root.
+//   - on disc only: then gc with no wait.
+//   - lost: a verified disc, then the records that disc lost writes.
+//   - missing: two discs packed, the repository removed, and recover of
+//     the second disc only. The fixture names the first disc.
+//   - undone: a packed disc, then the records that pack --undo writes.
+func repoWithDisc(t *testing.T, state stage.DiscState) *discFixture {
+	t.Helper()
+	if state == stage.DiscMissing {
+		return repoWithMissingDisc(t)
+	}
+	work := t.TempDir()
+	fx := &discFixture{work: work, repo: filepath.Join(work, "repo"), src: writeFixtureSource(t)}
+	if code, out := runIn(t, fx.repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	packOut := fx.mustRun(t, "pack", "--capacity=64MiB")
+	fx.uuid = packedDiscUUID(t, packOut)
+	fx.seq, fx.label = 0, defaultRefName()+" disc 0"
+	fx.root = filepath.Join(work, "disc")
+	copyTree(t, packedTreeDir(t, fx.repo, packOut), fx.root)
+
+	switch state {
+	case stage.DiscPacked:
+	case stage.DiscUndone:
+		markPackUndoneInLog(t, fx)
+	case stage.DiscBurned:
+		fx.mustRun(t, "disc", "burned", fx.uuid)
+	case stage.DiscVerified, stage.DiscOnDiscOnly, stage.DiscLost:
+		fx.mustRun(t, "disc", "burned", fx.uuid)
+		fx.mustRun(t, "verify", fx.root)
+		switch state {
+		case stage.DiscOnDiscOnly:
+			fx.mustRun(t, "gc", "--force-after=0d")
+		case stage.DiscLost:
+			markDiscLostInLog(t, fx)
+		}
+	default:
+		t.Fatalf("repoWithDisc: no fixture for state %s", state)
+	}
+	if got := discState(t, fx.repo, fx.uuid).State; got != state {
+		t.Fatalf("repoWithDisc: disc state %s, want %s", got, state)
+	}
+	return fx
+}
+
+// repoWithMissingDisc packs two discs, removes the repository, and
+// recovers it from the second disc only. The first disc is then
+// missing. The fixture names the first disc; its root is the pack --out
+// directory of that disc.
+func repoWithMissingDisc(t *testing.T) *discFixture {
+	t.Helper()
+	work := t.TempDir()
+	fx := &discFixture{work: work, repo: filepath.Join(work, "repo"), src: writeFixtureSource(t)}
+	if code, out := runIn(t, fx.repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	fx.root = filepath.Join(work, "disc0")
+	fx.uuid = packedDiscUUID(t, fx.mustRun(t, "pack", "--capacity=64MiB", "--out="+fx.root))
+	fx.seq, fx.label = 0, defaultRefName()+" disc 0"
+	if err := os.WriteFile(filepath.Join(fx.src, "second.txt"), []byte("content of the second disc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	second := filepath.Join(work, "disc1")
+	fx.mustRun(t, "pack", "--capacity=64MiB", "--out="+second)
+	if err := os.RemoveAll(fx.repo); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := fx.run(t, "recover", second); code != 1 {
+		t.Fatalf("recover of the second disc: exit %d, want 1: %s", code, out)
+	}
+	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscMissing {
+		t.Fatalf("repoWithMissingDisc: disc state %s, want missing", got)
+	}
+	return fx
+}
+
+// markDiscLostInLog writes the records that disc lost writes for the
+// disc of fx: its Packed items return to Staged, its OnDisc items become
+// Lost, the Lost event, and the removal of its plan directory.
+func markDiscLostInLog(t *testing.T, fx *discFixture) {
+	t.Helper()
+	u := fx.uuidBytes(t)
+	logs, err := stage.OpenLogs(testLayout(t, fx.repo).stateDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Items.MarkStaged(stage.ReasonDiscLost, logs.Items.ItemsOfDiscInState(u, stage.Packed)...); err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Items.MarkLost(logs.Items.ItemsOfDiscInState(u, stage.OnDisc)...); err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Discs.Append(discEvent(fakeNow(), u, stage.EventLost)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(testLayout(t, fx.repo).planDir(u)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// markPackUndoneInLog writes the records that pack --undo writes for the
+// packed disc of fx: its items return to Staged, the PackUndone event,
+// and the removal of its ledger row, its catalog tables and its plan
+// directory.
+func markPackUndoneInLog(t *testing.T, fx *discFixture) {
+	t.Helper()
+	u := fx.uuidBytes(t)
+	layout := testLayout(t, fx.repo)
+	logs, err := stage.OpenLogs(layout.stateDir(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Items.MarkPackUndone(logs.Items.ItemsOfDiscInState(u, stage.Packed)...); err != nil {
+		t.Fatal(err)
+	}
+	if err := logs.Discs.Append(discEvent(fakeNow(), u, stage.EventPackUndone)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readConfig(configPath(fx.repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := slices.DeleteFunc(ledger.Rows, func(r format.DiscsRow) bool { return r.DiscUUID == u })
+	if err := image.SaveDiscsLedger(layout.discsLedgerFile(), repoUUID, rows); err != nil {
+		t.Fatal(err)
+	}
+	c, err := catalog.Open(fx.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveDisc(u); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(layout.planDir(u)); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -11,21 +11,19 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// discSummary is one disc's row in "status": every row the ledger
-// records for a disc_uuid, folded into a single line.
+// discSummary is one disc's row in "status": the rows of the disc ledger
+// for one disc uuid, folded into a single line, and the record of the
+// disc in the disc state log.
 type discSummary struct {
 	UUID          string
 	Seq           uint64
 	Label         string
 	CapacityBytes uint64
-	OnDiscObjects int
-	PackedObjects int
-	BurnedObjects int
-	CleanObjects  int
-	// OnDiscOnlyObjects is how many of the disc's objects staging holds
-	// no file for: gc freed them, or recover read them from the
-	// disc itself. Such an object waits for no burn and no verify.
-	OnDiscOnlyObjects int
+	// Info is the replayed record of the disc. Its state is DiscUnknown
+	// when the disc state log does not know the disc.
+	Info stage.DiscInfo
+	// Items is the number of items whose newest record names the disc.
+	Items int
 }
 
 func init() {
@@ -38,12 +36,11 @@ func init() {
 }
 
 // cmdStatus implements "noahsark status": what waits for a pack, the
-// state of every disc in one word, and the one action to take next. It
-// replaces the counter list "disc list" printed. A counter answers a
-// question the operator did not ask; the state word and the next line
-// answer the one they did.
+// state of every disc in one word, and the one action to take next.
+// status takes no lock and changes no log.
 func cmdStatus(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
+	const cmd = "status"
 	if len(args) != 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark status")
 		return 2
@@ -72,21 +69,20 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
-	stageLog, err := stage.OpenReadOnly(layout.stateDir())
+	logs, err := openLogs(cmd, layout, false, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
-	warnIfTruncated("status", stageLog, stderr)
 
-	discs := summarizeDiscs(ledger.Rows, stageLog)
+	discs := summarizeDiscs(ledger.Rows, logs)
 
 	c, err := catalog.Open(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
-	stagedObjects, stagedBytes, err := image.StagedTotals(layout.objectPath(c), stageLog)
+	stagedObjects, stagedBytes, err := image.StagedTotals(layout.objectPath(c), logs.Items)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
@@ -94,56 +90,32 @@ func cmdStatus(e *env, args []string) int {
 
 	_, _ = fmt.Fprintf(stdout, "staged: %d objects, %d bytes\n", stagedObjects, stagedBytes)
 	for _, d := range discs {
-		_, _ = fmt.Fprintf(stdout, "disc %d %q  %s  %s\n", d.Seq, d.Label, discStateWord(d), d.UUID)
+		_, _ = fmt.Fprintf(stdout, "disc %d %q  %s  %s\n", d.Seq, d.Label, d.Info.State, d.UUID)
 	}
 	_, _ = fmt.Fprintln(stdout, nextStepLine(discs, stagedObjects))
 	return 0
 }
 
-// discStateWord renders one disc's state as the single word the
-// operator acts on.
-func discStateWord(d discSummary) string {
-	switch {
-	case notFed(d):
-		return "not fed"
-	case d.OnDiscObjects > 0 && d.OnDiscOnlyObjects == d.OnDiscObjects:
-		return "on disc only"
-	case d.PackedObjects > 0:
-		return "packed"
-	case d.BurnedObjects > 0:
-		return "burned"
-	case d.CleanObjects > 0:
-		return "verified"
-	default:
-		return "packed"
-	}
-}
-
-// notFed reports whether the disc ledger names this disc but the state
-// log holds no object of it at all. A partial recover leaves exactly
-// this: the ledger came from a disc that was fed, and this disc was
-// not. The objects of the disc are unknown until it is fed too.
-func notFed(d discSummary) bool {
-	return d.OnDiscObjects == 0 && d.PackedObjects == 0 && d.BurnedObjects == 0 && d.CleanObjects == 0
-}
-
 // nextStepLine names the one action to take next, in the order of the
-// disc cycle: feed a disc to recover, burn, verify, pack, commit.
+// disc cycle: give a missing disc to recover, burn, verify, pack,
+// commit.
 func nextStepLine(discs []discSummary, stagedObjects int) string {
-	for _, d := range discs {
-		if notFed(d) {
-			return fmt.Sprintf("next: mount disc %d, then run: noahsark recover <MOUNT>", d.Seq)
+	first := func(state stage.DiscState) (discSummary, bool) {
+		for _, d := range discs {
+			if d.Info.State == state {
+				return d, true
+			}
 		}
+		return discSummary{}, false
 	}
-	for _, d := range discs {
-		if d.PackedObjects > 0 {
-			return fmt.Sprintf("next: burn disc %d, then run: noahsark disc burned %d", d.Seq, d.Seq)
-		}
+	if d, ok := first(stage.DiscMissing); ok {
+		return fmt.Sprintf("next: mount disc %d, then run: noahsark recover <MOUNT>", d.Seq)
 	}
-	for _, d := range discs {
-		if d.BurnedObjects > 0 {
-			return fmt.Sprintf("next: mount disc %d, then run: noahsark verify <MOUNT>", d.Seq)
-		}
+	if d, ok := first(stage.DiscPacked); ok {
+		return fmt.Sprintf("next: burn disc %d, then run: noahsark disc burned %d", d.Seq, d.Seq)
+	}
+	if d, ok := first(stage.DiscBurned); ok {
+		return fmt.Sprintf("next: mount disc %d, then run: noahsark verify <MOUNT>", d.Seq)
 	}
 	if stagedObjects > 0 {
 		return "next: pack a disc, run: noahsark pack"
@@ -156,16 +128,10 @@ func nextStepLine(discs []discSummary, stagedObjects int) string {
 
 // summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
 // ascending disc_seq order, and folds each disc's rows into one
-// discSummary: the label and forced capacity of its newest run, the sum
-// of used_sectors across every run, the disc's on-disc, packed, burned,
-// clean and on-disc-only object counts.
-func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log) []discSummary {
-	onDiscByDisc := stageLog.OnDiscCountByDisc()
-	packedByDisc := stageLog.PackedCountByDisc()
-	burnedByDisc := stageLog.CountByDiscInState(stage.Burned)
-	cleanByDisc := stageLog.CleanCountByDisc()
-	onDiscOnlyByDisc := stageLog.CountByDiscInState(stage.OnDiscOnly)
-
+// discSummary: the label and forced capacity of its newest run, its
+// record in the disc state log, and the count of its items. An undone
+// disc gets no summary.
+func summarizeDiscs(rows []format.DiscsRow, logs *stage.Logs) []discSummary {
 	order := make([]string, 0)
 	byUUID := make(map[string][]format.DiscsRow)
 	for _, r := range rows {
@@ -175,7 +141,7 @@ func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log) []discSummary {
 		}
 		byUUID[key] = append(byUUID[key], r)
 	}
-	sort.Slice(order, func(i, j int) bool {
+	sort.SliceStable(order, func(i, j int) bool {
 		return byUUID[order[i]][0].DiscSeq < byUUID[order[j]][0].DiscSeq
 	})
 
@@ -183,16 +149,18 @@ func summarizeDiscs(rows []format.DiscsRow, stageLog *stage.Log) []discSummary {
 	for _, key := range order {
 		discRows := byUUID[key]
 		newest := discRows[len(discRows)-1]
+		info, _ := logs.Discs.Disc(newest.DiscUUID)
+		if info.State == stage.DiscUndone {
+			continue
+		}
+		info.UUID = newest.DiscUUID
 		discs = append(discs, discSummary{
-			UUID:              key,
-			Seq:               newest.DiscSeq,
-			Label:             labelText(newest.Label[:newest.LabelLen]),
-			CapacityBytes:     newest.CapacitySectors * image.SectorSize,
-			OnDiscObjects:     onDiscByDisc[newest.DiscUUID],
-			PackedObjects:     packedByDisc[newest.DiscUUID],
-			BurnedObjects:     burnedByDisc[newest.DiscUUID],
-			CleanObjects:      cleanByDisc[newest.DiscUUID],
-			OnDiscOnlyObjects: onDiscOnlyByDisc[newest.DiscUUID],
+			UUID:          key,
+			Seq:           newest.DiscSeq,
+			Label:         labelText(newest.Label[:newest.LabelLen]),
+			CapacityBytes: newest.CapacitySectors * image.SectorSize,
+			Info:          info,
+			Items:         len(logs.Items.ItemsOfDisc(newest.DiscUUID)),
 		})
 	}
 	return discs

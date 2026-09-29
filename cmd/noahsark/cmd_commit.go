@@ -96,12 +96,15 @@ func (o *commitOptions) run(e *env, args []string) int {
 	}
 
 	layout := layoutOf(repoDir, cfg)
-	commitStageLog, err := stage.Open(layout.stateDir())
+	logs, err := openLogs("commit", layout, true, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
-	warnIfTruncated("commit", commitStageLog, stderr)
+	if refuseWhileMissing("commit", layout, cfg, logs.Discs, stderr) {
+		return 1
+	}
+	commitStageLog := logs.Items
 	c, err := catalog.Open(repoDir)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
@@ -119,13 +122,16 @@ func (o *commitOptions) run(e *env, args []string) int {
 	if len(allExcludes) > 0 {
 		w.Exclude = object.NewMatcher(allExcludes)
 	}
+	// commit treats a Lost item as not known: it writes the chunk again,
+	// and records the item as Staged. A Staged item gets its chunk file
+	// again when the file is missing or has the wrong size.
 	w.Known = func(id object.ID) bool {
 		rec, ok := commitStageLog.Get(id)
-		return ok && (rec.State == stage.Staged || rec.State.OnDisc())
+		return ok && rec.State != stage.Lost
 	}
 	w.OnDisc = func(id object.ID) bool {
 		rec, ok := commitStageLog.Get(id)
-		return ok && rec.State.OnDisc()
+		return ok && (rec.State == stage.Packed || rec.State == stage.OnDisc)
 	}
 	snapID, sum, err := w.Commit(source)
 	if err != nil {
@@ -209,19 +215,11 @@ func printSpecialWarnings(stdout io.Writer, special []object.SpecialPath) {
 	_, _ = fmt.Fprintf(stdout, "special files: %d; a FIFO, a socket and a device node carry no content, and restore does not create them\n", len(special))
 }
 
-// markStaged appends a Staged record to the state log l for the
-// snapshot and every object reachable names that has no record yet: the
-// whole staging state machine's entry point. reachable comes from the
-// Writer's own Summary, not a walk of the files: a chunk the Writer
-// found already on a disc gets no chunk file to walk into.
+// markStaged records the snapshot and every item that reachable names
+// as Staged, when the state log l does not know the item or knows it as
+// Lost, in one batch with one sync. reachable comes from the Writer's
+// own Summary, not a walk of the files: a chunk the Writer found already
+// on a disc gets no chunk file to walk into.
 func markStaged(l *stage.Log, snapID object.ID, reachable []object.ID) error {
-	if err := l.EnsureStaged(snapID); err != nil {
-		return err
-	}
-	for _, id := range reachable {
-		if err := l.EnsureStaged(id); err != nil {
-			return err
-		}
-	}
-	return nil
+	return l.EnsureStaged(append([]object.ID{snapID}, reachable...)...)
 }

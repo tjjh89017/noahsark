@@ -4,157 +4,78 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
 // TestDiscBurnedThenVerifyReachesClean runs "disc burned", then verify:
-// only after "disc burned" has moved the run's objects to BURNED can a
-// passing verify move them on to CLEAN. "disc burned --undo" reverses
-// that, back to PACKED, so a following verify again reports the disc
-// not marked burned.
+// the disc goes from packed to burned to verified, and a second verify
+// logs one more check and changes no state.
 func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
+	fx := repoWithDisc(t, stage.DiscPacked)
 
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
+	out := fx.mustRun(t, "disc", "burned", fx.uuid)
+	if !strings.Contains(out, fx.name()+": burn recorded\n") {
+		t.Fatalf("disc burned output %q, want the burn-recorded line", out)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	stagedTree := packedTreeDir(t, repo, packOut)
-	discUUID := packedDiscUUID(t, packOut)
-
-	mounted := filepath.Join(work, "mounted")
-	copyTree(t, stagedTree, mounted)
-
-	code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID)
-	if code != 0 {
-		t.Fatalf("disc burned: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "marked burned") || strings.Contains(out, "marked burned, 0 objects") {
-		t.Fatalf("disc burned output %q did not mark objects burned", out)
+	if words := itemWords(t, fx.repo, fx.uuid); len(words) != 1 || words[stage.WordBurned] == 0 {
+		t.Fatalf("item words %v after disc burned, want every item burned", words)
 	}
 
-	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
-	if code != 0 {
-		t.Fatalf("verify (burned): exit %d: %s", code, out)
+	out = fx.mustRun(t, "verify", fx.root)
+	if !strings.Contains(out, "\nverified\n") {
+		t.Fatalf("verify (burned) output %q, want the verified line", out)
 	}
-	if !strings.Contains(out, "object(s) verified on") || strings.Contains(out, "0 object(s) verified on") {
-		t.Fatalf("verify (burned) output %q did not report the objects verified", out)
-	}
-	if strings.Contains(out, "not marked burned") {
-		t.Fatalf("verify (burned) output %q still warned about an unmarked disc", out)
+	if words := itemWords(t, fx.repo, fx.uuid); len(words) != 1 || words[stage.WordClean] == 0 {
+		t.Fatalf("item words %v after verify, want every item clean", words)
 	}
 
-	// A second verify of the same disc is idempotent: every object is
-	// already CLEAN, so nothing more is marked, and the CLEAN line does
-	// not print at all, since no object was BURNED this time.
-	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
-	if code != 0 {
-		t.Fatalf("verify (mounted, second pass): exit %d: %s", code, out)
+	out = fx.mustRun(t, "verify", fx.root)
+	if !strings.Contains(out, "already verified; check logged") {
+		t.Fatalf("verify (second pass) output %q, want the check-logged line", out)
 	}
-	if strings.Contains(out, "object(s) verified on") {
-		t.Fatalf("verify (mounted, second pass) output %q, want no verified-count line when nothing was BURNED", out)
+	if d := discState(t, fx.repo, fx.uuid); d.State != stage.DiscVerified {
+		t.Fatalf("disc state %s, want verified", d.State)
 	}
 }
 
-// TestDiscBurnedUndo marks a disc burned, then undoes it: the run's
-// objects must return to PACKED, and a following verify must again
-// report the disc as not marked burned rather than reaching CLEAN.
+// TestDiscBurnedUndo records a burn, then removes it: the disc returns
+// to packed, and a following verify records the burn and the verified
+// record together.
 func TestDiscBurnedUndo(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
+	fx := repoWithDisc(t, stage.DiscBurned)
 
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
+	out := fx.mustRun(t, "--yes", "disc", "burned", "--undo", fx.uuid)
+	if !strings.Contains(out, fx.name()+": burn record removed\n") {
+		t.Fatalf("disc burned --undo output %q, want the burn-record-removed line", out)
 	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	stagedTree := packedTreeDir(t, repo, packOut)
-	discUUID := packedDiscUUID(t, packOut)
-
-	mounted := filepath.Join(work, "mounted")
-	copyTree(t, stagedTree, mounted)
-
-	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
-		t.Fatalf("disc burned: exit %d: %s", code, out)
+	if d := discState(t, fx.repo, fx.uuid); d.State != stage.DiscPacked {
+		t.Fatalf("disc state %s after the undo, want packed", d.State)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "--undo", discUUID)
-	if code != 0 {
-		t.Fatalf("disc burned --undo: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "returned to packed") || strings.Contains(out, "returned to packed, 0 objects") {
-		t.Fatalf("disc burned --undo output %q did not return objects to packed", out)
-	}
-
-	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
-	if code != 0 {
-		t.Fatalf("verify (after undo): exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "not marked burned") {
-		t.Fatalf("verify (after undo) output %q, want the not-marked-burned line again", out)
+	out = fx.mustRun(t, "verify", fx.root)
+	if !strings.Contains(out, "burn recorded; verified") {
+		t.Fatalf("verify (after undo) output %q, want the burn-recorded line", out)
 	}
 }
 
 // TestDiscBurnedUndoRefusedOnceClean checks that "disc burned --undo"
-// refuses, and changes nothing, once verify has already moved a disc's
-// objects on to CLEAN: a verified disc cannot be returned to packed.
+// refuses, asks nothing, and changes nothing, once a verify has made
+// the disc verified.
 func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
+	fx := repoWithDisc(t, stage.DiscVerified)
+	before := discLogBytes(t, fx.repo)
 
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	stagedTree := packedTreeDir(t, repo, packOut)
-	discUUID := packedDiscUUID(t, packOut)
-
-	mounted := filepath.Join(work, "mounted")
-	copyTree(t, stagedTree, mounted)
-
-	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
-		t.Fatalf("disc burned: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
-		t.Fatalf("verify: exit %d: %s", code, out)
-	}
-
-	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "--undo", discUUID)
+	code, out := fx.run(t, "--yes", "disc", "burned", "--undo", fx.uuid)
 	if code != 1 {
 		t.Fatalf("disc burned --undo (verified disc): exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "is verified and cannot be returned to packed") {
-		t.Fatalf("disc burned --undo output %q missing the verified-disc refusal", out)
+	if !strings.Contains(out, "disc 0 is not burned") || strings.Contains(out, "warning:") {
+		t.Fatalf("disc burned --undo output %q, want the not-burned refusal and no warning", out)
 	}
-
-	// Nothing changed: a following verify still reports every object
-	// CLEAN, not reset to PACKED.
-	code, out = runCmd(t, "--repo="+repo, "verify", mounted)
-	if code != 0 {
-		t.Fatalf("verify (after refused undo): exit %d: %s", code, out)
-	}
-	if strings.Contains(out, "not marked burned") {
-		t.Fatalf("verify (after refused undo) output %q, want the disc still burned and clean", out)
+	if string(discLogBytes(t, fx.repo)) != string(before) {
+		t.Fatal("a refused undo wrote the disc state log")
 	}
 }
 
@@ -162,35 +83,17 @@ func TestDiscBurnedUndoRefusedOnceClean(t *testing.T) {
 // the disc number and an upper case uuid prefix with a hyphen in place
 // of the full uuid.
 func TestDiscBurnedBySeqAndUUIDPrefix(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
+	fx := repoWithDisc(t, stage.DiscPacked)
 
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB"); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
+	out := fx.mustRun(t, "disc", "burned", "0")
+	if !strings.Contains(out, "burn recorded") {
+		t.Fatalf("disc burned 0 output %q, want the burn-recorded line", out)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "0")
-	if code != 0 {
-		t.Fatalf("disc burned 0 (by seq): exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "marked burned") || strings.Contains(out, "marked burned, 0 objects") {
-		t.Fatalf("disc burned 0 output %q did not mark objects burned", out)
-	}
-
-	prefix := strings.ToUpper(defaultDiscUUID(t, repo, 0)[:13])
-	code, out = runCmd(t, "--repo="+repo, "disc", "burned", "--undo", prefix)
-	if code != 0 {
-		t.Fatalf("disc burned --undo %s (by uuid prefix): exit %d: %s", prefix, code, out)
-	}
-	if !strings.Contains(out, "returned to packed") || strings.Contains(out, "returned to packed, 0 objects") {
-		t.Fatalf("disc burned --undo (by uuid prefix) output %q did not return objects to packed", out)
+	prefix := strings.ToUpper(defaultDiscUUID(t, fx.repo, 0)[:13])
+	out = fx.mustRun(t, "--yes", "disc", "burned", "--undo", prefix)
+	if !strings.Contains(out, "burn record removed") {
+		t.Fatalf("disc burned --undo %s output %q, want the burn-record-removed line", prefix, out)
 	}
 }
 
@@ -202,77 +105,48 @@ func defaultDiscUUID(t *testing.T, repo string, seq uint64) string {
 			return r.UUID
 		}
 	}
-	t.Fatalf("status --json names no disc %d", seq)
+	t.Fatalf("status names no disc %d", seq)
 	return ""
 }
 
-// TestDiscBurnedUndoFlagAfterUUID checks that "disc burned UUID --undo"
-// works, matching the corrected usage text: --undo before UUID.
+// TestDiscBurnedUndoFlagBeforeUUID checks that --undo comes before the
+// DISC argument, as the usage text gives.
 func TestDiscBurnedUndoFlagBeforeUUID(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
+	fx := repoWithDisc(t, stage.DiscBurned)
 
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	discUUID := packedDiscUUID(t, packOut)
-
-	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
-		t.Fatalf("disc burned: exit %d: %s", code, out)
-	}
-
-	code, out := runCmd(t, "--repo="+repo, "disc", "burned", "--undo", discUUID)
-	if code != 0 {
-		t.Fatalf("disc burned --undo UUID: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "undo: returned to packed") {
+	out := fx.mustRun(t, "--yes", "disc", "burned", "--undo", fx.uuid)
+	if !strings.Contains(out, "burn record removed") {
 		t.Fatalf("disc burned --undo output %q, want the undo line", out)
 	}
-}
-
-// TestDiscBurnedAlreadyBurnedReportsZero checks that running "disc
-// burned" again on an already-burned disc prints the already-burned
-// line and exits 0, rather than "marked burned, 0 objects".
-func TestDiscBurnedAlreadyBurnedReportsZero(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	discUUID := packedDiscUUID(t, packOut)
-
-	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID); code != 0 {
-		t.Fatalf("disc burned: exit %d: %s", code, out)
-	}
-
-	code, out := runCmd(t, "--repo="+repo, "disc", "burned", discUUID)
-	if code != 0 {
-		t.Fatalf("disc burned (again): exit %d, want 0: %s", code, out)
-	}
-	if !strings.Contains(out, "already burned, 0 objects to mark") {
-		t.Fatalf("disc burned (again) output %q, want the already-burned line", out)
+	if code, out := fx.run(t, "disc", "burned", fx.uuid, "--undo"); code != 2 {
+		t.Fatalf("disc burned DISC --undo: exit %d, want 2: %s", code, out)
 	}
 }
 
-// TestDiscBurnedUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
-// disc burned: each case exits 2, never 0 or 1.
+// TestDiscBurnedAlreadyBurnedIsRefused checks that "disc burned" of a
+// burned disc refuses with exit code 1 and writes nothing.
+func TestDiscBurnedAlreadyBurnedIsRefused(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscBurned)
+	before := discLogBytes(t, fx.repo)
+
+	code, out := fx.run(t, "disc", "burned", fx.uuid)
+	if code != 1 {
+		t.Fatalf("disc burned (again): exit %d, want 1: %s", code, out)
+	}
+	if !strings.Contains(out, "disc 0 already has a burn record") {
+		t.Fatalf("disc burned (again) output %q, want the already-burned refusal", out)
+	}
+	if strings.Contains(out, nextStatusLine) {
+		t.Fatalf("disc burned (again) output %q, want no next line after a refusal", out)
+	}
+	if string(discLogBytes(t, fx.repo)) != string(before) {
+		t.Fatal("a refused disc burned wrote the disc state log")
+	}
+}
+
+// TestDiscBurnedUsageErrorsExitTwo checks the usage-error convention of
+// the exit code registry for disc burned: each case exits 2, never 0 or
+// 1.
 func TestDiscBurnedUsageErrorsExitTwo(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
@@ -284,6 +158,8 @@ func TestDiscBurnedUsageErrorsExitTwo(t *testing.T) {
 		args []string
 	}{
 		{"missing DISC", []string{"--repo=" + repo, "disc", "burned"}},
+		{"two DISC arguments", []string{"--repo=" + repo, "disc", "burned", "0", "1"}},
+		{"no disc matches", []string{"--repo=" + repo, "disc", "burned", "0"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -292,5 +168,35 @@ func TestDiscBurnedUsageErrorsExitTwo(t *testing.T) {
 				t.Fatalf("args %v: exit %d, want 2: %s", c.args, code, out)
 			}
 		})
+	}
+}
+
+// TestResolveDiscHidesAnUndoneDisc checks that an undone disc matches no
+// disc argument, also when its ledger row is still there.
+func TestResolveDiscHidesAnUndoneDisc(t *testing.T) {
+	dir := t.TempDir()
+	logs, err := stage.OpenLogs(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	undone := [16]byte{0xAA, 1}
+	kept := [16]byte{0xBB, 2}
+	events := []stage.DiscRecord{
+		{TimeSec: 1, DiscUUID: undone, Event: stage.EventPacked, DiscSeq: 0, RunSeq: 1},
+		{TimeSec: 2, DiscUUID: undone, Event: stage.EventPackUndone},
+		{TimeSec: 3, DiscUUID: kept, Event: stage.EventPacked, DiscSeq: 1, RunSeq: 2},
+	}
+	if err := logs.Discs.Append(events...); err != nil {
+		t.Fatal(err)
+	}
+	rows := []format.DiscsRow{{DiscSeq: 0, RunSeq: 1, DiscUUID: undone}, {DiscSeq: 1, RunSeq: 2, DiscUUID: kept}}
+
+	for _, arg := range []string{"0", "aa01"} {
+		if _, err := resolveDisc(rows, logs.Discs, arg); err == nil || err.Error() != "no disc matches "+arg {
+			t.Fatalf("resolveDisc(%q) error = %v, want no match", arg, err)
+		}
+	}
+	if got, err := resolveDisc(rows, logs.Discs, "1"); err != nil || got != kept {
+		t.Fatalf("resolveDisc(1) = %x, %v; want the kept disc", got, err)
 	}
 }
