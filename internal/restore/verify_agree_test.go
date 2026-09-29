@@ -114,6 +114,42 @@ func TestVerifyAndRestoreAgreeOnAHeaderCRCMismatch(t *testing.T) {
 	}
 }
 
+// TestRestoreRefusesADamagedRootTree damages the snapshot's root tree.
+// No path holds the root tree, so the report cannot name it. Restore
+// must return the damage as an error. It must not return a clean result
+// with no file restored.
+func TestRestoreRefusesADamagedRootTree(t *testing.T) {
+	stagingDir, _, snapID := commitMultiFixture(t)
+	outDir := packSequence(t, stagingDir, snapID, []uint64{50_000_000})[0]
+
+	cache := image.NewNameCache()
+	base, err := findNoahsark(outDir, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapRaw, _, err := readVerified(base, snapID, true, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap format.Snapshot
+	if _, err := snap.Decode(snapRaw); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := objectPath(base, object.ID(snap.RootTree), false, cache)
+	data, err := os.ReadFile(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[40] ^= 0xff
+	if err := os.WriteFile(rootPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Restore(outDir, snapID, t.TempDir()); err == nil {
+		t.Fatal("Restore: want an error over the damaged root tree, got none")
+	}
+}
+
 // TestRestoreRefusesAChunkHeaderCRCMismatch damages a chunk object's
 // header, never its payload, leaving the chunk's content id intact. A
 // chunk's payload is written straight into a restored file, with no

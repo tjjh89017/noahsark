@@ -170,6 +170,9 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 
 	snapRaw, _, ok := src.read(snapshotID, true)
 	if !ok {
+		if err := src.badObject(snapshotID); err != nil {
+			return src.wp.report, err
+		}
 		return src.wp.report, src.finalError()
 	}
 	var snap format.Snapshot
@@ -179,6 +182,11 @@ func RestoreMultiWithProgress(discRoots []string, snapshotID object.ID, outDir s
 
 	rootRaw, _, ok := src.read(object.ID(snap.RootTree), false)
 	if !ok {
+		// No path holds a damaged root tree, so the report cannot name it.
+		// Return the damage as the error.
+		if err := src.badObject(object.ID(snap.RootTree)); err != nil {
+			return src.wp.report, err
+		}
 		err := src.finalError()
 		if mde, isMissing := err.(*MissingDiscError); isMissing && len(mde.ByDisc) == 0 {
 			mde.RootTreeMissing = true
