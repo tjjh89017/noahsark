@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"syscall"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -40,18 +39,19 @@ func (e *FatalDiscError) Unwrap() error { return e.Err }
 // file of the file that holds it.
 //
 // It reads every tree and blob from the catalog. Only chunk payloads come
-// from a disc.
+// from a disc. It keeps the state of each file in a temporary file, not
+// in memory, so its memory does not grow with the number of files.
 type Assembler struct {
-	c           *catalog.Catalog
-	sel         *plan.Selection
-	outDir      string
-	wp          *writePolicy
-	dirsForMeta []dirMeta
-	// pending holds one record for each file in scope that is not
-	// complete yet, by destination path. A file that the first walk
-	// finished, resumed or skipped is absent, and a later walk then
-	// reads neither its blob nor its bytes.
-	pending map[string]*pendingFile
+	c      *catalog.Catalog
+	sel    *plan.Selection
+	outDir string
+	wp     *writePolicy
+	// states holds a record for each file in scope that is not complete
+	// yet. A file that the first walk finished, resumed or skipped has no
+	// record, and a later walk then reads neither its blob nor its bytes.
+	states *fileStates
+	// fileNo is the number of the next regular file of the current walk.
+	fileNo int64
 	// firstDisc is true until the first walk ends. The first walk
 	// creates the directories and the symlinks, and decides every
 	// existing destination; a later walk creates nothing.
@@ -62,32 +62,20 @@ type Assembler struct {
 	chunkBuf []byte
 }
 
-// pendingFile is what the assembler keeps for one file it has not
-// finished: how many blob entries still owe their bytes, and whether a
-// part file from an earlier run was already on disk.
-// Nothing here grows with the file's size or with the snapshot's.
-type pendingFile struct {
-	remaining int
-	resume    bool
-}
-
-// dirMeta is one directory the walk created, recorded so its metadata
-// can be applied in a deferred pass, deepest first, after the last
-// disc.
-type dirMeta struct {
-	path string
-	e    format.TreeEntry
-}
-
 // errIncomplete names a file that needs a chunk that no disc of this
 // restore gave: a chunk on a lost disc, or a chunk that no catalog INDEX
 // lists.
 var errIncomplete = errors.New("file not restored: a chunk of this file is on a lost disc or on no disc known to the catalog; the part file stays")
 
 // NewAssembler prepares a disc-swap restore of sel into outDir. It
-// creates outDir and reads nothing else until the first Disc call.
+// creates outDir and the temporary state file, and reads nothing else
+// until the first Disc call. Close frees the state file.
 func NewAssembler(c *catalog.Catalog, sel *plan.Selection, outDir string, overwrite bool) (*Assembler, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return nil, err
+	}
+	states, err := newFileStates()
+	if err != nil {
 		return nil, err
 	}
 	return &Assembler{
@@ -95,10 +83,13 @@ func NewAssembler(c *catalog.Catalog, sel *plan.Selection, outDir string, overwr
 		sel:       sel,
 		outDir:    outDir,
 		wp:        &writePolicy{overwrite: overwrite},
-		pending:   make(map[string]*pendingFile),
+		states:    states,
 		firstDisc: true,
 	}, nil
 }
+
+// Close frees the temporary state file.
+func (a *Assembler) Close() { a.states.close() }
 
 // Disc walks the selection one time against d, and writes every chunk d
 // holds into the part file of the file that holds it. A file whose last
@@ -109,12 +100,36 @@ func NewAssembler(c *catalog.Catalog, sel *plan.Selection, outDir string, overwr
 // Only a *FatalDiscError, and a failure that stops the walk itself, is
 // returned.
 func (a *Assembler) Disc(d DiscChunks, prog *progress.Reporter) error {
-	if !a.firstDisc && len(a.pending) == 0 {
+	if !a.firstDisc && a.states.pending == 0 {
 		return nil
 	}
-	err := a.sel.Walk(a.outDir, &discWalk{a: a, d: d, prog: prog})
+	err := a.walk(&discWalk{a: a, d: d, prog: prog})
 	a.firstDisc = false
 	return err
+}
+
+// walk walks the selection with v and numbers its regular files. A walk
+// after the first must meet as many files as the first.
+func (a *Assembler) walk(v plan.Visitor) error {
+	a.fileNo = 0
+	if err := a.sel.Walk(a.outDir, v); err != nil {
+		return err
+	}
+	if a.firstDisc {
+		a.states.files = a.fileNo
+		return nil
+	}
+	if a.fileNo != a.states.files {
+		return errDestChanged
+	}
+	return nil
+}
+
+// nextFile returns the number of the next regular file of the walk.
+func (a *Assembler) nextFile() int64 {
+	no := a.fileNo
+	a.fileNo++
+	return no
 }
 
 // discWalk is the walk of one disc.
@@ -135,14 +150,10 @@ func (w *discWalk) Dir(parent string, names []string) (string, bool, error) {
 	return ensureDir(parent, names, nil)
 }
 
-func (w *discWalk) DirDone(path string, e format.TreeEntry) {
-	if w.a.firstDisc {
-		w.a.dirsForMeta = append(w.a.dirsForMeta, dirMeta{path, e})
-	}
-}
+func (w *discWalk) DirDone(string, format.TreeEntry) {}
 
 func (w *discWalk) File(dest, part string, e format.TreeEntry) error {
-	return w.a.file(dest, part, object.ID(e.ContentID), e, w.d, w.prog)
+	return w.a.file(w.a.nextFile(), dest, part, e, w.d, w.prog)
 }
 
 // Other restores a symlink, and reports a special file, on the first
@@ -170,23 +181,28 @@ func blobError(id object.ID, err error) error {
 	return fmt.Errorf("blob %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
 }
 
-// file restores one regular file as far as d can take it. The first
-// walk decides an existing destination and registers the file; a later
-// walk works only on a file that is still pending.
-func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry, d DiscChunks, prog *progress.Reporter) error {
-	pf, known := a.pending[dest]
-	if !known && !a.firstDisc {
-		return nil
+// file restores regular file no as far as d can take it. The first walk
+// decides an existing destination and registers the file; a later walk
+// works only on a file that is still pending.
+func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d DiscChunks, prog *progress.Reporter) error {
+	var st fileState
+	pending := false
+	if !a.firstDisc {
+		var err error
+		st, pending, err = a.states.get(no, dest)
+		if err != nil || !pending {
+			return err
+		}
 	}
+	blobID := object.ID(e.ContentID)
 	blob, err := a.c.ReadBlob(blobID)
 	if err != nil {
 		a.wp.failed(dest, blobError(blobID, err))
-		delete(a.pending, dest)
-		return nil
+		return a.states.clear(no, pending)
 	}
 	entries := placeChunks(blob.Entries)
 
-	if !known {
+	if a.firstDisc {
 		if !a.wp.overwrite {
 			if resumed, found := existingFileStatus(dest, e, entries); found {
 				if resumed {
@@ -200,8 +216,7 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 				return nil
 			}
 		}
-		pf = a.register(part, entries)
-		a.pending[dest] = pf
+		st = a.register(part, entries)
 	}
 
 	var wanted []placedChunk
@@ -210,22 +225,23 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 			wanted = append(wanted, be)
 		}
 	}
-	if len(wanted) == 0 && pf.remaining > 0 {
-		return nil
-	}
-	if err := a.writePart(part, pf, e, wanted, d, prog); err != nil {
-		if _, fatal := errors.AsType[*FatalDiscError](err); fatal {
-			return err
+	if len(wanted) > 0 || st.remaining == 0 {
+		if err := a.writePart(part, &st, e, wanted, d, prog); err != nil {
+			if _, fatal := errors.AsType[*FatalDiscError](err); fatal {
+				return err
+			}
+			a.wp.failed(dest, err)
+			return a.states.clear(no, pending)
 		}
-		a.wp.failed(dest, err)
-		delete(a.pending, dest)
+	}
+	if st.remaining == 0 {
+		finishPart(dest, part, e, a.wp)
+		return a.states.clear(no, pending)
+	}
+	if pending && len(wanted) == 0 {
 		return nil
 	}
-	if pf.remaining == 0 {
-		finishPart(dest, part, e, a.wp)
-		delete(a.pending, dest)
-	}
-	return nil
+	return a.states.put(no, dest, st, pending)
 }
 
 // register counts how many blob entries of one file still owe their
@@ -233,26 +249,26 @@ func (a *Assembler) file(dest, part string, blobID object.ID, e format.TreeEntry
 // and every chunk it already holds is taken out of the count, whatever
 // disc that chunk came from. A later walk therefore finishes the file
 // even when the restore never asks for that disc again.
-func (a *Assembler) register(part string, entries []placedChunk) *pendingFile {
+func (a *Assembler) register(part string, entries []placedChunk) fileState {
 	f, err := os.Open(part)
 	if err != nil {
-		return &pendingFile{remaining: len(entries)}
+		return fileState{remaining: uint64(len(entries))}
 	}
 	defer func() { _ = f.Close() }()
-	remaining := 0
+	var remaining uint64
 	for _, be := range entries {
 		if !a.chunkInPlace(f, be) {
 			remaining++
 		}
 	}
-	return &pendingFile{remaining: remaining, resume: true}
+	return fileState{remaining: remaining, resume: true}
 }
 
 // writePart opens the part file, sets its final size, and writes every
 // chunk of this disc into it at the chunk's own offset. A chunk whose
 // bytes are already in the part file, from a run that was killed, is
 // checked against its content id and skipped.
-func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, wanted []placedChunk, d DiscChunks, prog *progress.Reporter) error {
+func (a *Assembler) writePart(part string, st *fileState, e format.TreeEntry, wanted []placedChunk, d DiscChunks, prog *progress.Reporter) error {
 	f, err := os.OpenFile(part, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
 		return err
@@ -263,7 +279,7 @@ func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, 
 	}
 	for _, be := range wanted {
 		id := object.ID(be.ContentID)
-		if pf.resume && a.chunkInPlace(f, be) {
+		if st.resume && a.chunkInPlace(f, be) {
 			// register already took this chunk out of remaining.
 			continue
 		}
@@ -278,7 +294,7 @@ func (a *Assembler) writePart(part string, pf *pendingFile, e format.TreeEntry, 
 			return err
 		}
 		prog.Add(int64(len(payload)))
-		pf.remaining--
+		st.remaining--
 	}
 	return f.Close()
 }
@@ -366,23 +382,37 @@ func removePart(part string) {
 	_ = os.Remove(part)
 }
 
-// Finish applies directory metadata in a deferred pass, deepest
-// directory first, and names every file no disc could complete. Its
-// part file stays for a later run.
-func (a *Assembler) Finish() {
-	// The walk records a directory after every directory below it.
-	for _, d := range a.dirsForMeta {
-		applyMetadata(d.path, d.e, a.wp)
-	}
-	paths := make([]string, 0, len(a.pending))
-	for path := range a.pending {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		a.wp.failed(path, errIncomplete)
-	}
+// Finish walks the selection one last time. It names every file no disc
+// could complete, whose part file stays for a later run, and applies the
+// metadata of each directory after every entry below it. It follows at
+// least one Disc call.
+func (a *Assembler) Finish() error {
+	return a.walk(finishWalk{a})
 }
+
+// finishWalk is the last walk of the selection. It creates nothing and
+// reads no blob.
+type finishWalk struct{ a *Assembler }
+
+func (w finishWalk) Dir(parent string, names []string) (string, bool, error) {
+	return ensureDir(parent, names, nil)
+}
+
+// DirDone follows every entry below the directory, so the deepest
+// directory gets its metadata first.
+func (w finishWalk) DirDone(path string, e format.TreeEntry) {
+	applyMetadata(path, e, w.a.wp)
+}
+
+func (w finishWalk) File(dest, _ string, _ format.TreeEntry) error {
+	_, pending, err := w.a.states.get(w.a.nextFile(), dest)
+	if pending {
+		w.a.wp.failed(dest, errIncomplete)
+	}
+	return err
+}
+
+func (w finishWalk) Other(string, format.TreeEntry) error { return nil }
 
 // Report is what this restore did not do.
 func (a *Assembler) Report() Report { return a.wp.report }

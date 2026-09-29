@@ -109,6 +109,7 @@ func TestAssemblerSpansTwoDiscs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer a.Close()
 	d1 := &treeDisc{root: treeDir, holds: first}
 	if err := a.Disc(d1, nil); err != nil {
 		t.Fatal(err)
@@ -124,7 +125,9 @@ func TestAssemblerSpansTwoDiscs(t *testing.T) {
 	if err := a.Disc(d2, nil); err != nil {
 		t.Fatal(err)
 	}
-	a.Finish()
+	if err := a.Finish(); err != nil {
+		t.Fatal(err)
+	}
 	if rep := a.Report(); rep.Failed() {
 		t.Fatalf("restore reported %s", rep.Summary())
 	}
