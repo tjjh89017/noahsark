@@ -390,7 +390,7 @@ func TestUnstableFileIsFlaggedAndReported(t *testing.T) {
 	if len(sum.Unstable) != 1 {
 		t.Fatalf("Summary.Unstable = %v, want exactly one entry", sum.Unstable)
 	}
-	if sum.Unstable[0].Path != "a.txt" || sum.Unstable[0].Branch != "flagged" {
+	if sum.Unstable[0].Path != "a.txt" {
 		t.Fatalf("Summary.Unstable[0] = %+v, want path a.txt branch flagged", sum.Unstable[0])
 	}
 

@@ -82,7 +82,7 @@ func (s *catalogSource) Refs() (*format.RefsTable, error) {
 	}
 	for name, text := range local {
 		id, err := parseSnapshotID(text)
-		if err != nil || len(name) > format.RefNameLen {
+		if err != nil || checkRefName(name) != nil {
 			continue
 		}
 		catalog.MergeRef(newest, localRefRecord(s.c, name, id))

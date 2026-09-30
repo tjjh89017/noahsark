@@ -25,6 +25,7 @@ func init() {
 // commitOptions holds the command options of commit.
 type commitOptions struct {
 	ref           string
+	refSet        bool
 	message       string
 	excludes      stringList
 	oneFileSystem bool
@@ -32,7 +33,10 @@ type commitOptions struct {
 
 func commitFlags(fs *flag.FlagSet) runFunc {
 	o := &commitOptions{}
-	fs.StringVar(&o.ref, "ref", "", "ref to move; the default is the local date of today, YYYY-MM-DD")
+	fs.Func("ref", "ref to move; the default is the local date of today, YYYY-MM-DD", func(name string) error {
+		o.ref, o.refSet = name, true
+		return nil
+	})
 	fs.StringVar(&o.message, "m", "", "commit message, stored on the snapshot")
 	fs.Var(&o.excludes, "exclude", "exclude pattern, gitignore-style; repeatable")
 	fs.BoolVar(&o.oneFileSystem, "one-file-system", false, "do not cross a mount point; the mount point directory is recorded as empty")
@@ -56,6 +60,12 @@ func (o *commitOptions) run(e *env, args []string) int {
 	ref := o.ref
 	if ref == "" {
 		ref = e.now().Format("2006-01-02")
+	}
+	if o.refSet {
+		if err := checkRefName(o.ref); err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
+			return 2
+		}
 	}
 	flagExcludes, err := parseExcludeFlags(o.excludes)
 	if err != nil {
@@ -179,19 +189,21 @@ func (o *commitOptions) run(e *env, args []string) int {
 	_, _ = fmt.Fprintf(stdout, "ref %s -> %s\n", ref, snapID.TextForm())
 	_, _ = fmt.Fprintf(stdout, "new items: %d, existing items: %d\n", sum.NewObjects, sum.ExistingObjects)
 	_, _ = fmt.Fprintf(stdout, "unstable: %d, skipped: %d\n", len(sum.Unstable), len(sum.Skipped))
+	// A path or a reason can hold any byte. escapeField keeps each record
+	// on one line.
 	for _, u := range sum.Unstable {
-		_, _ = fmt.Fprintf(stdout, "unstable %s branch=%s\n", u.Path, u.Branch)
+		_, _ = fmt.Fprintf(stdout, "unstable %s: the file changed during the read\n", escapeField(u.Path))
 	}
 	for _, p := range sum.Skipped {
-		_, _ = fmt.Fprintf(stdout, "skipped %s: %s\n", p.Path, p.Reason)
+		_, _ = fmt.Fprintf(stdout, "skipped %s: %s\n", escapeField(p.Path), escapeField(p.Reason))
 	}
 	for _, p := range sum.MountPoints {
-		_, _ = fmt.Fprintf(stdout, "mount point %s: not crossed, recorded as an empty directory\n", p)
+		_, _ = fmt.Fprintf(stdout, "mount point %s: not crossed, recorded as an empty directory\n", escapeField(p))
 	}
 	for _, d := range sum.OwnDirs {
-		_, _ = fmt.Fprintf(stdout, "excluded %s: %s\n", d.Path, d.What)
+		_, _ = fmt.Fprintf(stdout, "excluded %s: %s\n", escapeField(d.Path), d.What)
 	}
-	printSpecialWarnings(stdout, sum.Special)
+	printSpecialPaths(stdout, sum.Special)
 	if sum.Excluded > 0 {
 		_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
 	}
@@ -230,28 +242,28 @@ func ownDirs(l repoLayout) []object.OwnDir {
 	return dirs
 }
 
-// maxSpecialWarnings bounds how many special-file warning lines one
-// commit prints, the same bound restore puts on its own warnings. A
-// source tree with a large /dev copied into it must not bury the rest
-// of the commit report.
-const maxSpecialWarnings = 20
+// maxSpecialLines bounds how many special-file lines one commit prints,
+// the same bound restore puts on its own warnings. A source tree with a
+// large /dev copied into it must not bury the rest of the commit report.
+const maxSpecialLines = 20
 
-// printSpecialWarnings names each FIFO, socket and device node the
-// commit recorded without content, up to maxSpecialWarnings lines, then
-// one line with the total. The operator learns at commit time that
-// these paths hold no data on the disc, while the source is still
+// printSpecialPaths names each FIFO, socket and device node the commit
+// recorded without content, up to maxSpecialLines lines, then one line
+// with the total. The lines are records of standard output, as the
+// skipped and unstable lines are. The operator learns at commit time
+// that these paths hold no data on the disc, while the source is still
 // there to look at. It never changes the exit code: such a path is
 // normal in many source trees, and the commit is complete without it.
-func printSpecialWarnings(stdout io.Writer, special []object.SpecialPath) {
+func printSpecialPaths(stdout io.Writer, special []object.SpecialPath) {
 	if len(special) == 0 {
 		return
 	}
-	shown := min(len(special), maxSpecialWarnings)
+	shown := min(len(special), maxSpecialLines)
 	for _, p := range special[:shown] {
-		_, _ = fmt.Fprintf(stdout, "warning: %s: %s, no content is backed up\n", p.Path, p.Kind)
+		_, _ = fmt.Fprintf(stdout, "special %s: %s, no content is backed up\n", escapeField(p.Path), p.Kind)
 	}
 	if rest := len(special) - shown; rest > 0 {
-		_, _ = fmt.Fprintf(stdout, "warning: %d more special file(s) not shown\n", rest)
+		_, _ = fmt.Fprintf(stdout, "special files not shown: %d\n", rest)
 	}
 	_, _ = fmt.Fprintf(stdout, "special files: %d; a FIFO, a socket and a device node carry no content, and restore does not create them\n", len(special))
 }

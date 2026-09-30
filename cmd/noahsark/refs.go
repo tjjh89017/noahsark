@@ -16,6 +16,24 @@ import (
 // name: one line for each name, the name, one space, and the snapshot id
 // in text form. repoLayout.refsFile gives its path.
 
+// refNameRule is the rule of checkRefName, as the operator reads it.
+const refNameRule = "a ref name is 1 to 40 bytes of printable ASCII, with no space"
+
+// checkRefName refuses a name that a line of refs.txt or a record of a
+// REFS table cannot hold: an empty name, a name longer than the name
+// field of a ref record, and a name with a space, a control byte or a
+// byte that is not ASCII.
+func checkRefName(name string) error {
+	ok := len(name) >= 1 && len(name) <= format.RefNameLen
+	for i := 0; ok && i < len(name); i++ {
+		ok = name[i] > ' ' && name[i] < 0x7F
+	}
+	if !ok {
+		return fmt.Errorf("ref name %q is not valid: %s", name, refNameRule)
+	}
+	return nil
+}
+
 // updateRef sets name to point at id in the ref file at path, creating
 // the file if needed and replacing any earlier value for name.
 func updateRef(path, name string, id object.ID) error {
@@ -31,10 +49,14 @@ func updateRef(path, name string, id object.ID) error {
 // name-to-id-text pairs in refs. recover uses this to restore every ref
 // a disc's REFS table names in one write, instead of one updateRef call
 // per name. A crash during the write leaves the old file or the new
-// file, never a part of one.
+// file, never a part of one. It refuses a name that checkRefName
+// refuses, and writes nothing then.
 func writeRefs(path string, refs map[string]string) error {
 	names := make([]string, 0, len(refs))
 	for n := range refs {
+		if err := checkRefName(n); err != nil {
+			return err
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)

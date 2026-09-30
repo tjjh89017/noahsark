@@ -228,6 +228,8 @@ the state of the item's disc, as `docs/states.md`, "Item states", defines.
 `<repo>/state/refs.txt` is a text file. Each line holds a ref name, one space,
 and a snapshot id in text form. `commit` replaces the line of the ref that it
 moves. `recover` writes the names that the REFS table of its disc carries.
+Each name follows the ref name rule ("Refs"); the tool never writes a line
+with another name.
 Each write of the file goes to a temporary file, which is synced, then
 renamed; the directory is synced after the rename. A crash thus leaves the
 old file or the new file.
@@ -420,6 +422,16 @@ named by the local date of today, as `YYYY-MM-DD`. Two commits on one day
 move that one name to the newer snapshot; `log` still lists the older
 snapshot. No ref name is reserved.
 
+A ref name is 1 to 40 bytes of printable ASCII, with no space: each byte is
+from 0x21 to 0x7E. The limit of 40 bytes is the name field of FORMAT.md's
+"Ref". `commit` refuses another `--ref` value before it writes a file, with
+exit code 2: `noahsark: commit: ref name "NAME" is not valid: a ref name is 1
+to 40 bytes of printable ASCII, with no space`. Thus every name that `pack`
+writes into a REFS table follows the rule. A REFS table of a disc that another
+writer made can hold another name. `recover` then writes that name into the
+ref ledger, but not into `refs.txt`; `restore`, `ls` and `log` still resolve
+it from the catalog REFS table.
+
 1. `commit` moves one ref in `refs.txt`, as its last step.
 2. `pack` writes into the REFS table of the disc every ref of the ref ledger
    and every ref of `refs.txt` whose snapshot the ledger does not carry yet.
@@ -487,8 +499,10 @@ The lock is advisory. It is not a security boundary.
 5. Write the snapshot object, with the root tree, the time and the `-m`
    message, into `catalog/snapshots/`.
    Each object file of steps 3 to 5 goes to a temporary file, which is
-   synced, then renamed. Then `commit` syncs each directory that got a new
-   name, one time.
+   synced, then renamed. `commit` does this in groups of at most 64 files
+   or 64 MiB: it syncs the temporary files of a group at the same time,
+   then renames each one, while it writes the next group. Then `commit`
+   syncs each directory that got a new name, one time.
 6. Record every new item in the state log as Staged. An item is a chunk, a
    blob, a tree or a snapshot object. Only an item that the snapshot reaches
    gets a record.
@@ -516,7 +530,7 @@ scheduler and no daemon.
 | Source roots | One source root for each commit. It is opened read-only. It must be a directory. A source root that is a symlink is refused with exit code 1: the message names the directory that the link points to, and the operator gives that directory. |
 | The repository and the staging store | Never walked, also when the source holds them. `commit` finds them by device and inode, not by path. It also leaves out the `pack --out` directory that a plan symlink in `staging/plans/` names. For each one it prints `excluded PATH: the repository`, `excluded PATH: the staging store` or `excluded PATH: the disc root of a pack --out`. The exit code does not change. |
 | Symlinks | Never followed. The link itself is stored. |
-| FIFO, socket, device node | Recorded by type, with no content. `commit` warns about each one. |
+| FIFO, socket, device node | Recorded by type, with no content. `commit` prints a `special PATH: KIND, no content is backed up` line for each one ("Command notes"). The exit code does not change. |
 | Unreadable or vanished file | Skipped and reported. The snapshot is still written. Exit code 1. |
 | Name that a tree entry cannot hold | A name that FORMAT.md's "Name validation" or the name limit of FORMAT.md's "Limits" refuses. On a POSIX source this is a name that holds `\`. Skipped like an unreadable file: `commit` prints `skipped PATH: REASON` and counts the path in `skipped: N`. A directory with such a name is not walked. The snapshot is still written. Exit code 1. |
 | Mount points | Crossed by default. With `--one-file-system`, a directory on another device stays in the tree as an empty directory, and `commit` prints one line for it. |
@@ -531,8 +545,8 @@ more than one source root, they keep the root level.
 `commit` stats a file, reads and chunks it, and stats it again. When the size
 or the mtime differs, it reads the file again, one time. When the file still
 differs, `commit` stores the content that it read last, sets the `UNSTABLE`
-flag of FORMAT.md's "Entry flags" on the entry, and prints `unstable PATH
-branch=flagged`. The exit code is then 1. A read that `commit` does not
+flag of FORMAT.md's "Entry flags" on the entry, and prints `unstable PATH: the
+file changed during the read`. The exit code is then 1. A read that `commit` does not
 keep, and the read of a file that fails part way, give no item. `commit`
 removes each chunk file that such a read wrote, unless the snapshot reaches
 the chunk or the state log has a record for it. This detection always runs. A
@@ -1562,7 +1576,7 @@ Each line takes the global options before the command name.
 |---|---|---|
 | `init` | `--source` | The source root. `init` stores the absolute path as `sources.root`. |
 | `commit` | `-m` | The commit message, stored on the snapshot. |
-| `commit` | `--ref` | The ref to move. Default: the local date of today, `YYYY-MM-DD`. |
+| `commit` | `--ref` | The ref to move. Default: the local date of today, `YYYY-MM-DD`. The name follows the ref name rule ("Refs"). |
 | `commit` | `--exclude` | An exclude pattern ("Excludes"). Repeatable. |
 | `commit` | `--one-file-system` | Do not cross a mount point. |
 | `pack` | `--capacity` | The target capacity ("Capacity"). Required, except with `--undo`. |
@@ -1608,6 +1622,23 @@ the sum of the stored file sizes of the Staged items: the chunk files in
 when a file was skipped or unstable; the snapshot is committed all the same,
 and `commit` still prints the `next:` line. A special file never changes the
 exit code.
+
+The path lines are records on standard output, in this order:
+
+| Line | When |
+|---|---|
+| `unstable PATH: the file changed during the read` | The file changed during each read ("In-flight change detection"). |
+| `skipped PATH: REASON` | The file could not be read, or a tree entry cannot hold its name ("Source policy"). |
+| `mount point PATH: not crossed, recorded as an empty directory` | `--one-file-system` and a directory on another device. |
+| `excluded PATH: WHAT` | The repository, the staging store, or the disc root of a `pack --out`. |
+| `special PATH: KIND, no content is backed up` | A FIFO, a socket or a device node. `KIND` is `FIFO`, `socket`, `character device` or `block device`. 20 lines at most. |
+| `special files not shown: N` | More than 20 special files. |
+| `special files: N; a FIFO, a socket and a device node carry no content, and restore does not create them` | One special file or more. |
+| `excluded: N path(s)` | An exclude pattern left out one path or more. |
+
+`PATH` is relative to the source root. `commit` escapes `PATH` and `REASON` as
+`ls` escapes a path, thus each record is one line. `commit` prints
+`noahsark: commit: MESSAGE` on standard error only for a failure.
 
 **`pack`** prints `packed disc SEQ "LABEL": N item(s), B bytes`, then `uuid:
 UUID`, then `next: noahsark status`. The label is the newest ref of the
@@ -1995,7 +2026,7 @@ Every command uses exactly these three codes.
 | 16 | `image build needs root for the loop mount; run: ...` | Run the printed `sudo` line. |
 | 17 | `image build`: `FILE exists; add --force to build it again` | Add `--force`. |
 | 18 | `gc: N item(s) skipped: disc SEQ's table is not in the catalog` | Run `verify` of that disc, then `gc`. |
-| 19 | `commit`: `unstable PATH branch=flagged`, or `skipped PATH: REASON` | The snapshot is written. Run `commit` again later. |
+| 19 | `commit`: `unstable PATH: the file changed during the read`, or `skipped PATH: REASON` | The snapshot is written. Run `commit` again later. |
 | 20 | `restore: N item(s) have no disc known to the catalog; run recover with more discs` | `restore` restores every other file. Run `recover` with each disc that you still hold, then run the same `restore` again. When no other disc exists, the files that it names cannot be restored. |
 | 21 | `expected disc SEQ "LABEL" (UUID), found disc SEQ "LABEL" (UUID)` | Mount the right disc, or its second copy, and press Enter. |
 | 22 | `restore` stops between two discs: killed, or no terminal | Mount the named disc and run the same `restore` again. It completes the part files. |
@@ -2020,7 +2051,8 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
 - `internal/fec`: repair at exactly `m` erasures, refusal at `m + 1`, burst
   damage, the checksum column, the printed worked example.
 - `internal/object`: the commit walk, compression, excludes, one file system,
-  the `UNSTABLE` flag, unreadable and vanished files.
+  the `UNSTABLE` flag, unreadable and vanished files, the sync of each object
+  file before its rename in groups, one sync of each directory.
 - `internal/stage`: the golden state log record and the golden disc state log
   record; replay of both logs; each disc event against the replay table of
   `docs/states.md`; a refused event; the torn tail; a bad record in the
@@ -2041,7 +2073,8 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   disc in the plan, metadata as root and not as root, hardlinks, special
   files, case-folded names, heal, bounded memory.
 - `cmd/noahsark`: each command: options and their positions, output, the `ls`
-  and `log` line formats and escapes, exit codes, the `DISC` argument, the
+  and `log` line formats and escapes, the escapes of the `commit` path lines,
+  the ref name rule, exit codes, the `DISC` argument, the
   confirmations with a terminal, with no terminal, with `--yes` and with
   `--force-yes`, `config.yaml` with an unknown key, each command that takes
   the repository lock while another process holds it.
