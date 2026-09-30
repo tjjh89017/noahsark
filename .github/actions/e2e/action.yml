@@ -3,7 +3,9 @@ description: >
   Runs one disc e2e scenario (and, for the media scenario, one media
   preset): installs udftools, checks the mkudffs version, builds the
   helper commands and the noahsark binary, and runs test/e2e/disc under
-  sudo with NOAHSARK_E2E set. Every e2e matrix cell calls this action
+  sudo with NOAHSARK_E2E set. The incremental cell also runs the
+  internal/image tests that need a real mkudffs, with NOAHSARK_CI set.
+  Every e2e matrix cell calls this action
   instead of repeating its steps. Uploads the cell's log and result line
   as an artifact named after cell-name, whether the cell passed or
   failed.
@@ -173,6 +175,18 @@ runs:
               GOCACHE=/tmp/noahsark-e2e-gocache GOMODCACHE=/tmp/noahsark-e2e-gomodcache \
               go test ./internal/image/... ./internal/restore/... -run MemoryBounded -v -count=1 -timeout 15m)
           if ! run_wrapped "${MEMTEST_CMD[@]}" 2>&1 | tee --output-error=warn -a "$LOG"; then
+            status=fail
+          fi
+        fi
+
+        # The incremental cell also runs the internal/image tests that
+        # need root and a real mkudffs. NOAHSARK_CI=1 makes them run:
+        # without it they skip, and with it a missing tool fails them.
+        if [ "${{ inputs.scenario }}" = "incremental" ]; then
+          UDFTEST_CMD=(env "PATH=$PATH" NOAHSARK_CI=1 \
+              GOCACHE=/tmp/noahsark-e2e-gocache GOMODCACHE=/tmp/noahsark-e2e-gomodcache \
+              go test ./internal/image -run 'TestPackedTreeFitsRealUDFImage|TestRealUDFOverheadMeasurement' -v -count=1 -timeout 20m)
+          if ! run_wrapped "${UDFTEST_CMD[@]}" 2>&1 | tee --output-error=warn -a "$LOG"; then
             status=fail
           fi
         fi

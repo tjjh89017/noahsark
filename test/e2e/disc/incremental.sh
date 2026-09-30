@@ -45,6 +45,7 @@ scenario_incremental() {
 	echo "$commit_out1"
 	snap1="$(awk '/^snapshot /{print $2}' <<<"$commit_out1")"
 	new1="$(incremental_new_objects "$commit_out1")"
+	require_number "incremental: new items of commit BASE" "$new1"
 	log "incremental: commit BASE took $((t1 - t0))s, new objects: $new1"
 
 	local tree1="$work/tree1" image1="$work/disc1.img" mnt1="$work/mnt1" uuid1
@@ -56,6 +57,7 @@ scenario_incremental() {
 	pack_rate_line "incremental: pack disc 1" "$INCREMENTAL_BASE_BYTES" "$t0" "$t1"
 	local size1
 	size1="$(du -sb "$tree1" | cut -f1)"
+	require_number "incremental: disc 1 packed tree size" "$size1"
 	log "incremental: disc 1 packed tree size: $size1 bytes"
 
 	image_build "$repo" "$uuid1" "$image1"
@@ -82,6 +84,7 @@ scenario_incremental() {
 	echo "$commit_out2"
 	snap2="$(awk '/^snapshot /{print $2}' <<<"$commit_out2")"
 	new2="$(incremental_new_objects "$commit_out2")"
+	require_number "incremental: new items of commit NEXT" "$new2"
 	log "incremental: commit NEXT took $((t1 - t0))s, new objects: $new2 (BASE had $new1)"
 
 	# Unchanged files must dedup to zero new chunks, so NEXT's new
@@ -101,6 +104,7 @@ scenario_incremental() {
 	pack_rate_line "incremental: pack disc 2" "$INCREMENTAL_ADD_BYTES" "$t0" "$t1"
 	local size2
 	size2="$(du -sb "$tree2" | cut -f1)"
+	require_number "incremental: disc 2 packed tree size" "$size2"
 	log "incremental: disc 2 packed tree size: $size2 bytes (disc 1 was $size1 bytes)"
 
 	local size_limit=$((size1 * 40 / 100))

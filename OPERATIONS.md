@@ -2029,7 +2029,10 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   sequence mark and a roll back.
 - `internal/image`: packing order, the capacity budget, FEC on and off, the
   dry run, the ledgers, `README.txt` and `FORMAT.txt` against the golden text,
-  bounded memory, the UDF image build.
+  bounded memory, the content id check of each staged tree, blob and snapshot
+  object, the `mkudffs` version check, the UDF image build. The tests that
+  need root and a real `mkudffs` run only with `NOAHSARK_CI=1`. Without it
+  they skip. With it, a missing tool fails them.
 - `internal/catalog`, `internal/repolock`: the catalog by disc uuid, the
   writes of `commit`, the removal by `pack --undo`; the lock.
 - `internal/restore`: a planted symlink, no overwrite by default, the skip of
@@ -2040,7 +2043,8 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
 - `cmd/noahsark`: each command: options and their positions, output, the `ls`
   and `log` line formats and escapes, exit codes, the `DISC` argument, the
   confirmations with a terminal, with no terminal, with `--yes` and with
-  `--force-yes`, `config.yaml` with an unknown key.
+  `--force-yes`, `config.yaml` with an unknown key, each command that takes
+  the repository lock while another process holds it.
 - `cmd/noahsark`, the state table test: a table-driven test reads the state x
   event table of `docs/states.md` row by row. It runs one case for each row,
   and checks the result, the message, the exit code and the next line. It
@@ -2051,7 +2055,9 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
 the tool reads (`verify`, `restore`, `recover`) is read-only (`mount -o
 ro,loop`), so that each `verify` of it is a counted mount. A test mounts an
 image read-write only to write damage into it. It then unmounts the image and
-mounts it again read-only before the tool reads it.
+mounts it again read-only before the tool reads it. With `NOAHSARK_E2E=1`, a
+missing prerequisite (root, `mkudffs`, `mount`, `sudo`) fails the cell; it
+does not skip it.
 
 | Cell | What it proves |
 |---|---|
@@ -2059,7 +2065,7 @@ mounts it again read-only before the tool reads it.
 | `media/bd25-forced-10g` | A 25 GB medium, packed at a 10 GB `--capacity`. |
 | `chain/dvd-bd25-bd10` | Two snapshots of about 22.5 GB each across three discs. `pack` takes the older snapshot first. Data that does not fit stays Staged, and `status` names the snapshot that is not complete on discs. A fourth disc takes the rest. The repository is deleted, and `recover` runs one time for each of the four discs. Both snapshots then restore; restore swaps the discs at one mount point. A missing disc is named. |
 | `lowmem` | The 25 GB flow under a memory limit: peak memory does not grow with the data size. |
-| `incremental` | A second commit packs only the change. Both snapshots restore. |
+| `incremental` | A second commit packs only the change. Both snapshots restore. The cell also runs the `internal/image` tests that need root and a real `mkudffs`. |
 | `rebuild` | The repository is deleted. `recover` runs one time for each disc. `log`, `ls` and `restore` then work, and a later `pack` deduplicates against the discs. This proves that the discs alone hold the backup. |
 | `lifecycle` | `disc verified` then `gc` keeps the 7-day wait; `pack --undo`; `verify --undo`; `disc lost` and `disc lost --undo`; each with `--yes` or `--force-yes`. |
 | `fec` | With `--fec`: heal a corrupt stripe, heal corrupt parity, heal at the maximum damage, refuse above the maximum. |

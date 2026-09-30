@@ -88,6 +88,9 @@ assert_sparse() {
 	local image="$1" want_bytes="$2" apparent real limit
 	apparent="$(stat --format='%s' "$image")"
 	real="$(du --block-size=1 "$image" | cut -f1)"
+	require_number "image $image: apparent size" "$apparent"
+	require_number "image $image: real use" "$real"
+	require_number "image $image: wanted size" "$want_bytes"
 	if [ "$apparent" -ne "$want_bytes" ]; then
 		fail "image $image: apparent size $apparent, want $want_bytes"
 	fi

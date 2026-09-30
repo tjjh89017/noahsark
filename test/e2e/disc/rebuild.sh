@@ -67,6 +67,7 @@ scenario_rebuild() {
 	pack_rate_line "rebuild: pack disc 1" "$REBUILD_BASE_BYTES" "$t0" "$t1"
 	local size1
 	size1="$(du -sb "$tree1" | cut -f1)"
+	require_number "rebuild: disc 1 packed tree size" "$size1"
 	log "rebuild: disc 1 packed tree size: $size1 bytes"
 
 	image_build "$repo" "$uuid1" "$image1"
@@ -146,6 +147,7 @@ scenario_rebuild() {
 	pack_rate_line "rebuild: pack disc 2" "$REBUILD_ADD_BYTES" "$t0" "$t1"
 	local size2
 	size2="$(du -sb "$tree2" | cut -f1)"
+	require_number "rebuild: disc 2 packed tree size" "$size2"
 	log "rebuild: disc 2 packed tree size: $size2 bytes (disc 1 was $size1 bytes)"
 
 	local size_limit=$((size1 * 25 / 100))
