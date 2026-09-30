@@ -272,6 +272,22 @@ func init() {
 			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
 			check: allChecks(lastCheckIs(stage.CheckResultOK), verifyFailDetail),
 		},
+		stateCase{
+			row: "38b", name: "damaged, not a mount point, packed disc",
+			start: stage.DiscPacked, setup: verifyRootSetup(rootNotMountPoint, true),
+			args:  []string{"verify", "{ROOT}"},
+			exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscPacked, word: stage.WordPacked,
+			check: allChecks(lastCheckIs(stage.CheckResultNone), verifyFailDetail),
+		},
+		stateCase{
+			row: "38b", name: "damaged, read-write mount, burned disc",
+			start: stage.DiscBurned, setup: verifyRootSetup(rootReadWrite, true),
+			args:  []string{"verify", "{ROOT}"},
+			exact: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscBurned, word: stage.WordBurned,
+			check: allChecks(lastCheckIs(stage.CheckResultNone), verifyFailDetail),
+		},
 		// Row 38c: a damaged disc root with no repository.
 		stateCase{
 			row: "38c", name: "damaged, no repository",

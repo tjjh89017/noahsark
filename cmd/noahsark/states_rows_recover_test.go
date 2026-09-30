@@ -284,6 +284,14 @@ func init() {
 		// Row 70d: a damaged copy of a verified disc of the repository.
 		// recover writes no event.
 		stateCase{
+			row: "70a", name: "a missing disc with a damaged object",
+			start: stage.DiscMissing, setup: damageOneSetup(format.ObjectKindChunk),
+			args:  recoverArgs,
+			exact: true,
+			end:   stage.DiscOnDiscOnly,
+			check: allChecks(lastCheckIs(stage.CheckResultFailed), badHasNoRecord),
+		},
+		stateCase{
 			row: "70d", name: "a damaged copy of a verified disc",
 			start: stage.DiscVerified, setup: damageOneSetup(format.ObjectKindChunk),
 			args:  recoverArgs,
@@ -353,7 +361,7 @@ func init() {
 	// the items that had no record and logs a good check.
 	registerStateCases(stateCase{
 		row: "70e", name: "a good copy after a damaged copy",
-		start: stage.DiscPacked, setup: goodCopyAfterDamageSetup,
+		start: stage.DiscPacked, from: stage.DiscOnDiscOnly, setup: goodCopyAfterDamageSetup,
 		args:  []string{"recover", "--source={SRC}", "--disc={ROOT}"},
 		exact: true,
 		end:   stage.DiscOnDiscOnly, word: stage.WordOnDisc,

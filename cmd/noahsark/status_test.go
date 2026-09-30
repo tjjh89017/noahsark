@@ -67,7 +67,7 @@ func TestStatusPackedBlock(t *testing.T) {
 		"growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=" + statusImage(t, fx) + " &&",
 		"eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&",
 		"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&",
-		"noahsark verify /mnt/ark &&",
+		"noahsark verify /mnt/ark;",
 		"sudo umount /mnt/ark && eject /dev/sr0",
 		`or burn the folder directly; see the guide, "Burn the folder directly"`,
 	}
@@ -149,7 +149,7 @@ func TestStatusBurnedBlock(t *testing.T) {
 		"next: load disc 0, then run:",
 		"eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&",
 		"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&",
-		"noahsark verify /mnt/ark &&",
+		"noahsark verify /mnt/ark;",
 		"sudo umount /mnt/ark && eject /dev/sr0",
 	}
 	if got := statusLines(t, fx.repo); !slices.Equal(got, want) {
@@ -253,8 +253,8 @@ func TestStatusMissingBlock(t *testing.T) {
 	want := []string{
 		fmt.Sprintf("next: load disc 0 %q, then run:", fx.label),
 		"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&",
-		"noahsark recover --source=" + quoteShellWord(cfg.SourceRoot) + " --disc=/mnt/ark &&",
-		"sudo umount /mnt/ark",
+		"noahsark recover --source=" + quoteShellWord(cfg.SourceRoot) + " --disc=/mnt/ark;",
+		"sudo umount /mnt/ark && eject /dev/sr0",
 		"or, when disc 0 is gone for good, run:",
 		"noahsark disc lost 0",
 	}
@@ -444,39 +444,65 @@ func TestNextBlockOrder(t *testing.T) {
 		d.info.LastCheck = stage.CheckResultFailed
 		return d
 	}
+	lostFrom := func(arg string, before stage.DiscState) nextDisc {
+		d := disc(arg, stage.DiscLost)
+		d.info.BeforeLost, d.info.LastEvent, d.info.LastEventTime = before, stage.EventLost, now.Add(-time.Minute)
+		return d
+	}
+	found := func(d nextDisc) nextDisc {
+		d.info.LastEvent = stage.EventLostUndone
+		return d
+	}
 	old := func(d nextDisc) nextDisc {
 		d.info.VerifiedTime = now.Add(-8 * 24 * time.Hour)
 		return d
 	}
 	cases := []struct {
-		name    string
-		staged  int
-		discs   []nextDisc
-		repairs []nextRepair
-		first   string
+		name     string
+		staged   int
+		discs    []nextDisc
+		repairs  []nextRepair
+		noStage  bool
+		snapshot time.Time
+		first    string
 	}{
-		{"repair before missing", 1, []nextDisc{disc("1", stage.DiscMissing), disc("2", stage.DiscLost)}, []nextRepair{{arg: "2", command: "disc lost"}},
-			"next: disc 2: an earlier disc lost stopped before it wrote the records of its items; run:"},
-		{"repair instead of nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly)}, []nextRepair{{arg: "1", command: "gc"}},
-			"next: disc 1: an earlier gc stopped before it wrote the records of its items; run:"},
-		{"missing first", 1, []nextDisc{failed(disc("1", stage.DiscOnDiscOnly)), disc("2", stage.DiscPacked), disc("3", stage.DiscMissing)}, nil,
+		{name: "staging directory before repair", staged: 1, discs: []nextDisc{disc("1", stage.DiscPacked)}, repairs: []nextRepair{{arg: "1", command: "gc"}}, noStage: true,
+			first: "next: staging directory /r/staging does not exist."},
+		{"repair before missing", 1, []nextDisc{disc("1", stage.DiscMissing), disc("2", stage.DiscLost)}, []nextRepair{{arg: "2", command: "disc lost"}}, false, time.Time{},
+			"next: disc 2: an earlier disc lost stopped before it wrote the records of its items; gc writes them"},
+		{"repair instead of nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly)}, []nextRepair{{arg: "1", command: "gc"}}, false, time.Time{},
+			"next: disc 1: an earlier gc stopped before it wrote the records of its items; gc writes them"},
+		{name: "on disc only failed before a lost disc", staged: 1, discs: []nextDisc{lostFrom("1", stage.DiscOnDiscOnly), failed(disc("2", stage.DiscOnDiscOnly))}, snapshot: now.Add(-time.Hour),
+			first: "next: disc 2 failed its last check."},
+		{name: "a lost disc waits for a commit before packed", staged: 1, discs: []nextDisc{disc("1", stage.DiscPacked), lostFrom("2", stage.DiscMissing)}, snapshot: now.Add(-time.Hour),
+			first: "next: disc 2 is lost; a new commit stages what the source still holds; run:"},
+		{name: "a commit in the second of the lost event ends the wait", discs: []nextDisc{lostFrom("1", stage.DiscOnDiscOnly)}, snapshot: now.Add(-time.Minute),
+			first: "next: nothing to do"},
+		{name: "a verified disc marked lost waits for no commit", discs: []nextDisc{lostFrom("1", stage.DiscVerified)}, snapshot: now.Add(-time.Hour),
+			first: "next: nothing to do"},
+		{name: "a found on disc only disc before gc", staged: 1, discs: []nextDisc{old(disc("1", stage.DiscVerified)), found(disc("2", stage.DiscOnDiscOnly))},
+			first: "next: load disc 2, then run:"},
+		{name: "a found on disc only disc after a failed check", discs: []nextDisc{failed(found(disc("1", stage.DiscOnDiscOnly)))},
+			first: "next: disc 1 failed its last check."},
+		{"missing first", 1, []nextDisc{failed(disc("1", stage.DiscOnDiscOnly)), disc("2", stage.DiscPacked), disc("3", stage.DiscMissing)}, nil, false, time.Time{},
 			`next: load disc 3 "L3", then run:`},
-		{"on disc only failed before packed", 1, []nextDisc{disc("1", stage.DiscPacked), failed(disc("2", stage.DiscOnDiscOnly))}, nil,
+		{"on disc only failed before packed", 1, []nextDisc{disc("1", stage.DiscPacked), failed(disc("2", stage.DiscOnDiscOnly))}, nil, false, time.Time{},
 			"next: disc 2 failed its last check."},
-		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)}, nil,
+		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)}, nil, false, time.Time{},
 			"next: load disc 2, then run:"},
-		{"gc before staged", 1, []nextDisc{old(disc("1", stage.DiscVerified))}, nil,
+		{"gc before staged", 1, []nextDisc{old(disc("1", stage.DiscVerified))}, nil, false, time.Time{},
 			"advice: burn a second copy of /img1 before gc"},
-		{"staged before waiting", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil,
+		{"staged before waiting", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil, false, time.Time{},
 			"next: load a blank disc, then run:"},
-		{"waiting", 0, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscOnDiscOnly), disc("3", stage.DiscLost)}, nil,
+		{"waiting", 0, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscOnDiscOnly), disc("3", stage.DiscLost)}, nil, false, time.Time{},
 			"next: nothing to do; gc can free disc 1 after 2026-10-06"},
-		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil,
+		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
 			"next: nothing to do"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			lines := nextBlock(nextRepo{repo: "/r", device: "/dev/sr0", source: "/src", staged: c.staged, now: now, discs: c.discs, repairs: c.repairs})
+			lines := nextBlock(nextRepo{repo: "/r", staging: "/r/staging", stagingMissing: c.noStage, device: "/dev/sr0", source: "/src",
+				staged: c.staged, now: now, discs: c.discs, repairs: c.repairs, newestSnapshot: c.snapshot})
 			if !strings.HasPrefix(lines[0], c.first) {
 				t.Fatalf("block %q, want the first line %q", lines, c.first)
 			}
@@ -535,7 +561,7 @@ func TestStatusNamesARepair(t *testing.T) {
 			fx := repoWithDisc(t, c.start)
 			appendEventOnly(t, fx, c.event)
 			want := []string{
-				"next: disc 0: an earlier " + c.cmd + " stopped before it wrote the records of its items; run:",
+				"next: disc 0: an earlier " + c.cmd + " stopped before it wrote the records of its items; gc writes them, and also frees the data whose wait is over; run:",
 				"noahsark gc",
 			}
 			for range 2 {

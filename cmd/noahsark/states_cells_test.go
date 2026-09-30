@@ -727,6 +727,120 @@ func (tb *stateTable) spansOf(id string) []string {
 	return spans
 }
 
+// cellState is one state that a State cell names: a disc state, and for
+// a lost disc the state when it was marked lost. beforeLost is unknown
+// when the cell does not name it.
+type cellState struct {
+	state      stage.DiscState
+	beforeLost stage.DiscState
+}
+
+func (s cellState) String() string {
+	if s.beforeLost == stage.DiscUnknown {
+		return s.state.String()
+	}
+	return fmt.Sprintf("%s, %s when marked lost", s.state, s.beforeLost)
+}
+
+// holds reports whether the state of a case, got, is the state s.
+func (s cellState) holds(got cellState) bool {
+	return got.state == s.state && (s.beforeLost == stage.DiscUnknown || got.beforeLost == s.beforeLost)
+}
+
+var (
+	// stateWordRe matches a disc state word of a State cell.
+	stateWordRe = regexp.MustCompile(`\b(?:on disc only|packed|burned|verified|lost|missing)\b`)
+	// stateRowsRe matches the list of the rows whose states a State cell
+	// names, for example "(rows 11, 24, 47, 61 to 63)".
+	stateRowsRe = regexp.MustCompile(`\(rows? ([^)]*)\)`)
+	// rowRangeRe matches one row or a range of rows of such a list.
+	rowRangeRe = regexp.MustCompile(`(\d+[a-z]?)(?: to (\d+[a-z]?))?`)
+)
+
+// namedStates returns the disc states that the State cell of row id
+// names. A cell that lists rows names the states of those rows. A span
+// that is not a state word, such as a command, names no state. In a cell
+// that says "when marked lost", each span is the state of a lost disc
+// when it was marked lost. Else each state word is one state.
+func (tb *stateTable) namedStates(id string) []cellState {
+	return tb.namedStatesDepth(id, 0)
+}
+
+func (tb *stateTable) namedStatesDepth(id string, depth int) []cellState {
+	row, ok := tb.rows[id]
+	if !ok || depth > 2 {
+		return nil
+	}
+	var states []cellState
+	add := func(s cellState) {
+		if !slices.Contains(states, s) {
+			states = append(states, s)
+		}
+	}
+	if m := stateRowsRe.FindStringSubmatch(row.state); m != nil {
+		for _, r := range rowRangeRe.FindAllStringSubmatch(m[1], -1) {
+			last := r[1]
+			if r[2] != "" {
+				last = r[2]
+			}
+			from, to := slices.Index(tb.ids, r[1]), slices.Index(tb.ids, last)
+			if from < 0 || to < from {
+				continue
+			}
+			for _, ref := range tb.ids[from : to+1] {
+				for _, s := range tb.namedStatesDepth(ref, depth+1) {
+					add(s)
+				}
+			}
+		}
+		return states
+	}
+	words := map[string]stage.DiscState{}
+	for _, s := range resultWords {
+		words[s.String()] = s
+	}
+	var spans []string
+	text := spanRe.ReplaceAllStringFunc(row.state, func(s string) string {
+		word := s[1 : len(s)-1]
+		if _, ok := words[word]; !ok {
+			return ""
+		}
+		spans = append(spans, word)
+		return word
+	})
+	if strings.Contains(text, "when marked lost") {
+		for _, w := range spans {
+			add(cellState{state: stage.DiscLost, beforeLost: words[w]})
+		}
+		return states
+	}
+	for _, w := range stateWordRe.FindAllString(text, -1) {
+		add(cellState{state: words[w]})
+	}
+	return states
+}
+
+// TestStatesNamedStates checks the states of a few State cells.
+func TestStatesNamedStates(t *testing.T) {
+	tb := loadStateTable(t)
+	lostFrom := func(s stage.DiscState) cellState { return cellState{state: stage.DiscLost, beforeLost: s} }
+	for _, c := range []struct {
+		row  string
+		want []cellState
+	}{
+		{"1", nil},
+		{"38b", []cellState{{state: stage.DiscPacked}, {state: stage.DiscBurned}, {state: stage.DiscVerified}, {state: stage.DiscOnDiscOnly}}},
+		{"64", []cellState{lostFrom(stage.DiscVerified), lostFrom(stage.DiscOnDiscOnly), lostFrom(stage.DiscMissing)}},
+		{"85a", nil},
+		{"89a", nil},
+		{"82", []cellState{{state: stage.DiscBurned}, {state: stage.DiscPacked}, {state: stage.DiscVerified}, {state: stage.DiscOnDiscOnly}, {state: stage.DiscMissing}}},
+	} {
+		if got := tb.namedStates(c.row); !slices.Equal(got, c.want) {
+			t.Errorf("row %s: states %v, want %v", c.row, got, c.want)
+		}
+	}
+}
+
 // TestStatesTableCellsParse fails when a cell of the state x event table
 // does not parse. A row in irregularMessageRows must still fail to
 // parse.

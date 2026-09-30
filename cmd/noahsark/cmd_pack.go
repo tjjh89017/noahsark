@@ -53,6 +53,9 @@ func packFlags(fs *flag.FlagSet) runFunc {
 	return o.run
 }
 
+// packUsage is the usage line of a pack that takes staged items.
+const packUsage = "usage: noahsark pack --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]"
+
 // packNothingStaged is the line of a pack that finds no staged item.
 const packNothingStaged = "pack: nothing staged"
 
@@ -63,6 +66,10 @@ func (o *packOptions) run(e *env, args []string) int {
 		return o.runUndo(e, args)
 	}
 	stdout, stderr := e.stdout, e.stderr
+	if len(args) != 0 {
+		_, _ = fmt.Fprintln(stderr, packUsage)
+		return 2
+	}
 
 	repoDir, err := e.findRepo()
 	if err != nil {

@@ -67,6 +67,7 @@ func init() {
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
 		usageError("77", "init with --repo", true, []string{"--repo={REPO}", "init"}, nil),
+		usageError("79c", "pack with an argument that it does not take", false, []string{"pack", "--capacity=bd25", "extra"}, nil),
 		usageError("78", "a disc argument that matches no disc", false, []string{"disc", "burned", "7"}, map[string]string{"ARG": "7"}),
 		// The cell gives the form of a candidate line. also names the
 		// line of the second candidate.

@@ -23,6 +23,12 @@ const folderBurnPointer = `or burn the folder directly; see the guide, "Burn the
 type nextRepo struct {
 	// repo is the absolute path of the repository.
 	repo string
+	// staging is the absolute path of the staging directory, and
+	// stagingMissing tells that it does not exist.
+	staging        string
+	stagingMissing bool
+	// newestSnapshot is the time of the newest snapshot of the catalog.
+	newestSnapshot time.Time
 	// device is pack.device, and source is sources.root.
 	device string
 	source string
@@ -59,23 +65,43 @@ type nextDisc struct {
 	imageExists bool
 }
 
+// foundOnDiscOnly reports whether the disc is on disc only, and disc lost
+// --undo gave it back after its last check: it needs a check.
+func (d nextDisc) foundOnDiscOnly() bool {
+	return d.info.State == stage.DiscOnDiscOnly && d.info.LastEvent == stage.EventLostUndone
+}
+
 // lastCheckFailed reports whether the newest check of the disc failed.
 func (d nextDisc) lastCheckFailed() bool {
 	return d.info.LastCheck == stage.CheckResultFailed
 }
 
+// waitsForCommit reports whether the data of a lost disc can wait for a
+// commit: the disc was on disc only or missing when it was marked lost,
+// thus no staged copy of its data is left.
+func waitsForCommit(info stage.DiscInfo) bool {
+	return info.State == stage.DiscLost && (info.BeforeLost == stage.DiscOnDiscOnly || info.BeforeLost == stage.DiscMissing)
+}
+
 // nextBlock returns the lines that status prints after the disc lines:
 // the one next block of the repository, and the lines that go with it.
-// The first match in this order gives the block: a disc whose item
-// records do not follow its state, a missing disc, an on disc only disc
-// whose last check failed, a packed or burned disc, data that gc can free
-// now, staged data, a verified disc that waits, and nothing. Inside one
-// step the disc with the lowest number wins.
+// The first match in this order gives the block: a staging directory
+// that does not exist, a disc whose item records do not follow its
+// state, a missing disc, an on disc only disc whose last check failed, a
+// lost disc whose data waits for a commit, a disc to burn or to verify,
+// data that gc can free now, staged data, a verified disc that waits, and
+// nothing. Inside one step the disc with the lowest number wins.
 func nextBlock(r nextRepo) []string {
+	if r.stagingMissing {
+		return []string{
+			fmt.Sprintf("next: staging directory %s does not exist. Mount its volume, or correct staging.dir in config.yaml. When the staging store is gone for good, run:", r.staging),
+			"mkdir -p " + quoteShellWord(r.staging),
+		}
+	}
 	if len(r.repairs) > 0 {
 		d := r.repairs[0]
 		return []string{
-			fmt.Sprintf("next: disc %s: an earlier %s stopped before it wrote the records of its items; run:", d.arg, d.command),
+			fmt.Sprintf("next: disc %s: an earlier %s stopped before it wrote the records of its items; gc writes them, and also frees the data whose wait is over; run:", d.arg, d.command),
 			"noahsark gc",
 		}
 	}
@@ -90,8 +116,18 @@ func nextBlock(r nextRepo) []string {
 			"noahsark disc lost " + d.arg + " && noahsark commit",
 		}
 	}
+	// A commit in the second of the Lost event counts as a later commit:
+	// the event keeps whole seconds only.
 	if d, ok := r.first(func(d nextDisc) bool {
-		return d.info.State == stage.DiscPacked || d.info.State == stage.DiscBurned
+		return waitsForCommit(d.info) && r.newestSnapshot.Unix() < d.info.LastEventTime.Unix()
+	}); ok {
+		return []string{
+			fmt.Sprintf("next: disc %s is lost; a new commit stages what the source still holds; run:", d.arg),
+			"noahsark commit",
+		}
+	}
+	if d, ok := r.first(func(d nextDisc) bool {
+		return d.info.State == stage.DiscPacked || d.info.State == stage.DiscBurned || d.foundOnDiscOnly()
 	}); ok {
 		return r.burnBlock(d)
 	}
@@ -127,31 +163,33 @@ func (r nextRepo) first(match func(nextDisc) bool) (nextDisc, bool) {
 	return nextDisc{}, false
 }
 
-// missingBlock gives a missing disc to recover, or names it lost.
+// missingBlock gives a missing disc to recover, or names it lost. The
+// unmount follows a ";": recover exits 1 while another disc is missing.
 func (r nextRepo) missingBlock(d nextDisc) []string {
 	return []string{
 		fmt.Sprintf("next: load disc %s %q, then run:", d.arg, d.label),
 		r.mountLine() + " &&",
-		"noahsark recover --source=" + quoteShellWord(r.source) + " --disc=" + arkMount + " &&",
-		"sudo umount " + arkMount,
+		"noahsark recover --source=" + quoteShellWord(r.source) + " --disc=" + arkMount + ";",
+		r.unmountLine(),
 		fmt.Sprintf("or, when disc %s is gone for good, run:", d.arg),
 		"noahsark disc lost " + d.arg,
 	}
 }
 
-// burnBlock gives the block of a packed disc, or of a burned disc. A
-// packed disc, and a burned disc whose last check failed, need a new
-// disc from the kept disc root. A disc with no disc root can only be
-// named lost.
+// burnBlock gives the block of a packed disc, of a burned disc, or of a
+// found on disc only disc. A packed disc, and a burned disc whose last
+// check failed, need a new disc from the kept disc root. A disc with no
+// disc root can only be named lost. The unmount follows a ";", so that
+// a failed verify leaves no disc mounted.
 func (r nextRepo) burnBlock(d nextDisc) []string {
 	dev := quoteShellWord(r.device)
 	verifyLines := []string{
 		"eject " + dev + " && eject -t " + dev + " && sleep 5 &&",
 		r.mountLine() + " &&",
-		"noahsark verify " + arkMount + " &&",
-		"sudo umount " + arkMount + " && eject " + dev,
+		"noahsark verify " + arkMount + ";",
+		r.unmountLine(),
 	}
-	if d.info.State == stage.DiscBurned && !d.lastCheckFailed() {
+	if d.foundOnDiscOnly() || d.info.State == stage.DiscBurned && !d.lastCheckFailed() {
 		return append([]string{fmt.Sprintf("next: load disc %s, then run:", d.arg)}, verifyLines...)
 	}
 	if !d.treeExists {
@@ -176,6 +214,11 @@ func (r nextRepo) burnBlock(d nextDisc) []string {
 // mountLine mounts the disc in the drive read-only on arkMount.
 func (r nextRepo) mountLine() string {
 	return "sudo mkdir -p " + arkMount + " && sudo mount -o ro " + quoteShellWord(r.device) + " " + arkMount
+}
+
+// unmountLine unmounts arkMount and ejects the disc.
+func (r nextRepo) unmountLine() string {
+	return "sudo umount " + arkMount + " && eject " + quoteShellWord(r.device)
 }
 
 // secondCopyAdvice is the advice line of a verified disc.

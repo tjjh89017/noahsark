@@ -208,7 +208,7 @@ func TestNoRepository(t *testing.T) {
 		if code != 2 {
 			t.Errorf("%v: exit %d, want 2: %s", args, code, out)
 		}
-		if !strings.Contains(out, "no repository; run noahsark init, or give --repo") {
+		if !strings.Contains(out, "no repository; give --repo, or run noahsark init for a new repository, or noahsark recover for a lost one") {
 			t.Errorf("%v: output %q", args, out)
 		}
 	}
