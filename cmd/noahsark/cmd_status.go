@@ -44,9 +44,9 @@ func init() {
 // for each snapshot that is not complete on discs, one line for each
 // disc, and the one next block of the repository. It prints a warning on
 // standard error for each item that pack cannot take, and then exits 1.
-// A staging directory that does not exist gives a warning in place of
-// the staged total and the snapshot lines, and exit 1. status takes no
-// lock and changes no file.
+// A staging directory that does not exist while a Staged or a Packed
+// item needs it gives a warning in place of the staged total and the
+// snapshot lines, and exit 1. status takes no lock and changes no file.
 func cmdStatus(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "status"
@@ -73,11 +73,6 @@ func cmdStatus(e *env, args []string) int {
 	}
 
 	layout := layoutOf(repoDir, cfg)
-	noStaging, err := stagingMissing(layout)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
 	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
@@ -89,6 +84,11 @@ func cmdStatus(e *env, args []string) int {
 		return 1
 	}
 
+	noStaging, err := stagingLost(layout, logs.Items)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+		return 1
+	}
 	discs := summarizeDiscs(ledger.Rows, logs)
 	repairs, err := logRepairs(layout, logs)
 	if err != nil {

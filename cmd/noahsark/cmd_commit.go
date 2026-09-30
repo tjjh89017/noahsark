@@ -109,8 +109,12 @@ func (o *commitOptions) run(e *env, args []string) int {
 
 	layout := layoutOf(repoDir, cfg)
 	// The staging store exists before the walk, thus the walk can leave
-	// it out when it is inside the source.
-	err = ensureRepoDirs(layout)
+	// it out when it is inside the source. A lost staging store is
+	// refused before commit creates it.
+	err = checkStaging(layout)
+	if err == nil {
+		err = ensureRepoDirs(layout)
+	}
 	if err == nil {
 		err = mkdirDurable(layout.chunksDir())
 	}

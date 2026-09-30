@@ -181,5 +181,29 @@ func init() {
 			exact: true, exactStderr: true, noEvent: true, sameCatalog: true,
 			end: stage.DiscVerified, word: stage.WordClean,
 		},
+		stateCase{
+			row: "71c", name: "commit with no staging directory",
+			start: stage.DiscPacked, setup: stagingGoneSetup,
+			args:  []string{"commit", "{SRC}"},
+			exact: true, exactStderr: true, noEvent: true, sameCatalog: true,
+			end: stage.DiscPacked, word: stage.WordPacked,
+			check: func(t *testing.T, fx *discFixture, _, _ string) {
+				if _, err := os.Stat(fx.vars["{STAGING}"]); !os.IsNotExist(err) {
+					t.Errorf("commit created the staging directory: %v", err)
+				}
+			},
+		},
+		// Row 71d: no Staged and no Packed item needs the staging
+		// directory. status gives no warning and exits 0.
+		stateCase{
+			row: "71d", name: "status of an on disc only disc with no staging directory",
+			start: stage.DiscOnDiscOnly, setup: stagingGoneSetup,
+			args:    []string{"status"},
+			cells:   map[string]string{"N": "0", "B": "0"},
+			also:    []string{"next: nothing to do\n"},
+			absent:  []string{"warning:", "staging directory"},
+			noEvent: true, sameCatalog: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+		},
 	)
 }

@@ -71,17 +71,12 @@ func markFile(layout repoLayout) string {
 // needs it. It leaves catalog/ to the commands that write the catalog. A
 // command without the lock creates nothing.
 //
-// A holder of the lock refuses a staging directory that does not exist,
-// before it writes a file: an unmounted volume or a wrong staging.dir
-// hides the chunk files and the disc roots.
+// A holder of the lock refuses a lost staging directory before it writes
+// a file (see checkStaging).
 func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (*stage.Logs, error) {
 	if holdsLock {
-		missing, err := stagingMissing(layout)
-		if err != nil {
+		if err := checkStaging(layout); err != nil {
 			return nil, err
-		}
-		if missing {
-			return nil, fmt.Errorf("staging directory %s does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir", layout.stagingDir())
 		}
 		if err := mkdirDurable(layout.stateDir()); err != nil {
 			return nil, err
@@ -118,6 +113,44 @@ func stagingMissing(layout repoLayout) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// stagingNeeded reports whether the state log holds a Staged or a Packed
+// item. Only then does the staging directory hold files: the chunk files
+// of the Staged items, and the disc roots of the discs of the Packed
+// items.
+func stagingNeeded(items *stage.Log) bool {
+	return items.CountState(stage.Staged) > 0 || items.CountState(stage.Packed) > 0
+}
+
+// stagingLost reports whether the staging directory of layout does not
+// exist while items needs it. An unmounted volume or a wrong staging.dir
+// then hides the chunk files and the disc roots.
+func stagingLost(layout repoLayout, items *stage.Log) (bool, error) {
+	missing, err := stagingMissing(layout)
+	if err != nil || !missing {
+		return false, err
+	}
+	return stagingNeeded(items), nil
+}
+
+// checkStaging returns the refusal of a command that takes the lock when
+// the staging directory is lost. It reads the state log read-only and
+// writes nothing. A missing staging directory that no item needs is no
+// refusal: the command creates it when it needs it.
+func checkStaging(layout repoLayout) error {
+	missing, err := stagingMissing(layout)
+	if err != nil || !missing {
+		return err
+	}
+	logs, err := stage.OpenLogs(layout.stateDir(), false)
+	if err != nil {
+		return err
+	}
+	if !stagingNeeded(logs.Items) {
+		return nil
+	}
+	return fmt.Errorf("staging directory %s does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir", layout.stagingDir())
 }
 
 // warnRollback prints the warning of openLogs for a command without the

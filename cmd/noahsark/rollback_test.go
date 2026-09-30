@@ -137,11 +137,22 @@ func TestGitRollbackKeepsThePlanDirectory(t *testing.T) {
 }
 
 // TestNewStagingDirectoryIsNoRollback removes the staging directory, as
-// a clone on a second computer has none. commit writes the chunk files
+// a clone on a second computer has none. pack and commit refuse while
+// the Staged items need it. After mkdir, commit writes the chunk files
 // again, and pack works.
 func TestNewStagingDirectoryIsNoRollback(t *testing.T) {
 	repo, src := initAndCommit(t)
-	if err := os.RemoveAll(testLayout(t, repo).stagingDir()); err != nil {
+	staging := testLayout(t, repo).stagingDir()
+	if err := os.RemoveAll(staging); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"pack", "--capacity=64MiB"}, {"commit", src}} {
+		code, out := runCmd(t, append([]string{"--repo=" + repo}, args...)...)
+		if code != 1 || strings.Contains(out, rollbackRefusal) || !strings.Contains(out, "staging directory "+staging+" does not exist") {
+			t.Fatalf("%s with no staging directory: exit %d, want the refusal of a lost staging directory: %s", args[0], code, out)
+		}
+	}
+	if err := os.Mkdir(staging, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
