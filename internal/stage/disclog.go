@@ -301,8 +301,10 @@ type DiscInfo struct {
 	// MarkedVerified event, and LastCheckTime its time.
 	LastCheck     CheckResult
 	LastCheckTime time.Time
-	// LastEvent is the newest event of the disc.
-	LastEvent DiscEvent
+	// LastEvent is the newest event of the disc, and LastEventTime its
+	// time.
+	LastEvent     DiscEvent
+	LastEventTime time.Time
 }
 
 // apply returns d after the event of rec, or an error when the replay
@@ -341,7 +343,7 @@ func (d DiscInfo) apply(rec DiscRecord) (DiscInfo, error) {
 	}
 	d.UUID = rec.DiscUUID
 	d.State = next
-	d.LastEvent = rec.Event
+	d.LastEvent, d.LastEventTime = rec.Event, at
 	return d, nil
 }
 

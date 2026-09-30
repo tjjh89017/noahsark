@@ -47,6 +47,13 @@ type stateCase struct {
 	// start is the state of the one disc of the repository that
 	// repoWithDisc builds.
 	start stage.DiscState
+	// from is the state of the disc of the fixture after setup, when
+	// setup changes it. The zero value means start.
+	from stage.DiscState
+	// lostFrom is the state of a lost disc when it was marked lost. The
+	// zero value means start when setup marks the disc lost, and verified
+	// when repoWithDisc builds a lost disc.
+	lostFrom stage.DiscState
 	// setup changes the fixture after repoWithDisc and before the event.
 	// It can damage the disc root, point {ROOT} to another disc root,
 	// add a disc, set the fake clock, set a placeholder, or give the
@@ -122,9 +129,31 @@ func sortedRows(rows map[string]bool) []string {
 	return ids
 }
 
+// declared returns the state of the disc of the fixture before the
+// event, as the fields start, from and lostFrom of the case give it.
+func (c stateCase) declared() cellState {
+	s := cellState{state: c.start}
+	if c.from != stage.DiscUnknown {
+		s.state = c.from
+	}
+	if s.state != stage.DiscLost {
+		return s
+	}
+	switch {
+	case c.lostFrom != stage.DiscUnknown:
+		s.beforeLost = c.lostFrom
+	case c.start == stage.DiscLost:
+		s.beforeLost = stage.DiscVerified
+	default:
+		s.beforeLost = c.start
+	}
+	return s
+}
+
 // TestStatesTableIsComplete fails when a row of the state x event table
-// has no registered case, when a case names a row that the table does
-// not have, and when knownDisagreements names no case.
+// has no registered case, when a state that the State cell of a row
+// names has no case of that row, when a case names a row that the table
+// does not have, and when knownDisagreements names no case.
 func TestStatesTableIsComplete(t *testing.T) {
 	tb := loadStateTable(t)
 	covered := map[string]bool{}
@@ -135,14 +164,23 @@ func TestStatesTableIsComplete(t *testing.T) {
 			unknown[c.row] = true
 		}
 	}
-	var missing []string
+	var missing, missingStates []string
 	for _, id := range tb.ids {
 		if !covered[id] {
 			missing = append(missing, id)
+			continue
+		}
+		for _, s := range tb.namedStates(id) {
+			if !slices.ContainsFunc(stateCases, func(c stateCase) bool { return c.row == id && s.holds(c.declared()) }) {
+				missingStates = append(missingStates, fmt.Sprintf("row %s: %s", id, s))
+			}
 		}
 	}
 	if len(missing) > 0 {
 		t.Errorf("rows of docs/states.md with no registered case: %s", strings.Join(missing, ", "))
+	}
+	if len(missingStates) > 0 {
+		t.Errorf("states that the State cell names, with no registered case:\n%s", strings.Join(missingStates, "\n"))
 	}
 	if len(unknown) > 0 {
 		t.Errorf("registered cases name rows that docs/states.md does not have: %s", strings.Join(sortedRows(unknown), ", "))
@@ -192,6 +230,16 @@ func runStateCase(t *testing.T, tb *stateTable, c stateCase) {
 	}
 	fill := fx.filler()
 	before := discStateIfRepo(t, fx.repo, fx.uuid)
+	if before != stage.DiscUnknown && len(tb.namedStates(c.row)) > 0 {
+		info := discState(t, fx.repo, fx.uuid)
+		got := cellState{state: info.State}
+		if got.state == stage.DiscLost {
+			got.beforeLost = info.BeforeLost
+		}
+		if want := c.declared(); got != want {
+			t.Fatalf("after setup the disc is %s, but the case declares %s; set from or lostFrom", got, want)
+		}
+	}
 
 	spy := &readSpy{}
 	switch c.stdin {

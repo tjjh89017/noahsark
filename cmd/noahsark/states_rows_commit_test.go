@@ -37,7 +37,7 @@ func init() {
 		// it stays lost.
 		stateCase{
 			row: "3", name: "commit stages each lost item again",
-			start: stage.DiscOnDiscOnly, setup: lostItemsSetup,
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost, setup: lostItemsSetup,
 			args: []string{"commit", "{SRC}"},
 			end:  stage.DiscLost,
 			check: func(t *testing.T, fx *discFixture, _, _ string) {
@@ -55,9 +55,11 @@ func init() {
 		// lost item, and each lost item stays lost.
 		stateCase{
 			row: "4", name: "commit of a source without the lost data",
-			start: stage.DiscOnDiscOnly,
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost,
 			setup: func(t *testing.T, fx *discFixture) {
+				laterClockSetup(t, fx)
 				lostItemsSetup(t, fx)
+				statusShows(commitBlock...)(t, fx, "", "")
 				// N of this row counts the items of the other source,
 				// not the lost items.
 				fx.cell("N", "")
@@ -76,6 +78,9 @@ func init() {
 				if n := countByState(t, fx.repo, stage.Lost); n != lostCount(t, fx) {
 					t.Fatalf("%d items lost, want %d", n, lostCount(t, fx))
 				}
+				// The commit ends the commit block, also for the items
+				// that stay lost.
+				statusLacks(commitBlock[0])(t, fx, stdout, stderr)
 			},
 		},
 	)

@@ -19,17 +19,23 @@ func init() {
 		})
 	}
 	registerStateCases(
+		// Rows 58 and 59: the Lost event is newer than each snapshot, so
+		// status gives the commit block.
 		stateCase{
 			row: "58", name: "on disc only disc marked lost",
-			start: stage.DiscOnDiscOnly, args: []string{"disc", "lost", "{SEQ}"},
+			start: stage.DiscOnDiscOnly, setup: laterClockSetup,
+			args:  []string{"disc", "lost", "{SEQ}"},
 			stdin: stdinYes,
 			end:   stage.DiscLost, word: stage.WordLost,
+			check: statusShows(commitBlock...),
 		},
 		stateCase{
 			row: "59", name: "missing disc marked lost",
-			start: stage.DiscMissing, args: []string{"disc", "lost", "{SEQ}"},
+			start: stage.DiscMissing, setup: laterClockSetup,
+			args:  []string{"disc", "lost", "{SEQ}"},
 			stdin: stdinYes,
 			end:   stage.DiscLost,
+			check: statusShows(commitBlock...),
 		},
 	)
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscBurned, stage.DiscVerified, stage.DiscOnDiscOnly, stage.DiscMissing} {
@@ -110,6 +116,13 @@ func init() {
 			stdin: stdinNo,
 			end:   stage.DiscVerified, word: stage.WordClean,
 		},
+		stateCase{
+			row: "64", name: "missing disc found, answer no",
+			start: stage.DiscMissing, from: stage.DiscLost, setup: lostSetup,
+			args:  []string{"disc", "lost", "--undo", "{UUID}"},
+			stdin: stdinNo,
+			end:   stage.DiscLost,
+		},
 		// Row 57 with the count: the items return to staged, the plan
 		// directory is removed, and the catalog data of the disc stays.
 		stateCase{
@@ -150,7 +163,7 @@ func init() {
 		// verified time, and each item is burned again.
 		stateCase{
 			row: "61", name: "verified disc found, the count",
-			start: stage.DiscVerified, setup: lostSetup,
+			start: stage.DiscVerified, from: stage.DiscLost, setup: lostSetup,
 			args: []string{"--yes", "disc", "lost", "--undo", "0"},
 			end:  stage.DiscBurned, word: stage.WordBurned,
 			check: func(t *testing.T, fx *discFixture, _, _ string) {
@@ -166,7 +179,7 @@ func init() {
 		// disc.
 		stateCase{
 			row: "61", name: "verified disc found, a later pack took the items",
-			start: stage.DiscVerified,
+			start: stage.DiscVerified, from: stage.DiscLost,
 			setup: func(t *testing.T, fx *discFixture) {
 				lostSetup(t, fx)
 				fx.mustRun(t, "pack", "--capacity=64MiB")
@@ -180,42 +193,115 @@ func init() {
 				}
 			},
 		},
+		// Row 62: status gives the found disc the verify lines until a
+		// verify logs a check.
 		stateCase{
 			row: "62", name: "on disc only disc found",
-			start: stage.DiscOnDiscOnly, setup: lostSetup,
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost, setup: lostSetup,
 			args: []string{"--yes", "disc", "lost", "--undo", "0"},
 			end:  stage.DiscOnDiscOnly, word: stage.WordOnDisc,
-			check: func(t *testing.T, fx *discFixture, _, _ string) {
-				if words := itemWords(t, fx.repo, fx.uuid); words[stage.WordOnDisc] != itemCount(t, fx) {
-					t.Errorf("item words %v, want %d on-disc", words, itemCount(t, fx))
-				}
-			},
+			check: allChecks(
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					if words := itemWords(t, fx.repo, fx.uuid); words[stage.WordOnDisc] != itemCount(t, fx) {
+						t.Errorf("item words %v, want %d on-disc", words, itemCount(t, fx))
+					}
+				},
+				statusShows(append([]string{"next: load disc {SEQ}, then run:\n"}, statusVerifyLines...)...),
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					fx.mustRun(t, "verify", fx.root)
+				},
+				statusShows("next: nothing to do\n"),
+			),
 		},
 		stateCase{
 			row: "62", name: "on disc only disc found, answer yes",
-			start: stage.DiscOnDiscOnly, setup: lostSetup,
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost, setup: lostSetup,
 			args:  []string{"disc", "lost", "--undo", "0"},
 			stdin: stdinYes,
 			end:   stage.DiscOnDiscOnly, word: stage.WordOnDisc,
 		},
 		stateCase{
 			row: "63", name: "missing disc found",
-			start: stage.DiscMissing, setup: lostSetup,
+			start: stage.DiscMissing, from: stage.DiscLost, setup: lostSetup,
 			args: []string{"--yes", "disc", "lost", "--undo", "{UUID}"},
 			end:  stage.DiscMissing,
 		},
 		stateCase{
 			row: "64", name: "on disc only disc found, answer no",
-			start: stage.DiscOnDiscOnly, setup: lostSetup,
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost, setup: lostSetup,
 			args:  []string{"disc", "lost", "--undo", "0"},
 			stdin: stdinNo,
 			end:   stage.DiscLost,
 		},
 	)
+	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscVerified, stage.DiscOnDiscOnly, stage.DiscMissing} {
+		registerStateCases(stateCase{
+			row: "59b", name: s.String() + " disc lost with no terminal and no answer flag", like: "57",
+			start: s, args: []string{"disc", "lost", "{SEQ}"},
+			absent: []string{confirmQuestion, "needs --force-yes"},
+			end:    s,
+		})
+	}
+	// Rows 82 to 84a for the states that the cases of disc verified and
+	// of the verified disc do not cover. like is the answer-yes row of
+	// the state.
+	for _, c := range []struct {
+		s    stage.DiscState
+		like string
+	}{{stage.DiscPacked, "57"}, {stage.DiscOnDiscOnly, "58"}, {stage.DiscMissing, "59"}} {
+		registerStateCases(
+			stateCase{
+				row: "82", name: c.s.String() + " disc lost with --force-yes", like: c.like,
+				start: c.s, args: []string{"--force-yes", "disc", "lost", "{SEQ}"},
+				end: stage.DiscLost,
+			},
+			stateCase{
+				row: "83", name: c.s.String() + " disc lost with --yes and no terminal", like: c.like,
+				start: c.s, args: []string{"--yes", "disc", "lost", "{SEQ}"},
+				omit:   []string{"nothing changed; disc verified needs --force-yes"},
+				absent: []string{confirmQuestion},
+				end:    c.s,
+			},
+			stateCase{
+				row: "84", name: c.s.String() + " disc lost with --yes, answer yes", like: c.like,
+				start: c.s, args: []string{"--yes", "disc", "lost", "{SEQ}"},
+				stdin: stdinYes,
+				end:   stage.DiscLost,
+			},
+			stateCase{
+				row: "84a", name: c.s.String() + " disc lost with --yes, answer no", like: c.like,
+				start: c.s, args: []string{"--yes", "disc", "lost", "{SEQ}"},
+				stdin: stdinNo,
+				end:   c.s,
+			},
+		)
+	}
+	// Rows 80 and 81 for a disc that was on disc only or missing when it
+	// was marked lost.
+	for _, c := range []struct {
+		s    stage.DiscState
+		like string
+	}{{stage.DiscOnDiscOnly, "62"}, {stage.DiscMissing, "63"}} {
+		registerStateCases(
+			stateCase{
+				row: "80", name: "lost undo with --yes, " + c.s.String() + " when marked lost", like: c.like,
+				start: c.s, from: stage.DiscLost, setup: lostSetup,
+				args: []string{"--yes", "disc", "lost", "--undo", "{UUID}"},
+				end:  c.s,
+			},
+			stateCase{
+				row: "81", name: "lost undo with no terminal, " + c.s.String() + " when marked lost", like: c.like,
+				start: c.s, from: stage.DiscLost, setup: lostSetup,
+				args:   []string{"disc", "lost", "--undo", "{UUID}"},
+				absent: []string{confirmQuestion},
+				end:    stage.DiscLost,
+			},
+		)
+	}
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscBurned} {
 		registerStateCases(stateCase{
 			row: "65", name: s.String() + " disc found",
-			start: s, setup: lostSetup,
+			start: s, from: stage.DiscLost, setup: lostSetup,
 			args:   []string{"--force-yes", "disc", "lost", "--undo", "0"},
 			absent: []string{"warning:"},
 			end:    stage.DiscLost,

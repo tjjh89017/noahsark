@@ -9,7 +9,7 @@ import (
 
 // errNoRepo is the error of a command that needs a repository and finds
 // none. Its exit code is 2.
-var errNoRepo = errors.New("no repository; run noahsark init, or give --repo")
+var errNoRepo = errors.New("no repository; give --repo, or run noahsark init for a new repository, or noahsark recover for a lost one")
 
 // repoEnvVar names the environment variable that gives the repository.
 const repoEnvVar = "NOAHSARK_REPO"

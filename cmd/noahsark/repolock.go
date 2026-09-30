@@ -70,8 +70,19 @@ func markFile(layout repoLayout) string {
 // creates state/ when it does not exist, because each append of a log
 // needs it. It leaves catalog/ to the commands that write the catalog. A
 // command without the lock creates nothing.
+//
+// A holder of the lock refuses a staging directory that does not exist,
+// before it writes a file: an unmounted volume or a wrong staging.dir
+// hides the chunk files and the disc roots.
 func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (*stage.Logs, error) {
 	if holdsLock {
+		missing, err := stagingMissing(layout)
+		if err != nil {
+			return nil, err
+		}
+		if missing {
+			return nil, fmt.Errorf("staging directory %s does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir", layout.stagingDir())
+		}
 		if err := mkdirDurable(layout.stateDir()); err != nil {
 			return nil, err
 		}
@@ -97,6 +108,16 @@ func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (
 		}
 	}
 	return logs, nil
+}
+
+// stagingMissing reports whether the staging directory of layout does
+// not exist. The stat follows a symlink.
+func stagingMissing(layout repoLayout) (bool, error) {
+	_, err := os.Stat(layout.stagingDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
 }
 
 // warnRollback prints the warning of openLogs for a command without the

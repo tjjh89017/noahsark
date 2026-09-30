@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -43,7 +44,9 @@ func init() {
 // for each snapshot that is not complete on discs, one line for each
 // disc, and the one next block of the repository. It prints a warning on
 // standard error for each item that pack cannot take, and then exits 1.
-// status takes no lock and changes no file.
+// A staging directory that does not exist gives a warning in place of
+// the staged total and the snapshot lines, and exit 1. status takes no
+// lock and changes no file.
 func cmdStatus(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "status"
@@ -70,6 +73,11 @@ func cmdStatus(e *env, args []string) int {
 	}
 
 	layout := layoutOf(repoDir, cfg)
+	noStaging, err := stagingMissing(layout)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+		return 1
+	}
 	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
@@ -93,41 +101,57 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
-	stagedItems, stagedBytes, err := image.StagedTotals(layout.objectPath(c), logs.Items)
+	newest, err := newestSnapshotTime(c, discs)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
 
-	ids, err := packStore(layout, c, logs.Items).SnapshotIDs()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-	groups, orphans := image.PackGroups(layout.objectPath(c), ids, logs.Items)
-
-	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
-	for _, g := range groups {
-		if line := statusSnapshotLine(g); line != "" {
-			_, _ = fmt.Fprintln(stdout, line)
+	// The chunk files of the staged items are in the staging directory.
+	var stagedItems int
+	var groups []image.SnapshotGroup
+	var orphans []image.UnreadableItem
+	if noStaging {
+		_, _ = fmt.Fprintf(stderr, "noahsark: status: warning: staging directory %s does not exist; staging.dir in config.yaml names it\n", layout.stagingDir())
+	} else {
+		var stagedBytes uint64
+		stagedItems, stagedBytes, err = image.StagedTotals(layout.objectPath(c), logs.Items)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+			return 1
+		}
+		ids, err := packStore(layout, c, logs.Items).SnapshotIDs()
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+			return 1
+		}
+		groups, orphans = image.PackGroups(layout.objectPath(c), ids, logs.Items)
+		_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
+		for _, g := range groups {
+			if line := statusSnapshotLine(g); line != "" {
+				_, _ = fmt.Fprintln(stdout, line)
+			}
 		}
 	}
 	for _, d := range discs {
 		_, _ = fmt.Fprintln(stdout, statusDiscLine(d))
 	}
 	r := nextRepo{
-		repo:   repoDir,
-		device: cfg.PackDevice,
-		source: cfg.SourceRoot,
-		staged: stagedItems,
-		now:    e.now(),
-		discs:  nextDiscs(layout, discs),
+		repo:           repoDir,
+		staging:        layout.stagingDir(),
+		stagingMissing: noStaging,
+		newestSnapshot: newest,
+		device:         cfg.PackDevice,
+		source:         cfg.SourceRoot,
+		staged:         stagedItems,
+		now:            e.now(),
+		discs:          nextDiscs(layout, discs),
 	}
 	r.repairs = nextRepairs(ledger.Rows, discs, repairs)
 	for _, line := range nextBlock(r) {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
-	warned := false
+	warned := noStaging
 	for _, g := range groups {
 		if g.Unreadable != nil {
 			_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, *g.Unreadable, g.OnDisc))
@@ -206,6 +230,31 @@ func statusStateWord(info stage.DiscInfo) string {
 		}
 	}
 	return word
+}
+
+// newestSnapshotTime returns the time of the newest snapshot that the
+// catalog holds, or the zero time when it holds none. It reads the
+// snapshots only when a lost disc waits for a commit. A snapshot object
+// that does not read gives no time.
+func newestSnapshotTime(c *catalog.Catalog, discs []discSummary) (time.Time, error) {
+	if !slices.ContainsFunc(discs, func(d discSummary) bool { return waitsForCommit(d.Info) }) {
+		return time.Time{}, nil
+	}
+	ids, err := c.ListSnapshots()
+	if err != nil {
+		return time.Time{}, err
+	}
+	var newest time.Time
+	for _, id := range ids {
+		snap, err := c.ReadSnapshot(id)
+		if err != nil {
+			continue
+		}
+		if at := time.Unix(snap.TimeSec, int64(snap.TimeNsec)); at.After(newest) {
+			newest = at
+		}
+	}
+	return newest, nil
 }
 
 // nextDiscs gives the next block the discs of status. It names a disc

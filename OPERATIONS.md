@@ -69,7 +69,9 @@ The `state/` directory holds these files:
 Git keeps no empty directory, thus a clone of a repository can lack
 `state/`, `catalog/` and `staging/`. `commit` creates each one that is
 absent, with mode 0755. `status`, `ls`, `log` and `restore` read a missing
-directory as empty, and change no file.
+directory as empty, and change no file. The one exception is a missing
+staging directory: `status` warns about it and exits with code 1, as "The
+repository directory" states below.
 
 The tracked part is permanent: the operator can keep it in a version control
 system. The ignored part holds only what `gc` frees, and the sequence mark.
@@ -109,6 +111,26 @@ there. `status` and `pack` then fail on the first missing chunk file. A
 then works. The disc root of a `packed` disc is gone too: its `next:` block
 gives `disc lost` ("State to `next:` block" in `docs/states.md`).
 
+A staging directory that does not exist is not the same as an empty one.
+Its volume can be unmounted, or `staging.dir` can name a wrong path. The
+discs roots and the chunk files are then not gone. Thus:
+
+- `status` prints `noahsark: status: warning: staging directory DIR does not
+  exist; staging.dir in config.yaml names it` on standard error, the disc
+  lines, and the `next:` block of a missing staging directory, and exits
+  with code 1. It prints no `staged:` line and no snapshot line. No block
+  names `disc lost` for a disc root that is missing with the staging
+  directory. `DIR` is the absolute path.
+- Each command that takes the lock, other than `commit` and `recover`,
+  refuses before it writes a file, and exits with code 1: `noahsark: CMD:
+  staging directory DIR does not exist; mount its volume, or correct
+  staging.dir in config.yaml; when the staging store is gone for good,
+  create it with mkdir`.
+- `commit` and `recover` create a missing staging directory, as `init` does.
+  Run `status` before `commit` when the staging store is on its own volume.
+- The `next:` block of a `packed` disc gives `disc lost` only when the
+  staging directory exists and the plan directory of that disc does not.
+
 Thus git is safe for these uses: a commit of `state/` and `catalog/` after
 each command, a push to a remote as a copy, and a clone to read the history.
 Do not check out an old commit into the repository, and do not pull changes
@@ -127,8 +149,11 @@ variable `NOAHSARK_REPO`; then the current directory and each ancestor of it.
 and it refuses `--repo` with exit code 2.
 
 With no repository, every command other than `init`, `recover` and `verify`
-prints `no repository; run noahsark init, or give --repo` and exits with code
-2. `restore`, `ls` and `log` print `no repository; run recover first, one
+prints `no repository; give --repo, or run noahsark init for a new
+repository, or noahsark recover for a lost one` and exits with code 2. After
+the loss of the repository, the operator runs `recover` with each disc, and
+never `init`: a new `init` makes a repository with a new `repo_uuid`, which
+the discs do not carry. `restore`, `ls` and `log` print `no repository; run recover first, one
 time for each disc` in its place. `recover` creates the repository directory when it is
 absent; it needs `--repo` or `NOAHSARK_REPO` then. `verify` with no
 repository checks the disc root, records nothing, and prints `not counted: no
@@ -1568,7 +1593,11 @@ noahsark ls      [-R | --recursive] SNAPSHOT [PATH]
 noahsark log     [REF | SNAPSHOT]
 ```
 
-Each line takes the global options before the command name.
+Each line takes the global options before the command name. A positional
+argument that a line does not have is a usage error: the tool prints the
+usage line of the command and exits with code 2. For example, `noahsark pack
+--capacity=bd25 extra` prints `usage: noahsark pack --capacity=SIZE [--fec]
+[--close] [--out=DIR] [--dry-run]`.
 
 ### 16.3 Options
 
@@ -1728,6 +1757,11 @@ warning of `pack` on standard error, with `status` in place of `pack`. For a
 snapshot object that a disc holds and whose catalog file is missing or does
 not verify, `REPAIR` is `run recover with a disc that holds it`. `status`
 prints all its lines on standard output as usual, then exits 1.
+
+When the staging directory does not exist, `status` prints no `staged:` line
+and no snapshot line. It prints the warning that "The repository directory"
+gives, the disc lines, and the `next:` block of a missing staging
+directory, then exits 1.
 
 Two spaces separate the fields. `STATE` is the state word, with the suffix
 `, last check DATE`, `, last check failed DATE` or `, not checked` where
@@ -2032,11 +2066,12 @@ Every command uses exactly these three codes.
 | 22 | `restore` stops between two discs: killed, or no terminal | Mount the named disc and run the same `restore` again. It completes the part files. |
 | 23 | `nothing changed` | The confirmation was answered no. Run the command again, and answer `y`, or give `--yes` (`--force-yes` for `disc verified` and `disc lost`). |
 | 24 | An unknown format version on a disc | The tool refuses the disc. Use a newer tool. |
-| 25 | `no repository; run noahsark init, or give --repo` | Run `init` in the directory of the repository, or give `--repo` or set `NOAHSARK_REPO`. |
+| 25 | `no repository; give --repo, or run noahsark init for a new repository, or noahsark recover for a lost one` | Give `--repo` or set `NOAHSARK_REPO`, or go into the repository. For a new repository, run `init` in its directory. After the loss of the repository, do not run `init`: run `noahsark --repo=PATH recover --source=SOURCE --disc=DIR` with each disc. |
 | 26 | `snapshot ID is partial; run recover with more discs` | Run `recover` with each disc that you still hold, then run the command again. |
 | 27 | `the state log ends in a part of a record; ...; another noahsark command writes the log at this time` | Nothing is wrong. Wait for the other command, then run the command again. |
 | 28 | `disc SEQ "LABEL": an earlier COMMAND stopped before it wrote the records of its items; N item record(s) now written` | Nothing to do. The command that printed the note wrote the records, then did its own work. When `status` names such a disc, run the command that its `next:` block gives. Do not run the stopped command again: its disc event is written. |
 | 29 | `state/ went back to an older version: ...` | `state/` is older than the staging directory, for example after a `git checkout` of an old commit. Put `state/` and `catalog/` forward again to the newest commit with git. When the newest version is gone, run `noahsark --repo=<new> recover --source=PATH --disc=DIR` with each disc, into a new repository. Commands that take no lock warn and go on. |
+| 30 | `staging directory DIR does not exist; ...`, or the `status` warning `staging directory DIR does not exist; staging.dir in config.yaml names it` | Mount the volume of the staging store, or correct `staging.dir` in `config.yaml`. Then run `status`. When the staging store is gone for good, run `mkdir -p DIR`: `status` then names each `packed` disc with `disc lost`, and a `commit` of the same source writes the chunk files of the Staged items again. |
 
 ## 20. Test list
 
@@ -2134,8 +2169,7 @@ sudo noahsark --repo=/srv/ark/repo image build <DISC>
 # After the burn: load the disc again, mount it read-only, verify.
 eject /dev/sr0 && eject -t /dev/sr0 && sleep 5
 sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
-noahsark verify /mnt/ark
-sudo umount /mnt/ark
+noahsark verify /mnt/ark; sudo umount /mnt/ark && eject /dev/sr0
 # Copy a good disc to an image, to burn a new copy.
 ddrescue -b 2048 -n -r1 /dev/sr0 copy.img copy.map
 ```
