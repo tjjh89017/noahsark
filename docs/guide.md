@@ -149,7 +149,8 @@ other commands print a short id: the 12 characters after `1220`, as
 
 `commit` reads every file of the source and stages the new data. With no
 `--ref`, it moves the ref named by the date of today. Give `--ref` for a
-name of your own, and `-m` for a message that `log` shows:
+name of your own, and `-m` for a message that `log` shows. A ref name is 1
+to 40 letters, digits and ASCII signs, with no space:
 
 ```
 noahsark commit --ref=before-upgrade -m "before the OS upgrade"
@@ -694,7 +695,8 @@ the copy to `recover`. See "A second copy".
 | `image build`: `FILE exists; add --force to build it again` | Add `--force` after `image build`. |
 | `repository lock ... is held` | Another `noahsark` command runs on this repository. Wait for it. |
 | `nothing changed` | You answered no to the question. Run the command again, and answer `y`. |
-| `commit` prints `unstable PATH` or `skipped PATH` | The snapshot is written. A file changed or could not be read: run `commit` again later. A name that holds `\` cannot be stored: rename the file, then run `commit` again. |
+| `commit` prints `unstable PATH` or `skipped PATH` | The snapshot is written. A file changed or could not be read: run `commit` again later. A name that holds `\` cannot be stored: rename the file, then run `commit` again. The line shows a `\` as `\\` and a newline as `\n`, as `ls` does. |
+| `commit`: `ref name "NAME" is not valid` | Nothing is written. Give a `--ref` of 1 to 40 letters, digits and ASCII signs, with no space. |
 
 A failed `verify` removes one record: the verified record first, else the
 burn record. The state of the disc goes down one step, and `gc` holds the

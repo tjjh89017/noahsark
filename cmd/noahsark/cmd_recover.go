@@ -356,7 +356,9 @@ func recordGoodCopy(e *env, logs *stage.Logs, rr *image.ReadResult) error {
 // refs.txt. In refs.txt, only a name that the disc carries changes: it
 // takes the snapshot of the newest record of the disc for the name. A
 // line of refs.txt that is newer than that record stays, as the line
-// that a later commit wrote. localRefRecord gives the time of a line.
+// that a later commit wrote. localRefRecord gives the time of a line. A
+// name that checkRefName refuses stays out of refs.txt; the ref ledger
+// and the catalog REFS table still hold it.
 func recoverRefs(layout repoLayout, repoUUID [16]byte, records []format.RefRecord) error {
 	ledger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
 	if err != nil {
@@ -379,6 +381,9 @@ func recoverRefs(layout repoLayout, repoUUID [16]byte, records []format.RefRecor
 		catalog.MergeRef(newest, rec)
 	}
 	for name, rec := range newest {
+		if checkRefName(name) != nil {
+			continue
+		}
 		if text, ok := refs[name]; ok {
 			if id, err := parseSnapshotID(text); err == nil && !format.NewerRef(rec, localRefRecord(c, name, id)) {
 				continue

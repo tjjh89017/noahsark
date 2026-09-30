@@ -3,8 +3,14 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/format"
+	"github.com/tjjh89017/noahsark/internal/image"
+	"github.com/tjjh89017/noahsark/internal/object"
 )
 
 // TestWriteRefsReplacesTheFileByRename checks that writeRefs never writes
@@ -72,5 +78,65 @@ func TestCommitKeepsEachRefWhenItMovesOne(t *testing.T) {
 	}
 	if len(refs) != 2 || refs["other"] == "" {
 		t.Fatalf("refs = %v, want the date ref and other", refs)
+	}
+}
+
+// TestWriteRefsRefusesABadName checks that refs.txt never gets a name
+// that checkRefName refuses: writeRefs refuses the whole write and keeps
+// the old file.
+func TestWriteRefsRefusesABadName(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "refs.txt")
+	const old = "a sha256-old\n"
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRefs(path, map[string]string{"a": "sha256-1", "b c": "sha256-2"}); err == nil {
+		t.Fatal(`writeRefs wrote the name "b c"`)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != old {
+		t.Fatalf("refs.txt = %q, %v; want the old file %q", got, err, old)
+	}
+}
+
+// TestRecoverRefsKeepsABadNameOutOfRefsFile gives recoverRefs a REFS
+// record whose name has a space, as a disc of another writer can hold.
+// The name stays out of refs.txt, and the ref ledger holds it. The good
+// name of the same disc goes into refs.txt.
+func TestRecoverRefsKeepsABadNameOutOfRefsFile(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	layout := testLayout(t, repo)
+	cfg, err := readConfig(configPath(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoUUID, err := parseRepoUUID(cfg.RepoUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := object.ComputeID(format.ObjectKindSnapshot, []byte("a snapshot"))
+	record := func(name string) format.RefRecord {
+		r := format.RefRecord{SnapshotID: id, TimeSec: 1, NameLen: uint16(len(name))}
+		copy(r.Name[:], name)
+		return r
+	}
+	if err := recoverRefs(layout, repoUUID, []format.RefRecord{record("bad name"), record("good")}); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := readRefs(layout.refsFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := refs["bad name"]; ok {
+		t.Fatal(`refs.txt holds the name "bad name"`)
+	}
+	if refs["good"] != id.TextForm() {
+		t.Fatalf("refs.txt names good as %q, want %s", refs["good"], id.TextForm())
+	}
+	ledger, err := image.LoadRefsLedger(layout.refsLedgerFile(), repoUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(ledger.Records, func(r format.RefRecord) bool { return catalog.RefName(r) == "bad name" }) {
+		t.Fatal(`the ref ledger does not hold the name "bad name"`)
 	}
 }

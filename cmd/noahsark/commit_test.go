@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"math/rand"
 	"os"
@@ -397,15 +398,18 @@ func TestTwoCommitsOneDayMoveOneRefAndKeepBoth(t *testing.T) {
 // TestCommitExitsOneAndReportsAnUnstablePath uses the newWriter seam to
 // install a Stat function that never lets one target file's two stats
 // agree, forcing the in-flight change detection to flag it UNSTABLE on
-// every commit. It asserts commit exits 1 and prints the path.
+// every commit. It asserts commit exits 1 and prints the path in one
+// line, escaped as ls escapes a name: the name of the file holds a
+// newline.
 func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
-	target, err := filepath.Abs(filepath.Join(src, "a.txt"))
+	target, err := filepath.Abs(filepath.Join(src, "a\nb.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	mustWriteCmd(t, target, "changes during the read")
 
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
@@ -434,8 +438,8 @@ func TestCommitExitsOneAndReportsAnUnstablePath(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("commit: exit %d, want 1; output: %s", code, out)
 	}
-	if !strings.Contains(out, "unstable a.txt branch=flagged") {
-		t.Fatalf("output = %q, want an unstable line naming a.txt", out)
+	if !slices.Contains(strings.Split(out, "\n"), `unstable a\nb.txt: the file changed during the read`) {
+		t.Fatalf("output = %q, want an unstable line naming a\\nb.txt", out)
 	}
 	if !strings.Contains(out, "unstable: 1, skipped: 0") {
 		t.Fatalf("output = %q, want the unstable/skipped count line", out)
@@ -562,15 +566,91 @@ func TestCommitWarnsAboutASpecialFile(t *testing.T) {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	te := newTestEnv(t.TempDir())
+	code, _ := te.run("--repo="+repo, "commit", src)
+	stdout, stderr := te.out.String(), te.errOut.String()
 	if code != 0 {
-		t.Fatalf("commit: exit %d, want 0 for a special file alone: %s", code, out)
+		t.Fatalf("commit: exit %d, want 0 for a special file alone: %s%s", code, stdout, stderr)
 	}
-	if !strings.Contains(out, "pipe: FIFO, no content is backed up") {
-		t.Fatalf("commit output %q does not warn about the FIFO", out)
+	lines := strings.Split(stdout, "\n")
+	if !slices.Contains(lines, "special pipe: FIFO, no content is backed up") {
+		t.Fatalf("commit output %q has no special line for the FIFO", stdout)
 	}
-	if !strings.Contains(out, "special files: 1") {
-		t.Fatalf("commit output %q has no special-file count", out)
+	if !slices.ContainsFunc(lines, func(l string) bool { return strings.HasPrefix(l, "special files: 1;") }) {
+		t.Fatalf("commit output %q has no special-file count", stdout)
+	}
+	if strings.Contains(stdout, "warning:") || stderr != "" {
+		t.Fatalf("commit printed a warning, want only records on standard output: stdout %q, stderr %q", stdout, stderr)
+	}
+}
+
+// TestCommitEscapesASkippedPath gives the source a name that a tree entry
+// cannot hold, with a newline in it. The skipped line names the path in
+// one line, escaped as ls escapes a name.
+func TestCommitEscapesASkippedPath(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
+	mustWriteCmd(t, filepath.Join(src, "bad\\name\nnext"), "data")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+
+	code, out := runCmd(t, "--repo="+repo, "commit", src)
+	if code != 1 {
+		t.Fatalf("commit: exit %d, want 1 for a skipped path: %s", code, out)
+	}
+	want := `skipped bad\\name\nnext: the name holds a backslash, which a tree entry name must not hold`
+	if !slices.Contains(strings.Split(out, "\n"), want) {
+		t.Fatalf("commit output %q, want the line %q", out, want)
+	}
+}
+
+// TestCommitRefusesABadRefName gives commit a ref name that a line of
+// refs.txt or a REFS record cannot hold. commit exits 2, names the rule,
+// and writes nothing.
+func TestCommitRefusesABadRefName(t *testing.T) {
+	for _, name := range []string{"", "a b", "a\tb", "a\x01b", "a\x7fb", "caf\u00e9", strings.Repeat("r", 41)} {
+		t.Run(fmt.Sprintf("%q", name), func(t *testing.T) {
+			repo := filepath.Join(t.TempDir(), "repo")
+			src := writeFixtureSource(t)
+			if code, out := runIn(t, repo, "init"); code != 0 {
+				t.Fatalf("init: exit %d: %s", code, out)
+			}
+			code, out := runCmd(t, "--repo="+repo, "commit", "--ref="+name, src)
+			if code != 2 {
+				t.Fatalf("commit --ref=%q: exit %d, want 2: %s", name, code, out)
+			}
+			if !strings.Contains(out, "1 to 40 bytes of printable ASCII, with no space") {
+				t.Fatalf("commit --ref=%q: output %q does not give the rule", name, out)
+			}
+			layout := testLayout(t, repo)
+			if _, err := os.Stat(layout.refsFile()); !os.IsNotExist(err) {
+				t.Fatalf("commit --ref=%q wrote refs.txt: %v", name, err)
+			}
+			if files := listFilesUnder(t, layout.catalogDir()); slices.ContainsFunc(files, func(f string) bool { return strings.HasPrefix(f, "snapshots") }) {
+				t.Fatalf("commit --ref=%q wrote a snapshot: %v", name, files)
+			}
+			if code, out := runCmd(t, "--repo="+repo, "log"); code == 2 || strings.Contains(out, "malformed") {
+				t.Fatalf("log after the refused commit: exit %d: %s", code, out)
+			}
+		})
+	}
+}
+
+// TestCommitAcceptsARefOfFortyBytes gives commit a ref name at the limit.
+// log then names it.
+func TestCommitAcceptsARefOfFortyBytes(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	src := writeFixtureSource(t)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	name := strings.Repeat("r", 39) + "~"
+	if code, out := runCmd(t, "--repo="+repo, "commit", "--ref="+name, src); code != 0 {
+		t.Fatalf("commit --ref=%s: exit %d: %s", name, code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "log"); code != 0 || !strings.Contains(out, name) {
+		t.Fatalf("log: exit %d, want the ref %s: %s", code, name, out)
 	}
 }
 
@@ -625,8 +705,8 @@ func TestCommitSkipsANameTheTreeFormatForbids(t *testing.T) {
 	}
 	for _, want := range []string{
 		"unstable: 0, skipped: 2\n",
-		`skipped back\slash.txt: the name holds a \, which a tree entry name must not hold` + "\n",
-		`skipped dir\name: the name holds a \, which a tree entry name must not hold` + "\n",
+		`skipped back\\slash.txt: the name holds a backslash, which a tree entry name must not hold` + "\n",
+		`skipped dir\\name: the name holds a backslash, which a tree entry name must not hold` + "\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("commit output %q has no line %q", out, want)

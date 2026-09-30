@@ -90,13 +90,10 @@ type OwnDir struct {
 	What string
 }
 
-// UnstablePath names one path the in-flight change detection flagged, and
-// which branch of the rule was taken. This build has no parent snapshot, so
-// the branch is always "flagged": the writer stores the content it read
-// and sets UNSTABLE.
+// UnstablePath names one path the in-flight change detection flagged.
+// The writer stores the content it read last and sets UNSTABLE.
 type UnstablePath struct {
-	Path   string
-	Branch string
+	Path string
 }
 
 // SpecialPath names one FIFO, socket or device node a commit recorded
@@ -212,6 +209,7 @@ type Writer struct {
 	dropped    map[ID]string
 	knownDirs  map[string]bool
 	dirtyDirs  map[string]bool
+	batch      *fileBatch
 	ownInfos   []ownInfo
 	rootAbs    string
 	rootDev    uint64
@@ -290,6 +288,8 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 	w.dropped = make(map[ID]string)
 	w.knownDirs = make(map[string]bool)
 	w.dirtyDirs = make(map[string]bool)
+	w.batch = newFileBatch(batchMaxFiles, batchMaxBytes)
+	defer w.batch.abort()
 	w.ownerNames = newNameCache()
 	w.rootAbs = absRoot
 	w.rootDev, w.rootDevOK = 0, false
@@ -333,6 +333,9 @@ func (w *Writer) Commit(sourceDir string) (ID, Summary, error) {
 
 	snapID, err := w.writeSnapshot(rootTreeID, &sum)
 	if err != nil {
+		return ID{}, Summary{}, err
+	}
+	if err := w.batch.flush(); err != nil {
 		return ID{}, Summary{}, err
 	}
 	if err := w.removeDropped(); err != nil {
@@ -417,7 +420,7 @@ func forbiddenNameReason(name string) string {
 	}
 	switch {
 	case strings.Contains(name, `\`):
-		return `the name holds a \, which a tree entry name must not hold`
+		return "the name holds a backslash, which a tree entry name must not hold"
 	case len(name) > 4095:
 		return "the name is longer than 4095 bytes, the limit of a tree entry name"
 	default:
@@ -473,7 +476,7 @@ func (w *Writer) commitEntry(path, name string, sum *Summary) (format.TreeEntry,
 		te.Size = uint64(size)
 		if unstable {
 			te.EntryFlags |= format.EntryFlagUnstable
-			sum.Unstable = append(sum.Unstable, UnstablePath{Path: w.relPath(path), Branch: "flagged"})
+			sum.Unstable = append(sum.Unstable, UnstablePath{Path: w.relPath(path)})
 		}
 	case mode&os.ModeSymlink != 0:
 		te.EntryType = format.EntryTypeSymlink
@@ -815,6 +818,9 @@ func commonHeader(kind format.Magic, headerLen int) format.CommonHeader {
 // under the right name but a different size (for example truncated by a
 // prior crash) is rewritten through the same temp-file-and-rename path.
 func (w *Writer) writeObjectFile(path string, data []byte) (isNew bool, err error) {
+	if w.batch.has(path) {
+		return false, nil
+	}
 	if fi, statErr := os.Stat(path); statErr == nil {
 		if fi.Size() == int64(len(data)) {
 			return false, nil
@@ -829,8 +835,12 @@ func (w *Writer) writeObjectFile(path string, data []byte) (isNew bool, err erro
 // the catalog, as the catalog writes an object: a file of the same name
 // counts only when its bytes are data. Each read of the catalog checks
 // the object against its id, thus a damaged file with the size of data
-// must be replaced here. isNew is true when path did not exist.
+// must be replaced here. isNew is true when path did not exist. A file
+// of the batch holds the bytes of the same id, thus it holds data.
 func (w *Writer) writeMetaObjectFile(path string, data []byte) (isNew bool, err error) {
+	if w.batch.has(path) {
+		return false, nil
+	}
 	existing, err := os.ReadFile(path)
 	switch {
 	case err == nil && bytes.Equal(existing, data):
@@ -843,18 +853,22 @@ func (w *Writer) writeMetaObjectFile(path string, data []byte) (isNew bool, err 
 	return false, err
 }
 
-// replaceObjectFile writes data to path through a temp file, a sync and
-// a rename, so a crash leaves no partial object. It notes the directory
-// of path for syncDirtyDirs, which makes the rename durable.
+// replaceObjectFile writes data to path through a temporary file of the
+// batch. The flush of the batch syncs the file and renames it, so a crash
+// leaves no partial object. It notes the directory of path for
+// syncDirtyDirs, which makes the rename durable.
 func (w *Writer) replaceObjectFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := w.ensureDir(dir); err != nil {
 		return err
 	}
-	if err := writeSyncRename(path, data, 0); err != nil {
+	if err := w.batch.add(path, data); err != nil {
 		return err
 	}
 	w.dirtyDirs[dir] = true
+	if w.batch.full() {
+		return w.batch.start()
+	}
 	return nil
 }
 

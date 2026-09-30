@@ -3,12 +3,14 @@ package object
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -27,21 +29,175 @@ type fsEvent struct {
 func recordFSEvents(t *testing.T, w *Writer) *[]fsEvent {
 	t.Helper()
 	var events []fsEvent
+	var mu sync.Mutex
+	record := func(e fsEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	}
 	oldSync, oldRename := syncFile, renameFile
 	t.Cleanup(func() { syncFile, renameFile = oldSync, oldRename })
 	syncFile = func(f *os.File) error {
-		events = append(events, fsEvent{op: "sync", path: f.Name()})
+		record(fsEvent{op: "sync", path: f.Name()})
 		return f.Sync()
 	}
 	renameFile = func(from, to string) error {
-		events = append(events, fsEvent{op: "rename", path: from, to: to})
+		record(fsEvent{op: "rename", path: from, to: to})
 		return os.Rename(from, to)
 	}
 	w.SyncDir = func(dir string) error {
-		events = append(events, fsEvent{op: "dirsync", path: dir})
+		record(fsEvent{op: "dirsync", path: dir})
 		return SyncDir(dir)
 	}
 	return &events
+}
+
+// TestCommitSyncsObjectFilesInBatches commits many small files. Commit
+// syncs the temporary files of a batch together, then renames them. Thus
+// the events hold one run of syncs for each batch, not one for each
+// object file.
+func TestCommitSyncsObjectFilesInBatches(t *testing.T) {
+	src := t.TempDir()
+	for i := range 150 {
+		mustWrite(t, filepath.Join(src, fmt.Sprintf("f%03d", i)), fmt.Sprintf("content of file %d", i))
+	}
+	w := testWriter(t.TempDir())
+	w.Now = fixedClock
+	events := recordFSEvents(t, w)
+
+	if _, _, err := w.Commit(src); err != nil {
+		t.Fatal(err)
+	}
+
+	renames, syncRuns := 0, 0
+	prev := ""
+	for _, e := range *events {
+		if e.op == "rename" {
+			renames++
+		}
+		if e.op == "sync" && prev != "sync" {
+			syncRuns++
+		}
+		prev = e.op
+	}
+	if renames < 300 {
+		t.Fatalf("commit renamed %d object files, want at least 300", renames)
+	}
+	if want := (renames + batchMaxFiles - 1) / batchMaxFiles; syncRuns > want {
+		t.Fatalf("commit synced %d object files in %d runs, want at most %d", renames, syncRuns, want)
+	}
+}
+
+// TestFileBatchIsFullAtItsByteLimit checks the byte limit of a batch:
+// the batch is full when its files hold the limit or more.
+func TestFileBatchIsFullAtItsByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	b := newFileBatch(10, 16)
+	t.Cleanup(b.abort)
+	if err := b.add(filepath.Join(dir, "a"), make([]byte, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if b.full() {
+		t.Fatal("a batch of 10 bytes is full, want not full below the limit of 16")
+	}
+	if err := b.add(filepath.Join(dir, "b"), make([]byte, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if !b.full() {
+		t.Fatal("a batch of 20 bytes is not full, want full at the limit of 16")
+	}
+	if !b.has(filepath.Join(dir, "a")) {
+		t.Fatal("the batch does not report a pending file")
+	}
+	if err := b.flush(); err != nil {
+		t.Fatal(err)
+	}
+	if b.has(filepath.Join(dir, "a")) || b.full() {
+		t.Fatal("the batch keeps its files after flush")
+	}
+	for _, name := range []string{"a", "b"} {
+		if fi, err := os.Stat(filepath.Join(dir, name)); err != nil || fi.Size() != 10 {
+			t.Fatalf("file %s after flush: %v", name, err)
+		}
+	}
+	checkNoTempFiles(t, dir)
+}
+
+// TestFileBatchStartFlushesInTheBackground starts the flush of one group
+// and adds a second group. The batch reports the files of both groups
+// until flush returns. After flush, every file has its name.
+func TestFileBatchStartFlushesInTheBackground(t *testing.T) {
+	dir := t.TempDir()
+	b := newFileBatch(1, 1<<20)
+	t.Cleanup(b.abort)
+	a, c := filepath.Join(dir, "a"), filepath.Join(dir, "c")
+	if err := b.add(a, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.add(c, []byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	if !b.has(a) || !b.has(c) {
+		t.Fatal("the batch does not report the files of the background flush and of the group")
+	}
+	if err := b.flush(); err != nil {
+		t.Fatal(err)
+	}
+	if b.has(a) || b.has(c) {
+		t.Fatal("the batch keeps its files after flush")
+	}
+	for path, want := range map[string]string{a: "first", c: "second"} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Fatalf("%s after flush = %q, %v; want %q", path, got, err, want)
+		}
+	}
+	checkNoTempFiles(t, dir)
+}
+
+// TestFileBatchAbortRemovesItsTemporaryFiles checks that abort leaves no
+// temporary file and renames nothing.
+func TestFileBatchAbortRemovesItsTemporaryFiles(t *testing.T) {
+	dir := t.TempDir()
+	b := newFileBatch(10, 1<<20)
+	if err := b.add(filepath.Join(dir, "a"), []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	b.abort()
+	checkNoTempFiles(t, dir)
+	if _, err := os.Stat(filepath.Join(dir, "a")); !os.IsNotExist(err) {
+		t.Fatalf("abort renamed the file: %v", err)
+	}
+}
+
+// TestCommitErrorLeavesNoTemporaryFile fails the sync of one object file.
+// Commit returns the error and removes every temporary file of the batch.
+func TestCommitErrorLeavesNoTemporaryFile(t *testing.T) {
+	src := t.TempDir()
+	buildFixture(t, src)
+	staging := t.TempDir()
+	w := testWriter(staging)
+	errSync := errors.New("injected file sync failure")
+	oldSync := syncFile
+	t.Cleanup(func() { syncFile = oldSync })
+	var mu sync.Mutex
+	calls := 0
+	syncFile = func(f *os.File) error {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 2 {
+			return errSync
+		}
+		return f.Sync()
+	}
+	if _, _, err := w.Commit(src); !errors.Is(err, errSync) {
+		t.Fatalf("Commit error = %v, want the file sync failure", err)
+	}
+	checkNoTempFiles(t, staging)
 }
 
 // TestCommitSyncsEachObjectBeforeItsRenameAndEachDirectoryOnce checks the
