@@ -40,13 +40,16 @@ var scenarios = map[string]bool{
 	"lifecycle":      true,
 }
 
+// requireHarness skips the test when NOAHSARK_E2E is not 1. When it is
+// 1, a missing prerequisite fails the test: a skip would give a green
+// CI cell that ran no scenario.
 func requireHarness(t *testing.T) (scenario, media, order, extras string) {
 	t.Helper()
 	if os.Getenv("NOAHSARK_E2E") != "1" {
 		t.Skip("set NOAHSARK_E2E=1 to run the disc e2e suite")
 	}
 	if runtime.GOOS != "linux" {
-		t.Skip("the disc e2e suite is Linux-only (mkudffs, loop mount)")
+		t.Fatal("NOAHSARK_E2E=1 is set, but the disc e2e suite is Linux-only (mkudffs, loop mount)")
 	}
 	scenario = os.Getenv("NOAHSARK_E2E_SCENARIO")
 	media = os.Getenv("NOAHSARK_E2E_MEDIA")
@@ -65,11 +68,11 @@ func requireHarness(t *testing.T) (scenario, media, order, extras string) {
 		t.Fatal("NOAHSARK_E2E_ORDER is required for the chain scenario")
 	}
 	if os.Geteuid() != 0 {
-		t.Skip("requires root (loop mount)")
+		t.Fatal("NOAHSARK_E2E=1 is set, but the process is not root; the loop mount needs root")
 	}
 	for _, bin := range []string{"mkudffs", "mount", "sudo"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not in PATH", bin)
+			t.Fatalf("NOAHSARK_E2E=1 is set, but %s is not in PATH", bin)
 		}
 	}
 	return scenario, media, order, extras

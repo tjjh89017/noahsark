@@ -42,11 +42,6 @@ func TestEstimateNeverExceedsCapacityAtDVDR(t *testing.T) {
 	}
 }
 
-// realUDFOverheadEnvVar, when set, runs the measurement tests below
-// against a real mkudffs image. They need root for the loop mount and
-// mkudffs itself, so they run only under CI.
-const realUDFOverheadEnvVar = "NOAHSARK_CI"
-
 // udfCapacityCase names one capacity this measurement covers: a real
 // dvd+r, and two round byte sizes for comparison at other media scales.
 type udfCapacityCase struct {
@@ -72,20 +67,9 @@ func fanoutDirFor(i int) string {
 // usable bytes: df of the empty mount, then the per-file cost of adding
 // files in batches of 1000, 5000 and 20000, spread over a 256-directory
 // fanout the way the real objects tree is. It needs root and mkudffs, so
-// it runs only under NOAHSARK_CI; otherwise it skips.
+// it runs only under NOAHSARK_CI (requireRealUDF).
 func TestRealUDFOverheadMeasurement(t *testing.T) {
-	if os.Getenv(realUDFOverheadEnvVar) == "" {
-		t.Skip("NOAHSARK_CI not set; skipping the real mkudffs overhead measurement")
-	}
-	if _, err := exec.LookPath("mkudffs"); err != nil {
-		t.Skip("mkudffs not installed")
-	}
-	if _, err := CheckTools(); err != nil {
-		t.Skipf("udftools too old: %v", err)
-	}
-	if os.Geteuid() != 0 {
-		t.Skip("measurement needs root for the loop mount")
-	}
+	requireRealUDF(t)
 
 	for _, c := range udfCapacityCases {
 		t.Run(c.name, func(t *testing.T) {
@@ -111,7 +95,7 @@ func buildEmptyUDFImage(imagePath string, sectors uint64) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	cmd := exec.Command("mkudffs",
+	cmd, err := toolCommand("mkudffs",
 		"--utf8",
 		"--media-type=hd",
 		"--blocksize=2048",
@@ -122,6 +106,9 @@ func buildEmptyUDFImage(imagePath string, sectors uint64) error {
 		"--bootarea=erase",
 		imagePath,
 	)
+	if err != nil {
+		return err
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("mkudffs: %w: %s", err, out)
 	}

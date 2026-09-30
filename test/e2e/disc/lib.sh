@@ -20,6 +20,13 @@ BIN="$WORK/noahsark"
 log() { echo "[disc-e2e] $*"; }
 fail() { echo "[disc-e2e] FAIL: $*" >&2; exit 1; }
 
+# require_number NAME VALUE fails unless VALUE is a whole number. A test
+# such as [ "$x" -ge 1 ] with an empty or other text x is an error, and
+# an error inside an if condition does not stop the script.
+require_number() {
+	[[ "$2" =~ ^[0-9]+$ ]] || fail "$1 is not a number: [$2]"
+}
+
 # build_binary sets BIN to a runnable noahsark binary: NOAHSARK_E2E_BIN
 # when the caller (the e2e action) already built one outside sudo, else
 # a binary this scenario builds itself.

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -75,20 +74,33 @@ func TestPackStaysWithinCapacity(t *testing.T) {
 	}
 }
 
+// requireRealUDF skips the test when NOAHSARK_CI is not set: a local run
+// has no root and maybe no mkudffs. Under NOAHSARK_CI, the test must
+// run, thus a missing mkudffs, an old udftools or a process that is not
+// root fails the test. A skip there would show a green job that tested
+// nothing.
+func requireRealUDF(t *testing.T) {
+	t.Helper()
+	if os.Getenv(ciEnvVar) == "" {
+		t.Skip("NOAHSARK_CI not set; this test needs root and a real mkudffs")
+	}
+	if _, err := findTool("mkudffs"); err != nil {
+		t.Fatalf("NOAHSARK_CI is set, but mkudffs is not installed: %v", err)
+	}
+	if _, err := CheckTools(); err != nil {
+		t.Fatalf("NOAHSARK_CI is set, but the mkudffs check failed: %v", err)
+	}
+	if os.Geteuid() != 0 {
+		t.Fatal("NOAHSARK_CI is set, but the process is not root; the loop mount needs root")
+	}
+}
+
 // TestPackedTreeFitsRealUDFImage builds a real mkudffs UDF image at the
 // same capacity pack used, loop-mounts it and copies the packed tree
 // in, the way test/e2e/disc/chain.sh does. It needs root and mkudffs,
-// so it runs only under NOAHSARK_CI; otherwise it skips.
+// so it runs only under NOAHSARK_CI (requireRealUDF).
 func TestPackedTreeFitsRealUDFImage(t *testing.T) {
-	if os.Getenv(ciEnvVar) == "" {
-		t.Skip("NOAHSARK_CI not set; skipping the real mkudffs populate check")
-	}
-	if _, err := exec.LookPath("mkudffs"); err != nil {
-		t.Skip("mkudffs not installed")
-	}
-	if _, err := CheckTools(); err != nil {
-		t.Skipf("udftools too old: %v", err)
-	}
+	requireRealUDF(t)
 
 	stagingDir, snapID := packFixture(t)
 	l, err := stage.Open(stagingDir)

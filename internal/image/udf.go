@@ -69,12 +69,19 @@ func CheckTools() (string, error) {
 	// when it is run with no device argument. That is the only reliable
 	// way to read its version: it has no --version option.
 	out, runErr := cmd.CombinedOutput()
-	m := udfToolsVersionRe.FindStringSubmatch(string(out))
+	if runErr != nil && len(out) == 0 {
+		return "", fmt.Errorf("mkudffs: %w", runErr)
+	}
+	return checkUDFToolsVersion(string(out))
+}
+
+// checkUDFToolsVersion reads the udftools version from out, the output
+// of mkudffs. It refuses output with no version, and a version below
+// MinUDFToolsMajor.MinUDFToolsMinor.
+func checkUDFToolsVersion(out string) (string, error) {
+	m := udfToolsVersionRe.FindStringSubmatch(out)
 	if m == nil {
-		if runErr != nil && len(out) == 0 {
-			return "", fmt.Errorf("mkudffs: %w", runErr)
-		}
-		return "", fmt.Errorf("could not parse mkudffs version from: %s", strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("could not parse mkudffs version from: %s", strings.TrimSpace(out))
 	}
 	major, _ := strconv.Atoi(m[1])
 	minor, _ := strconv.Atoi(m[2])
