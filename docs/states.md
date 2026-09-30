@@ -458,8 +458,9 @@ lists that last line where a row prints it.
 | 70e | on disc only, last check failed | recover, a copy of that disc with no damaged object | unchanged, a verify log event added. Each item of the disc that has no record, or that is `lost`, becomes on-disc. | `recover: ok; disc SEQ "LABEL" already known; check logged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 71 | any | status | unchanged | `staged: N items, B bytes`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the full `next:` block for the whole repository. STATE is the disc word, with the suffix that "Disc states" defines. A disc with FEC has the word `fec` and two spaces between STATE and UUID. | 0 | the `next:` block |
 | 71a | (no repository) | a command other than `init`, `recover`, `verify`, `restore`, `ls`, and `log` | refused, usage error | `no repository; give --repo, or run noahsark init for a new repository, or noahsark recover for a lost one` | 2 | the same line with `--repo=PATH`; `noahsark init` in the directory of a new repository; after the loss of the repository, `noahsark --repo=PATH recover --source=SOURCE --disc=DIR`, never `init` |
-| 71b | the staging directory does not exist: its volume is not mounted, or `staging.dir` names a wrong path | status | unchanged | `warning: staging directory DIR does not exist; staging.dir in config.yaml names it` on standard error, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the `next:` block of a missing staging directory. No `staged:` line and no snapshot line: the chunk files are not there. No block names `disc lost` for a disc root that is missing with the staging directory. | 1 | the `next:` block |
-| 71c | the staging directory does not exist | a command that takes the lock, other than `commit` and `recover`, for example `disc burned SEQ` | refused. Nothing is written. | `staging directory DIR does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir` | 1 | `noahsark status`: its block names the directory |
+| 71b | the staging directory does not exist, and the state log holds a Staged or a Packed item: its volume is not mounted, or `staging.dir` names a wrong path | status | unchanged | `warning: staging directory DIR does not exist; staging.dir in config.yaml names it` on standard error, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the `next:` block of a missing staging directory. No `staged:` line and no snapshot line: the chunk files are not there. No block names `disc lost` for a disc root that is missing with the staging directory. | 1 | the `next:` block |
+| 71c | the staging directory does not exist, and the state log holds a Staged or a Packed item | a command that takes the lock, other than `recover`, for example `disc burned SEQ` or `commit` | refused. Nothing is written. | `staging directory DIR does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir` | 1 | `noahsark status`: its block names the directory |
+| 71d | the staging directory does not exist, and the state log holds no Staged and no Packed item, for example a clone of a repository whose data is all on discs | status | unchanged | as row 71. No warning: no file waits in the staging directory. A command that needs the directory creates it. | 0 | the `next:` block |
 | 72 | any | a global option after the command name, for example `noahsark status --repo=PATH` | refused, usage error | `--repo is a global option; give it before the command name: noahsark --repo=PATH status` | 2 | the same line with the option before the command name |
 | 73 | any | a command option before the command name, or between a group and its subcommand, for example `noahsark --undo disc burned 0` or `noahsark disc --undo burned 0` | refused, usage error | `--undo is an option of disc burned; give it after the last subcommand word: noahsark disc burned --undo 0; see: noahsark disc burned -h` | 2 | the same line with the option after the last subcommand word. `-h` is the one exception to the position rule: `noahsark COMMAND -h` is not a usage error. |
 | 74 | any | a group with no subcommand, for example `noahsark disc` | refused, usage error | `disc needs a subcommand:`, then one line for each subcommand: `burned`, `lost`, `verified` | 2 | the same line with a subcommand, or `noahsark disc -h` |
@@ -588,7 +589,8 @@ block in the shell where `status` found the repository.
 When two or more discs need an action, `status` takes the first match
 in this order, and inside one step the lowest number:
 
-1. the staging directory does not exist;
+1. the staging directory does not exist, and the state log holds a
+   Staged or a Packed item;
 2. a disc whose item records do not follow its state: a command stopped
    after its disc event ("Replay of the disc state log");
 3. a `missing` disc;
@@ -607,10 +609,12 @@ A repository with no commit and no disc matches step 10: `status` prints
 step 1 or step 2 matches.
 
 Step 1 comes first, because each command that takes the lock, other than
-`commit` and `recover`, refuses while the staging directory does not
-exist (row 71c). A disc root under a staging directory that does not
-exist is not gone: the volume can be unmounted. Thus a missing disc root
-gives the block of step 6 only when the staging directory exists.
+`recover`, refuses while it matches (row 71c). A disc root under a
+staging directory that does not exist is not gone: the volume can be
+unmounted. Thus a missing disc root gives the block of step 6 only when
+the staging directory exists. Each disc root that a block needs belongs
+to a disc of Packed items. When the state log holds no Staged and no
+Packed item, a missing staging directory matches no step (row 71d).
 
 Step 5 compares seconds: a snapshot is as new as the `Lost` event when
 its time, in whole seconds, is not before the time of the event. A
@@ -628,7 +632,7 @@ its own.
 
 | State | `next:` block |
 |---|---|
-| the staging directory does not exist (step 1) | `next: staging directory STAGING does not exist. Mount its volume, or correct staging.dir in config.yaml. When the staging store is gone for good, run:` then `mkdir -p STAGING`. `status` also prints the warning of row 71b. |
+| the staging directory does not exist, and a Staged or a Packed item needs it (step 1) | `next: staging directory STAGING does not exist. Mount its volume, or correct staging.dir in config.yaml. When the staging store is gone for good, run:` then `mkdir -p STAGING`. `status` also prints the warning of row 71b. |
 | any state, the item records do not follow it (step 2) | `next: disc SEQ: an earlier COMMAND stopped before it wrote the records of its items; gc writes them, and also frees the data whose wait is over; run:` then `noahsark gc`. `COMMAND` is `disc lost`, `disc lost --undo`, `pack --undo`, or `gc`. `gc` takes the lock, thus it writes the item records first; any other command that takes the lock does the same. `gc --dry-run` takes no lock, and writes no record. |
 | `packed` | `next: load a blank disc, then run:` then `sudo noahsark --repo=REPO image build SEQ &&` (only when `IMG` does not exist), `growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z DEV=IMG &&`, `eject DEV && eject -t DEV && sleep 5 &&`, `sudo mkdir -p /mnt/ark && sudo mount -o ro DEV /mnt/ark &&`, `noahsark verify /mnt/ark;`, `sudo umount /mnt/ark && eject DEV`. For a disc packed with `--close`, the `growisofs` line is `growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z DEV=IMG &&`. The `close` flag of the `Packed` event holds that choice. After the block, one line that is not part of it: `or burn the folder directly; see the guide, "Burn the folder directly"`. |
 | `burned`, last check failed | the `packed` block: the disc is bad, and a new disc gets the kept disc root |

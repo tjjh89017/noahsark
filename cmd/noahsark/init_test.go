@@ -172,8 +172,9 @@ func repoFileState(t *testing.T, dir string) map[string]string {
 
 // TestCloneWithNoStateDirectory makes a repository as a git clone of a
 // repository with no commit gives it: config.yaml and .gitignore only.
-// status and log change no file. status warns about the missing staging
-// directory and exits 1. commit creates state/ and catalog/ and works.
+// status and log change no file and exit 0. The empty state log needs
+// no staging directory, thus status gives no warning. commit creates
+// state/ and catalog/ and works.
 func TestCloneWithNoStateDirectory(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
@@ -185,18 +186,10 @@ func TestCloneWithNoStateDirectory(t *testing.T) {
 		}
 	}
 	before := repoFileState(t, repo)
-	for _, c := range []struct {
-		args []string
-		exit int
-		out  string
-	}{
-		{[]string{"status"}, 1, "warning: staging directory " + filepath.Join(repo, "staging") + " does not exist"},
-		{[]string{"log"}, 0, ""},
-	} {
-		args := c.args
+	for _, args := range [][]string{{"status"}, {"log"}} {
 		code, out := runCmd(t, append([]string{"--repo=" + repo}, args...)...)
-		if code != c.exit || !strings.Contains(out, c.out) {
-			t.Fatalf("%v: exit %d, want %d and %q: %s", args, code, c.exit, c.out, out)
+		if code != 0 || strings.Contains(out, "warning") {
+			t.Fatalf("%v: exit %d, want 0 and no warning: %s", args, code, out)
 		}
 		if after := repoFileState(t, repo); !maps.Equal(before, after) {
 			t.Fatalf("%v changed the repository: before %v, after %v", args, before, after)

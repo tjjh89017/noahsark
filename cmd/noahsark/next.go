@@ -24,7 +24,8 @@ type nextRepo struct {
 	// repo is the absolute path of the repository.
 	repo string
 	// staging is the absolute path of the staging directory, and
-	// stagingMissing tells that it does not exist.
+	// stagingMissing tells that it does not exist while a Staged or a
+	// Packed item needs it.
 	staging        string
 	stagingMissing bool
 	// newestSnapshot is the time of the newest snapshot of the catalog.
@@ -86,11 +87,11 @@ func waitsForCommit(info stage.DiscInfo) bool {
 // nextBlock returns the lines that status prints after the disc lines:
 // the one next block of the repository, and the lines that go with it.
 // The first match in this order gives the block: a staging directory
-// that does not exist, a disc whose item records do not follow its
-// state, a missing disc, an on disc only disc whose last check failed, a
-// lost disc whose data waits for a commit, a disc to burn or to verify,
-// data that gc can free now, staged data, a verified disc that waits, and
-// nothing. Inside one step the disc with the lowest number wins.
+// that does not exist while an item needs it, a disc whose item records
+// do not follow its state, a missing disc, an on disc only disc whose
+// last check failed, a lost disc whose data waits for a commit, a disc
+// to burn or to verify, data that gc can free now, staged data, a
+// verified disc that waits, and nothing. Inside one step the disc with the lowest number wins.
 func nextBlock(r nextRepo) []string {
 	if r.stagingMissing {
 		return []string{

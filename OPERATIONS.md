@@ -70,8 +70,9 @@ Git keeps no empty directory, thus a clone of a repository can lack
 `state/`, `catalog/` and `staging/`. `commit` creates each one that is
 absent, with mode 0755. `status`, `ls`, `log` and `restore` read a missing
 directory as empty, and change no file. The one exception is a missing
-staging directory: `status` warns about it and exits with code 1, as "The
-repository directory" states below.
+staging directory while the state log holds a Staged or a Packed item:
+`status` warns about it and exits with code 1, and `commit` refuses, as
+"The repository directory" states below.
 
 The tracked part is permanent: the operator can keep it in a version control
 system. The ignored part holds only what `gc` frees, and the sequence mark.
@@ -104,16 +105,23 @@ write of the mark leaves it. The next command with the lock writes the mark
 again.
 
 A staging directory with no mark is not a roll back: a new clone on a second
-computer, or a staging directory that the operator deleted. The first command
-with the lock writes the mark. The chunk files of the Staged items are not
-there. `status` and `pack` then fail on the first missing chunk file. A
-`commit` of the same source writes each missing chunk file again, and `pack`
-then works. The disc root of a `packed` disc is gone too: its `next:` block
-gives `disc lost` ("State to `next:` block" in `docs/states.md`).
+computer, or a staging directory that the operator deleted and then created
+again with `mkdir -p` (a staging directory that does not exist follows below).
+The first command with the lock writes the mark. The chunk files of the Staged
+items are not there. `status` and `pack` then fail on the first missing chunk
+file. A `commit` of the same source writes each missing chunk file again, and
+`pack` then works. The disc root of a `packed` disc is gone too: its `next:`
+block gives `disc lost` ("State to `next:` block" in `docs/states.md`).
 
-A staging directory that does not exist is not the same as an empty one.
-Its volume can be unmounted, or `staging.dir` can name a wrong path. The
-discs roots and the chunk files are then not gone. Thus:
+A staging directory that does not exist is not the same as an empty one. Its
+volume can be unmounted, or `staging.dir` can name a wrong path. The disc
+roots and the chunk files are then not gone. Files are expected in the staging
+directory only while the state log holds a Staged or a Packed item: the chunk
+files of the Staged items, and the disc roots of the discs of the Packed
+items. When the state log holds no Staged and no Packed item, a missing
+staging directory is normal, for example in a clone of a repository whose data
+is all on discs: `status` gives no warning, and a command that needs the
+directory creates it. When the state log holds a Staged or a Packed item:
 
 - `status` prints `noahsark: status: warning: staging directory DIR does not
   exist; staging.dir in config.yaml names it` on standard error, the disc
@@ -121,13 +129,12 @@ discs roots and the chunk files are then not gone. Thus:
   with code 1. It prints no `staged:` line and no snapshot line. No block
   names `disc lost` for a disc root that is missing with the staging
   directory. `DIR` is the absolute path.
-- Each command that takes the lock, other than `commit` and `recover`,
-  refuses before it writes a file, and exits with code 1: `noahsark: CMD:
-  staging directory DIR does not exist; mount its volume, or correct
-  staging.dir in config.yaml; when the staging store is gone for good,
-  create it with mkdir`.
-- `commit` and `recover` create a missing staging directory, as `init` does.
-  Run `status` before `commit` when the staging store is on its own volume.
+- Each command that takes the lock, other than `recover`, refuses before it
+  writes a file, and exits with code 1: `noahsark: CMD: staging directory
+  DIR does not exist; mount its volume, or correct staging.dir in
+  config.yaml; when the staging store is gone for good, create it with
+  mkdir`. `commit` is one of them.
+- `recover` creates a missing staging directory, as `init` does.
 - The `next:` block of a `packed` disc gives `disc lost` only when the
   staging directory exists and the plan directory of that disc does not.
 
@@ -513,6 +520,9 @@ The lock is advisory. It is not a security boundary.
 ### 7.1 Commit flow
 
 1. Resolve the source root: the `SOURCE` argument, else `sources.root`.
+   Refuse a staging directory that does not exist while the state log holds
+   a Staged or a Packed item ("The repository directory"). Else create a
+   missing staging directory.
 2. Walk the source. Leave out each excluded path.
 3. For each regular file: chunk it, hash each chunk with SHA-256, and compress
    each chunk with zstd. Write a chunk into `staging/chunks/` only when the
@@ -1758,8 +1768,8 @@ snapshot object that a disc holds and whose catalog file is missing or does
 not verify, `REPAIR` is `run recover with a disc that holds it`. `status`
 prints all its lines on standard output as usual, then exits 1.
 
-When the staging directory does not exist, `status` prints no `staged:` line
-and no snapshot line. It prints the warning that "The repository directory"
+When the staging directory does not exist and the state log holds a Staged
+or a Packed item, `status` prints no `staged:` line and no snapshot line. It prints the warning that "The repository directory"
 gives, the disc lines, and the `next:` block of a missing staging
 directory, then exits 1.
 
@@ -2071,7 +2081,7 @@ Every command uses exactly these three codes.
 | 27 | `the state log ends in a part of a record; ...; another noahsark command writes the log at this time` | Nothing is wrong. Wait for the other command, then run the command again. |
 | 28 | `disc SEQ "LABEL": an earlier COMMAND stopped before it wrote the records of its items; N item record(s) now written` | Nothing to do. The command that printed the note wrote the records, then did its own work. When `status` names such a disc, run the command that its `next:` block gives. Do not run the stopped command again: its disc event is written. |
 | 29 | `state/ went back to an older version: ...` | `state/` is older than the staging directory, for example after a `git checkout` of an old commit. Put `state/` and `catalog/` forward again to the newest commit with git. When the newest version is gone, run `noahsark --repo=<new> recover --source=PATH --disc=DIR` with each disc, into a new repository. Commands that take no lock warn and go on. |
-| 30 | `staging directory DIR does not exist; ...`, or the `status` warning `staging directory DIR does not exist; staging.dir in config.yaml names it` | Mount the volume of the staging store, or correct `staging.dir` in `config.yaml`. Then run `status`. When the staging store is gone for good, run `mkdir -p DIR`: `status` then names each `packed` disc with `disc lost`, and a `commit` of the same source writes the chunk files of the Staged items again. |
+| 30 | `staging directory DIR does not exist; ...`, or the `status` warning `staging directory DIR does not exist; staging.dir in config.yaml names it`. Only while the state log holds a Staged or a Packed item. | Mount the volume of the staging store, or correct `staging.dir` in `config.yaml`. Then run `status`. When the staging store is gone for good, run `mkdir -p DIR`: `status` then names each `packed` disc with `disc lost`, and a `commit` of the same source writes the chunk files of the Staged items again. |
 
 ## 20. Test list
 
