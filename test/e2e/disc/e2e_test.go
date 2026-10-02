@@ -12,11 +12,13 @@ package disc
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -87,18 +89,71 @@ func TestDisc(t *testing.T) {
 }
 
 // runScenario runs run.sh with the given arguments, streaming its output
-// live to stdout and stderr as it happens, so a `go test -v` run shows
-// progress instead of one block of text after the run finishes. It also
-// keeps a copy of the combined output, for a failure message.
+// live to stdout as it happens, so a `go test -v` run shows progress
+// instead of one block of text after the run finishes. It also keeps a
+// copy of the output, for a failure message. Standard output and
+// standard error of run.sh share one scenarioOutput value: os/exec then
+// uses one pipe and one copy goroutine for both.
 func runScenario(args ...string) error {
-	cmd := exec.Command("bash", append([]string{"./run.sh"}, args...)...)
-	var captured bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &captured)
+	return runWithOutput(exec.Command("bash", append([]string{"./run.sh"}, args...)...), os.Stdout)
+}
+
+// runWithOutput runs cmd with its standard output and standard error
+// copied to live through one scenarioOutput.
+func runWithOutput(cmd *exec.Cmd, live io.Writer) error {
+	out := &scenarioOutput{live: live}
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w\noutput:\n%s", err, captured.String())
+		return fmt.Errorf("%w\noutput:\n%s", err, out.captured.String())
 	}
 	return nil
+}
+
+// scenarioOutput copies the output of run.sh to live and keeps a copy.
+// Write never returns an error. When the copy goroutine of os/exec gets
+// an error, it stops and closes the read end of its pipe, and the next
+// write of run.sh or of a command that it runs dies of SIGPIPE: exit
+// status 141. A failed write to live thus drops only the live copy.
+type scenarioOutput struct {
+	live     io.Writer
+	captured bytes.Buffer
+}
+
+func (o *scenarioOutput) Write(p []byte) (int, error) {
+	_, _ = o.live.Write(p)
+	_, _ = o.captured.Write(p)
+	return len(p), nil
+}
+
+// brokenWriter fails each write, as a closed log pipe does.
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+// TestRunWithOutputSurvivesABrokenLiveCopy runs a command that writes
+// many lines to both standard output and standard error while each write
+// to the live copy fails. The command must not die of SIGPIPE, and the
+// kept copy must hold the last line of both streams. This test needs no
+// root and no harness.
+func TestRunWithOutputSurvivesABrokenLiveCopy(t *testing.T) {
+	script := `for i in $(seq 1 2000); do echo "out $i"; echo "err $i" >&2; done; echo out-end; echo err-end >&2`
+	cmd := exec.Command("bash", "-c", script)
+	out := &scenarioOutput{live: brokenWriter{}}
+	cmd.Stdout = out
+	cmd.Stderr = out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("the command failed: %v", err)
+	}
+	got := out.captured.String()
+	for _, want := range []string{"out-end\n", "err-end\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the kept copy does not hold %q", want)
+		}
+	}
+	if err := runWithOutput(exec.Command("bash", "-c", script), brokenWriter{}); err != nil {
+		t.Fatalf("runWithOutput: %v", err)
+	}
 }
 
 // TestChainSmall runs the chain scenario at a small, fast fixture size,
