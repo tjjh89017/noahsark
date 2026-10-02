@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 )
 
 // treeBodyFixedLen is the fixed part of the tree payload, before the
@@ -36,6 +37,15 @@ const (
 	EntryFlagMetadataPart uint8 = 1 << 5
 	EntryFlagUnstable     uint8 = 1 << 7
 )
+
+// entryFlagsKnown holds the entry flag bits that version_major 1
+// defines. Every other bit is reserved.
+const entryFlagsKnown = EntryFlagCtimeAbsent | EntryFlagSparse | EntryFlagMetadataPart | EntryFlagUnstable
+
+// entryModeKnown holds the mode bits that version_major 1 defines: the
+// permission bits, setuid, setgid and sticky. Bits 12 to 31 are
+// reserved.
+const entryModeKnown = 0o7777
 
 // Tree is one directory, with one entry per child.
 type Tree struct {
@@ -161,8 +171,9 @@ func (e *TreeEntry) Encode(buf []byte) (int, error) {
 // Decode reads one TreeEntry from buf and returns the number of bytes
 // read. It rejects a short buffer, an invalid name, a content_len the
 // entry type forbids, an entry_len that differs from the derived value,
-// an unknown critical TLV, and a TLV area out of canonical order. It does
-// not interpret a padding byte between the entry's variable areas.
+// a reserved flag bit, a reserved mode bit, a nonzero reserved_u32, a
+// nonzero padding byte, a fault of a TLV, an unknown critical TLV, and a
+// TLV area out of canonical order.
 func (e *TreeEntry) Decode(buf []byte) (int, error) {
 	if len(buf) < TreeEntryHeaderLen {
 		return 0, ErrShort
@@ -212,6 +223,16 @@ func (e *TreeEntry) Decode(buf []byte) (int, error) {
 
 	name := append([]byte(nil), buf[TreeEntryHeaderLen:TreeEntryHeaderLen+nameLen]...)
 	if err := ValidateEntryName(name); err != nil {
+		return 0, err
+	}
+	if err := firstError(
+		zeroBits("tree entry", "entry_flags", uint64(entryFlags), uint64(entryFlagsKnown)),
+		zeroBits("tree entry", "mode", uint64(mode), entryModeKnown),
+		zeroField("tree entry", "reserved_u32", uint64(reservedU32)),
+		zeroBytes("tree entry", "name padding", buf[TreeEntryHeaderLen+nameLen:contentOff]),
+		zeroBytes("tree entry", "content padding", buf[contentOff+contentLen:extOff]),
+		zeroBytes("tree entry", "entry padding", buf[extOff+extLen:entryLen]),
+	); err != nil {
 		return 0, err
 	}
 
@@ -341,34 +362,26 @@ func (t *Tree) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Tree from buf and returns the number of bytes read. It
-// rejects a short buffer, a magic_kind mismatch, a header_crc32c mismatch,
-// a header_len below the fixed part this build knows, and tree entries not
-// in ascending canonical order. It does not interpret a reserved field.
+// rejects a short buffer, every fault of DecodeObjectFileHeader, a
+// nonzero reserved_u32, a fault of an entry, and tree entries not in
+// ascending canonical order.
 func (t *Tree) Decode(buf []byte) (int, error) {
 	if len(buf) < treeFixedLen {
 		return 0, ErrShort
 	}
-	if err := t.Header.Decode(buf[0:CommonHeaderLen]); err != nil {
-		return 0, err
-	}
-	if t.Header.MagicKind != MagicTree {
-		return 0, ErrBadMagic
-	}
-	entriesOff, err := t.Header.fixedPartEnd(treeFixedLen)
+	ch, oh, err := decodeObjectHead(buf, MagicTree)
 	if err != nil {
 		return 0, err
 	}
-	off := CommonHeaderLen
-	if err := t.ObjectHeader.Decode(buf[off : off+ObjectHeaderLen]); err != nil {
-		return 0, err
-	}
-	off += ObjectHeaderLen
-	if crc32c(buf[0:objectHeaderCRCOffset]) != t.ObjectHeader.HeaderCRC32C {
-		return 0, ErrCRC
-	}
+	t.Header, t.ObjectHeader = ch, oh
+	off := CommonHeaderLen + ObjectHeaderLen
+	entriesOff := treeFixedLen
 
 	t.EntryCount = binary.LittleEndian.Uint32(buf[off : off+4])
 	t.ReservedU32 = binary.LittleEndian.Uint32(buf[off+4 : off+8])
+	if err := zeroField("tree", "reserved_u32", uint64(t.ReservedU32)); err != nil {
+		return 0, err
+	}
 
 	pos := entriesOff
 	t.Entries = nil
@@ -380,7 +393,7 @@ func (t *Tree) Decode(buf []byte) (int, error) {
 		var e TreeEntry
 		n, err := e.Decode(buf[pos:])
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("tree entry %d: %w", len(t.Entries), err)
 		}
 		if prev != nil && bytes.Compare(prev.sortKey(), e.sortKey()) >= 0 {
 			return 0, ErrBadField

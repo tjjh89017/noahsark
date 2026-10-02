@@ -60,11 +60,12 @@ func (r *IndexFileRecord) encode(buf []byte) {
 	copy(buf[41:48], r.Reserved[:])
 }
 
-func (r *IndexFileRecord) decode(buf []byte) {
+func (r *IndexFileRecord) decode(buf []byte) error {
 	copy(r.FileHash[:], buf[0:32])
 	r.ByteLen = binary.LittleEndian.Uint64(buf[32:40])
 	r.Role = buf[40]
 	copy(r.Reserved[:], buf[41:48])
+	return zeroBytes("INDEX Files row", "reserved", r.Reserved[:])
 }
 
 // IndexObjectRecord is one row of the Objects table, 40 bytes. The id
@@ -89,7 +90,7 @@ func (r *IndexObjectRecord) decode(buf []byte) error {
 	if r.Kind < ObjectKindChunk || r.Kind > ObjectKindSnapshot {
 		return ErrObjectKind
 	}
-	return nil
+	return zeroBytes("INDEX Objects row", "reserved", r.Reserved[:])
 }
 
 // IndexPrereqRecord is one row of the Prereqs table, 48 bytes. It names
@@ -168,17 +169,16 @@ func (idx *Index) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads an Index from buf and returns the number of bytes read.
-// It rejects a short buffer, a magic_kind mismatch, a header_len below
-// the fixed part this build knows, a file length that does not agree
-// with the row counts, a Files row with a reserved role, and an Objects
-// row whose kind is outside 1 to 4.
-// It does not interpret a reserved field.
+// It rejects a short buffer, a magic_kind mismatch, a header_len other
+// than IndexHeaderLen, a nonzero reserved field, a file length that does
+// not agree with the row counts, a Files row with a reserved role, and
+// an Objects row whose kind is outside 1 to 4.
 func (idx *Index) Decode(buf []byte) (int, error) {
 	if len(buf) < IndexHeaderLen {
 		return 0, ErrShort
 	}
 	var h CommonHeader
-	if err := h.Decode(buf[0:CommonHeaderLen]); err != nil {
+	if err := h.decode(buf[0:CommonHeaderLen]); err != nil {
 		return 0, err
 	}
 	if h.MagicKind != MagicIndex {
@@ -194,6 +194,9 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	objectCount := binary.LittleEndian.Uint32(buf[44:48])
 	prereqCount := binary.LittleEndian.Uint32(buf[48:52])
 	reservedU32 := binary.LittleEndian.Uint32(buf[52:56])
+	if err := firstError(h.checkReserved(), zeroField("INDEX", "reserved_u32", uint64(reservedU32))); err != nil {
+		return 0, err
+	}
 
 	total := tablesOff +
 		int(fileCount)*IndexFileRecordLen +
@@ -209,7 +212,9 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	off := tablesOff
 	files := make([]IndexFileRecord, fileCount)
 	for i := range files {
-		files[i].decode(buf[off : off+IndexFileRecordLen])
+		if err := files[i].decode(buf[off : off+IndexFileRecordLen]); err != nil {
+			return 0, fmt.Errorf("row %d of the Files table: %w", i, err)
+		}
 		if !knownFileRole(files[i].Role) {
 			return 0, fmt.Errorf("%w: Files row %d has role %d", ErrFileRole, i, files[i].Role)
 		}
@@ -218,7 +223,7 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	objects := make([]IndexObjectRecord, objectCount)
 	for i := range objects {
 		if err := objects[i].decode(buf[off : off+IndexObjectRecordLen]); err != nil {
-			return 0, err
+			return 0, fmt.Errorf("row %d of the Objects table: %w", i, err)
 		}
 		off += IndexObjectRecordLen
 	}

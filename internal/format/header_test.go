@@ -1,6 +1,9 @@
 package format
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func testCommonHeader() CommonHeader {
 	return CommonHeader{
@@ -53,7 +56,7 @@ func TestCommonHeaderDecodeRejectsVersion(t *testing.T) {
 	buf[16] = 2
 	buf[17] = 0
 	var h CommonHeader
-	if err := h.Decode(buf); err != ErrVersion {
+	if err := h.Decode(buf); !errors.Is(err, ErrVersion) {
 		t.Fatalf("decode bad version: got %v, want %v", err, ErrVersion)
 	}
 }

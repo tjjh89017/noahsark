@@ -3,6 +3,7 @@ package format
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 )
 
 const (
@@ -37,13 +38,20 @@ func (r *RefRecord) encode(buf []byte) {
 	copy(buf[48:88], r.Name[:])
 }
 
-func (r *RefRecord) decode(buf []byte) {
+func (r *RefRecord) decode(buf []byte) error {
 	copy(r.SnapshotID[:], buf[0:32])
 	r.TimeSec = int64(binary.LittleEndian.Uint64(buf[32:40]))
 	r.TimeNsec = binary.LittleEndian.Uint32(buf[40:44])
 	r.NameLen = binary.LittleEndian.Uint16(buf[44:46])
 	r.ReservedU16 = binary.LittleEndian.Uint16(buf[46:48])
 	copy(r.Name[:], buf[48:88])
+	if int(r.NameLen) > RefNameLen {
+		return fmt.Errorf("%w: ref record name_len is %d, want at most %d", ErrBadField, r.NameLen, RefNameLen)
+	}
+	return firstError(
+		zeroField("ref record", "reserved_u16", uint64(r.ReservedU16)),
+		zeroBytes("ref record", "name padding", r.Name[r.NameLen:]),
+	)
 }
 
 // RefsTable is REFS, the repository-wide table of named pointers to
@@ -85,14 +93,14 @@ func (t *RefsTable) Encode(buf []byte) (int, error) {
 
 // Decode reads a RefsTable from buf and returns the number of bytes
 // read. It rejects a short buffer, a magic_kind mismatch, a header_len
-// below the fixed part this build knows, and a file length that does
-// not agree with record_count. It does not interpret a reserved field.
+// other than RefsHeaderLen, a nonzero reserved field or padding byte,
+// and a file length that does not agree with record_count.
 func (t *RefsTable) Decode(buf []byte) (int, error) {
 	if len(buf) < RefsHeaderLen {
 		return 0, ErrShort
 	}
 	var h CommonHeader
-	if err := h.Decode(buf[0:CommonHeaderLen]); err != nil {
+	if err := h.decode(buf[0:CommonHeaderLen]); err != nil {
 		return 0, err
 	}
 	if h.MagicKind != MagicRefs {
@@ -100,6 +108,9 @@ func (t *RefsTable) Decode(buf []byte) (int, error) {
 	}
 	recordsOff, err := h.fixedPartEnd(RefsHeaderLen)
 	if err != nil {
+		return 0, err
+	}
+	if err := h.checkReserved(); err != nil {
 		return 0, err
 	}
 
@@ -118,7 +129,9 @@ func (t *RefsTable) Decode(buf []byte) (int, error) {
 	off := recordsOff
 	records := make([]RefRecord, recordCount)
 	for i := range records {
-		records[i].decode(buf[off : off+RefRecordLen])
+		if err := records[i].decode(buf[off : off+RefRecordLen]); err != nil {
+			return 0, fmt.Errorf("REFS record %d: %w", i, err)
+		}
 		off += RefRecordLen
 	}
 

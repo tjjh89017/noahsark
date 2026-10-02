@@ -41,27 +41,16 @@ func (c *Chunk) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Chunk from buf and returns the number of bytes read. It
-// rejects a short buffer, a magic_kind mismatch, and a header_crc32c
-// mismatch.
+// rejects a short buffer and every fault of DecodeObjectFileHeader.
 func (c *Chunk) Decode(buf []byte) (int, error) {
 	if len(buf) < chunkFixedLen {
 		return 0, ErrShort
 	}
-	if err := c.Header.Decode(buf[0:CommonHeaderLen]); err != nil {
+	ch, oh, err := decodeObjectHead(buf, MagicChunk)
+	if err != nil {
 		return 0, err
 	}
-	if c.Header.MagicKind != MagicChunk {
-		return 0, ErrBadMagic
-	}
-	if c.Header.HeaderLen != chunkFixedLen {
-		return 0, ErrHeaderLen
-	}
-	if err := c.ObjectHeader.Decode(buf[CommonHeaderLen:chunkFixedLen]); err != nil {
-		return 0, err
-	}
-	if crc32c(buf[0:objectHeaderCRCOffset]) != c.ObjectHeader.HeaderCRC32C {
-		return 0, ErrCRC
-	}
+	c.Header, c.ObjectHeader = ch, oh
 	stored := int(c.ObjectHeader.StoredLen)
 	n := chunkFixedLen + stored
 	if len(buf) < n {

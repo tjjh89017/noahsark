@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // SnapshotFixedLen is the encoded size of the snapshot kind body, the
 // common header and the object header excluded.
@@ -55,8 +58,8 @@ func (m *SnapshotMeta) Encode(buf []byte) error {
 }
 
 // Decode reads one metadata record from the start of buf and returns the
-// number of bytes it consumed, padding included. It does not interpret a
-// padding byte.
+// number of bytes it consumed, padding included. It rejects a short
+// buffer, a reserved bit of flags, and a nonzero padding byte.
 func (m *SnapshotMeta) Decode(buf []byte) (int, error) {
 	if len(buf) < 8 {
 		return 0, ErrShort
@@ -70,6 +73,13 @@ func (m *SnapshotMeta) Decode(buf []byte) (int, error) {
 	}
 	if len(buf) < total {
 		return 0, ErrShort
+	}
+	name := fmt.Sprintf("snapshot metadata tag %d", tag)
+	if err := firstError(
+		zeroBits(name, "flags", uint64(flags), uint64(SnapshotMetaFlagCritical)),
+		zeroBytes(name, "padding", buf[8+int(valueLen):total]),
+	); err != nil {
+		return 0, err
 	}
 	m.Tag = SnapshotMetaTag(tag)
 	m.Flags = flags
@@ -148,28 +158,19 @@ func (s *Snapshot) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Snapshot from the start of buf and returns the number of
-// bytes it consumed. It rejects a short buffer, a magic_kind mismatch, and
-// a header_crc32c mismatch. It does not interpret a reserved field.
+// bytes it consumed. It rejects a short buffer, every fault of
+// DecodeObjectFileHeader, a nonzero reserved field, and a fault of a
+// metadata record.
 func (s *Snapshot) Decode(buf []byte) (int, error) {
 	if len(buf) < CommonHeaderLen+ObjectHeaderLen+SnapshotFixedLen {
 		return 0, ErrShort
 	}
-	if err := s.Common.Decode(buf[0:CommonHeaderLen]); err != nil {
-		return 0, err
-	}
-	if s.Common.MagicKind != MagicSnapshot {
-		return 0, ErrBadMagic
-	}
-	metaOff, err := s.Common.fixedPartEnd(CommonHeaderLen + ObjectHeaderLen + SnapshotFixedLen)
+	ch, oh, err := decodeObjectHead(buf, MagicSnapshot)
 	if err != nil {
 		return 0, err
 	}
-	if err := s.Object.Decode(buf[CommonHeaderLen : CommonHeaderLen+ObjectHeaderLen]); err != nil {
-		return 0, err
-	}
-	if crc32c(buf[0:objectHeaderCRCOffset]) != s.Object.HeaderCRC32C {
-		return 0, ErrCRC
-	}
+	s.Common, s.Object = ch, oh
+	metaOff := SnapshotHeaderLen
 	body := buf[CommonHeaderLen+ObjectHeaderLen:]
 	copy(s.RootTree[:], body[0:32])
 	copy(s.Parent[:], body[32:64])
@@ -182,6 +183,14 @@ func (s *Snapshot) Decode(buf []byte) (int, error) {
 	s.ReservedU16 = binary.LittleEndian.Uint16(body[104:106])
 	s.MetaCount = binary.LittleEndian.Uint16(body[106:108])
 	s.ReservedU32 = binary.LittleEndian.Uint32(body[108:112])
+	if err := firstError(
+		zeroField("snapshot", "reserved_u64a", s.ReservedU64a),
+		zeroField("snapshot", "reserved_u64b", s.ReservedU64b),
+		zeroField("snapshot", "reserved_u16", uint64(s.ReservedU16)),
+		zeroField("snapshot", "reserved_u32", uint64(s.ReservedU32)),
+	); err != nil {
+		return 0, err
+	}
 
 	off := metaOff
 	s.Meta = make([]SnapshotMeta, 0, s.MetaCount)

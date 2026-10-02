@@ -1,6 +1,11 @@
 package format
 
-import "testing"
+import (
+	"encoding/binary"
+	"errors"
+	"strings"
+	"testing"
+)
 
 func testTLV() TLV {
 	return TLV{
@@ -47,20 +52,20 @@ func TestTLVDecodeRejectsShort(t *testing.T) {
 	}
 }
 
-func TestTLVDecodeIgnoresNonzeroPadding(t *testing.T) {
-	golden := readGolden(t, "tlv.golden")
-	buf := append([]byte(nil), golden...)
+func TestTLVDecodeRefusesNonzeroPadding(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "tlv.golden")...)
 	buf[len(buf)-1] = 1
-	tlv := testTLV()
 	var got TLV
-	n, err := got.Decode(buf)
-	if err != nil {
-		t.Fatalf("decode nonzero padding: %v", err)
+	if _, err := got.Decode(buf); !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), "padding") {
+		t.Fatalf("decode nonzero padding: got %v, want %v that names the padding", err, ErrReserved)
 	}
-	if n != len(buf) {
-		t.Fatalf("decode read %d bytes, want %d", n, len(buf))
-	}
-	if got.Type != tlv.Type || got.Flags != tlv.Flags || string(got.Payload) != string(tlv.Payload) {
-		t.Fatalf("decoded mismatch: got %+v, want %+v", got, tlv)
+}
+
+func TestTLVDecodeRefusesReservedFlagBit(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "tlv.golden")...)
+	binary.LittleEndian.PutUint16(buf[2:4], binary.LittleEndian.Uint16(buf[2:4])|1<<3)
+	var got TLV
+	if _, err := got.Decode(buf); !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), "tlv_flags") {
+		t.Fatalf("decode reserved flag bit: got %v, want %v that names tlv_flags", err, ErrReserved)
 	}
 }

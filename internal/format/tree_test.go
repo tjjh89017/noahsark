@@ -1,6 +1,8 @@
 package format
 
 import (
+	"encoding/binary"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -115,49 +117,48 @@ func TestTreeGolden(t *testing.T) {
 	}
 }
 
-func TestTreeDecodeIgnoresReservedField(t *testing.T) {
-	golden := readGolden(t, "tree.golden")
-	buf := append([]byte(nil), golden...)
+func TestTreeDecodeRefusesReservedField(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "tree.golden")...)
 	buf[CommonHeaderLen+ObjectHeaderLen+4] = 0xFF // the body's reserved_u32
 
 	var got Tree
-	if _, err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved field: %v", err)
-	}
-	if got.ReservedU32 == 0 {
-		t.Fatalf("reserved field not preserved: %d", got.ReservedU32)
-	}
-	tr := testTree()
-	if got.EntryCount != tr.EntryCount {
-		t.Fatalf("body mismatch: got %+v, want %+v", got, tr)
+	if _, err := got.Decode(buf); !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), "tree reserved_u32 is 0xff") {
+		t.Fatalf("decode nonzero reserved field: got %v, want %v that names reserved_u32", err, ErrReserved)
 	}
 }
 
-func TestTreeEntryDecodeIgnoresPaddingBytes(t *testing.T) {
+func TestTreeEntryDecodeRefusesReservedValues(t *testing.T) {
 	e := TreeEntry{
 		EntryType: EntryTypeRegular,
 		Mode:      0o644,
 		Name:      []byte("f"),
 		ContentID: [32]byte{1, 2, 3},
 	}
-	buf := make([]byte, e.EncodedLen())
-	if _, err := e.Encode(buf); err != nil {
+	plain := make([]byte, e.EncodedLen())
+	if _, err := e.Encode(plain); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	// The name is one byte, so the alignment padding before the content
-	// area, offset 73 to 79, is nonzero here.
-	buf[73] = 0xFF
-
-	var got TreeEntry
-	n, err := got.Decode(buf)
-	if err != nil {
-		t.Fatalf("decode nonzero padding byte: %v", err)
+	cases := []struct {
+		name  string
+		set   func(buf []byte)
+		field string
+	}{
+		// The name is one byte, so the alignment padding before the
+		// content area is offset 73 to 79.
+		{"name padding", func(buf []byte) { buf[73] = 0xFF }, "name padding byte 0 is 0xff"},
+		{"reserved flag bit", func(buf []byte) { buf[5] |= 1 << 3 }, "entry_flags is 0x8"},
+		{"reserved mode bit", func(buf []byte) { binary.LittleEndian.PutUint32(buf[40:44], 0o644|1<<12) }, "mode is 0x11a4"},
+		{"reserved_u32", func(buf []byte) { buf[68] = 0xFF }, "reserved_u32 is 0xff"},
 	}
-	if n != len(buf) {
-		t.Fatalf("decode read %d bytes, want %d", n, len(buf))
-	}
-	if got.ContentID != e.ContentID || string(got.Name) != string(e.Name) {
-		t.Fatalf("decoded mismatch: got %+v, want %+v", got, e)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			buf := append([]byte(nil), plain...)
+			c.set(buf)
+			var got TreeEntry
+			if _, err := got.Decode(buf); !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), c.field) {
+				t.Fatalf("decode: got %v, want %v that names %q", err, ErrReserved, c.field)
+			}
+		})
 	}
 }
 
@@ -211,7 +212,7 @@ func TestTreeDecodeRejectsBadOrder(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var got Tree
-	if _, err := got.Decode(buf); err != ErrBadField {
+	if _, err := got.Decode(buf); !errors.Is(err, ErrBadField) {
 		t.Fatalf("decode out-of-order entries: got %v, want %v", err, ErrBadField)
 	}
 }
@@ -229,7 +230,7 @@ func TestTreeEntryDecodeRejectsBadName(t *testing.T) {
 	for _, bad := range []string{"..", "a/", "a\\", "a\x00"} {
 		copy(buf[TreeEntryHeaderLen:], bad)
 		var got TreeEntry
-		if _, err := got.Decode(buf); err != ErrBadField {
+		if _, err := got.Decode(buf); !errors.Is(err, ErrBadField) {
 			t.Fatalf("decode name %q: got %v, want %v", bad, err, ErrBadField)
 		}
 	}
@@ -243,7 +244,7 @@ func TestTreeEntryEncodeRejectsBadName(t *testing.T) {
 			Name:      []byte(bad),
 		}
 		buf := make([]byte, e.EncodedLen())
-		if _, err := e.Encode(buf); err != ErrBadField {
+		if _, err := e.Encode(buf); !errors.Is(err, ErrBadField) {
 			t.Fatalf("encode name %q: got %v, want %v", bad, err, ErrBadField)
 		}
 	}
@@ -263,7 +264,7 @@ func TestTreeEntryDecodeRejectsUnknownCriticalTLV(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	var got TreeEntry
-	if _, err := got.Decode(buf); err != ErrBadField {
+	if _, err := got.Decode(buf); !errors.Is(err, ErrBadField) {
 		t.Fatalf("decode unknown critical TLV: got %v, want %v", err, ErrBadField)
 	}
 }

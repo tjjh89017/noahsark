@@ -25,5 +25,10 @@ var ErrObjectKind = errors.New("format: object kind out of range")
 // the file role registry.
 var ErrFileRole = errors.New("format: reserved file role")
 
-// ErrHeaderLen reports a header_len below the fixed part this build knows.
-var ErrHeaderLen = errors.New("format: header_len below the known fixed part")
+// ErrHeaderLen reports a header_len other than the one this build knows
+// for the structure and its version_major.
+var ErrHeaderLen = errors.New("format: header_len is not the known value")
+
+// ErrReserved reports a nonzero reserved field, reserved bit or padding
+// byte.
+var ErrReserved = errors.New("format: nonzero reserved field")

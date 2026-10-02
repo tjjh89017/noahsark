@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // TLVHeaderLen is the encoded size of a TLV record's prefix, before the
 // payload and its padding.
@@ -70,7 +73,9 @@ func (t *TLV) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads one TLV from buf and returns the number of bytes read. It
-// rejects a short buffer. It does not interpret a padding byte.
+// rejects a short buffer, a reserved bit of tlv_flags, and a nonzero
+// padding byte. The type is not checked here: the tree entry applies the
+// rule for an unknown type.
 func (t *TLV) Decode(buf []byte) (int, error) {
 	if len(buf) < TLVHeaderLen {
 		return 0, ErrShort
@@ -80,8 +85,17 @@ func (t *TLV) Decode(buf []byte) (int, error) {
 	if len(buf) < n {
 		return 0, ErrShort
 	}
-	t.Type = binary.LittleEndian.Uint16(buf[0:2])
-	t.Flags = binary.LittleEndian.Uint16(buf[2:4])
+	typ := binary.LittleEndian.Uint16(buf[0:2])
+	flags := binary.LittleEndian.Uint16(buf[2:4])
+	name := fmt.Sprintf("TLV 0x%04x", typ)
+	if err := firstError(
+		zeroBits(name, "tlv_flags", uint64(flags), uint64(TLVFlagCritical)),
+		zeroBytes(name, "padding", buf[TLVHeaderLen+int(payloadLen):n]),
+	); err != nil {
+		return 0, err
+	}
+	t.Type = typ
+	t.Flags = flags
 	t.Payload = append([]byte(nil), buf[TLVHeaderLen:TLVHeaderLen+int(payloadLen)]...)
 	return n, nil
 }

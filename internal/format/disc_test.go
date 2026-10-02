@@ -2,6 +2,8 @@ package format
 
 import (
 	"encoding/binary"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -58,21 +60,38 @@ func TestDiscGolden(t *testing.T) {
 	}
 }
 
-func TestDiscDecodeIgnoresReservedByte(t *testing.T) {
-	golden := readGolden(t, "disc.golden")
-	buf := append([]byte(nil), golden...)
+func TestDiscDecodeRefusesReservedByte(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "disc.golden")...)
 	buf[216] = 0xFF
 	binary.LittleEndian.PutUint32(buf[2044:2048], crc32c(buf[0:2044]))
 
 	var got Disc
-	if err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved byte: %v", err)
+	err := got.Decode(buf)
+	if !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), "reserved_c byte 0 is 0xff") {
+		t.Fatalf("decode nonzero reserved byte: got %v, want %v that names reserved_c and 0xff", err, ErrReserved)
 	}
-	want := testDisc()
-	want.ReservedC[0] = 0xFF
-	want.SuperCRC32C = crc32c(buf[0:2044])
-	if got != want {
-		t.Fatalf("decoded disc mismatch: got %+v, want %+v", got, want)
+}
+
+func TestDiscDecodeRefusesLabelPadding(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "disc.golden")...)
+	labelLen := binary.LittleEndian.Uint32(buf[144:148])
+	buf[148+labelLen] = 'x'
+	binary.LittleEndian.PutUint32(buf[2044:2048], crc32c(buf[0:2044]))
+
+	var got Disc
+	if err := got.Decode(buf); !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), "label padding") {
+		t.Fatalf("decode nonzero label padding: got %v, want %v that names the label padding", err, ErrReserved)
+	}
+}
+
+func TestDiscDecodeRefusesHeaderLen(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "disc.golden")...)
+	binary.LittleEndian.PutUint16(buf[20:22], DiscLen+8)
+	binary.LittleEndian.PutUint32(buf[2044:2048], crc32c(buf[0:2044]))
+
+	var got Disc
+	if err := got.Decode(buf); !errors.Is(err, ErrHeaderLen) {
+		t.Fatalf("decode other header_len: got %v, want %v", err, ErrHeaderLen)
 	}
 }
 

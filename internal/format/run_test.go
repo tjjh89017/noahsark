@@ -68,21 +68,39 @@ func TestRunGolden(t *testing.T) {
 	}
 }
 
-func TestRunDecodeIgnoresReservedByte(t *testing.T) {
-	golden := readGolden(t, "run.golden")
-	buf := append([]byte(nil), golden...)
-	buf[192] = 0xFF
+func TestRunDecodeRefusesReservedByte(t *testing.T) {
+	cases := []struct {
+		name  string
+		off   int
+		field string
+	}{
+		{"reserved_c", 192, "reserved_c byte 0 is 0xff"},
+		{"reserved_d", 136, "reserved_d is 0xff"},
+		{"reserved_final outside the CRC", 508, "reserved_final byte 0 is 0xff"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			buf := append([]byte(nil), readGolden(t, "run.golden")...)
+			buf[c.off] = 0xFF
+			binary.LittleEndian.PutUint32(buf[504:508], crc32c(buf[0:504]))
+
+			var got Run
+			err := got.Decode(buf)
+			if !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), c.field) {
+				t.Fatalf("decode: got %v, want %v that names %q", err, ErrReserved, c.field)
+			}
+		})
+	}
+}
+
+func TestRunDecodeRefusesHeaderLen(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "run.golden")...)
+	binary.LittleEndian.PutUint16(buf[20:22], RunLen+8)
 	binary.LittleEndian.PutUint32(buf[504:508], crc32c(buf[0:504]))
 
 	var got Run
-	if err := got.Decode(buf); err != nil {
-		t.Fatalf("decode nonzero reserved byte: %v", err)
-	}
-	want := testRun()
-	want.ReservedC[0] = 0xFF
-	want.HeaderCRC32C = crc32c(buf[0:504])
-	if got != want {
-		t.Fatalf("decoded run mismatch: got %+v, want %+v", got, want)
+	if err := got.Decode(buf); !errors.Is(err, ErrHeaderLen) {
+		t.Fatalf("decode other header_len: got %v, want %v", err, ErrHeaderLen)
 	}
 }
 
@@ -123,7 +141,6 @@ func TestRunDecodeRejectsFieldValue(t *testing.T) {
 		set   func(buf []byte)
 		field string
 	}{
-		{"reserved_d", func(buf []byte) { binary.LittleEndian.PutUint64(buf[136:144], 7) }, "reserved_d is 7"},
 		{"fec_k", func(buf []byte) { binary.LittleEndian.PutUint16(buf[80:82], 231) }, "fec_k is 231"},
 		{"fec_m", func(buf []byte) { binary.LittleEndian.PutUint16(buf[82:84], 23) }, "fec_m is 23"},
 	}
