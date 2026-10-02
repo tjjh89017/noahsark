@@ -63,20 +63,25 @@ You need these:
   Arch). You use `growisofs` to burn a disc and `dvd+rw-mediainfo` to read
   the capacity of a blank disc.
 - `udftools` 2.3 or later. `image build` runs `mkudffs`.
-- GNU `ddrescue`, to copy a disc to an image. You need it only for a second
-  copy after `gc`.
+- `eject`. Each block that `status` prints uses it.
+- GNU `ddrescue` (the Debian package is `gddrescue`), to copy a disc to an
+  image. You need it only for a second copy after `gc`.
 
-Check the versions of the burn tools one time:
+Check the versions of the burn tools one time. `growisofs -version` does
+not show the package revision, thus ask the package manager. On Fedora,
+use `rpm -q`. On Arch, use `pacman -Q`.
 
 ```
-$ growisofs -version 2>&1 | head -2
-$ mkudffs 2>&1 | head -1
+$ dpkg-query -W dvd+rw-tools udftools
+dvd+rw-tools	7.1-14+b2
+udftools	2.3-2
 ```
 
-Build the tool in the source checkout, and install it in `/usr/local/bin`.
+Get the source, build the tool, and install it in `/usr/local/bin`.
 `sudo` does not search a directory in your home directory.
 
 ```
+$ git clone https://github.com/tjjh89017/noahsark.git && cd noahsark
 $ go build -o noahsark ./cmd/noahsark
 $ sudo install -m 0755 noahsark /usr/local/bin/
 $ sudo usermod -aG cdrom $USER      # then log in again
@@ -252,12 +257,15 @@ complete on discs on a line of its own, a new commit too:
 $ noahsark status
 staged: 412 items, 1830221824 bytes
 snapshot 1b03c7e2a9f4: 412 items staged, not complete on discs; recover cannot find it from the discs alone
-disc 0 "2026-09-14 disc 0"  verified, last check 2026-09-14  4a060bd4-ca9f-2d06-263e-b907483b8230
+disc 0 "2026-09-14 disc 0"  on disc only, last check 2026-09-14  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: load a blank disc, then run:
 dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
 then paste this line, type the capacity, and press Enter:
 noahsark pack --capacity=
 ```
+
+While a disc is `verified`, the block is `noahsark gc` first. The block
+for the rest comes after `gc`.
 
 `pack` takes the snapshots in the order of their time, the oldest first.
 Thus the rest of such a snapshot goes before each newer snapshot. `pack`
@@ -270,8 +278,10 @@ discs alone cannot restore all of it`. The next `pack` takes the items of
 the lost disc again.
 
 When `pack` or `status` prints `warning: snapshot ID: cannot pack all of
-it`, a staged item of that snapshot is damaged. `pack` packs the rest.
-Commit the same source again, then pack. The warning names the repair.
+it`, a staged item of that snapshot is damaged or missing. `pack` packs
+the items that it can take. Do the repair that the warning names. For a
+damaged chunk, the repair is: delete the file that the warning names,
+commit the same source again, then pack.
 
 
 ### Build the image, burn, and verify
@@ -321,8 +331,8 @@ burn recorded; verified
 next: noahsark status
 ```
 
-The number counts the items on the disc. From the second disc on, it is
-larger than the number that `pack` printed: each disc also carries the
+The number counts the items on the disc. From the second disc on, it can
+be larger than the number that `pack` printed: each disc also carries the
 snapshots of the earlier discs.
 
 Write the disc number, the first 8 characters of the uuid, and the storage
@@ -411,7 +421,7 @@ disc with `verify --no-mark`. Load a blank disc, and paste:
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img &&
 eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&
 sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
-noahsark verify --no-mark /mnt/ark &&
+noahsark verify --no-mark /mnt/ark;
 sudo umount /mnt/ark && eject /dev/sr0
 ```
 
@@ -440,10 +450,12 @@ Then load a blank disc, and paste:
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=$HOME/copy.img &&
 eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&
 sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
-noahsark verify --no-mark /mnt/ark &&
-sudo umount /mnt/ark && eject /dev/sr0 &&
-rm ~/copy.img ~/copy.map
+noahsark verify --no-mark /mnt/ark && rm ~/copy.img ~/copy.map;
+sudo umount /mnt/ark && eject /dev/sr0
 ```
+
+When the check fails, the copy stays in `~/copy.img`. Burn it again on a
+new blank disc.
 
 Write the same number and uuid on the sleeve of the second copy, and a
 `B`. Store it in a different building from the first disc.
@@ -528,10 +540,10 @@ $ noahsark ls -R 2026-09-14
 ```
 
 A `SNAPSHOT` argument is a ref name, a full snapshot id, or the start of a
-snapshot id. A ref name wins over a start of an id. When a start of an id
-matches more than one snapshot, the tool lists each full id and exits with
-code 2. Give more characters. You can copy a path from `ls` into a `restore`
-line.
+short id, as `log` prints it, without `1220`. A ref name wins over a
+start of an id. When a start of an id matches more than one snapshot, the
+tool lists each full id and exits with code 2. Give more characters. You
+can copy a path from `ls` into a `restore` line.
 
 ## Restore
 
@@ -545,9 +557,12 @@ no `PATH`, `restore` writes the content of the source root into `DEST`:
 
 ### See the discs that you need
 
-Mount any disc of the repository, and ask for the plan:
+You must be able to write in `DEST`. Make it first when its parent
+directory is not yours. Mount any disc of the repository, and ask for the
+plan:
 
 ```
+$ sudo mkdir -p /srv/restore && sudo chown "$USER": /srv/restore
 $ sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
 $ noahsark restore --dry-run --disc=/mnt/ark 2026-10-12 /srv/restore
 disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 2 items, 2999478 bytes
@@ -604,6 +619,8 @@ trailing slash:
 - `photos` makes the directory `/srv/drill/photos`.
 - `photos/` puts the content of `photos` directly into `/srv/drill`.
 
+Make `/srv/drill` first, as `/srv/restore`.
+
 ```
 $ noahsark restore --disc=/mnt/ark 2026-09-14 photos /srv/drill
 disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): 1 items, 2998210 bytes
@@ -618,7 +635,7 @@ When a disc is damaged, `restore` names each file that it cannot restore,
 writes no wrong data, and exits with code 1:
 
 ```
-noahsark: restore: warning: /srv/restore/photos/a.jpg: 1220ca2c9582...: content id does not verify
+noahsark: restore: warning: /srv/restore/photos/a.jpg: 1220ca2c95829e1f0b7d4a6c3e58f2a1d907b6c4e2f81a3d5c7b9e0f1a2b3c4d5e6f: content id does not verify
 noahsark: restore: warning: not restored: 1 file(s) not restored; see the warning(s) above
 restored snapshot 5e9a02d41c7b into /srv/restore
 ```
@@ -642,11 +659,14 @@ You have the discs and a new computer, and no repository. First make the
 repository again from the discs with `recover`. Then restore. `restore`
 never builds a repository.
 
-Install the tool as in "Set up, one time". Do not run `init`. Load any
-disc of the repository, mount it, and run `recover`. `recover` creates the
-repository directory. `--source` is the source root for your next commits.
+Install the tool as in "Set up, one time". Do not run `init`. Make the
+repository directory, as for `init`. Load any disc of the repository,
+mount it, and run `recover`. `recover` fills the empty directory, or
+creates it when you can write in its parent. `--source` is the source
+root for your next commits.
 
 ```
+$ sudo mkdir -p /srv/ark/repo && sudo chown "$USER": /srv/ark/repo
 $ sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
 $ noahsark --repo=/srv/ark/repo recover --source=/srv/data --disc=/mnt/ark
 recover: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230) named by another disc, not yet given
@@ -710,6 +730,7 @@ the copy to `recover`. See "A second copy".
 | `restore` stops between two discs | Mount the named disc, and run the same `restore` again. It resumes. |
 | `restore` reports that a path is already there | Add `--overwrite`, or restore into an empty directory. |
 | `restore` prints `restore: N item(s) have no disc known to the catalog; run recover with more discs` | The repository does not know which disc holds some data. `restore` restores every other file, names each file that it cannot restore, and exits with code 1. Give each disc that you still hold to `recover`, then run the same `restore` again. |
+| `restore`, `ls` or `log` prints `snapshot ID is partial; run recover with more discs` | `recover` did not read every disc of that snapshot yet. Give each disc that you still hold to `recover`, then run the same command again. |
 | `no repository; run recover first, one time for each disc` | See "After the computer is lost". |
 | `no repository; give --repo, or run noahsark init for a new repository, or noahsark recover for a lost one` | Go into the repository, or give `--repo`. After the computer is lost, do not run `init`: see "After the computer is lost". |
 | `image build`: `FILE exists; add --force to build it again` | Add `--force` after `image build`. |

@@ -2242,8 +2242,8 @@ burn path. A physical burn is not a release gate.
 
 ```bash
 # Check the tool versions: dvd+rw-tools 7.1-14 or newer, udftools 2.3 or newer.
-growisofs -version 2>&1 | head -2
-mkudffs 2>&1 | head -1
+# growisofs -version shows no package revision; ask the package manager.
+dpkg-query -W dvd+rw-tools udftools    # Fedora: rpm -q; Arch: pacman -Q
 # Look at the blank disc.
 dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks|Track Size'
 # Build the image, then burn it with the growisofs line that status prints.
