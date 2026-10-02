@@ -8,8 +8,10 @@ the design authorities. `NOTES.md` is informative.
 
 NoahsArk is a backup system for write-once Blu-ray optical media. It writes
 content-addressed objects to discs and reads them back years later. It uses
-content-defined chunking for dedup, self-describing on-disc tables, and
-optional Reed-Solomon self-healing per run. The implementation language is
+content-defined chunking for dedup and self-describing on-disc tables. Each
+disc carries the full format description. The tool restores from the discs
+alone, with no repository. The tool writes no repair data: the second copy
+of a disc is the repair. The implementation language is
 Go. The implementation is under `cmd/noahsark` and `internal/`. For host-side
 behaviour the code is the truth, and `OPERATIONS.md` and `docs/states.md`
 describe it.
@@ -49,11 +51,9 @@ Use this table to find a topic, by document and heading, not by number
 | Disc and run structures (on-disc) | FORMAT.md | "7. Disc and run model" |
 | Disc lifecycle (host-side) | OPERATIONS.md | "12. Disc lifecycle and closing" |
 | Disc filesystem requirements and the volume tree (on-disc layout) | FORMAT.md | "8. Filesystem and the volume tree" and "8.1 Filesystem requirements" |
-| The reference decoder | FORMAT.md | "8.6 Reference decoder" |
 | Burning and image building (host-side) | OPERATIONS.md | "10. Disc filesystems and image building" and "11. Burning" |
-| Reed-Solomon parity (on-disc layout) | FORMAT.md | "9. Forward error correction" |
-| Self-healing and verify (host-side) | OPERATIONS.md | "13. Verify and heal" |
-| The run index and the catalog | FORMAT.md | "10. The run index and the catalog" |
+| Verify and damage (host-side) | OPERATIONS.md | "13. Verify" |
+| The run index and the catalog | FORMAT.md | "9. The run index and the catalog" |
 | Repository layout, and what git tracks | OPERATIONS.md | "2. Repository, staging and catalog" |
 | Catalog (permanent history in the repository) | OPERATIONS.md | "2.4 Catalog layout" |
 | Staging store and GC | OPERATIONS.md | "2.3 Staging store layout" and "4. Staging state machine" |
@@ -70,7 +70,7 @@ Use this table to find a topic, by document and heading, not by number
 | Command syntax | OPERATIONS.md | "16. CLI reference" |
 | Confirmations and answer flags | OPERATIONS.md and docs/states.md | "16.5 Confirmations" and "1.2 Confirmations" |
 | Config keys | OPERATIONS.md | "17. Configuration reference" |
-| Format versioning rules | FORMAT.md | "11. Reader and writer rules" |
+| Format versioning rules | FORMAT.md | "2.6 Version policy" and "10. Reader and writer rules" |
 | Failure and recovery behaviour | OPERATIONS.md | "19. Failure and recovery actions" |
 | Testing and CI | OPERATIONS.md | "20. Test list" and "21. Manual physical checklist" |
 | Go-level implementation notes | NOTES.md | "5. Implementation notes" |
@@ -120,12 +120,15 @@ Follow OPERATIONS.md's "20. Test list" and "21. Manual physical checklist"
 sections. In summary:
 
 - Test image-first. Build a filesystem image, loop-mount it, verify it,
-  simulate damage on the image. A mount that the tool reads (`verify`,
+  write damage into the image, and check that `verify` finds it. A mount that the tool reads (`verify`,
   `restore`, `recover`) is read-only. A test mounts an image read-write only
   to write damage into it. It mounts the image again read-only before the
   tool reads it. One test also builds the disc root
   as an ISO 9660 image, as the folder burn does, and verifies and restores
-  it. Physical burns are a manual checklist, not CI.
+  it. Physical burns are a manual checklist, not CI, and not a release gate.
+- Damage tests check detection, not repair. They use random damage with a
+  fresh seed on each run. Print the seed, accept a seed to reproduce a run,
+  and also run a fixed list of known seeds.
 - Put CI test steps in the composite actions under `.github/actions/`
   (`lint`, `unit`, `e2e`).
   Workflows call the composite action; they do not repeat its steps.
@@ -135,7 +138,11 @@ sections. In summary:
 - Manual physical checks need a real drive and real media. Follow
   OPERATIONS.md's manual checklist; do not attempt to automate it in CI.
 - CI must prove that `recover` builds the catalog again from the disc images
-  alone, and that a restore then works.
+  alone, and that a restore then works. One job restores on a clean runner
+  from the images of another job.
+- The disc-root fixtures under `reference/testdata/` are the frozen test
+  data of format major 1. A Go test reads them. Regenerate them one time
+  before the first tag; never regenerate them after it.
 
 ## Git rules
 
@@ -164,21 +171,19 @@ internal/chunker      Gear table, FastCDC
 internal/catalog      catalog: snapshots, trees, blobs, and the disc tables
                       INDEX, REFS, DISCS of each disc
 internal/object       chunk, blob, tree, snapshot writers over a source tree
-internal/fec          GF(2^8), Reed-Solomon, checksum column, stream mapping
 internal/plan         restore planning from the catalog, disc order
 internal/progress     progress reporter for long-running commands
 internal/image        lay out /NOAHSARK for one run, INDEX, RUN, DISC, REFS,
-                      DISCS, decoder.py, parity; mkudffs image build of one
-                      disc number
+                      DISCS; mkudffs image build of one disc number
 internal/repolock     repository advisory lock for concurrent state access
 internal/restore      restore a snapshot one mounted disc at a time, write
-                      files; verify and heal
+                      files; verify
 internal/stage        item and disc state machines, state log and disc
                       state log records
 docs/                 guide.md (operator guide, not a specification),
                       states.md (state machines, part of the specification),
-                      decisions.md, fec-reference.md
-reference/decoder.py  the on-disc reference decoder
+                      decisions.md
+reference/testdata    frozen disc-root fixtures of format major 1
 .github/actions       composite actions: lint, unit, e2e
 ```
 

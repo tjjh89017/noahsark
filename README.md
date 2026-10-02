@@ -5,7 +5,7 @@ BD-R, DVD+R and DVD-R. It splits files into deduplicated,
 content-addressed objects and writes them to self-describing discs. A
 disc can be read back years later without the repository. The tool counts
 one verified disc for each pack; a second copy is the job of the operator.
-Reed-Solomon parity is optional and off by default.
+The tool writes no repair data: the second copy of a disc is the repair.
 
 There are two methods to write a disc root to a disc. The recommended
 method is `image build`, which makes a UDF image, and then a burn of the
@@ -53,12 +53,7 @@ To burn, verify and restore real discs, follow the
   `status`.
 - [docs/decisions.md](docs/decisions.md): the decisions of the project,
   by topic: what, and why.
-- [docs/fec-reference.md](docs/fec-reference.md): the Reed-Solomon code,
-  written out by hand. The implementation uses
-  `github.com/klauspost/reedsolomon`.
 - [NOTES.md](NOTES.md): background and rationale.
-- [test/e2e/disc/run.sh](test/e2e/disc/run.sh): the corrupt-and-heal
-  experiment with `--fec`.
 
 ## License
 
