@@ -2160,28 +2160,49 @@ does not skip it.
 | `rebuild` | The repository is deleted. `recover` runs one time for each disc. `log`, `ls` and `restore` then work, and a later `pack` deduplicates against the discs. This proves that the discs alone hold the backup. |
 | `lifecycle` | `disc verified` then `gc` frees the data of the disc at once; `pack --undo`; `verify --undo`; `disc lost` and `disc lost --undo`; each with `--yes` or `--force-yes`. |
 | `damage` | Random damage detection ("Random damage detection"). |
-| `cross-runner` | Two jobs ("Cross-runner restore"). |
+| `cross-runner/build`, `cross-runner/restore` | Two jobs ("Cross-runner restore"). |
 | `hostile` | A hostile source tree ("Hostile source tree"). |
 
 **Random damage detection.** The test uses a fresh seed on each run and
-prints the seed. A seed given on the command line or in an environment
-variable reproduces the run. A fixed list of known seeds also runs on each
-run. The test changes random bytes of an image. Then `verify` of the disc
-must report the disc bad and name what is damaged. `restore` must not write
-wrong data: it fails loudly for each damaged file.
+prints the seed. The environment variable `NOAHSARK_E2E_DAMAGE_SEED` gives a
+seed in place of the fresh one, to run it again. A fixed list of known seeds
+also runs on each run. The test packs one small disc and keeps its image as
+the second copy. For each seed, it copies the image and flips 1 to 4 random
+bytes of the files below `NOAHSARK/` of the copy: the object files, the
+snapshot files, `INDEX.bin`, `REFS.bin`, `DISCS.bin`, `DISC.bin`, `RUN.bin`,
+`RUN2.bin`, `README.txt` and `FORMAT.txt`. Then `verify` of the copy must
+exit 1, report the disc bad or not readable, and name a damaged file.
+`restore` from the copy must not write wrong data: each file that it
+completes equals the source, and it exits 1 when a file is not restored.
+`restore` from the second copy into the same destination then completes the
+tree and exits 0 ("Restore", "A damaged copy"). The seed changes the file and
+the offset of each flip. The bytes of the image change from run to run, with
+the times and the uuids, thus a seed hits the same place, not the same byte.
 
 **Cross-runner restore.** Job one builds a small set of images of several
 discs. It uploads the images as an artifact, with the checksums of the source
-tree. Job two runs on a clean runner. It downloads the images and has no
-repository. It runs `recover` for each disc, then `restore`. It compares the
-result with the checksums of the source tree, byte for byte.
+tree. Job two runs on a clean runner. It builds only the tool, downloads the
+images, and has no repository and no source tree. It runs `verify` and
+`recover` for each disc, then `restore`. It compares the result with the
+checksums of the source tree, byte for byte, and checks that no file is
+missing or extra.
 
 **Hostile source tree.** The cell commits a source tree that holds odd file
-names, deep paths, many small files, symbolic links, unusual permissions, a
-file larger than one disc, and extreme modification times. It packs the tree
-across discs, and verifies and restores each disc. The restore must give the
-tree back, with the names, the symlink targets, the permissions and the
-modification times that "Metadata restore policy" applies.
+names (spaces, a leading `-`, a newline, a tab, bytes that are not UTF-8, a
+255-byte name, CJK and emoji names, a name in NFC and in NFD), a path of
+about 3900 bytes, an empty directory and an empty file, ten thousand small
+files, symbolic links (to a file, to a directory, dangling, absolute, with
+`..`), a hard link, a read-only file and directory, setuid, setgid and sticky
+bits, another owner, files at the chunk size limits and one byte below and
+above, modification times before 1970 and after 2038, a FIFO, a socket, a
+device node, and a file larger than one disc. It packs the tree across discs,
+builds and verifies each image, deletes the repository, recovers each disc,
+and restores. The restore must give the tree back, with the names, the
+content, the symlink targets, the modes, the owners and the modification
+times that "Metadata restore policy" applies. The FIFO, the socket and the
+device node are not restored, and `restore` reports them as unsupported
+entries. The cell runs as root. An unreadable file and a planted symlink
+in the destination are unit tests.
 
 **Guide walk.** Before the first tag, a person walks `docs/guide.md` in a
 clean container, command by command, from the install to a restore. Each

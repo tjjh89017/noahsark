@@ -136,6 +136,8 @@ jobs:
           - { scenario: incremental, media: '', extras: '', name: incremental, slug: incremental }
           - { scenario: rebuild, media: '', extras: '', name: rebuild, slug: rebuild }
           - { scenario: lifecycle, media: '', extras: '', name: lifecycle, slug: lifecycle }
+          - { scenario: damage, media: '', extras: '', name: damage, slug: damage }
+          - { scenario: hostile, media: '', extras: '', name: hostile, slug: hostile }
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7
@@ -157,12 +159,69 @@ jobs:
           cell-name: ${{ matrix.name }}
           artifact-name: e2e-result-${{ matrix.slug }}
 
+  # The cross-runner restore, job one: builds a small set of disc images
+  # and the SHA-256 list of its source tree, and uploads both as the
+  # artifact e2e-disc-set.
+  cross-build:
+    name: E2E (cross-runner/build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - decide
+      - lint
+      - unit
+    if: needs.decide.outputs.code_changed == 'true'
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      - name: E2E
+        uses: ./.github/actions/e2e
+        with:
+          scenario: cross-build
+          disc-set: write
+          cell-name: cross-runner/build
+          artifact-name: e2e-result-cross-build
+
+  # The cross-runner restore, job two: a clean runner with no repository
+  # and no source tree. It downloads the disc set, recovers each disc,
+  # restores, and checks the result against the SHA-256 list.
+  cross-restore:
+    name: E2E (cross-runner/restore)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - decide
+      - cross-build
+    if: needs.decide.outputs.code_changed == 'true'
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      - name: E2E
+        uses: ./.github/actions/e2e
+        with:
+          scenario: cross-restore
+          disc-set: read
+          cell-name: cross-runner/restore
+          artifact-name: e2e-result-cross-restore
+
   # One stable check the branch ruleset can require in place of every
   # e2e cell, lint, and unit, so adding or dropping a cell never touches
   # branch protection. Always runs, so it can also gate a docs-only
   # change where decide skipped lint, unit, and e2e on purpose. Passes
-  # when decide succeeded and each of lint, unit, e2e either succeeded
-  # or was skipped; fails on any failure, cancellation, or on decide
+  # when decide succeeded and each of lint, unit, e2e, cross-build and
+  # cross-restore either succeeded or was skipped; fails on any failure, cancellation, or on decide
   # itself failing (which leaves the others skipped for the wrong
   # reason). Downloads every e2e cell's result first and prints a
   # summary table, so the run stays legible even when several cells
@@ -175,6 +234,8 @@ jobs:
       - lint
       - unit
       - e2e
+      - cross-build
+      - cross-restore
     if: always()
     steps:
       - name: Download e2e cell results
@@ -206,14 +267,16 @@ jobs:
           lint="${{ needs.lint.result }}"
           unit="${{ needs.unit.result }}"
           e2e="${{ needs.e2e.result }}"
-          echo "decide=$decide lint=$lint unit=$unit e2e=$e2e"
+          cross_build="${{ needs.cross-build.result }}"
+          cross_restore="${{ needs.cross-restore.result }}"
+          echo "decide=$decide lint=$lint unit=$unit e2e=$e2e cross-build=$cross_build cross-restore=$cross_restore"
 
           if [ "$decide" != "success" ]; then
             echo "decide did not succeed"
             exit 1
           fi
 
-          for result in "$lint" "$unit" "$e2e"; do
+          for result in "$lint" "$unit" "$e2e" "$cross_build" "$cross_restore"; do
             case "$result" in
               success|skipped) ;;
               *)

@@ -6,7 +6,8 @@
 #
 # Usage: run.sh SCENARIO [MEDIA] [ORDER] [EXTRAS]
 #   SCENARIO  media | cli | iso | chain | chain-small | lowmem |
-#             incremental | rebuild | lifecycle
+#             incremental | rebuild | lifecycle | damage | hostile |
+#             cross-build | cross-restore
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
 #             fixture at dvd+r's real sector counts. lowmem ignores it
@@ -19,6 +20,12 @@
 #             CI matrix folds cli and iso into the media/dvd+r cell this
 #             way. Only cli and iso are valid extras. Empty for every
 #             other cell.
+#
+# Environment:
+#   NOAHSARK_E2E_DISC_SET    the disc set directory that cross-build
+#                            writes and cross-restore reads
+#   NOAHSARK_E2E_DAMAGE_SEED a seed that the damage scenario runs in
+#                            place of a fresh one
 set -euo pipefail
 
 HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
@@ -34,6 +41,12 @@ HERE="$(CDPATH='' cd "$(dirname "$0")" && pwd)"
 . "$HERE/rebuild.sh"
 # shellcheck source=test/e2e/disc/lifecycle.sh
 . "$HERE/lifecycle.sh"
+# shellcheck source=test/e2e/disc/damage.sh
+. "$HERE/damage.sh"
+# shellcheck source=test/e2e/disc/hostile.sh
+. "$HERE/hostile.sh"
+# shellcheck source=test/e2e/disc/cross.sh
+. "$HERE/cross.sh"
 
 # FIXED_MEDIA is the media preset every scenario but media builds its
 # fixture at: real, but small enough that fixture size never depends on
@@ -202,6 +215,10 @@ main() {
 	incremental) scenario_incremental ;;
 	rebuild) scenario_rebuild ;;
 	lifecycle) scenario_lifecycle ;;
+	damage) scenario_damage ;;
+	hostile) scenario_hostile ;;
+	cross-build) scenario_cross_build ;;
+	cross-restore) scenario_cross_restore ;;
 	*) fail "unknown scenario: $scenario" ;;
 	esac
 

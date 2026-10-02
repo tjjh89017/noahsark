@@ -142,10 +142,13 @@ sections. In summary:
 - The e2e suite holds a hostile source tree cell: odd names, deep paths,
   many small files, symbolic links, permissions, a file larger than one
   disc, and extreme modification times.
+- The e2e suite holds a random damage cell: random bytes of a disc image
+  change, `verify` must find the damage, `restore` must write no wrong data,
+  and a restore from the second copy completes the tree.
+- One CI job restores on a clean runner from the images of another job.
 - Before the first tag, a person walks `docs/guide.md` in a clean container,
-  command by command, from the install to a restore. One job restores on a clean runner
-  from the images of another job.
-- The disc-root fixtures under `reference/testdata/` are the frozen test
+  command by command, from the install to a restore.
+- The disc-root fixtures under `cmd/noahsark/testdata/format1/` are the frozen test
   data of format major 1. A Go test reads them. Regenerate them one time
   before the first tag; never regenerate them after it.
 

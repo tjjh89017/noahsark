@@ -34,6 +34,11 @@ var scenarios = map[string]bool{
 	"incremental": true,
 	"rebuild":     true,
 	"lifecycle":   true,
+	"damage":      true,
+	"hostile":     true,
+	// cross-build and cross-restore read NOAHSARK_E2E_DISC_SET.
+	"cross-build":   true,
+	"cross-restore": true,
 }
 
 // requireHarness skips the test when NOAHSARK_E2E is not 1. When it is
