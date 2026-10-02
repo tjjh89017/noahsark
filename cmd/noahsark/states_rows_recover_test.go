@@ -356,6 +356,82 @@ func badHasOnDiscRecord(t *testing.T, fx *discFixture, _, _ string) {
 	}
 }
 
+// knownLine and checkLoggedLine are the two alternative first lines of
+// the Message cell of row 70f.
+const (
+	knownLine       = "recover: disc ... already known"
+	checkLoggedLine = "recover: disc ... already known; check logged"
+)
+
+// secondDiscGivenSetup recovers a lost repository from disc 1 of
+// secondDiscCopySetup. Disc 0, the disc of fx, is then missing.
+func secondDiscGivenSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	secondDiscCopySetup(t, fx)
+	if code, out := fx.run(t, "recover", "--source="+fx.src, "--disc="+fx.vars["{ROOT1}"]); code != 1 {
+		t.Fatalf("recover of disc 1: exit %d, want 1: %s", code, out)
+	}
+}
+
+// damagedSecondDiscGivenSetup recovers a lost repository from a damaged
+// copy of disc 1. Disc 0 is then missing, and disc 1 is on disc only
+// with a failed check. {ROOT1} becomes a good copy of disc 1.
+func damagedSecondDiscGivenSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	secondDiscSetup(t, fx)
+	good := filepath.Join(fx.work, "disc1-good")
+	damaged := filepath.Join(fx.work, "disc1-damaged")
+	copyTree(t, fx.vars["{ROOT1}"], good)
+	copyTree(t, fx.vars["{ROOT1}"], damaged)
+	removeRepoSetup(t, fx)
+	damageObject(t, damaged, format.ObjectKindChunk)
+	if code, out := fx.run(t, "recover", "--source="+fx.src, "--disc="+damaged); code != 1 {
+		t.Fatalf("recover of the damaged copy of disc 1: exit %d, want 1: %s", code, out)
+	}
+	if info := discState(t, fx.repo, fx.vars["{UUID1}"]); info.State != stage.DiscOnDiscOnly || info.LastCheck != stage.CheckResultFailed {
+		t.Fatalf("disc 1 after the damaged copy: state %s, last check %d", info.State, info.LastCheck)
+	}
+	fx.set("{ROOT1}", good)
+}
+
+// secondDiscIs is a check: disc 1 is on disc only with the last check
+// result want.
+func secondDiscIs(want stage.CheckResult) func(*testing.T, *discFixture, string, string) {
+	return func(t *testing.T, fx *discFixture, _, _ string) {
+		t.Helper()
+		info := discState(t, fx.repo, fx.vars["{UUID1}"])
+		if info.State != stage.DiscOnDiscOnly || info.LastCheck != want {
+			t.Errorf("disc 1: state %s, last check %d, want on disc only, last check %d", info.State, info.LastCheck, want)
+		}
+	}
+}
+
+func init() {
+	// Row 70f: recover of a known disc while disc 0 is missing names
+	// disc 0 and exits 1, also when it logs a good check.
+	args := []string{"recover", "--source={SRC}", "--disc={ROOT1}"}
+	registerStateCases(
+		stateCase{
+			row: "70f", name: "a known disc while another disc is missing",
+			start: stage.DiscPacked, from: stage.DiscMissing, setup: secondDiscGivenSetup,
+			args:  args,
+			omit:  []string{checkLoggedLine},
+			exact: true, noEvent: true,
+			end:   stage.DiscMissing,
+			check: secondDiscIs(stage.CheckResultNone),
+		},
+		stateCase{
+			row: "70f", name: "a good copy while another disc is missing",
+			start: stage.DiscPacked, from: stage.DiscMissing, setup: damagedSecondDiscGivenSetup,
+			args:  args,
+			omit:  []string{knownLine},
+			exact: true,
+			end:   stage.DiscMissing,
+			check: secondDiscIs(stage.CheckResultOK),
+		},
+	)
+}
+
 func init() {
 	// Row 70e: a good copy of a disc whose recover found damage records
 	// the items that had no record and logs a good check.

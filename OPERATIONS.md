@@ -1874,8 +1874,13 @@ There is one `damaged:` line for each damaged object, with its full text id,
 then the count line.
 Then it exits with code 1. Else it prints `recover: ok`, or one `recover:
 disc SEQ "LABEL" (UUID) named by another disc, not yet given` line for each
-`missing` disc, and then exits with code 1. Each of these ends with `next:
-noahsark status`, unless `recover` refused the disc. Do not run `disc burned` or
+`missing` disc, and then exits with code 1. A disc that the repository
+already knows follows the same rule. While a disc is `missing` after the
+call, `recover` prints the `already known` line without `ok; `, then the
+`named by another disc` line of each `missing` disc, and exits with code 1
+(`docs/states.md`, row 70f). A line that starts with `recover: ok` thus
+always comes with exit code 0 and no `missing` disc. Each of these ends with
+`next: noahsark status`, unless `recover` refused the disc. Do not run `disc burned` or
 `verify` for a recovered disc to raise its state: it is `on disc only`.
 
 `recover` stores `--source` as an absolute path: a relative path is taken
