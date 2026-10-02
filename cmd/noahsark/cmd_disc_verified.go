@@ -81,7 +81,7 @@ func runDiscVerified(e *env, args []string) int {
 	}
 	warning := []string{
 		disc.warning(stage.DiscVerified),
-		"the tool did not read this disc; gc frees the repository copy of its data after the wait time; if the disc is bad, that data is lost",
+		"the tool did not read this disc; gc can free the repository copy of its data at once; if the disc is bad, that data is lost",
 	}
 	if !e.confirm(confirmCritical, cmd, warning) {
 		return 1

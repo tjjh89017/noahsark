@@ -68,8 +68,6 @@ scenario_lifecycle() {
 	grep -qx 'burn recorded; verified' <<<"$VERIFY_OUT" ||
 		fail "lifecycle: the first verify did not record the burn"
 
-	# gc keeps the 7-day wait.
-	expect_exit 0 "gc: disc 0: too soon; " "${n[@]}" gc
 	expect_exit 1 "disc 0 is already verified" "${n[@]}" disc burned 0
 	assert_disc_state "$repo" "$uuid0" "verified, last check *"
 
@@ -85,8 +83,10 @@ scenario_lifecycle() {
 	expect_exit 0 "verified record added; not checked" "${force[@]}" disc verified 0
 	assert_disc_state "$repo" "$uuid0" "verified, not checked"
 
-	# disc verified then gc keeps the 7-day wait too.
-	expect_exit 0 "gc: disc 0: too soon; " "${n[@]}" gc
+	# After disc verified, gc can free the data of the disc at once.
+	expect_exit 0 "gc: would free " "${n[@]}" gc --dry-run
+	grep -qE '^gc: would free [1-9][0-9]* item\(s\), ' <<<"$EXPECT_OUT" ||
+		fail "lifecycle: gc --dry-run after disc verified would free nothing"
 	assert_disc_state "$repo" "$uuid0" "verified, not checked"
 
 	# A good verify replaces "not checked" with the date of the check.
@@ -94,10 +94,10 @@ scenario_lifecycle() {
 	grep -qx 'already verified; check logged' <<<"$VERIFY_OUT" ||
 		fail "lifecycle: the verify of a verified disc did not log the check"
 
-	# gc with a shorter wait frees the staged copy.
-	expect_exit 0 "gc: freed " "${n[@]}" gc --force-after=0d
+	# gc frees the staged copy at once.
+	expect_exit 0 "gc: freed " "${n[@]}" gc
 	grep -qE '^gc: freed [1-9][0-9]* item\(s\), ' <<<"$EXPECT_OUT" ||
-		fail "lifecycle: gc --force-after=0d freed nothing"
+		fail "lifecycle: gc freed nothing"
 	assert_disc_state "$repo" "$uuid0" "on disc only, last check *"
 	[ ! -e "$repo/staging/plans/$uuid0" ] ||
 		fail "lifecycle: gc left the plan directory of disc 0"

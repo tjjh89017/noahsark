@@ -35,7 +35,6 @@ type nextRepo struct {
 	source string
 	// staged is the number of Staged items.
 	staged int
-	now    time.Time
 	// discs are the discs that are not undone, in the order of their
 	// numbers.
 	discs []nextDisc
@@ -90,8 +89,9 @@ func waitsForCommit(info stage.DiscInfo) bool {
 // that does not exist while an item needs it, a disc whose item records
 // do not follow its state, a missing disc, an on disc only disc whose
 // last check failed, a lost disc whose data waits for a commit, a disc
-// to burn or to verify, data that gc can free now, staged data, a
-// verified disc that waits, and nothing. Inside one step the disc with the lowest number wins.
+// to burn or to verify, a verified disc whose data gc can free, staged
+// data, and nothing. Inside one step the disc with the lowest number
+// wins.
 func nextBlock(r nextRepo) []string {
 	if r.stagingMissing {
 		return []string{
@@ -102,7 +102,7 @@ func nextBlock(r nextRepo) []string {
 	if len(r.repairs) > 0 {
 		d := r.repairs[0]
 		return []string{
-			fmt.Sprintf("next: disc %s: an earlier %s stopped before it wrote the records of its items; gc writes them, and also frees the data whose wait is over; run:", d.arg, d.command),
+			fmt.Sprintf("next: disc %s: an earlier %s stopped before it wrote the records of its items; gc writes them, and also frees the data of each verified disc; run:", d.arg, d.command),
 			"noahsark gc",
 		}
 	}
@@ -132,9 +132,7 @@ func nextBlock(r nextRepo) []string {
 	}); ok {
 		return r.burnBlock(d)
 	}
-	if d, ok := r.first(func(d nextDisc) bool {
-		return d.info.State == stage.DiscVerified && !r.now.Before(gcFreeTime(d))
-	}); ok {
+	if d, ok := r.first(func(d nextDisc) bool { return d.info.State == stage.DiscVerified }); ok {
 		return []string{secondCopyAdvice(d), "next: noahsark gc"}
 	}
 	if r.staged > 0 {
@@ -143,12 +141,6 @@ func nextBlock(r nextRepo) []string {
 			"dvd+rw-mediainfo " + quoteShellWord(r.device) + " | grep -E 'Mounted Media|Free Blocks'",
 			"then paste this line, type the capacity, and press Enter:",
 			"noahsark pack --capacity=",
-		}
-	}
-	if d, ok := r.first(func(d nextDisc) bool { return d.info.State == stage.DiscVerified }); ok {
-		return []string{
-			fmt.Sprintf("next: nothing to do; gc can free disc %s after %s", d.arg, statusDate(gcFreeTime(d))),
-			secondCopyAdvice(d),
 		}
 	}
 	return []string{"next: nothing to do"}
@@ -228,11 +220,6 @@ func secondCopyAdvice(d nextDisc) string {
 		return fmt.Sprintf(`advice: burn a second copy of %s before gc; see the guide, "A second copy"`, d.image)
 	}
 	return fmt.Sprintf(`advice: copy disc %s before gc; see the guide, "A second copy"`, d.arg)
-}
-
-// gcFreeTime is the time from which gc can free a verified disc.
-func gcFreeTime(d nextDisc) time.Time {
-	return d.info.VerifiedTime.Add(retainAfterClean)
 }
 
 // statusDate is the DATE of status and gc: the local date, YYYY-MM-DD.

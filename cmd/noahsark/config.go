@@ -8,9 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
-	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -75,27 +73,6 @@ func (e *configError) Unwrap() error { return e.err }
 func isConfigError(err error) bool {
 	_, ok := errors.AsType[*configError](err)
 	return ok
-}
-
-// retainAfterClean is how long an object stays CLEAN before gc may
-// free its staged file: a fixed 7 days. gc --force-after shortens this
-// for one run only.
-const retainAfterClean = 7 * 24 * time.Hour
-
-// parseRetentionDuration parses a duration for gc --force-after: a
-// plain integer with a "d" suffix for whole days, since
-// time.ParseDuration has no day unit and a retention period is
-// ordinarily counted in days, or any duration string time.ParseDuration
-// itself accepts.
-func parseRetentionDuration(s string) (time.Duration, error) {
-	if days, ok := strings.CutSuffix(s, "d"); ok {
-		n, err := strconv.ParseUint(days, 10, 32)
-		if err != nil {
-			return 0, fmt.Errorf("%q: not a whole number of days", s)
-		}
-		return time.Duration(n) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
 }
 
 // encodeConfig returns the text of f: the keys in a fixed order, an

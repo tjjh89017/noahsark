@@ -203,7 +203,7 @@ func TestCommitAfterGCDoesNotRefillStaging(t *testing.T) {
 	packAndVerifyDisc(t, work, repo, src)
 
 	setFakeStdin(t, strings.NewReader("y\n"))
-	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d")
+	code, out := runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}

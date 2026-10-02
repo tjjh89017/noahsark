@@ -172,17 +172,17 @@ func TestStatusBurnedLastCheckFailed(t *testing.T) {
 	}
 }
 
-// TestStatusVerifiedWaits checks a verified disc in its 7 days: the
-// block names the date on which gc can free it, then the advice line.
-// With the image, the advice line names the image.
-func TestStatusVerifiedWaits(t *testing.T) {
+// TestStatusVerified checks a verified disc: the advice line, then the
+// gc line, at once after the verify. With the image, the advice line
+// names the image.
+func TestStatusVerified(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscVerified)
 	info := discState(t, fx.repo, fx.uuid)
 	want := []string{
 		"staged: 0 items, 0 bytes",
 		fmt.Sprintf("%s  verified, last check %s  %s", fx.name(), wantStatusDate(info.LastCheckTime), fx.uuid),
-		"next: nothing to do; gc can free disc 0 after " + wantStatusDate(info.VerifiedTime.Add(7*24*time.Hour)),
 		`advice: copy disc 0 before gc; see the guide, "A second copy"`,
+		"next: noahsark gc",
 	}
 	if got := statusLines(t, fx.repo); !slices.Equal(got, want) {
 		t.Fatalf("status:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -193,21 +193,8 @@ func TestStatusVerifiedWaits(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := statusLines(t, fx.repo)
-	if want := `advice: burn a second copy of ` + img + ` before gc; see the guide, "A second copy"`; lines[3] != want {
-		t.Fatalf("advice line %q, want %q", lines[3], want)
-	}
-}
-
-// TestStatusVerifiedGCReady checks a verified disc after its 7 days:
-// the advice line, then the gc line.
-func TestStatusVerifiedGCReady(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscVerified)
-	later := time.Now().Add(8 * 24 * time.Hour)
-	setFakeNow(t, func() time.Time { return later })
-	lines := statusLines(t, fx.repo)
-	want := []string{`advice: copy disc 0 before gc; see the guide, "A second copy"`, "next: noahsark gc"}
-	if got := lines[2:]; !slices.Equal(got, want) {
-		t.Fatalf("block %q, want %q", got, want)
+	if want := `advice: burn a second copy of ` + img + ` before gc; see the guide, "A second copy"`; lines[2] != want {
+		t.Fatalf("advice line %q, want %q", lines[2], want)
 	}
 }
 
@@ -452,10 +439,6 @@ func TestNextBlockOrder(t *testing.T) {
 		d.info.LastEvent = stage.EventLostUndone
 		return d
 	}
-	old := func(d nextDisc) nextDisc {
-		d.info.VerifiedTime = now.Add(-8 * 24 * time.Hour)
-		return d
-	}
 	cases := []struct {
 		name     string
 		staged   int
@@ -479,7 +462,7 @@ func TestNextBlockOrder(t *testing.T) {
 			first: "next: nothing to do"},
 		{name: "a verified disc marked lost waits for no commit", discs: []nextDisc{lostFrom("1", stage.DiscVerified)}, snapshot: now.Add(-time.Hour),
 			first: "next: nothing to do"},
-		{name: "a found on disc only disc before gc", staged: 1, discs: []nextDisc{old(disc("1", stage.DiscVerified)), found(disc("2", stage.DiscOnDiscOnly))},
+		{name: "a found on disc only disc before gc", staged: 1, discs: []nextDisc{disc("1", stage.DiscVerified), found(disc("2", stage.DiscOnDiscOnly))},
 			first: "next: load disc 2, then run:"},
 		{name: "a found on disc only disc after a failed check", discs: []nextDisc{failed(found(disc("1", stage.DiscOnDiscOnly)))},
 			first: "next: disc 1 failed its last check."},
@@ -489,19 +472,19 @@ func TestNextBlockOrder(t *testing.T) {
 			"next: disc 2 failed its last check."},
 		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)}, nil, false, time.Time{},
 			"next: load disc 2, then run:"},
-		{"gc before staged", 1, []nextDisc{old(disc("1", stage.DiscVerified))}, nil, false, time.Time{},
+		{"gc before staged", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil, false, time.Time{},
 			"advice: burn a second copy of /img1 before gc"},
-		{"staged before waiting", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil, false, time.Time{},
+		{"lowest number of verified", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscVerified), disc("3", stage.DiscVerified)}, nil, false, time.Time{},
+			"advice: burn a second copy of /img2 before gc"},
+		{"staged", 1, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
 			"next: load a blank disc, then run:"},
-		{"waiting", 0, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscOnDiscOnly), disc("3", stage.DiscLost)}, nil, false, time.Time{},
-			"next: nothing to do; gc can free disc 1 after 2026-10-06"},
 		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
 			"next: nothing to do"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			lines := nextBlock(nextRepo{repo: "/r", staging: "/r/staging", stagingMissing: c.noStage, device: "/dev/sr0", source: "/src",
-				staged: c.staged, now: now, discs: c.discs, repairs: c.repairs, newestSnapshot: c.snapshot})
+				staged: c.staged, discs: c.discs, repairs: c.repairs, newestSnapshot: c.snapshot})
 			if !strings.HasPrefix(lines[0], c.first) {
 				t.Fatalf("block %q, want the first line %q", lines, c.first)
 			}
@@ -560,7 +543,7 @@ func TestStatusNamesARepair(t *testing.T) {
 			fx := repoWithDisc(t, c.start)
 			appendEventOnly(t, fx, c.event)
 			want := []string{
-				"next: disc 0: an earlier " + c.cmd + " stopped before it wrote the records of its items; gc writes them, and also frees the data whose wait is over; run:",
+				"next: disc 0: an earlier " + c.cmd + " stopped before it wrote the records of its items; gc writes them, and also frees the data of each verified disc; run:",
 				"noahsark gc",
 			}
 			for range 2 {
@@ -569,7 +552,7 @@ func TestStatusNamesARepair(t *testing.T) {
 					t.Fatalf("status:\n%s\nwant the last lines:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
 				}
 			}
-			fx.mustRun(t, "gc", "--force-after=0d")
+			fx.mustRun(t, "gc")
 			for _, line := range statusLines(t, fx.repo) {
 				if strings.Contains(line, "stopped before it wrote") {
 					t.Fatalf("status after gc still names the repair: %s", line)

@@ -886,7 +886,7 @@ func TestStatesLineRegexp(t *testing.T) {
 		{`disc SEQ is marked lost`, `disc 3 is marked lost; later`, false},
 		{`recover: ok`, `recover: ok; disc 3 "x" already known`, false},
 		{confirmQuestionSpan, "Continue? [y/N] ", true},
-		{`gc: disc SEQ: too soon; N item(s) held until DATE`, `gc: disc 3: too soon; 5 item(s) held until 2026-09-29`, true},
+		{`gc: disc SEQ: not verified; N item(s) held`, `gc: disc 3: not verified; 5 item(s) held`, true},
 		{`capacity ... holds not one item`, `noahsark: pack: capacity 50KiB holds not one item`, true},
 		{`capacity CAP (B bytes) holds not one item; the smallest staged item is KIND ID, B bytes`, `noahsark: pack: capacity 50KiB (51200 bytes) holds not one item; the smallest staged item is chunk 1220ab, 60000 bytes`, true},
 		{`disc SEQ "LABEL"  STATE  UUID`, `disc 3 "x disc 3"  verified, last check 2026-09-29  0a1b2c3d-0000-4000-8000-00000000000f`, true},

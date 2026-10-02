@@ -144,7 +144,6 @@ func cmdStatus(e *env, args []string) int {
 		device:         cfg.PackDevice,
 		source:         cfg.SourceRoot,
 		staged:         stagedItems,
-		now:            e.now(),
 		discs:          nextDiscs(layout, discs),
 	}
 	r.repairs = nextRepairs(ledger.Rows, discs, repairs)

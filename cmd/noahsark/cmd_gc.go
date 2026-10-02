@@ -28,28 +28,25 @@ var gcRemove = os.Remove
 func init() {
 	register(&command{
 		name:    "gc",
-		usage:   "gc [--dry-run] [--force-after=DURATION]",
-		summary: "Free the staged files of verified discs after 7 days.",
+		usage:   "gc [--dry-run]",
+		summary: "Free the staged data of verified discs.",
 		flags:   gcFlags,
 	})
 }
 
 // gcOptions holds the command options of gc.
 type gcOptions struct {
-	dryRun     bool
-	forceAfter string
+	dryRun bool
 }
 
 func gcFlags(fs *flag.FlagSet) runFunc {
 	o := &gcOptions{}
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print what would be freed, and free nothing")
-	fs.StringVar(&o.forceAfter, "force-after", "", "shorten the 7-day wait to this duration for this run only")
 	return o.run
 }
 
 // run implements "noahsark gc". It frees the chunk files and the plan
-// directory of a verified disc after the wait since its verified time,
-// and the chunk file of an item that is already OnDisc. It never
+// directory of a verified disc, and the chunk file of an item that is already OnDisc. It never
 // removes a file of the catalog or of the state directory. A dry run
 // takes no lock and writes no file. docs/states.md, rows 52 to 56, gives
 // the lines.
@@ -57,17 +54,8 @@ func (o *gcOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "gc"
 	if len(args) != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run] [--force-after=DURATION]")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark gc [--dry-run]")
 		return 2
-	}
-	wait := retainAfterClean
-	if o.forceAfter != "" {
-		d, err := parseRetentionDuration(o.forceAfter)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: gc: --force-after:", err)
-			return 2
-		}
-		wait = d
 	}
 
 	repoDir, err := e.findRepo()
@@ -112,7 +100,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 	}
 
 	now := e.now()
-	plan := planGC(logs, indexOf, layout, gcDiscSeqs(ledger.Rows), wait, now)
+	plan := planGC(logs, indexOf, layout, gcDiscSeqs(ledger.Rows))
 	if o.dryRun {
 		printGCPlan(stdout, plan, "would free", plan.itemCount(), plan.byteCount())
 		if len(plan.skipped) > 0 {
@@ -145,19 +133,13 @@ type gcDiscPlan struct {
 	objs  []gcObj
 }
 
-// gcHeld is one disc whose Packed items gc keeps: a verified disc whose
-// wait is not over, or a packed or burned disc.
+// gcHeld is one packed or burned disc whose Packed items gc keeps.
 type gcHeld struct {
 	seq   uint64
 	items int
-	// verified is true for a verified disc. until is then the end of its
-	// wait.
-	verified bool
-	until    time.Time
 }
 
-// gcSkip is one verified disc whose wait is over and whose items gc
-// cannot confirm against the catalog INDEX of the disc.
+// gcSkip is one verified disc whose items gc cannot confirm against the catalog INDEX of the disc.
 type gcSkip struct {
 	seq   uint64
 	items int
@@ -168,8 +150,8 @@ type gcSkip struct {
 
 // gcPlan is what one gc run frees, holds and skips.
 type gcPlan struct {
-	// discs are the verified discs whose wait is over and whose items
-	// the catalog INDEX of the disc lists.
+	// discs are the verified discs whose items the catalog INDEX of the
+	// disc lists.
 	discs []gcDiscPlan
 	// orphans are the chunk files of items that are already OnDisc.
 	orphans []gcObj
@@ -242,12 +224,11 @@ func gcDiscSeqs(rows []format.DiscsRow) map[[16]byte]uint64 {
 	return seqs
 }
 
-// planGC lists what gc frees, holds and skips at the time now, and
-// changes nothing. A verified disc is ready when wait has passed since
-// its verified time. gc frees no item of a ready disc when the catalog
+// planGC lists what gc frees, holds and skips, and changes nothing. gc
+// frees no item of a verified disc when the catalog
 // does not hold the INDEX of the disc, or when that INDEX does not list
 // every Packed item of the disc: Freed moves the whole disc.
-func planGC(logs *stage.Logs, indexOf gcIndexFunc, layout repoLayout, seqs map[[16]byte]uint64, wait time.Duration, now time.Time) *gcPlan {
+func planGC(logs *stage.Logs, indexOf gcIndexFunc, layout repoLayout, seqs map[[16]byte]uint64) *gcPlan {
 	p := &gcPlan{}
 	for _, d := range logs.Discs.Discs() {
 		seq, ok := seqs[d.UUID]
@@ -260,7 +241,7 @@ func planGC(logs *stage.Logs, indexOf gcIndexFunc, layout repoLayout, seqs map[[
 				p.held = append(p.held, gcHeld{seq: seq, items: len(items)})
 			}
 		case stage.DiscVerified:
-			p.planVerified(logs.Items, indexOf, layout, d, seq, wait, now)
+			p.planVerified(logs.Items, indexOf, layout, d, seq)
 		case stage.DiscOnDiscOnly:
 			p.planDirs = appendPlanDir(p.planDirs, layout, d.UUID)
 		}
@@ -269,18 +250,11 @@ func planGC(logs *stage.Logs, indexOf gcIndexFunc, layout repoLayout, seqs map[[
 	return p
 }
 
-// planVerified adds the verified disc d to p: to the held discs while
-// its wait lasts, to the skipped discs when its catalog INDEX does not
-// confirm its items, and else to the freed discs.
-func (p *gcPlan) planVerified(items *stage.Log, indexOf gcIndexFunc, layout repoLayout, d stage.DiscInfo, seq uint64, wait time.Duration, now time.Time) {
+// planVerified adds the verified disc d to p: to the skipped discs when
+// its catalog INDEX does not confirm its items, and else to the freed
+// discs.
+func (p *gcPlan) planVerified(items *stage.Log, indexOf gcIndexFunc, layout repoLayout, d stage.DiscInfo, seq uint64) {
 	packed := items.ItemsOfDiscInState(d.UUID, stage.Packed)
-	freeAt := d.VerifiedTime.Add(wait)
-	if now.Before(freeAt) {
-		if len(packed) > 0 {
-			p.held = append(p.held, gcHeld{seq: seq, items: len(packed), verified: true, until: freeAt})
-		}
-		return
-	}
 	var objs []gcObj
 	if len(packed) > 0 {
 		idx, err := indexOf(d.UUID)
@@ -305,10 +279,6 @@ func (p *gcPlan) planVerified(items *stage.Log, indexOf gcIndexFunc, layout repo
 func printGCPlan(stdout io.Writer, p *gcPlan, verb string, items int, bytes uint64) {
 	_, _ = fmt.Fprintf(stdout, "gc: %s %d item(s), %d bytes\n", verb, items, bytes)
 	for _, h := range p.held {
-		if h.verified {
-			_, _ = fmt.Fprintf(stdout, "gc: disc %d: too soon; %d item(s) held until %s\n", h.seq, h.items, h.until.Local().Format("2006-01-02"))
-			continue
-		}
 		_, _ = fmt.Fprintf(stdout, "gc: disc %d: not verified; %d item(s) held\n", h.seq, h.items)
 	}
 	for _, s := range p.skipped {

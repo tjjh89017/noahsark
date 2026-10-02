@@ -110,17 +110,17 @@ var crashCases = []crashCase{
 	{"disc lost --undo of a verified disc", stage.DiscVerified, true, stage.EventLostUndone, []string{"--yes", "disc", "lost", "--undo", "{UUID}"}},
 	{"disc lost --undo of an on disc only disc", stage.DiscOnDiscOnly, true, stage.EventLostUndone, []string{"--yes", "disc", "lost", "--undo", "{UUID}"}},
 	{"pack --undo", stage.DiscPacked, false, stage.EventPackUndone, []string{"--yes", "pack", "--undo", "{UUID}"}},
-	{"gc", stage.DiscVerified, false, stage.EventFreed, []string{"gc", "--force-after=0d"}},
+	{"gc", stage.DiscVerified, false, stage.EventFreed, []string{"gc"}},
 }
 
 // crashCommand is the command name that the repair note gives for the
-// arguments args of a crash case: the arguments with no answer flag, no
-// gc wait and no disc argument.
+// arguments args of a crash case: the arguments with no answer flag and
+// no disc argument.
 func crashCommand(args []string) string {
 	var words []string
 	for _, a := range args {
-		switch {
-		case a == "--yes", a == "--force-yes", a == "{UUID}", strings.HasPrefix(a, "--force-after="):
+		switch a {
+		case "--yes", "--force-yes", "{UUID}":
 			continue
 		}
 		words = append(words, a)

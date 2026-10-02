@@ -278,7 +278,7 @@ func TestGCFreesChunksAndKeepsTheCatalog(t *testing.T) {
 	catalogBefore := listFilesUnder(t, l.catalogDir())
 
 	setFakeStdin(t, strings.NewReader("y\n"))
-	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 	if files := listFilesUnder(t, l.stagingDir()); !slices.Equal(files, []string{stage.MarkFileName}) {
