@@ -388,7 +388,7 @@ func BenchmarkPackMemory1M(b *testing.B) {
 		dryTime := time.Since(start)
 		dryPeak := peakRSS(b)
 		start = time.Now()
-		if _, _, err := StagedTotals(r.objectPath, l); err != nil {
+		if _, _, _, err := StagedTotals(r.objectPath, l); err != nil {
 			b.Fatal(err)
 		}
 		groups, _ := PackGroups(r.objectPath, []object.ID{snapID}, l)
@@ -425,7 +425,7 @@ func BenchmarkStatus1000Snapshots(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		start := time.Now()
-		if _, _, err := StagedTotals(r.objectPath, l); err != nil {
+		if _, _, _, err := StagedTotals(r.objectPath, l); err != nil {
 			b.Fatal(err)
 		}
 		groups, _ := PackGroups(r.objectPath, snaps, l)

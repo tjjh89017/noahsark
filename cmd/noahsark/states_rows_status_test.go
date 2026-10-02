@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -237,7 +238,51 @@ func init() {
 			noEvent: true, sameCatalog: true,
 			end: stage.DiscLost, word: stage.WordLost,
 		},
+		// Row 71f: a Staged item has no file in the staging store. status
+		// counts only the files that exist, prints its other lines, and
+		// warns with the count of the items with no file.
+		stateCase{
+			row: "71f", name: "status with a staged item that has no file",
+			start: stage.DiscOnDiscOnly, setup: missingChunkSetup,
+			args:    []string{"status"},
+			also:    []string{"next: load a blank disc, then run:\n"},
+			noEvent: true, sameCatalog: true,
+			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
+			check: func(t *testing.T, fx *discFixture, stdout, _ string) {
+				if strings.Contains(stdout, "staged: 0 items") {
+					t.Errorf("status counted no staged item with a file: %q", stdout)
+				}
+			},
+		},
 	)
+}
+
+// missingChunkSetup commits a new file of the source of fx, then
+// removes every chunk file of the staging store, as an operator who
+// empties the staging directory does. The cell I is the number of the
+// removed files: the Staged chunks.
+func missingChunkSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(fx.src, "new.txt"), []byte("a file of the next commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	removed := 0
+	err := filepath.WalkDir(testLayout(t, fx.repo).chunksDir(), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		removed++
+		return os.Remove(path)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed == 0 {
+		t.Fatal("the commit wrote no chunk file")
+	}
+	fx.cell("I", strconv.Itoa(removed))
+	fx.cell("N", "")
 }
 
 // lostCountSetup marks the disc of fx lost with disc lost, when it is

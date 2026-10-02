@@ -212,12 +212,15 @@ func (o *commitOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stdout, "excluded: %d path(s)\n", sum.Excluded)
 	}
 
-	stagedItems, stagedBytes, err := image.StagedTotals(layout.objectPath(c), commitStageLog)
+	stagedItems, stagedBytes, missingFiles, err := image.StagedTotals(layout.objectPath(c), commitStageLog)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
+	if missingFiles > 0 {
+		_, _ = fmt.Fprintln(stderr, missingFilesLine("commit", missingFiles))
+	}
 	// The snapshot is committed also when a file was skipped or unstable,
 	// so the next line comes before the exit code is chosen.
 	_, _ = fmt.Fprintln(stdout, nextStatusLine)

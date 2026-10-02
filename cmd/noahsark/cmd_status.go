@@ -43,7 +43,8 @@ func init() {
 // for each snapshot that is not complete on discs, the count of the Lost
 // items while one exists, one line for each disc, and the one next block
 // of the repository. It prints a warning on
-// standard error for each item that pack cannot take, and then exits 1.
+// standard error for each item that pack cannot take, and one warning
+// with the count of the Staged items that have no file, and then exits 1.
 // A staging directory that does not exist while a Staged or a Packed
 // item needs it gives a warning in place of the staged total and the
 // snapshot lines, and exit 1. status takes no lock and changes no file.
@@ -108,14 +109,14 @@ func cmdStatus(e *env, args []string) int {
 	}
 
 	// The chunk files of the staged items are in the staging directory.
-	var stagedItems int
+	var stagedItems, missingFiles int
 	var groups []image.SnapshotGroup
 	var orphans []image.UnreadableItem
 	if noStaging {
 		_, _ = fmt.Fprintf(stderr, "noahsark: status: warning: staging directory %s does not exist; staging.dir in config.yaml names it\n", layout.stagingDir())
 	} else {
 		var stagedBytes uint64
-		stagedItems, stagedBytes, err = image.StagedTotals(layout.objectPath(c), logs.Items)
+		stagedItems, stagedBytes, missingFiles, err = image.StagedTotals(layout.objectPath(c), logs.Items)
 		if err != nil {
 			_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 			return 1
@@ -154,6 +155,10 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
 	warned := noStaging
+	if missingFiles > 0 {
+		_, _ = fmt.Fprintln(stderr, missingFilesLine(cmd, missingFiles))
+		warned = true
+	}
 	for _, g := range groups {
 		if g.Unreadable != nil {
 			_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, *g.Unreadable, g.OnDisc))
@@ -168,6 +173,12 @@ func cmdStatus(e *env, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// missingFilesLine is the warning of commit and status about the Staged
+// items that have no file in the staging store.
+func missingFilesLine(cmd string, n int) string {
+	return fmt.Sprintf("noahsark: %s: warning: %d staged item(s) have no file in the staging store; commit the same source again", cmd, n)
 }
 
 // statusSnapshotLine is the line of one snapshot group of the pack

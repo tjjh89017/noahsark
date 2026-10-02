@@ -293,6 +293,51 @@ func TestCommitPrintsStagedTotals(t *testing.T) {
 	}
 }
 
+// TestCommitAndStatusCountOnlyStagedFilesThatExist removes the chunk
+// files of a commit, as an operator who empties the staging directory
+// does. A commit of another source and status then count only the files
+// that exist and warn with the count of the rest; commit exits 0 and
+// status exits 1. A commit of the same source writes the files again,
+// and the warning goes away.
+func TestCommitAndStatusCountOnlyStagedFilesThatExist(t *testing.T) {
+	repo, src := initAndCommit(t)
+	removed := 0
+	err := filepath.WalkDir(testLayout(t, repo).chunksDir(), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		removed++
+		return os.Remove(path)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed == 0 {
+		t.Fatal("the commit wrote no chunk file")
+	}
+	warning := fmt.Sprintf("warning: %d staged item(s) have no file in the staging store; commit the same source again", removed)
+
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "other.txt"), []byte("another source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runCmd(t, "--repo="+repo, "commit", other)
+	if code != 0 || !strings.Contains(out, "noahsark: commit: "+warning) || stagedLineRe.FindString(out) == "" {
+		t.Fatalf("commit of another source: exit %d, want 0, the staged line and the warning: %s", code, out)
+	}
+	code, out = runCmd(t, "--repo="+repo, "status")
+	if code != 1 || !strings.Contains(out, "noahsark: status: "+warning) || stagedLineRe.FindString(out) == "" {
+		t.Fatalf("status: exit %d, want 1, the staged line and the warning: %s", code, out)
+	}
+
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 || strings.Contains(out, "have no file") {
+		t.Fatalf("commit of the same source: exit %d, want 0 and no warning: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "status"); code != 0 || strings.Contains(out, "have no file") {
+		t.Fatalf("status after the commit of the same source: exit %d, want 0 and no warning: %s", code, out)
+	}
+}
+
 // TestCommitWithNoArgUsesConfiguredSource checks that commit with no
 // SOURCE positional argument falls back to init --source's config value.
 func TestCommitWithNoArgUsesConfiguredSource(t *testing.T) {

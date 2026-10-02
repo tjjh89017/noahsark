@@ -878,11 +878,14 @@ var stagedKinds = []format.ObjectKind{
 	format.ObjectKindChunk, format.ObjectKindBlob, format.ObjectKindTree, format.ObjectKindSnapshot,
 }
 
-// StagedTotals sums the repository-wide STAGED objects stageLog knows:
-// how many, and the total size of their files. objectPath gives the file
-// of each kind; the first kind whose file exists gives the size. It is
-// the same count the next pack would still have left to place.
-func StagedTotals(objectPath ObjectPathFunc, stageLog *stage.Log) (objects int, bytes uint64, err error) {
+// StagedTotals sums the repository-wide STAGED objects stageLog knows
+// whose file exists: how many, and the total size of their files.
+// objectPath gives the file of each kind; the first kind whose file
+// exists gives the size. missing counts the STAGED objects that have no
+// file of any kind, for example after the operator emptied the staging
+// directory. The sum is the count the next pack would still have left
+// to place.
+func StagedTotals(objectPath ObjectPathFunc, stageLog *stage.Log) (objects int, bytes uint64, missing int, err error) {
 	for _, id := range stageLog.IDsInState(stage.Staged) {
 		size, found := int64(0), false
 		for _, kind := range stagedKinds {
@@ -892,16 +895,17 @@ func StagedTotals(objectPath ObjectPathFunc, stageLog *stage.Log) (objects int, 
 				break
 			}
 			if !os.IsNotExist(statErr) {
-				return 0, 0, fmt.Errorf("%s: %w", id.TextForm(), statErr)
+				return 0, 0, 0, fmt.Errorf("%s: %w", id.TextForm(), statErr)
 			}
 		}
 		if !found {
-			return 0, 0, fmt.Errorf("%s: %w", id.TextForm(), os.ErrNotExist)
+			missing++
+			continue
 		}
 		objects++
 		bytes += uint64(size)
 	}
-	return objects, bytes, nil
+	return objects, bytes, missing, nil
 }
 
 // NextSeqNumbers derives the run_seq and disc_seq a new run must get
