@@ -4,6 +4,7 @@
 // operator-facing output no longer carries (the capacity fields and
 // the refs and discs row counts), so a shell scenario can check them
 // without asking normal operator output to carry internals it dropped.
+// It also prints the volume label that the burn methods give the disc.
 //
 // Usage: ci-disc-field DISC-ROOT
 package main
@@ -29,4 +30,5 @@ func main() {
 	}
 	fmt.Printf("capacity %d sectors\n", rr.Disc.CapacitySectors)
 	fmt.Printf("refs: %d, discs: %d\n", len(rr.Refs.Records), len(rr.Discs.Rows))
+	fmt.Printf("volume label %s\n", image.VolumeLabel(rr.Disc.DiscSeq))
 }

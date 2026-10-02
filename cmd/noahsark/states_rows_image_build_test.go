@@ -15,7 +15,7 @@ const fakeImageBytes = "67108864"
 
 // fakeMakeImage stands in for mkudffs and the loop mount: it makes a
 // sparse file of the image length through the descriptors of the plan.
-func fakeMakeImage(plan *image.Plan, sectors uint64, _ *progress.Reporter) error {
+func fakeMakeImage(plan *image.Plan, sectors uint64, _ string, _ *progress.Reporter) error {
 	img, err := plan.CreateImage()
 	if err != nil {
 		return err

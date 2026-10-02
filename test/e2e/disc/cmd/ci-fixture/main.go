@@ -104,10 +104,10 @@ func main() {
 		Label:                 "ci-fixture",
 		Now:                   fixedClock,
 	}
-	_, err = image.Build(opts)
+	res, err := image.Build(opts)
 	must(err)
 
-	must(image.MakeImage(treeDir, imagePath, targetSectors, nil))
+	must(image.MakeImage(treeDir, imagePath, targetSectors, image.VolumeLabel(res.DiscSeq), nil))
 
 	fmt.Println(treeDir)
 	fmt.Println(imagePath)

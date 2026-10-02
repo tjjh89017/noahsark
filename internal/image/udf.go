@@ -106,7 +106,7 @@ var ErrPopulateNeedsRoot = errors.New("populating the UDF image needs root for t
 // MakeImage builds the image at imagePath from the disc root at
 // treeDir. Both must be in the same directory, as in a plan directory.
 // It opens them with OpenPlan and runs BuildImage.
-func MakeImage(treeDir, imagePath string, sectors uint64, prog *progress.Reporter) error {
+func MakeImage(treeDir, imagePath string, sectors uint64, label string, prog *progress.Reporter) error {
 	if filepath.Dir(treeDir) != filepath.Dir(imagePath) {
 		return fmt.Errorf("the disc root %s and the image %s are not in the same directory", treeDir, imagePath)
 	}
@@ -115,11 +115,11 @@ func MakeImage(treeDir, imagePath string, sectors uint64, prog *progress.Reporte
 		return err
 	}
 	defer func() { _ = p.Close() }()
-	return BuildImage(p, sectors, prog)
+	return BuildImage(p, sectors, label, prog)
 }
 
-// BuildImage builds a UDF 2.01 image of length sectors in the plan
-// directory of p and populates it with the NOAHSARK tree of the disc
+// BuildImage builds a UDF 2.01 image of length sectors with the volume
+// label label in the plan directory of p and populates it with the NOAHSARK tree of the disc
 // root of p. mkudffs makes only an empty filesystem; populating it needs
 // a loop mount, which needs root. BuildImage refuses with
 // ErrPopulateNeedsRoot when the calling process is not root. The caller
@@ -138,7 +138,7 @@ func MakeImage(treeDir, imagePath string, sectors uint64, prog *progress.Reporte
 //
 // docs/decisions.md, "Image build", records why this is the chosen path
 // over a from-scratch Go UDF writer.
-func BuildImage(p *Plan, sectors uint64, prog *progress.Reporter) (err error) {
+func BuildImage(p *Plan, sectors uint64, label string, prog *progress.Reporter) (err error) {
 	if sectors == 0 {
 		return fmt.Errorf("sectors must not be zero")
 	}
@@ -170,7 +170,7 @@ func BuildImage(p *Plan, sectors uint64, prog *progress.Reporter) (err error) {
 	if err := img.Truncate(int64(sectors * SectorSize)); err != nil {
 		return err
 	}
-	if err := udfHost.mkudffs(img); err != nil {
+	if err := udfHost.mkudffs(img, label); err != nil {
 		return err
 	}
 	if err := populate(p, img, parent, sectors, prog, &stop); err != nil {
@@ -210,8 +210,8 @@ var geteuid = os.Geteuid
 // mkudffs. A test replaces them: it runs with no root, no mkudffs and
 // no loop device.
 var udfHost = struct {
-	// mkudffs formats the open image file.
-	mkudffs func(img *os.File) error
+	// mkudffs formats the open image file with the volume label label.
+	mkudffs func(img *os.File, label string) error
 	// attachLoop attaches the open image file to a loop device.
 	attachLoop func(img *os.File, name string) (dev string, detach func() error, err error)
 	// mount mounts the UDF volume of the loop device dev on mnt.
@@ -227,21 +227,28 @@ var udfHost = struct {
 	unmount: func(mnt string) error { return syscall.Unmount(mnt, 0) },
 }
 
-// runMkudffs formats the open image file img. mkudffs opens the image
-// through /dev/fd/3, a copy of the descriptor of img, and never through
-// the path in the plan directory.
-func runMkudffs(img *os.File) error {
-	cmd, err := toolCommand("mkudffs",
+// mkudffsArgs returns the arguments of mkudffs for the image file at
+// path and the volume label label.
+func mkudffsArgs(path, label string) []string {
+	return []string{
 		"--utf8",
 		"--media-type=hd",
 		"--blocksize=2048",
 		"--udfrev=2.01",
+		"--label=" + label,
 		"--uid=0",
 		"--gid=0",
 		"--mode=0555",
 		"--bootarea=erase",
-		"/dev/fd/3",
-	)
+		path,
+	}
+}
+
+// runMkudffs formats the open image file img with the volume label
+// label. mkudffs opens the image through /dev/fd/3, a copy of the
+// descriptor of img, and never through the path in the plan directory.
+func runMkudffs(img *os.File, label string) error {
+	cmd, err := toolCommand("mkudffs", mkudffsArgs("/dev/fd/3", label)...)
 	if err != nil {
 		return err
 	}

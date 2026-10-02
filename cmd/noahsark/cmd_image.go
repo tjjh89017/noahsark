@@ -35,7 +35,7 @@ var imageHost = struct {
 	// mkudffs is missing or too old.
 	mkudffsVersion func() (string, error)
 	// makeImage builds and populates the image file of the plan.
-	makeImage func(plan *image.Plan, sectors uint64, prog *progress.Reporter) error
+	makeImage func(plan *image.Plan, sectors uint64, label string, prog *progress.Reporter) error
 }{
 	mkudffsVersion: image.CheckTools,
 	makeImage:      image.BuildImage,
@@ -160,7 +160,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		return 1
 	}
 	sectors := discBin.CapacitySectors
-	if err := imageHost.makeImage(plan, sectors, e.progress()); err != nil {
+	if err := imageHost.makeImage(plan, sectors, image.VolumeLabel(discBin.DiscSeq), e.progress()); err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}

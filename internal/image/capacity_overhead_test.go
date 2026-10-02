@@ -95,17 +95,7 @@ func buildEmptyUDFImage(imagePath string, sectors uint64) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
-	cmd, err := toolCommand("mkudffs",
-		"--utf8",
-		"--media-type=hd",
-		"--blocksize=2048",
-		"--udfrev=2.01",
-		"--uid=0",
-		"--gid=0",
-		"--mode=0555",
-		"--bootarea=erase",
-		imagePath,
-	)
+	cmd, err := toolCommand("mkudffs", mkudffsArgs(imagePath, VolumeLabel(0))...)
 	if err != nil {
 		return err
 	}

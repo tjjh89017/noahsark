@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,8 +68,10 @@ func planFixture(t *testing.T) (planDir, outDir string, sectors uint64) {
 type fakeUDFHost struct {
 	// populated receives the NOAHSARK tree of the mount at the unmount.
 	populated string
-	// mkudffsImage is the fstat of the file that mkudffs got.
+	// mkudffsImage is the fstat of the file that mkudffs got, and label
+	// is the volume label that mkudffs got.
 	mkudffsImage syscall.Stat_t
+	label        string
 	// chowned is the fstat of the file that fchown got.
 	chowned    syscall.Stat_t
 	chownCalls int
@@ -91,7 +94,8 @@ func installFakeUDFHost(t *testing.T) *fakeUDFHost {
 	oldHost, oldEuid, oldFchown := udfHost, geteuid, fchown
 	t.Cleanup(func() { udfHost, geteuid, fchown = oldHost, oldEuid, oldFchown })
 	geteuid = func() int { return 0 }
-	udfHost.mkudffs = func(img *os.File) error {
+	udfHost.mkudffs = func(img *os.File, label string) error {
+		h.label = label
 		if h.beforeMkudffs != nil {
 			h.beforeMkudffs()
 		}
@@ -135,7 +139,7 @@ func buildPlan(t *testing.T, planDir string, sectors uint64) error {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Close() }()
-	return BuildImage(p, sectors, nil)
+	return BuildImage(p, sectors, VolumeLabel(7), nil)
 }
 
 // statOf returns the lstat of path.
@@ -192,7 +196,7 @@ func TestMakeImageNeedsRoot(t *testing.T) {
 	defer func() { geteuid = oldEuid }()
 
 	imagePath := filepath.Join(planDir, "tree.img")
-	err := MakeImage(filepath.Join(planDir, "tree"), imagePath, sectors, nil)
+	err := MakeImage(filepath.Join(planDir, "tree"), imagePath, sectors, VolumeLabel(0), nil)
 	if !errors.Is(err, ErrPopulateNeedsRoot) {
 		t.Fatalf("MakeImage error = %v, want ErrPopulateNeedsRoot", err)
 	}
@@ -220,6 +224,9 @@ func TestBuildImageCopiesTheTreeThroughDescriptors(t *testing.T) {
 	}
 	if uint64(img.Size) != sectors*SectorSize {
 		t.Errorf("image size %d, want %d", img.Size, sectors*SectorSize)
+	}
+	if h.label != "NOAHSARK_0007" {
+		t.Errorf("mkudffs got the label %q, want NOAHSARK_0007", h.label)
 	}
 	if h.mkudffsImage.Ino != img.Ino || h.chowned.Ino != img.Ino || h.chownCalls != 1 {
 		t.Errorf("mkudffs got inode %d and fchown got inode %d (%d calls), want the image inode %d",
@@ -542,5 +549,36 @@ func TestCheckRootOnlyPath(t *testing.T) {
 	}
 	if err := checkRootOnlyPath(t.TempDir()); err == nil {
 		t.Error("a directory of the test user passes the check for root")
+	}
+}
+
+// TestMkudffsArgs checks the arguments of mkudffs: the label follows
+// --udfrev, and the image path comes last.
+func TestMkudffsArgs(t *testing.T) {
+	got := mkudffsArgs("/dev/fd/3", "NOAHSARK_0012")
+	want := []string{"--utf8", "--media-type=hd", "--blocksize=2048", "--udfrev=2.01",
+		"--label=NOAHSARK_0012", "--uid=0", "--gid=0", "--mode=0555", "--bootarea=erase", "/dev/fd/3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mkudffs arguments %q, want %q", got, want)
+	}
+}
+
+// TestVolumeLabel checks the label rule: NOAHSARK_, then the disc
+// number zero-padded to 4 digits, with more digits when the number is
+// larger. The largest number gives 29 characters, within the UDF limit
+// of 30.
+func TestVolumeLabel(t *testing.T) {
+	for seq, want := range map[uint64]string{
+		0:              "NOAHSARK_0000",
+		7:              "NOAHSARK_0007",
+		12345:          "NOAHSARK_12345",
+		math.MaxUint64: "NOAHSARK_18446744073709551615",
+	} {
+		if got := VolumeLabel(seq); got != want {
+			t.Errorf("VolumeLabel(%d) = %q, want %q", seq, got, want)
+		}
+	}
+	if n := len(VolumeLabel(math.MaxUint64)); n > 30 {
+		t.Errorf("the longest label has %d characters, want at most 30", n)
 	}
 }
