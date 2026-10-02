@@ -5,9 +5,8 @@ package image
 
 import _ "embed"
 
-// DecoderPy is the reference decoder, copied byte for byte from
-// reference/decoder.py at build time. Every disc carries these exact
-// bytes as REFERENCE/decoder.py.
+// FormatTxt is the on-disc FORMAT.txt: a byte copy of FORMAT.md. A
+// writer writes these bytes and no others.
 //
-//go:embed decoder.py
-var DecoderPy []byte
+//go:embed format.txt
+var FormatTxt []byte

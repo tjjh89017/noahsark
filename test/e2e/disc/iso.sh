@@ -2,8 +2,8 @@
 # The iso e2e scenario: sourced by run.sh. Packs a real commit at the
 # dvd+r preset, burns the packed tree into a plain ISO 9660 image with
 # genisoimage (falling back to xorriso when genisoimage is missing),
-# loop-mounts it read-only, and runs the same verify, decoder and
-# restore checks the other scenarios run against a UDF mount. It also
+# loop-mounts it read-only, and runs the same verify and restore
+# checks the other scenarios run against a UDF mount. It also
 # builds a second, Joliet-only ISO to prove the docs/guide.md warning against
 # Joliet: Joliet truncates the 68-character object names, so an object
 # lookup on that mount must fail. A third image, plain ISO 9660 level 4
@@ -17,7 +17,7 @@
 # Ridge): Rock Ridge keeps exact case, so iso_assert_fixed_files can
 # compare the mount against the packed tree byte for byte. See lib.sh
 # for build_binary and the media_* helpers, and assert.sh for
-# assert_dirs_equal and assert_listing_matches.
+# assert_dirs_equal.
 set -euo pipefail
 
 # ISO_CONTENT_BYTES sizes iso.sh's own fixture: a few hundred MiB of
@@ -95,26 +95,24 @@ iso_assert_object_names() {
 	log "iso: $mnt_count object files, all 68-character lowercase hex names, correctly nested"
 }
 
-# iso_assert_fixed_files MOUNT TREE fails unless README.txt, FORMAT.txt
-# and REFERENCE/decoder.py exist on MOUNT and are byte-identical to
-# TREE's copies.
+# iso_assert_fixed_files MOUNT TREE fails unless README.txt and
+# FORMAT.txt exist on MOUNT and are byte-identical to TREE's copies.
 iso_assert_fixed_files() {
 	local mnt="$1" tree="$2" rel
-	for rel in README.txt FORMAT.txt REFERENCE/decoder.py; do
+	for rel in README.txt FORMAT.txt; do
 		if ! cmp -s "$mnt/NOAHSARK/$rel" "$tree/NOAHSARK/$rel"; then
 			fail "iso: NOAHSARK/$rel on the mount does not match the packed tree"
 		fi
 	done
-	log "iso: README.txt, FORMAT.txt and REFERENCE/decoder.py match the packed tree"
+	log "iso: README.txt and FORMAT.txt match the packed tree"
 }
 
 # iso_plain_level4_check TOOL FLAVOR WORK TREE SRC SNAP REPO UUID builds
 # a third image with plain ISO 9660 level 4 and no Rock Ridge: the exact
 # genisoimage invocation that folds every fixed name to lowercase (see
 # the file header). It mounts that image and checks that a counted
-# verify with the repository REPO, the decoder listing diff and restore
-# all still succeed against it, and prints the folded root directory
-# name it found.
+# verify with the repository REPO and restore both still succeed
+# against it, and prints the folded root directory name it found.
 iso_plain_level4_check() {
 	local tool="$1" flavor="$2" work="$3" tree="$4" src="$5" snap="$6" repo="$7" uuid="$8"
 	local plain_iso="$work/plain.iso" plain_mnt="$work/plain-mnt" plain_restored="$work/plain-restored"
@@ -133,7 +131,6 @@ iso_plain_level4_check() {
 	log "iso: plain level 4 image folded the root to: $root_name"
 
 	verify_counted "$repo" "$plain_mnt" "$uuid"
-	assert_listing_matches "$plain_mnt" "$work"
 
 	restore_loop "$repo" "$plain_mnt" "$snap" "$plain_restored"
 	assert_dirs_equal "$plain_restored" "$src"
@@ -231,7 +228,6 @@ scenario_iso() {
 	iso_assert_fixed_files "$mnt" "$tree"
 
 	verify_counted "$repo" "$mnt" "$uuid"
-	assert_listing_matches "$mnt" "$work"
 
 	t0=$(date +%s)
 	restore_loop "$repo" "$mnt" "$snap" "$restored"
