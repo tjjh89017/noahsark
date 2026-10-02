@@ -19,11 +19,12 @@ examples use these values. Put your own values in their place:
 ## What the tool does
 
 `noahsark` copies your files to write-once discs: BD-R, DVD+R and DVD-R.
-Equal data is stored one time. Each disc describes itself, and a disc can
-be read back years later without the repository and without the tool.
+Equal data is stored one time. Each disc carries the full description of
+its format. Years later, the tool restores from the discs alone, without the
+repository.
 
 The tool counts one verified disc for each pack. When that disc is
-verified and 7 days pass, `gc` frees the copy in the repository. From then
+verified, `gc` can free the copy in the repository. From then
 on, that disc is the only copy that the tool knows. A second copy, in a
 different building, is your job. See "A second copy".
 
@@ -327,15 +328,15 @@ snapshots of the earlier discs.
 Write the disc number, the first 8 characters of the uuid, and the storage
 place on the sleeve of the disc. The tool keeps no shelf notes.
 
-`status` now shows the verified disc, and the date when `gc` can free its
-data:
+`status` now shows the verified disc. `gc` can free its data now, thus
+`status` asks you to make the second copy first:
 
 ```
 $ noahsark status
 staged: 0 items, 0 bytes
 disc 0 "2026-09-14 disc 0"  verified, last check 2026-09-14  4a060bd4-ca9f-2d06-263e-b907483b8230
-next: nothing to do; gc can free disc 0 after 2026-09-21
 advice: burn a second copy of /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img before gc; see the guide, "A second copy"
+next: noahsark gc
 ```
 
 *... Days pass. You add, change and delete files in `/srv/data`. Each
@@ -375,8 +376,12 @@ not counted: this is not a disc
 Then load a blank disc, and burn the folder:
 
 ```
-growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
+growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
 ```
+
+`-V` gives the volume label that your computer shows for the disc: `NOAHSARK_`
+and the disc number with at least 4 digits. `image build` writes the same
+label. For disc 7, give `-V NOAHSARK_0007`.
 
 For a disc that you packed with `--close`, add `-dvd-compat`. After the
 burn, the steps are the same as for the image. Paste:
@@ -394,8 +399,8 @@ no image exists.
 
 ## A second copy
 
-`gc` frees the repository copy after one verified disc and 7 days. One
-disc with FEC off has no redundancy: one bad spot can lose data. Keep a
+`gc` frees the repository copy after one verified disc. One disc has no
+redundancy: one bad spot can lose data. Keep a
 second copy in a different building. The tool records nothing about the
 second copy. It is your job.
 
@@ -469,7 +474,7 @@ When a check fails, see "When something goes wrong".
 
 ## Free the staging space
 
-`gc` frees the staged data of a `verified` disc after 7 days. It also
+`gc` frees the staged data of a `verified` disc. It also
 removes the disc root and the image of that disc. It never removes a file
 of `state/` or `catalog/`, thus `log` and `ls` still show every snapshot.
 Burn your second copy before this step. See "A second copy".
@@ -494,17 +499,7 @@ gc: freed 8 item(s), 9441280 bytes
 next: noahsark status
 ```
 
-Before the 7 days pass, `gc` holds the data and names the date:
-
-```
-$ noahsark gc
-gc: freed 0 item(s), 0 bytes
-gc: disc 0: too soon; 8 item(s) held until 2026-09-21
-next: noahsark status
-```
-
-After `gc`, the disc is `on disc only`. `gc --force-after=1d` shortens the
-7-day wait for one run.
+After `gc`, the disc is `on disc only`.
 
 ## Look at the history
 
@@ -693,7 +688,7 @@ the copy to `recover`. See "A second copy".
 | `status` says that a disc has no disc root | No new disc can be burned from it. Discard the disc, and paste the `noahsark disc lost 0` line. The next `pack` takes its items. |
 | Every copy of a disc is destroyed | `noahsark disc lost 0`, and answer `y`. See "A lost disc". |
 | You find a disc that you marked lost | `noahsark disc lost --undo 0`, and answer `y`. Then run `noahsark status`, and paste its block, to verify the disc. |
-| `status` prints `next: disc 0: an earlier disc lost stopped before it wrote the records of its items; ...` | A command stopped between its disc event and the records of its items. Paste the `noahsark gc` line. `gc` writes the records first. It also frees the data of each verified disc whose wait is over, as a normal `gc` does. |
+| `status` prints `next: disc 0: an earlier disc lost stopped before it wrote the records of its items; ...` | A command stopped between its disc event and the records of its items. Paste the `noahsark gc` line. `gc` writes the records first. It also frees the data of each verified disc, as a normal `gc` does. |
 | `status` prints `warning: staging directory DIR does not exist` | The volume of the staging store is not mounted, or `staging.dir` in `config.yaml` names a wrong path. Mount the volume, or correct the path. Only when the staging store is gone for good, run `mkdir -p DIR`; `status` then names each `packed` disc with `disc lost`. The warning comes only while staged or packed data needs the directory. |
 | `restore` prints `expected disc 1 ... found disc 0 ...` | The wrong disc is in the drive. Mount the named disc, or its second copy, at the same mount point, and press Enter. |
 | `restore` stops between two discs | Mount the named disc, and run the same `restore` again. It resumes. |
@@ -784,55 +779,12 @@ cannot verify now. `status` then shows `burned`, and its block verifies
 the disc later.
 
 `noahsark disc verified 0` marks a `burned` disc `verified` on your word,
-and reads no disc. `gc` then frees the repository copy after the 7 days.
+and reads no disc. `gc` can then free the repository copy at once.
 If the disc is bad, that data is lost. The command asks a critical
 question. `status` shows the disc as `verified, not checked` until a good
 `verify`.
 
 ## Options
-
-**FEC.** FEC is off by default. It adds repair data to one disc. Add
-`--fec` to the `pack` line:
-
-```
-noahsark pack --capacity=bd25 --fec
-```
-
-A disc with FEC holds less data: in each stripe of 255 blocks, 231 blocks
-hold data. `status` shows `fec` on the line of each disc that has FEC:
-
-```
-disc 2 "2026-11-09 disc 2"  packed  fec  0d7f3a61-5b2e-4c19-8e44-2a9c6b1f0e73
-```
-
-The disc records its FEC setting, so `verify` needs no option for it. When
-a disc with FEC fails a check, `verify --heal --out=DIR` writes a repaired
-disc root into `DIR`, and checks it:
-
-```
-$ noahsark verify --heal --out=/srv/healed /mnt/ark
-disc 2 "2026-11-09 disc 2": healed 3 file(s) into /srv/healed
-disc 2 "2026-11-09 disc 2": 40 items, ok
-not counted: this is not a disc
-```
-
-`--heal` records nothing. `image build` takes only a disc of the
-repository, not a directory. Thus burn `/srv/healed` to a new disc with the
-`growisofs` line of "Burn the folder directly", then run a plain `verify` of
-the new disc. The new disc has the same uuid as the damaged disc: write the
-same number and uuid on its sleeve. `--heal` refuses a disc without FEC.
-The parity cannot heal every damage that its size suggests, thus a second
-copy is the main redundancy and the parity is only an aid.
-
-`DIR` must be empty or absent. A sector that the drive cannot read does
-not stop `--heal`: the copy in `DIR` holds zeros there, and the parity
-makes those bytes again. When too many sectors of one stripe are lost,
-`--heal` stops with `cannot heal`, names the stripe, and writes no wrong
-byte.
-
-A drive can stop, or retry for hours, on a badly damaged disc. Then copy
-the disc with `ddrescue` first, and heal the copy. OPERATIONS.md, "Verify
-and heal", gives the method.
 
 **Close.** `pack --close` makes the `growisofs` line of `status` seal the
 disc with `-dvd-compat`. A sealed disc can take no more data. The choice
@@ -891,7 +843,7 @@ comes after the command name, or after the subcommand word in a group.
 | `disc verified DISC` | Mark a burned disc `verified` without a check. |
 | `disc lost DISC` | Stop trusting a disc that is gone. `--undo` trusts a found disc again. |
 | `status` | Print the staged total, the state of each disc, and the `next:` block. |
-| `gc` | Free the staged data of verified discs after 7 days. |
+| `gc` | Free the staged data of verified discs. |
 | `log` | List the snapshots, newest first. |
 | `ls SNAPSHOT [PATH]` | List the entries of a snapshot. |
 | `restore --disc=DIR SNAPSHOT [PATH...] DEST` | Write the files of a snapshot into `DEST`, one disc at a time. |

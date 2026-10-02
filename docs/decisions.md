@@ -20,12 +20,34 @@ the specification. It does not need a sentence in the guide. `docs/states.md`
 is part of the specification because a test reads its state x event table row
 by row.
 
-**The operator layer redesign keeps the on-disc format.** Only the host side
-changed: the commands, the repository layout, the state machines and the
-host packages. The on-disc structures, `internal/format`, the format golden
-files, `internal/chunker`, `internal/object` and `internal/fec` stay as they
-are. FORMAT.md changes in wording only: chiefly the text about the
-filesystem type, and the name of the host catalog.
+**The operator layer redesign changed only the host side.** It changed the
+commands, the repository layout, the state machines and the host packages.
+The format decisions of 2026-10-02 below change the on-disc format one more
+time before the first tag: no FEC data, no reference decoder, and a strict
+reader.
+
+**Existing tools do not fit.** On 2026-10-02 the owner compared dar,
+git-annex, zpaq, restic, BorgBackup and Kopia. None of them gives all of
+these together: dedup, volumes of a fixed size for write-once media, old
+volumes that stay untouched, and a catalog that the discs alone rebuild. No
+dedup measurement on real data was made; the owner chose not to measure.
+
+**Dedup stores one copy of repeated data.** It stores one copy of data that
+the operator duplicated, known or not, and of data that did not change
+between commits. Content-defined chunking stays: it finds repeated data at
+shifted offsets, and it lets a file that is larger than one disc span discs.
+
+**The program is the way to read a disc; the disc carries the format.** Each
+disc carries `FORMAT.txt`, the complete format description. The NoahsArk
+program is the normal way to restore, and the discs alone, with no
+repository, are enough for it. The reference decoder is deleted, from the
+disc and from the repository. Reasons: the program is open source; the
+`FORMAT.txt` on the disc is the full recipe for a new reader; a second reader
+is a second program that must stay right. The accepted cost: no independent
+implementation proves that `FORMAT.txt` alone is enough.
+
+**The disc does not carry the source code.** This holds for the first
+release. A later version can add files to the disc without a format change.
 
 **No tag yet; a breaking change is fine before the first release.** No tag
 means no release, thus no disc in the field carries the old bytes. The project
@@ -34,22 +56,109 @@ until the owner says so.
 
 **One run on one disc. No append.** An append brings the hard problems: the
 spare area can run out, the directory blocks move, and the tool needs an image
-mirror. A blank disc is cheap. The default burn still leaves the disc open, so
-a later version can use the space.
+mirror. A blank disc is cheap. There is no plan to append in a later version.
+
+**A disc with more than one run is damaged.** A writer writes exactly one run.
+A reader that finds more than one run refuses the disc loudly and names the
+run directories that it found. It does not choose one of them. Reasons: no
+writer makes such a disc, thus it comes only from damage or from a foreign
+tool; a choice by the highest seq would hide that fault. `DISC.bin` and the
+run header both stay: the superblock holds the facts of the disc, and the run
+header is the root of trust of the run. `RUN2.bin` is the backup copy of the
+one run header, not a second run.
+
+**Only the on-disc format carries a compatibility promise.** A newer tool
+reads every older disc. An older tool refuses a newer `version_major`. There
+is no promise that an old tool reads a new disc. The repository layout has no
+migration promise: `recover` builds the catalog again from the discs. The CLI
+has no stability promise before tool version 1.0. Reasons: the discs must stay
+readable for years; the repository and the CLI can always be made again from
+the discs and the documents.
+
+**A strict reader, and two change mechanisms.** A later format changes in two
+ways only: a new registry id, or a `version_major` bump of a structure. A new
+field or a changed layout always needs the bump. A reader refuses a nonzero
+reserved field, reserved bit or padding byte, a `header_len` that it does not
+know, and a `version_major` of 0. Reasons: the owner promised only that a
+newer tool reads older discs. Skipped header bytes and ignored reserved
+fields serve only an older tool that reads a newer disc, which is not
+promised. A registry id and a `version_major` bump express every later
+change. A strict reader also finds damage and writer bugs in reserved space.
+The cost: a newer tool keeps one parser for each version of a structure. The
+TLV records of tree entries and snapshots stay as they are: they carry the
+optional facts of one entry or one snapshot, and their CRITICAL bit decides
+what an old reader does. DISC and RUN stay two structures.
+
+**FORMAT.md is cumulative after the first tag.** From document version 1.0.0
+on, FORMAT.md describes every released `version_major` of every structure
+and every released registry id. An older released layout is never deleted
+and never changed. Reasons: a newer tool reads every older disc, thus the
+specification must still describe the older layouts. A disc can hold an
+object that an earlier tool version encoded: every disc carries every
+snapshot object of the repository, and a chunk can wait in staging across a
+tool upgrade. A person who holds a mixed set of discs needs only one
+`FORMAT.txt`, the one on the newest disc. Layouts from before document
+version 1.0.0 are not kept, because no compatibility promise covers them.
+
+**The format freezes at FORMAT.md document version 1.0.0.** The first tool tag
+is `v0.1`, and FORMAT.md goes to 1.0.0 at that tag. The document version, the
+program version and the `version_major` of each structure are independent.
+Until that tag, a format change needs no version bump. The disc-root
+fixtures under `reference/testdata/` are regenerated one time before that
+tag, and are frozen after it.
+
+**A later format may refer to objects on older discs.** The content id covers
+the kind byte and the uncompressed payload only. It does not depend on the
+headers, the compression or the container. Thus a later format can name an
+object of a format-1 disc by its id, and dedup across formats stays possible.
+
+**A repository layout version is deferred.** When it comes, a repository with
+no version file is layout 1. Reason: no repository in the field needs a
+migration yet.
+
+**FEC leaves format major 1; only the field stays.** The run header keeps
+`fec_scheme`, `fec_k` and `fec_m` at their offsets. Format major 1 defines
+only scheme 0, `none`. `verify` finds damage through the content id of each
+object and the CRCs and hashes of the tables. The repair is the second copy
+of the disc. Reasons: the `fec_scheme` field is the flexibility. A frozen
+parity layout that no real disc has proved is a commitment, not flexibility.
+A later scheme can use measurements from real media. The owner's redundancy
+is two identical discs.
+
+**Compression stays zstd, registry id 1.** Reasons: zstd is a public standard
+with independent implementations, and compression never enters the content
+id.
+
+**No more host-side feature cuts before the first release.** The host side is
+small enough to walk with the guide, and each further cut costs a new round
+of documents and tests. Two items are deferred: state log compaction, and
+`.gitignore` handling when `staging.dir` moves inside the repository. Neither
+changes a disc byte.
+
+**The release gates.** The first tag needs these: CI is green, issue 45 is
+fixed, and the three tests of OPERATIONS.md's "Test list" pass: random damage
+detection, the cross-runner restore, and the frozen format-1 test data. A
+physical burn is not a gate: CI proves the image path, and the manual
+physical checklist runs after a change to the burn path. No tag and no
+release come until the owner says so.
 
 **No scheduler and no daemon.** `commit` is a batch job. The operator or an
 external scheduler runs it. The repository lock keeps two commits apart.
 
-**Memory is bounded by the chunk size and the stripe size.** Peak memory never
+**Memory is bounded by the chunk size.** Peak memory never
 follows the data size. `commit`, `pack`, `verify` and `restore` stream. The
 `lowmem` e2e cell runs the 25 GB flow under a memory limit to prove it.
 
 ## Deferred work
 
-Each item is recorded in a GitHub issue and is not part of the redesign.
+Each item is recorded in a GitHub issue and is not part of the redesign. Each
+comes after the first tag.
 
+- **A refactor after the operator layer redesign (issue 71).**
+- **A quick check in `commit`.** After the first tag, and before the owner
+  backs up real data: `commit` reuses the result for a file whose size and
+  modification time did not change, and a flag forces a full read.
 - **More `ls` output formats (issue 68).** `ls` prints one fixed format now.
-- **A volume label (issue 69).**
 - **`restore` reads local data (issue 70).** A `restore` could read chunks
   from staging, or from the current source or destination files, so that a
   small change does not ask for a disc that is years old. The owner wants to
@@ -59,7 +168,7 @@ Each item is recorded in a GitHub issue and is not part of the redesign.
 
 **The tool counts one verified disc. The operator owns the second copy.** One
 good `verify` of a counted mount moves a disc to `verified`. `gc` frees the
-staged chunks after one verified disc and 7 days. A disc has at most one burn
+staged chunks after one verified disc. A disc has at most one burn
 record and one verified record. The guide recommends a second copy in a
 different building and shows how to make it. The tool records nothing about
 it. Reasons: the state machine is simpler, and the tool cannot tell two copies
@@ -71,45 +180,10 @@ survives the total loss of one disc, which parity on the same disc does not.
 `status` shows the date of the last good check. This is the periodic check
 over the years. The tool never counts these lines as copies.
 
-**FEC is optional, off by default, and set for each disc.** `pack --fec`
-writes Reed-Solomon parity for this disc; without it, the disc has no FEC.
-There is no config key and no `--no-fec`. The format scope is the disc: the
-run header stores `fec_scheme`, `fec_k` and `fec_m`, and `verify` and heal
-read the run header only. `pack` also copies the choice into the disc state
-log, so that `status` shows `fec` without a read of the disc. FEC costs 9
-percent of the capacity, and a small host pays about three times the pack
-time. Measured on the CI runner with a 1.26 GB fixture: 1.94 s without FEC,
-4.21 s with it. The capacity budget follows the choice.
-
 **No recovery by carving.** A disc whose filesystem does not mount counts as
 lost. The tool reads every file by name through the filesystem. A filesystem
 can store a small file inside its own metadata, and the writer adds no
 padding to prevent that. The second copy is the answer to a dead disc.
-
-**The Reed-Solomon backend is `klauspost/reedsolomon` with
-`WithCauchyMatrix()`.** The default matrix of the library is a Vandermonde
-matrix and gives other parity bytes, thus the option must never change. A
-cross-check against a pure Go implementation of FORMAT.md's arithmetic gave
-byte-identical parity for `k = 231`, `m = 23`. The library ran at 792 MB/s
-against 11.7 MB/s. The pure Go code was then deleted; `docs/fec-reference.md`
-writes the arithmetic up by hand, and the worked example of FORMAT.md stays as
-a test.
-
-**The FEC package takes byte slices only.** `internal/fec` knows nothing of
-INDEX or of the checksum column file. The caller in `internal/restore` picks
-the erasure sets and calls `Decode` for each attempt. This fixes which package
-runs the retry loop, and changes no byte.
-
-**`verify --heal` always writes into `--out`.** It never repairs a disc root
-in place. The damaged copy stays as evidence, and a failed heal loses nothing.
-A healed directory is never a verified disc. The operator burns it with the
-folder burn method, because `image build` takes only a disc of the
-repository. The healed disc keeps the disc uuid of the damaged disc.
-
-**Heal needs a readable `INDEX.bin`.** Heal finds the stream layout through
-INDEX. An object row is found by position: the Objects table and the object
-file rows share the ascending content id order. No hash of the current bytes
-of a file takes part, thus a corrupt file cannot misplace a row.
 
 **`recover` rebuilds a lost repository; `restore` never does.** `recover`
 takes `--disc=DIR` for the mounted disc. After a lost computer the operator
@@ -128,6 +202,11 @@ tables of each disc. `commit` writes the snapshot, tree and blob objects
 directly into it, in directories by kind. Nothing trims it, and `gc` never
 touches it. Reasons: the history must stay for ever; the metadata is small;
 the chunk data lives on the discs. The Go package is `internal/catalog`.
+
+**One computer operates one repository.** Two computers must not each change
+`state/` and then combine the results. The state logs are append-only
+histories with one sequence; two histories cannot be joined. A push to a
+remote as a copy, and a clone to read the history, stay safe.
 
 **The repository has a permanent part and a part that git ignores.** Tracked:
 `config.yaml`; `state/` with the state log, the disc state log, the disc
@@ -163,8 +242,10 @@ second copy.
 
 **The default burn leaves the disc open.** `-dvd-compat` is never passed by
 default. Only `pack --close` makes `status` print the sealed variant. The
-repository stores that choice. A close is permanent, thus it must be an
-explicit act.
+repository stores that choice. Reasons: a close is permanent and cannot be
+undone, thus it must be an explicit act of the operator; every reader path of
+the tool works on an open disc, thus the default loses nothing that the tool
+needs. The tool never writes to the space that an open disc leaves.
 
 **A good `verify` of a counted mount records the burn.** It adds the burn
 record, when there is none, and the verified record. `verify --no-mark`
@@ -187,8 +268,8 @@ can hold data that `gc` already freed.
 
 **`disc verified` records a verified disc on the word of the operator.** It
 reads no disc. It has the same relation to `verify` that `disc burned` has to
-a burn. The 7-day wait of `gc` still applies. `status` never prints it in a
-`next:` block.
+a burn. `gc` can then free the data of the disc at once, thus the
+confirmation is critical. `status` never prints it in a `next:` block.
 
 **Every undo exists and asks first.** `pack --undo`, `disc burned --undo`,
 `verify --undo` and `disc lost --undo` each change one step back. Each undo
@@ -235,9 +316,8 @@ storage place on the sleeve. A disc is good or is discarded.
 
 **The filesystem type is free; UDF stays recommended.** FORMAT.md gives
 minimum requirements in place of a type. No reader depends on the type: the
-tool, `decoder.py` and a person read each file by name through the mounted
-filesystem. A CI test burns the disc root as ISO 9660, and `verify`,
-`restore` and `decoder.py` pass. The format is not frozen before the first
+tool and a person read each file by name through the mounted filesystem. A
+CI test burns the disc root as ISO 9660, and `verify` and `restore` pass. The format is not frozen before the first
 release, so the change costs no version bump.
 
 **The recommended method is `image build`, then a burn of the image.** Pure
@@ -273,12 +353,20 @@ the shortest path to conforming UDF bytes with no new format code. The copy
 always runs: an earlier design made it optional, and a developer machine then
 built an empty image with no error.
 
+**The volume label is `NOAHSARK_` and the disc number, for the operator
+only.** Both burn methods write the same label, for example `NOAHSARK_0007`.
+FORMAT.md requires no label, and no reader depends on it: the operator sees
+the label when the operating system shows the disc. The number has at least 4
+digits, so that the labels sort in order on a shelf list. The label uses only
+characters that an ISO 9660 volume identifier permits, and even a 20-digit
+number fits the UDF limit of 30 characters.
+
 **Never `--media-type=bdr` or `dvdr`.** Both make a write-once VAT volume. The
 kernel mounts such a volume read-only, thus nothing can fill it.
 
 **The image length comes from `DISC.bin`.** `image build` has no `--capacity`
-option. One value serves the packer, the image and the FEC layout, thus the
-three cannot disagree.
+option. One value serves the packer and the image, thus the two cannot
+disagree.
 
 **The filesystem overhead is an estimate with a wide margin.** FORMAT.md gives
 no filesystem overhead budget. A first estimate of one block for each file
@@ -305,7 +393,7 @@ path for one disc, also on a filesystem that folds case.
 staging and the metadata files in the catalog is what the disk holds for the
 Staged items. It is the number that the operator compares with the capacity.
 
-**A date in `status` and `gc` is local.** The operator reads it against the
+**A date in `status` is local.** The operator reads it against the
 calendar of the host, as the default ref name does. `ls` and `log` print
 times that a program parses, thus they use RFC 3339 in UTC.
 
@@ -333,9 +421,12 @@ good records after it is damage; the tool stops and changes nothing, because a
 silent drop of good records would hide a real fault. A read-only command never
 truncates: it could see an append that is still in progress.
 
-**`gc` needs one verified disc and 7 days.** The 7 days are fixed; `gc
---force-after` is the escape for one run. `gc` asks no confirmation: it frees
-only the chunk data that a verified disc holds.
+**`gc` needs one verified disc, and no wait.** `gc` frees the data of a disc
+as soon as the disc is `verified`. A good `verify` reads every byte of the
+disc, thus a wait adds no check. A wait only delays the free, and needs a
+flag, a date and more rows in the state table. The second copy is the job of
+the operator, before or after `gc`. `gc` asks no confirmation: it frees only
+the chunk data that a verified disc holds.
 
 **`gc` confirms through the INDEX in the catalog before it frees.** An item
 whose disc has no INDEX in the catalog is left alone and reported. `gc` never
@@ -504,8 +595,8 @@ from a checked-in template. The `{label}` slot receives the label text without
 the zero padding of the 64-byte field.
 
 **Files that are final only after INDEX carry a zero `file_hash`.**
-`INDEX.bin`, `RUN.bin`, `RUN2.bin`, the checksum file and the parity files
-cannot hold a hash of themselves in INDEX. The run header and their own CRCs
+`INDEX.bin`, `RUN.bin` and `RUN2.bin` cannot hold a hash of themselves in
+INDEX. The run header and their own CRCs
 protect them.
 
 ## Restore
@@ -568,7 +659,7 @@ a symlink. A directory that holds entries where a file must go is reported.
 lower case, for example plain ISO 9660 level 4. The reader tries the exact
 name first, then a match without case in the listing of that directory.
 Object names are lower-case hex already. The writer still writes the exact
-case. `reference/decoder.py` follows the same rule.
+case.
 
 ## CLI and config
 
@@ -685,20 +776,38 @@ replay, which never truncates the file.
 **Test image-first.** Every burn test uses a real filesystem image and a real
 loop mount. A mount that the tool reads (`verify`, `restore`, `recover`) is
 read-only. Most use a `mkudffs` image. One test builds the disc
-root as an ISO 9660 image, as the folder burn does, and checks that `verify`,
-`restore` and `decoder.py` pass. Physical burns are a manual checklist, not
-CI.
+root as an ISO 9660 image, as the folder burn does, and checks that `verify`
+and `restore` pass. Physical burns are a manual checklist, not
+CI, and not a release gate.
 
 **CI rebuilds the catalog from the discs.** A test deletes the repository,
 runs `recover` on the disc images alone, and then restores. This proves that
 the discs answer every question.
 
-**The heal test corrupts the real image.** It loop-mounts the image
-read-write and writes bad bytes into the files at the exact stripe position.
-The write lands on the sectors of the image file, thus the test does not
+**The damage test corrupts the real image.** It loop-mounts the image
+read-write and writes bad bytes into the files. The write lands on the sectors of the image file, thus the test does not
 depend on an unpacked tree. A read-write mount is only for the damage: the
 test unmounts the image and mounts it again read-only before the tool reads
 it.
+
+**Random damage detection, with a printed seed.** Fixed damage tests only the
+cases that the author thought of. Each run uses a fresh seed and prints it,
+so that a failure can be reproduced; a fixed list of known seeds also runs.
+The test checks detection, not repair: `verify` must report the disc bad and
+name the damage, and `restore` must not write wrong data. The tool repairs
+nothing, thus there is no repair to test.
+
+**A restore on a clean runner.** One job builds the images and uploads them;
+a second job on a clean runner has only the images. It runs `recover` and
+`restore`, and compares the result byte for byte. This proves that nothing
+on the first host is needed.
+
+**The format-1 disc-root fixtures are frozen at the first tag.** The fixtures
+under `reference/testdata/` stand for the discs in the field. A later tool
+must read them, thus nobody regenerates them after the first tag. They are
+regenerated one time before the first tag, because the disc content changes:
+no decoder and no FEC data. A Go test reads them. Each later format major
+adds its own set.
 
 **A probe records an unknown answer; a test asserts a known one.** A probe
 moves into the test list when its answer is stable.

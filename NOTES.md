@@ -1,6 +1,6 @@
 # NoahsArk design notes
 
-Document version 0.7.0.
+Document version 0.8.0.
 
 **Nothing in this document is normative.** It carries the purpose, the
 architecture, the rationale, the evidence, the implementation notes, the
@@ -18,9 +18,11 @@ verify it, store it, restore. The operator keeps a second copy of each disc.
 
 The system targets a 30-year archive. The format therefore prefers explicit
 byte layouts over parsers, fixed-width records over variable-length records,
-and plain files over databases. A human in 2050 must be able to read a disc
-with a hex editor and the `README.txt` and `FORMAT.txt` that the disc carries.
-That sentence is the source of most of the decisions in this document.
+and plain files over databases. Each disc carries the complete description
+of its format, `FORMAT.txt`. The NoahsArk program is the normal way to
+restore. The discs alone, with no repository, are enough for the program to
+restore. A person can write a new reader from `FORMAT.txt`. These statements
+are the source of most of the decisions in this document.
 
 The catalog in the repository is the permanent history: every snapshot, tree
 and blob object, and the tables of each disc. Chunk data lives on the discs.
@@ -31,11 +33,15 @@ and `recover` builds the catalog again from them.
 
 1. Store a directory tree on write-once optical media without loss.
 2. Restore that tree with its file metadata.
-3. Deduplicate below the file level across all discs of a repository.
+3. Deduplicate below the file level across all discs of a repository. Dedup
+   stores one copy of data that the operator duplicated, known or not, and of
+   data that did not change between commits. Content-defined chunking also
+   lets a file that is larger than one disc span discs.
 4. Survive the loss of one disc: a second copy, which the operator keeps, is
    the redundancy. The tool counts one verified disc.
 5. Survive the loss of the local machine. The discs alone are sufficient.
-6. Keep the on-disc format readable by a person with no NoahsArk software.
+6. Put the complete format description on every disc, so that a person can
+   write a new reader from it.
 7. Detect silent corruption at every read. Never use bad bytes.
 8. Support a file of any size. One file can be larger than one disc.
 9. Keep the peak memory independent of the data size.
@@ -59,7 +65,7 @@ and `recover` builds the catalog again from them.
 | Tier | Platform | Read | Burn | Notes |
 |---|---|---|---|---|
 | 1 | Linux | Yes | Yes | Reference platform. |
-| 2 | Windows XP to 11, macOS 10.4 to 15 | Mounts a UDF disc | No | Both mount UDF 2.01. No real host has read an ISO 9660 level 4 disc yet. `decoder.py` extracts a file. |
+| 2 | Windows XP to 11, macOS 10.4 to 15 | Mounts a UDF disc | No | Both mount UDF 2.01. No real host has read an ISO 9660 level 4 disc yet. |
 | - | FreeBSD | No | No | Its kernel reads UDF 1.50 only. |
 
 The recommended UDF volume must not lower its revision for FreeBSD, because
@@ -90,8 +96,8 @@ symlink safety" holds the `restore` rules.
         |  pack: a prefix of a post-order walk that fits the capacity
         v
    DISC ROOT   <repo>/staging/plans/<uuid>/tree/NOAHSARK: DISC.bin,
-        |      README.txt, FORMAT.txt, decoder.py, runs/<seq>/ with
-        |      RUN.bin, INDEX.bin, REFS, DISCS, parity; objects/ab/<id>,
+        |      README.txt, FORMAT.txt, runs/<seq>/ with
+        |      RUN.bin, INDEX.bin, REFS, DISCS; objects/ab/<id>,
         |      snapshots/<id>
         |  image build DISC: mkudffs, loop mount, copy (root)
         v
@@ -99,7 +105,7 @@ symlink safety" holds the `restore` rules.
         |  the operator: growisofs, then mount
         v
    VERIFY      one verified disc; the catalog keeps INDEX, REFS, DISCS
-        |      gc frees the staged chunks after 7 days
+        |      gc frees the staged chunks of a verified disc
         |  the operator keeps a second copy
         v
    RESTORE     plans from the catalog, reads one mounted disc at a time
@@ -112,10 +118,9 @@ symlink safety" holds the `restore` rules.
 | `internal/format` | Every on-disc structure: one definition, encode, decode. |
 | `internal/stage` | The state logs, the item states and the disc states. |
 | `internal/image` | The disc root of one run, the capacity budget, the reader, the UDF image build of one disc. |
-| `internal/fec` | Reed-Solomon parity, the checksum column, the stream mapping. |
 | `internal/catalog` | The catalog: snapshot, tree and blob objects, and the tables of each disc, keyed by disc uuid. |
 | `internal/plan` | Which disc holds which chunk of a snapshot, from the catalog. |
-| `internal/restore` | The restore walk, one disc at a time, part files, metadata, safety, heal. |
+| `internal/restore` | The restore walk, one disc at a time, part files, metadata, safety, verify. |
 | `internal/repolock` | The repository lock. |
 | `cmd/noahsark` | The commands, the YAML config, the `DISC` argument. |
 
@@ -130,19 +135,28 @@ Each subsection names the home of the rule and gives the reason.
 Rule: FORMAT.md's "Binary format rules".
 
 Every structure is a fixed-width little-endian packed record behind a 32-byte
-common header. A packed record needs no parser. A person can read it with a
-hex editor and the offset table in `FORMAT.txt`.
+common header. A packed record needs no parser. A person who writes a new
+reader needs only the offset table in `FORMAT.txt`.
 
-There is one evolution rule: a reader refuses an unknown `version_major`.
-Feature bit masks and a minor version said the same thing a second time, thus
-they were removed. Until the first release the format is not frozen.
+There are two change mechanisms: a new registry id, and a `version_major` bump
+of a structure. A reader refuses an unknown `version_major`, a nonzero
+reserved field and an unknown `header_len`. The only promise is that a newer
+tool reads every older disc. A reader that skipped unknown header bytes or
+ignored reserved fields would serve only an older tool that reads a newer
+disc, which is not promised. A strict reader also finds damage and writer
+bugs in reserved space. TLV records stay the mechanism for an optional fact
+of one tree entry or one snapshot. Feature bit masks and a minor version said
+the same thing a second time, thus they were removed. The format freezes at
+FORMAT.md document version 1.0.0, which comes with the first tool tag,
+`v0.1`. From then on FORMAT.md is cumulative: it keeps the layout of every
+released version.
 
 Every byte that NoahsArk writes is an ordinary file. A hidden sector is
 invisible to every operating system and is lost when a disc is copied by file.
 
-A reference decoder, `decoder.py`, is on every disc. A description of the
-bytes does not prove that the description is enough. A person with a Python
-interpreter and no network can extract and verify a file.
+The disc carries `FORMAT.txt` and no program. The NoahsArk program is open
+source and is the way to read a disc. No independent implementation proves
+that `FORMAT.txt` alone is enough; the owner accepts that cost.
 
 ### 3.2 Identity and hashing
 
@@ -151,8 +165,7 @@ Rule: FORMAT.md's "Identity and hashing".
 SHA-256 is the only algorithm. It is in the Go standard library, modern hosts
 accelerate it, and a reader in 30 years knows it. The content id covers one
 kind byte and the payload, thus an empty blob and an empty tree never share an
-id, and a lookup needs no kind filter. A digest is never truncated. The 8-byte
-digests of the checksum column are not content ids; they detect decay only.
+id, and a lookup needs no kind filter. A digest is never truncated.
 
 ### 3.3 Chunking
 
@@ -202,7 +215,8 @@ Rule: FORMAT.md's "Disc and run model".
 One disc holds one run, written in one burn. Nothing is ever overwritten. "Why
 true UDF multi-session is not possible" holds the evidence that no open source
 tool can append a UDF session. The rule holds for every filesystem type: a
-folder burn never appends either. The disc uuid is the identity of a disc. The
+folder burn never appends either. A disc with more than one run is damaged,
+and a reader refuses it. The disc uuid is the identity of a disc. The
 sequence numbers are labels, because a rebuilt repository can give a number a
 second time.
 
@@ -211,10 +225,9 @@ second time.
 Rule: FORMAT.md's "Filesystem requirements".
 
 The format gives minimum requirements, not a filesystem type. No reader
-depends on the type: the tool, `decoder.py` and a person all read each file
-by name through the mounted filesystem. A CI test burns the disc root as ISO
-9660, as a folder burn does, and `verify`, `restore` and `decoder.py` pass on
-it. Thus a folder burn with `growisofs -R` or at `-iso-level 4` is the second
+depends on the type: the tool and a person both read each file by name
+through the mounted filesystem. A CI test burns the disc root as ISO 9660, as
+a folder burn does, and `verify` and `restore` pass on it. Thus a folder burn with `growisofs -R` or at `-iso-level 4` is the second
 method, and it needs no `mkudffs`. Joliet alone cuts the 68-character object
 names. A UDF bridge carries two trees that can disagree, and only one of them
 gets verified.
@@ -232,22 +245,17 @@ logical-to-physical indirection.
 On-disc names are NoahsArk's own: lower-case hex and a few fixed names. User
 names, deep paths and POSIX metadata live inside tree objects.
 
-### 3.8 Forward error correction
+### 3.8 Damage and redundancy
 
-Rule: FORMAT.md's "Forward error correction". FEC is optional and off by
-default; `docs/decisions.md` holds that decision.
+Rule: OPERATIONS.md's "Verify". `docs/decisions.md` holds the decision.
 
-The drive returns a hard read error for a sector that it cannot decode, thus
-NoahsArk sees erasures. The drive can also return wrong bytes; the checksum
-column turns that case into an erasure. The dangerous damage is the contiguous
-run: a ring scratch or an outer-edge band. A radial scratch hits thousands of
-stripes with one block each and is harmless to an interleaved code.
-
-`k = 231`, `m = 23` gives 9 percent parity. Ten percent is the knee of the
-curve: it covers a 3 mm ring scratch on a 25 GB disc, and damage far beyond
-that usually means a disc that no drive reads. Per-object parity was rejected:
-its parity sits next to its object, thus one burst destroys both. Parity is
-computed one stripe at a time, never with the whole run in memory.
+The tool writes no data for error correction. `verify` finds damage through
+the content id of each object and the CRC or hash of each table and header.
+The repair is the second copy of the disc, which the operator keeps. The run
+header keeps the `fec_scheme` field, so that a later scheme can be added
+without a new layout of the run header. A later scheme can use measurements
+from real media; "Blu-ray media facts and damage patterns" holds the damage
+patterns that it must cover.
 
 ### 3.9 The run index and the catalog
 
@@ -280,8 +288,8 @@ Do not implement anything in this list. Each line gives the reason.
 - **casync-style stream chunking across files.** A metadata change moves the
   cut points, and a single-file restore needs the stream index.
 - **Git-style trees with no metadata.** One more object read for each file.
-- **Per-file Merkle trees.** The checksum column already finds damage at
-  2048 bytes.
+- **Per-file Merkle trees.** The content id of each chunk already finds
+  damage at the chunk level.
 - **Shallow partial graphs.** A snapshot must be provably complete or provably
   incomplete; the Prereqs table says which.
 - **A hash agility layer with id translation.** Git designed one and did not
@@ -373,8 +381,8 @@ disc on a kernel older than 5.4, pass `utf8`, not `iocharset=utf8`.
 
 A disc root that a burner writes as plain ISO 9660 level 4 still reads: the
 Linux driver folds the fixed names to lower case, and the reader accepts that.
-A CI test builds the disc root as ISO 9660, and `verify`, `restore` and
-`decoder.py` pass on it. Joliet does not read, because it cuts the
+A CI test builds the disc root as ISO 9660, and `verify` and `restore` pass
+on it. Joliet does not read, because it cuts the
 68-character object names.
 
 ### 4.5 Small files on UDF
@@ -414,9 +422,8 @@ what binds every implementation.
 
 - **Language: Go.** The standard library covers SHA-256 and CRC-32C, and one
   static binary suits a recovery tool. The dependencies are
-  `github.com/klauspost/compress` for zstd and
-  `github.com/klauspost/reedsolomon` for the parity, and `go.yaml.in/yaml/v3`
-  for the config file `config.yaml`. A package is a convenience, never the
+  `github.com/klauspost/compress` for zstd and `go.yaml.in/yaml/v3` for the
+  config file `config.yaml`. A package is a convenience, never the
   definition.
 - **One Go definition for each on-disc structure**, with explicit encode and
   decode functions. No reflection and no struct tags, for an on-disc
@@ -426,7 +433,7 @@ what binds every implementation.
   struct tags for `go.yaml.in/yaml/v3`. A new key is a new struct field.
 - **The catalog is history, not a cache.** `commit` writes the snapshot, tree
   and blob objects into `catalog/`. `gc` frees only staged chunks, after one
-  verified disc and 7 days. No code trims the catalog.
+  verified disc. No code trims the catalog.
 - **A golden file for every structure.** The test encodes known values and
   compares the bytes to a checked-in file; it also decodes that file and
   compares the fields. The first direction finds a changed layout. The second
@@ -434,7 +441,7 @@ what binds every implementation.
 - **Vendored tables.** The Gear table and the masks are part of the format.
   Never import them from a dependency.
 - **Bounded memory.** Reuse buffers in the chunk and hash path. Stream every
-  object. Compute parity one stripe at a time.
+  object.
 - **Every read verifies.** An error names the content id or the path.
 - **Comments.** A comment and a commit message never cite a section number.
   Numbers drift; name the heading or describe the rule.
@@ -445,15 +452,13 @@ what binds every implementation.
 |---|---|
 | **Blob** | The object that lists the chunk ids of one file, in order. |
 | **Catalog** | On a disc: the REFS table, the DISCS table and every snapshot object, which each run carries for the whole repository. In the repository: `<repo>/catalog/`, the permanent history: every snapshot, tree and blob object, and the INDEX, REFS and DISCS tables of each disc. It holds no chunk data. |
-| **Checksum column** | The FEC column that holds an 8-byte digest of each data block of its stripe. |
 | **Chunk** | A content-defined slice of a file. The unit of deduplication. |
 | **Content id** | SHA-256 over the kind byte and the uncompressed payload of an object. |
 | **Counted mount** | A read-only mounted filesystem outside the repository, whose path is itself a mount point. Only a `verify` of a counted mount records a burn or a verified disc. The tool does not check the source of the mount, so a loop mount of an image counts. |
 | **Disc ledger** | `<repo>/state/discs.bin`: one row for each disc that the repository knows. |
 | **Disc root** | A directory that holds `NOAHSARK/`: a mounted disc, a mounted image, or the directory that `pack` wrote. |
-| **Disc state log** | `<repo>/state/discstate.db`: the host-side record of each disc: the burn record, the verified record, the lost mark, the verify log, and the FEC and close choices of `pack`. No on-disc byte holds these. |
+| **Disc state log** | `<repo>/state/discstate.db`: the host-side record of each disc: the burn record, the verified record, the lost mark, the verify log, and the close choice of `pack`. No on-disc byte holds these. |
 | **Disc uuid** | The identity of a disc. Every copy of the disc shares it. |
-| **FEC stream** | The stream files of a run, each padded to 2048 bytes, in INDEX order. |
 | **INDEX** | The table of a run that lists its files, its objects and its prerequisites. |
 | **Item** | The operator's word for one staged object, tracked by its content id. |
 | **Lost disc** | A disc that is gone for good, or whose filesystem does not mount. The operator marks it with `disc lost`. The catalog keeps its data, and a restore plan shows it as `(lost)`. |
@@ -467,19 +472,16 @@ what binds every implementation.
 | **Snapshot** | The object that names a root tree, a time and a message. |
 | **Staging** | `<repo>/staging/`: chunks and plans only. It holds each chunk between `commit` and `gc`, and the disc root and image of each packed disc under `plans/`. |
 | **State log** | `<repo>/state/state.db`: the append-only record of each item's state. |
-| **Stripe** | Block `i` of every column: 231 data, 1 checksum, 23 parity. |
 | **TLV** | A type-length-value record in the extension area of a tree entry. |
 | **Tree** | The object that describes one directory, with the metadata of each entry. |
 | **Unstable** | A file whose size or mtime changed while `commit` read it. The entry carries the `UNSTABLE` flag. |
-| **Verified disc** | A disc with a verified record: a good `verify` of a counted mount, or `disc verified` on the word of the operator. The tool counts one verified disc for each pack. `gc` frees its staged chunks after 7 days. |
+| **Verified disc** | A disc with a verified record: a good `verify` of a counted mount, or `disc verified` on the word of the operator. The tool counts one verified disc for each pack. `gc` can then free its staged chunks. |
 
 ## 7. References
 
 | Topic | Reference |
 |---|---|
 | FastCDC | W. Xia et al., "The Design of Fast Content-Defined Chunking for Data Deduplication Based Storage Systems", IEEE TPDS, 2020. |
-| Reed-Solomon codes | I. S. Reed and G. Solomon, "Polynomial Codes over Certain Finite Fields", J. SIAM, 1960. |
-| Cauchy generator matrices | J. Blömer et al., "An XOR-Based Erasure-Resilient Coding Scheme", ICSI TR-95-048, 1995. |
 | SHA-256 | NIST FIPS 180-4, Secure Hash Standard. |
 | CRC-32C | G. Castagnoli et al., IEEE Transactions on Communications, 1993; parameters as in RFC 3720. |
 | zstd | RFC 8878, Zstandard Compression. |
@@ -488,18 +490,18 @@ what binds every implementation.
 | dvd+rw-tools | growisofs and dvd+rw-mediainfo, upstream 7.1 with the Debian patch set. |
 | udftools | mkudffs and udfinfo, 2.3 or later. |
 | GNU ddrescue | The ddrescue manual. |
-| dvdisaster | The RS03 codec, a similar column-and-stripe layout. |
 | Linux kernel | `fs/udf/super.c`, the write-once read-only rule. |
 
 ## 8. Change log
 
 FORMAT.md cites this change log. Until the first release the format is not
-frozen, and a disc carries its own `FORMAT.txt` and `decoder.py`. The git
+frozen, and a disc carries its own `FORMAT.txt`. The git
 history holds the detail of each version; this table holds one line for each
 version that changed what an operator or a reader sees.
 
 | Document version | Change |
 |---|---|
+| 0.8.0 | 2026-10-02, the decisions before the first tag. FEC leaves format major 1: the run header keeps `fec_scheme`, `fec_k` and `fec_m`, format major 1 defines only scheme 0, and `stream_bytes` becomes the reserved field `reserved_d`; the checksum column, the parity files, their INDEX roles and the FEC chapter are deleted; `pack --fec` and `verify --heal` are deleted. The reference decoder is deleted from the disc and from the repository; its INDEX role is reserved, and README.txt names no decoder. The reader is strict: it refuses a nonzero reserved field, reserved bit or padding byte, a `header_len` that it does not know, and `version_major` 0; the change mechanisms are a new registry id and a `version_major` bump. From document version 1.0.0 on, FORMAT.md is cumulative. A reader refuses a disc with more than one entry in `runs/`. The format freezes at FORMAT.md 1.0.0, at the first tag `v0.1`, and the `reference/testdata/` fixtures are regenerated one time before that tag and frozen after it. FORMAT.md requires no volume label; both burn methods write `NOAHSARK_` and the disc number. `gc` frees the data of a disc as soon as it is verified; `gc --force-after` is deleted. One computer operates one repository. The goals name restore from the discs alone in place of a reading with no NoahsArk software. The test list adds random damage detection, a cross-runner restore and the frozen fixtures. FORMAT.md is renumbered. No byte offset of a kept field changes. |
 | 0.7.0 | 2026-09-28, the operator layer redesign. FORMAT.md gives minimum filesystem requirements in place of a fixed UDF volume: UDF 2.01 from `mkudffs` stays recommended, and a folder burn as ISO 9660 with Rock Ridge or at level 4 conforms. The local cache becomes the catalog, the permanent history; `commit` writes the snapshot, tree and blob objects there. The repository splits into a tracked part (`config.yaml`, `state/`, `catalog/`) and an ignored part (`lock`, `staging/`). The config is YAML. The tool counts one verified disc; `verify` records the burn; `disc verified`, `verify --undo` and `disc lost --undo` are new. `restore` has one mode: one mounted disc at a time. `recover` takes `--disc`. `image build` takes a disc number. Confirmations have two levels, with `--yes` and `--force-yes`. `ls` prints one tab-separated line for each entry. No on-disc structure changes. |
 | 0.6.2 | `restore`, `ls`, `log` and `recover` lose `--discs-dir`; give a shell glob such as `/mnt/discs/*` as `DISC-ROOT` arguments instead. No on-disc format change. |
 | 0.6.1 | `verify` checks header_crc32c and file_hash the same way `restore` does, closing the gap where a disc could read clean and then fail restore. `verify --heal` no longer counts a healed directory as a verified copy. No on-disc format change. |

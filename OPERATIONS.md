@@ -24,8 +24,9 @@ a human. It is not the specification.
    bytes.
 4. The tool never removes a snapshot and never frees disc space.
 5. The tool counts one verified disc for each pack. A second copy of a disc
-   is the job of the operator, and the tool records nothing about it. FEC is
-   optional and off by default. A disc that does not mount counts as dead.
+   is the job of the operator, and the tool records nothing about it. The
+   tool writes no data for error correction: a damaged disc is replaced by
+   its second copy. A disc that does not mount counts as dead.
    There is no recovery by carving.
 6. The tool never runs `sudo`, a drive tool, or `git`. The tool never mounts a
    device. The operator mounts a disc and gives the mount point. There is one
@@ -34,10 +35,10 @@ a human. It is not the specification.
 7. Every command is usable from a script. Each confirmation has an answer
    flag ("Confirmations"). `-q` turns off the progress line. `ls` and `log`
    print one record on each line in a fixed field order.
-8. The design priorities are ordered: data durability, readability without
-   the tool, restore usability, deduplication, speed, media utilization.
-9. Peak memory follows the chunk size and the stripe size. It never follows
-   the data size.
+8. The design priorities are ordered: data durability, restore from the
+   discs alone with no repository, restore usability, deduplication, speed,
+   media utilization.
+9. Peak memory follows the chunk size. It never follows the data size.
 
 ## 2. Repository, staging and catalog
 
@@ -137,6 +138,9 @@ directory creates it. When the state log holds a Staged or a Packed item:
 - `recover` creates a missing staging directory, as `init` does.
 - The `next:` block of a `packed` disc gives `disc lost` only when the
   staging directory exists and the plan directory of that disc does not.
+
+One computer at a time operates one repository. Two computers must not each
+change `state/` and then combine the results: the state logs cannot be joined.
 
 Thus git is safe for these uses: a commit of `state/` and `catalog/` after
 each command, a push to a remote as a copy, and a clone to read the history.
@@ -288,7 +292,7 @@ number of fixed-width records, each 54 bytes:
 | 8 | 8 | i64 | `time_sec` | Unix time of the event. |
 | 16 | 16 | u8[16] | `disc_uuid` | The disc. |
 | 32 | 1 | u8 | `event` | The event code (table below). |
-| 33 | 1 | u8 | `flags` | Bit 0 `close`, bit 1 `fec`. Set in `Packed` only, except that `Recovered` sets the `fec` bit; 0 in every other event. The other bits are 0. A record with a bit that its event does not permit is damage. |
+| 33 | 1 | u8 | `flags` | Bit 0 `close`. Set in `Packed` only; 0 in every other event. Bits 1 to 7 must be 0. A record with a bit that its event does not permit is damage. |
 | 34 | 8 | u64 | `disc_seq` | The disc number. Set in `Packed` only; 0 otherwise. |
 | 42 | 8 | u64 | `run_seq` | The run number. Set in `Packed` only; 0 otherwise. |
 | 50 | 4 | u32 | `record_crc32c` | CRC-32C over bytes 0 to 49. |
@@ -424,26 +428,24 @@ in its `next:` block (`docs/states.md`, "State to `next:` block").
 1. `gc` frees the chunk files and the plan directory of a `verified` disc
    only. It also frees an orphan: a chunk file whose item is already OnDisc.
    It never removes a file of `catalog/` or `state/`.
-2. `gc` frees them only after 7 days have passed since the verified time of
-   the disc (`docs/states.md`, "Replay of the disc state log"). This period
-   is fixed. `--force-after=DURATION` shortens it for one run. `gc` asks no
-   confirmation.
-3. One verified disc is enough. No option and no config key asks for more.
-4. `gc` confirms, before it frees an item, that the catalog `INDEX.bin` of the
+2. One verified disc is enough. `gc` frees the data of a disc as soon as the
+   disc is `verified`. There is no wait time. No option and no config key asks
+   for more. `gc` asks no confirmation.
+3. `gc` confirms, before it frees an item, that the catalog `INDEX.bin` of the
    disc of the item's own record lists the item. When the catalog does not
    hold that INDEX, `gc` leaves the item alone and reports it. When the INDEX
    does not list some items of a `verified` disc, `gc` frees no item of that
    disc, appends no `Freed` event for it, and reports the skip. `Freed` moves
    the whole disc, thus `gc` never frees a part of a disc.
-5. `gc` writes the `Freed` events, then the OnDisc records, and syncs them
+4. `gc` writes the `Freed` events, then the OnDisc records, and syncs them
    before it unlinks a chunk file ("State log replay"). A crash after the
    records and before the unlink leaves an orphan.
-6. `gc` removes `staging/plans/<disc-uuid>/` of a freed disc. For a `pack
+5. `gc` removes `staging/plans/<disc-uuid>/` of a freed disc. For a `pack
    --out=DIR` disc, it removes the symlink `tree` and never touches `DIR`.
    It also removes a plan directory that remains for an `on disc only` disc.
-7. `gc --dry-run` prints what `gc` would free, writes nothing and takes no
+6. `gc --dry-run` prints what `gc` would free, writes nothing and takes no
    lock ("Command notes" gives the lines).
-8. `gc` reports the disk space that it frees: the allocated blocks of each
+7. `gc` reports the disk space that it frees: the allocated blocks of each
    file that it removes, not the apparent size. A sparse image counts only
    its allocated blocks. The dry run uses the same count.
 
@@ -501,10 +503,10 @@ One process at a time writes the local state of a repository.
    first such command creates the file. Those commands are `init`, `commit`,
    `pack`, `gc`, `disc burned`, `disc verified`, `disc lost`, `recover`,
    `verify --undo`, and a `verify` that records: a `verify` of a counted
-   mount with a repository, with no `--no-mark` and no `--heal`.
+   mount with a repository, with no `--no-mark`.
 2. A read-only command takes no lock: `ls`, `log`, `status`, `restore`,
    `pack --dry-run`, `gc --dry-run`, and each `verify` that records nothing:
-   `verify --no-mark`, `verify --heal`, a `verify` of a root that is not a
+   `verify --no-mark`, a `verify` of a root that is not a
    counted mount, and `verify` with no repository.
 3. `image build` takes no lock and never creates the lock file. It runs as
    root, and a lock file that root creates would block the operator. It writes
@@ -552,7 +554,7 @@ earlier commit is not made again, thus it stays `Lost`.
 
 FORMAT.md's "Objects", "Chunking" and "Compression" give the shapes and the
 constants. No config key changes them. No config key changes a disc byte:
-`pack --capacity` and `pack --fec` do.
+`pack --capacity` does.
 
 `commit` reads every file of the source on every run. An unchanged file gives
 the same chunk ids, thus `commit` writes no new chunk for it. NoahsArk has no
@@ -691,8 +693,7 @@ root.
 `pack` syncs every file and every directory of the disc root after the write.
 It writes the catalog tables of the disc, the disc ledger row, the Packed item
 records and the `Packed` event only after that sync, in this order. The
-`Packed` event carries the `close` flag for `--close` and the `fec` flag for
-`--fec`.
+`Packed` event carries the `close` flag for `--close`.
 
 A `pack` without `--dry-run` completes what an interrupted `pack` left, after
 it completes the undone packs ("Undo a pack") and before it writes a disc
@@ -702,9 +703,8 @@ root:
   exists, belongs to a `pack` that stopped after its ledger row. `pack`
   records each item that the catalog INDEX of the disc lists and that is
   Staged or has no record as Packed on that disc. Then it appends the
-  `Packed` event, with the time of the ledger row, the `fec` flag when the
-  INDEX lists a checksum file, and the `close` flag when the file `close` of
-  the plan directory exists. It prints `noahsark: pack: disc SEQ "LABEL": an
+  `Packed` event, with the time of the ledger row, and the `close` flag when
+  the file `close` of the plan directory exists. It prints `noahsark: pack: disc SEQ "LABEL": an
   earlier pack stopped before it recorded the disc; its records are now
   complete` on standard error.
 - A directory `catalog/discs/<disc-uuid>/` or `staging/plans/<disc-uuid>/`
@@ -718,7 +718,7 @@ root:
 ### 8.3 Dry run
 
 `pack --dry-run` answers "how many discs does the staged data need?". It needs
-`--capacity`, and uses the `--fec` value of the call. It writes nothing, uses
+`--capacity`. It writes nothing, uses
 no sequence number and takes no lock. It prints one `disc N: I items, B bytes`
 line for each disc, then `total: D discs, I items, B bytes`. The plural form
 is fixed, also for 1, because a program parses it. It prints no `next:` line.
@@ -787,7 +787,7 @@ A drive can report fewer sectors than the preset. The operator checks the
 blank disc with `dvd+rw-mediainfo` and gives the smaller size. A capacity
 below the real size of the medium is valid. `pack` records the value that it
 used as `capacity_sectors`, as FORMAT.md's "Disc superblock" states. The
-packer, the image length and the FEC layout all use this one value. The media
+packer and the image length both use this one value. The media
 type in `DISC.bin` follows the preset, else `BD-R-SL-25`. It is informational.
 
 ### 9.2 The budget formula
@@ -795,12 +795,12 @@ type in `DISC.bin` follows the preset, else `BD-R-SL-25`. It is informational.
 A run fits when this holds, in bytes:
 
 ```
-stream_bytes + run_header_copies + checksum_bytes + parity_bytes
-    + filesystem_overhead  <=  capacity_sectors * 2048
+file_bytes + run_header_copies + filesystem_overhead  <=  capacity_sectors * 2048
 ```
 
-`checksum_bytes` and `parity_bytes` are zero when FEC is off. With FEC they
-follow FORMAT.md's "Parity layout". `filesystem_overhead` is an estimate of
+`file_bytes` is the sum of the files of the run other than the two run header
+copies, each rounded up to a multiple of 2048. `run_header_copies` is the two
+run header copies, 1024 bytes. `filesystem_overhead` is an estimate of
 the filesystem metadata: the space bitmap, 4 MiB, two blocks for each file,
 two blocks for each directory, and 0.1 percent of the capacity. It changes no
 disc byte. The estimate covers the UDF image and the ISO 9660 folder burn.
@@ -836,8 +836,9 @@ makes. `image build DISC [--force]` does these steps.
 6. Read the capacity from the `DISC.bin` of the disc root. Create the image
    file `staging/plans/<disc-uuid>/tree.img` with mode 0600, and make it a
    sparse file of that length.
-7. Run `mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01 --uid=0
-   --gid=0 --mode=0555 --bootarea=erase /dev/fd/3`. The file descriptor 3 is
+7. Run `mkudffs --utf8 --media-type=hd --blocksize=2048 --udfrev=2.01
+   --label=LABEL --uid=0 --gid=0 --mode=0555 --bootarea=erase /dev/fd/3`.
+   `LABEL` is the volume label of the disc (below). The file descriptor 3 is
    the image file.
 8. Attach the image file to a free loop device, with the autoclear flag.
    Mount the loop device with `nosuid`, `nodev` and `noexec` on a new mount
@@ -846,6 +847,18 @@ makes. `image build DISC [--force]` does these steps.
    remove the mount point.
 9. Give the image file the owner and the group of the plan directory, and
    mode 0644.
+
+The volume label is for the operator only: it names the disc when the
+operating system shows the mounted disc. The tool never reads it. Both burn
+methods write the same label: `NOAHSARK_`, then the disc number in decimal,
+zero-padded to 4 digits, with more digits when the number is larger. For
+example, disc 7 gets `NOAHSARK_0007`, and disc 12345 gets `NOAHSARK_12345`.
+The label uses only upper-case letters, digits and `_`, the characters that
+an ISO 9660 volume identifier permits. The largest `disc_seq`, 2^64 - 1, has
+20 digits, thus a label has at most 29 characters. That is within the UDF
+volume identifier limit of 30 characters and the ISO 9660 limit of 32
+characters. `mkudffs --label` writes the label into the UDF logical volume
+identifier and the volume identifier.
 
 Never use `--media-type=bdr` or `dvdr`. Both make a write-once VAT volume,
 which cannot be populated. `image build` removes the partial image when a step
@@ -951,11 +964,12 @@ growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty \
 **Second method: burn the folder directly.**
 
 ```bash
-growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK TREE
+growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0007 TREE
 ```
 
 `growisofs` runs `mkisofs` and makes an ISO 9660 volume with Rock Ridge from
-the disc root `TREE`. For a `pack --out` disc, `TREE` is the `pack --out`
+the disc root `TREE`. `-V` takes the volume label of the disc ("Disc
+filesystems and image building"); the example is for disc 7. For a `pack --out` disc, `TREE` is the `pack --out`
 directory. Add `-dvd-compat` for a `pack --close` disc. Never pass `-J`: Joliet
 cuts long names. Never pass `-udf`: it adds a UDF 1.02 bridge. Never pass
 `-M`. The reading of an ISO 9660 level 4 disc on Windows and on macOS is not
@@ -1009,44 +1023,41 @@ thus the disc uuid identifies the run too. The operator writes the number, the
 first 8 characters of the uuid and the storage place on the sleeve of each
 disc. The tool keeps no shelf notes.
 
-## 13. Verify and heal
+## 13. Verify
 
-`verify [--no-mark] [--heal --out=DIR] DISC-ROOT` reads a disc root: the mount
+`verify [--no-mark] DISC-ROOT` reads a disc root: the mount
 point of a disc, the mount point of a loop-mounted image, or a directory that
 holds `NOAHSARK/`. It reads `DISC.bin`, the run header, `INDEX.bin` and every
 object through the filesystem. It checks every file that INDEX lists against
-its recorded hash, and every object against its content id. When the run has
-FEC, it checks the checksum column and the parity too.
+its recorded hash, every table and header against its CRC, and every object
+against its content id. This is how the tool finds damage. The tool does not
+repair a disc: the repair is the second copy of the disc.
 
 `verify` checks in this order, and stops at the first refusal:
 
-1. The options. `--heal` with no `--out`, `--out` with no `--heal`, and
-   `--undo` with another option are usage errors, with exit code 2. So is
-   an `--out` DIR that holds files (`--out=DIR holds files; give an empty
-   or absent directory`) or that is not a directory (`--out=DIR is not a
-   directory`): old files would stay in the healed disc root.
+1. The options. `--undo` with another option is a usage error, with exit
+   code 2.
 2. The repository and its config, as for every command.
 3. The `DISC.bin` of `DISC-ROOT`. When `verify` cannot read it, it prints
    `noahsark: verify: DISC-ROOT: cannot read the disc: ERROR` and exits
    with code 1.
-4. With a repository, and with no `--heal`: whether `DISC-ROOT` is a
+4. With a repository: whether `DISC-ROOT` is a
    counted mount. This check refuses nothing. It fails only when `verify`
    cannot resolve the path, read the mount table, or read the device of a
    path, with exit code 1.
-5. With a repository: the state of the disc. `verify`, also with `--heal`,
-   refuses a disc whose uuid the disc state log does not hold, an undone
-   disc, a `lost` disc and a `missing` disc, with exit code 1.
-6. With `--heal`: the FEC of the disc, as the heal sources below give.
+5. With a repository: the state of the disc. `verify` refuses a disc whose
+   uuid the disc state log does not hold, an undone disc, a `lost` disc and a
+   `missing` disc, with exit code 1.
 
 Then `verify` reads every object. `verify` reads the run header from
 `RUN.bin`, or from `RUN2.bin` when `RUN.bin` cannot be read or fails its
 checks (FORMAT.md's "Run header copies"). Damage to one copy fails the
 check, also when the other copy is good: the disc is damaged. `recover`
-and `--heal` go on with the good copy. A disc tree that holds a symlink or
+goes on with the good copy. A disc tree that holds a symlink or
 another entry that is not a regular file or a directory fails the check:
 the tool never writes such an entry on a disc, and never follows one.
 
-After the read, with a repository and with no `--heal`, `verify` compares
+After the read, with a repository, `verify` compares
 the disc uuid of the full read with the disc uuid of step 3. After a failed
 read, it reads `DISC.bin` again for the uuid. When the two uuids differ, it
 prints `noahsark: verify: DISC-ROOT: the disc changed during the check: disc
@@ -1060,7 +1071,7 @@ not given:
   catalog does not hold, or holds with other bytes, then appends `BurnRecorded` when the disc is
   `packed`, then `CheckOK`. The catalog write uses the result of the check:
   it reads again only the snapshot, tree and blob files and the tables, not
-  the chunks and not the FEC files. When the catalog write fails, the
+  the chunks. When the catalog write fails, the
   disc is not at fault: `verify` appends no event, prints no ok line and no
   bad line, prints `noahsark: verify: the disc passed its check, but the
   catalog write failed: ERROR; the check is not recorded; correct the cause
@@ -1095,9 +1106,9 @@ One line follows the ok line or the bad line, except after a failed counted
 check:
 
 - a good counted check: the text of `docs/states.md`, rows 31 to 35;
-- a root that is not a counted mount, also with `--no-mark`, and the check
-  of the `--heal` output: `not counted: this is not a disc`;
-- no repository, with no `--heal`: `not counted: no repository`;
+- a root that is not a counted mount, also with `--no-mark`: `not counted:
+  this is not a disc`;
+- no repository: `not counted: no repository`;
 - `--no-mark` of a counted mount: `not marked`. After a good check of a
   `packed` disc, the line is `not marked; to record this burn, run: noahsark
   disc burned SEQ`.
@@ -1105,81 +1116,14 @@ check:
 `verify --undo DISC` removes the verified record of a `verified` disc. It asks
 an ordinary confirmation and reads no disc.
 
-The operator tries the heal sources in this order.
+When `verify` finds damage, the operator uses these sources, in this order:
 
 1. **A second copy.** Read from the operator's second copy. Burn a new copy
    from the kept image, or from an image that `ddrescue` reads from a good
    copy.
-2. **On-disc RS parity**, when the run has FEC. `verify --heal --out=DIR
-   DISC-ROOT` writes the healed disc root into `DIR`, and then checks `DIR`.
-   `--heal` refuses a disc whose newest run has no FEC, with exit code 1.
-   It prints `noahsark: verify: disc SEQ has no FEC; --heal needs a disc
-   with FEC`, or `disc UUID` with no repository. When neither run header
-   copy of the newest run can be read, `--heal` goes on, and then fails
-   with `cannot heal`. A healed tree
-   lives on the hard disk, not on a disc, so it is never a counted mount:
-   `--heal` records nothing, whatever `DIR` checks clean as. `image build`
-   takes only a disc of the repository, not a directory. Thus the operator
-   burns `DIR` with the folder burn method ("Burning"), then runs a plain
-   `verify` of the new disc. The healed disc has the same disc uuid as the
-   damaged disc.
-
-   `verify --heal` prints these lines:
-
-   ```
-   disc SEQ "LABEL": healed N file(s) into DIR
-   disc SEQ "LABEL": N items, ok
-   not counted: this is not a disc
-   ```
-
-   The second and the third line are the check of `DIR`. When the parity
-   cannot repair the damage, it prints `disc SEQ "LABEL": bad; cannot heal;
-   REASON` and exits with code 1. With no repository, it names the disc by
-   uuid, as a plain `verify` does.
-
-   `--heal` copies the disc tree into `DIR` first. A read error does not
-   stop the copy. A block of 2048 bytes that the drive cannot read, a file
-   that cannot be opened, a file that ends before its length, and a
-   directory that cannot be listed are erasures: the copy holds zero bytes
-   in their place, and the parity makes them again. `--heal` handles each
-   kind of block as FORMAT.md states: an unreadable data block or parity
-   block is an erasure from the start. When the checksum block of a stripe
-   cannot be read or fails its header check, `--heal` checks each file of
-   the stripe against its content id or its `file_hash`, and each block of
-   a file that fails is an erasure. `--heal` repairs these stripes last,
-   after the stripes with a good checksum block. A file that has damage in
-   two such stripes fails its check in both, and the heal stops. `--heal`
-   writes the checksum block again from the repaired data. When one run
-   header copy is damaged, `--heal` writes it again from the other copy. `--heal` writes no wrong byte: a stripe with
-   more erasures than parity blocks stops the heal with `stripe N`, exit
-   code 1, and the files of that stripe stay unhealed in `DIR`. Bytes that
-   cannot be read in a file that the parity does not cover also stop the
-   heal, with exit code 1, and the error names the file. `--heal` refuses
-   a symlink and every entry that is not a regular file or a directory in
-   the disc tree, and never writes through a symlink.
-
-   A drive can stop, or take a very long time, on a damaged disc. Then
-   use `ddrescue` as the second method. `ddrescue` copies the disc into an
-   image file and records the sectors that it cannot read. Loop-mount the
-   image read-only, and run `verify --heal --out=DIR` on the mount point.
-   The image holds zeros in place of each sector that `ddrescue` could
-   not read, and `--heal` finds those blocks as damage through the
-   checksum column and repairs them. The parity cannot repair damage to
-   the filesystem structures of the image. When the image does not mount,
-   the disc counts as lost. As above, the heal of the image records
-   nothing. The operator burns `DIR` with the folder burn method, and only
-   a counted `verify` of the new disc records a check.
-
-   The parity heals less damage than its count of parity blocks can. The
-   decode uses the lowest-indexed parity blocks that are present, and a
-   retry drops one parity block at a time (FORMAT.md's "Decode rule").
-   Thus, when two or more damaged parity blocks are among the
-   blocks that the decode must use, `--heal` refuses the stripe, also when
-   the number of damaged blocks is not above the number of parity blocks. It writes no wrong
-   byte. The second copy is the main redundancy; the parity is an aid.
-3. **Another disc that holds the same content id.** The `restore` plan finds
+2. **Another disc that holds the same content id.** The `restore` plan finds
    it through the catalog INDEX tables.
-4. **The original source path**, if it still exists. `commit` stores it again.
+3. **The original source path**, if it still exists. `commit` stores it again.
 
 ## 14. Restore
 
@@ -1587,16 +1531,16 @@ A `DISC-ROOT` argument and `--disc=DIR` name one directory that holds
 noahsark init    [--source=PATH]
 noahsark commit  [--ref=NAME] [-m MESSAGE] [--exclude=PATTERN]...
                  [--one-file-system] [SOURCE]
-noahsark pack    --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]
+noahsark pack    --capacity=SIZE [--close] [--out=DIR] [--dry-run]
 noahsark pack    --undo DISC
 noahsark image build [--force] DISC
 noahsark disc burned [--undo] DISC
 noahsark disc verified DISC
 noahsark disc lost [--undo] DISC
-noahsark verify  [--no-mark] [--heal --out=DIR] DISC-ROOT
+noahsark verify  [--no-mark] DISC-ROOT
 noahsark verify  --undo DISC
 noahsark status
-noahsark gc      [--dry-run] [--force-after=DURATION]
+noahsark gc      [--dry-run]
 noahsark restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST
 noahsark recover --source=PATH --disc=DIR
 noahsark ls      [-R | --recursive] SNAPSHOT [PATH]
@@ -1606,7 +1550,7 @@ noahsark log     [REF | SNAPSHOT]
 Each line takes the global options before the command name. A positional
 argument that a line does not have is a usage error: the tool prints the
 usage line of the command and exits with code 2. For example, `noahsark pack
---capacity=bd25 extra` prints `usage: noahsark pack --capacity=SIZE [--fec]
+--capacity=bd25 extra` prints `usage: noahsark pack --capacity=SIZE
 [--close] [--out=DIR] [--dry-run]`.
 
 ### 16.3 Options
@@ -1619,7 +1563,6 @@ usage line of the command and exits with code 2. For example, `noahsark pack
 | `commit` | `--exclude` | An exclude pattern ("Excludes"). Repeatable. |
 | `commit` | `--one-file-system` | Do not cross a mount point. |
 | `pack` | `--capacity` | The target capacity ("Capacity"). Required, except with `--undo`. |
-| `pack` | `--fec` | Write FEC for this disc. Without it, the disc has no FEC. |
 | `pack` | `--close` | Make `status` print the sealing burn line for this disc. Nothing else changes. |
 | `pack` | `--out` | The directory that receives the disc root. It must be empty or absent. `staging/plans/<disc-uuid>/tree` becomes a symlink to it. |
 | `pack` | `--dry-run` | Predict the disc count and stop ("Dry run"). |
@@ -1628,11 +1571,8 @@ usage line of the command and exits with code 2. For example, `noahsark pack
 | `disc burned` | `--undo` | Remove the burn record of a `burned` disc. |
 | `disc lost` | `--undo` | Remove the lost mark of a found disc. |
 | `verify` | `--no-mark` | Check and write nothing. |
-| `verify` | `--heal` | Repair the disc root with the parity of the run. It requires `--out`. |
-| `verify` | `--out` | With `--heal`, the directory that receives the healed disc root. |
 | `verify` | `--undo` | Remove the verified record of a `verified` disc. No other option goes with it. |
 | `gc` | `--dry-run` | Print what `gc` would free, and free nothing. |
-| `gc` | `--force-after` | Shorten the 7-day wait for this run only. `DURATION` is a whole number of days with a `d` suffix, or a Go duration such as `1h`. |
 | `restore` | `--disc` | The mount point of the one drive. One value. Required. |
 | `restore` | `--overwrite` | Unlink an existing path first and then create it. |
 | `restore` | `--dry-run` | Print the plan and stop. |
@@ -1731,12 +1671,10 @@ rows 31 to 46, gives. It ends with `next: noahsark status` when it wrote a
 record or a verify log event. `--no-mark` and a `verify` that is not counted
 print no `next:` line. A failed check of a root that is not counted prints
 `disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc`, and
-exits with code 1. With no repository, it names the disc by uuid. "Verify
-and heal" gives the lines of `--heal`. Exit: 1 when the check or the heal
-failed, or when the state refused the command. 2 for `--heal` with no
-`--out`, `--out` with no `--heal`, and `--undo` with another option. "Verify
-and heal" gives the order of the checks, the `REASON` texts and the count
-`N`.
+exits with code 1. With no repository, it names the disc by uuid. Exit: 1
+when the check failed, or when the state refused the command. 2 for `--undo`
+with another option. "Verify" gives the order of the checks, the `REASON`
+texts and the count `N`.
 
 **`status`** prints `staged: N items, B bytes`, then one snapshot line for
 each snapshot that is not complete on discs, then one disc line for each disc
@@ -1745,7 +1683,7 @@ that is not undone, then one `next:` block:
 ```
 snapshot ID: N items staged, not complete on discs; recover cannot find it from the discs alone
 snapshot ID: N items staged, not complete on discs; the discs alone cannot restore all of it
-disc SEQ "LABEL"  STATE  [fec  ]UUID
+disc SEQ "LABEL"  STATE  UUID
 ```
 
 The first form names each snapshot whose snapshot object is Staged. `pack`
@@ -1775,8 +1713,7 @@ directory, then exits 1.
 
 Two spaces separate the fields. `STATE` is the state word, with the suffix
 `, last check DATE`, `, last check failed DATE` or `, not checked` where
-`docs/states.md`, "Disc states", gives one. `fec  ` is present only for a
-disc that has FEC. `DATE` is a local date, as `YYYY-MM-DD`. `B` in the
+`docs/states.md`, "Disc states", gives one. `DATE` is a local date, as `YYYY-MM-DD`. `B` in the
 `staged:` line is the sum of the stored file sizes of the Staged items: the
 chunk files in `staging/chunks/` and the metadata object files in `catalog/`.
 `docs/states.md`, "Disc states" and "State to `next:` block", give the words
@@ -1787,16 +1724,13 @@ items back, then one line for each disc whose items it skipped:
 
 ```
 gc: freed N item(s), B bytes
-gc: disc SEQ: too soon; N item(s) held until DATE
 gc: disc SEQ: not verified; N item(s) held
 gc: N item(s) skipped: disc SEQ's table is not in the catalog
 gc: N item(s) skipped: disc SEQ's table does not list them
 ```
 
-`DATE` is a local date, as `YYYY-MM-DD`: the verified time of the disc plus
-the wait of this run (7 days, or `--force-after`). The last skip line means
-that the INDEX of a `verified` disc in the catalog does not list N items of
-the disc. `gc` then frees no item of that disc and appends no `Freed` event
+The last skip line means that the INDEX of a `verified` disc in the catalog
+does not list N items of the disc. `gc` then frees no item of that disc and appends no `Freed` event
 for it.
 
 In the freed line, `N` counts every item that `gc` records OnDisc, also an
@@ -1805,9 +1739,8 @@ is the disk space that `gc` frees: the allocated blocks of the chunk files
 that it unlinked and of the regular files in the plan directories that it
 removed. A sparse image thus counts its allocated blocks, not its apparent
 size. On a platform with no block count, a file counts its apparent size. A
-symlink adds nothing. A held line
-appears only for a disc that still has a Packed item: a `packed` or a
-`burned` disc, or a `verified` disc whose wait is not over.
+symlink adds nothing. A held line appears only for a disc that still has a
+Packed item and is not `verified`: a `packed` or a `burned` disc.
 
 The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`.
 The last line is `next: noahsark status`. `--dry-run` prints no `next:`
@@ -1843,8 +1776,7 @@ repository` and exits with code 1. It reads and checks every object of the disc,
 `verify` does. It writes the catalog objects and tables that it can read, the
 disc ledger rows of the disc and of each disc that the disc names, the refs,
 the OnDisc records of the items that pass their check, and a `Recovered`
-event. `Recovered` carries the `fec` flag when the `fec_scheme` of the disc
-is not 0. It never carries the `close` flag: no disc byte records the close
+event. `Recovered` never carries the `close` flag: no disc byte records the close
 choice. The flag changes only the burn line of `status`, and `status` never
 prints a burn line for an `on disc only` disc. For a disc that
 the repository already knows and that is not `missing`, it writes only the
@@ -1908,7 +1840,7 @@ name that a later `commit` moved keeps its newer snapshot. A name that the
 disc does not carry stays as it is.
 
 A damaged file that is not an object, for example `README.txt`, one run
-header copy (`RUN.bin` or `RUN2.bin`) or an FEC file, gives the line `noahsark: recover: damaged file: FILE:
+header copy (`RUN.bin` or `RUN2.bin`), gives the line `noahsark: recover: damaged file: FILE:
 REASON` on standard error and no `damaged:` line. The count line does not
 count it. The disc still gets `CheckFailed`, and `recover` exits with code 1.
 When `REFS.bin` or `DISCS.bin` is damaged, `recover` writes none of the
@@ -2091,10 +2023,9 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
 **Unit tests** (`go test ./...`), by package:
 
 - `internal/format`: each on-disc structure against a byte-exact golden file;
-  canonical tree order; name validation.
+  the refusal of a nonzero reserved field, of another `header_len` and of
+  `version_major` 0; canonical tree order; name validation.
 - `internal/chunker`: golden cut points across buffer sizes; the Gear table.
-- `internal/fec`: repair at exactly `m` erasures, refusal at `m + 1`, burst
-  damage, the checksum column, the printed worked example.
 - `internal/object`: the commit walk, compression, excludes, one file system,
   the `UNSTABLE` flag, unreadable and vanished files, the sync of each object
   file before its rename in groups, one sync of each directory.
@@ -2104,8 +2035,7 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   middle; a close error; the flag bits of each event; the item records of
   each disc state after a stop between an event and its item records; the
   sequence mark and a roll back.
-- `internal/image`: packing order, the capacity budget, FEC on and off, the
-  dry run, the ledgers, `README.txt` and `FORMAT.txt` against the golden text,
+- `internal/image`: packing order, the capacity budget, the dry run, the ledgers, `README.txt` and `FORMAT.txt` against the golden text,
   bounded memory, the content id check of each staged tree, blob and snapshot
   object, the `mkudffs` version check, the UDF image build. The tests that
   need root and a real `mkudffs` run only with `NOAHSARK_CI=1`. Without it
@@ -2116,7 +2046,7 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   files that `DEST` holds, part files and resume, a file on two discs, `PATH`
   with and without a trailing slash, a `lost` disc and a chunk with no known
   disc in the plan, metadata as root and not as root, hardlinks, special
-  files, case-folded names, heal, bounded memory.
+  files, case-folded names, bounded memory.
 - `cmd/noahsark`: each command: options and their positions, output, the `ls`
   and `log` line formats and escapes, the escapes of the `commit` path lines,
   the ref name rule, exit codes, the `DISC` argument, the
@@ -2139,19 +2069,40 @@ does not skip it.
 
 | Cell | What it proves |
 |---|---|
-| `media/dvd+r` | The full cycle on a DVD+R size image, with the reference decoder. Then the command-line cycle, and a disc root burned as ISO 9660 with the folder burn options (`-R -iso-level 4 -V NOAHSARK`) that `verify` counts and `restore` reads. |
+| `media/dvd+r` | The full cycle on a DVD+R size image. Then the command-line cycle, and a disc root burned as ISO 9660 with the folder burn options (`-R -iso-level 4 -V NOAHSARK_0000` for disc 0) that `verify` counts and `restore` reads. |
 | `media/bd25-forced-10g` | A 25 GB medium, packed at a 10 GB `--capacity`. |
 | `chain/dvd-bd25-bd10` | Two snapshots of about 22.5 GB each across three discs. `pack` takes the older snapshot first. Data that does not fit stays Staged, and `status` names the snapshot that is not complete on discs. A fourth disc takes the rest. The repository is deleted, and `recover` runs one time for each of the four discs. Both snapshots then restore; restore swaps the discs at one mount point. A missing disc is named. |
 | `lowmem` | The 25 GB flow under a memory limit: peak memory does not grow with the data size. |
 | `incremental` | A second commit packs only the change. Both snapshots restore. The cell also runs the `internal/image` tests that need root and a real `mkudffs`. |
 | `rebuild` | The repository is deleted. `recover` runs one time for each disc. `log`, `ls` and `restore` then work, and a later `pack` deduplicates against the discs. This proves that the discs alone hold the backup. |
-| `lifecycle` | `disc verified` then `gc` keeps the 7-day wait; `pack --undo`; `verify --undo`; `disc lost` and `disc lost --undo`; each with `--yes` or `--force-yes`. |
-| `fec` | With `--fec`: heal a corrupt stripe, heal corrupt parity, heal at the maximum damage, refuse above the maximum. |
+| `lifecycle` | `disc verified` then `gc` frees the data of the disc at once; `pack --undo`; `verify --undo`; `disc lost` and `disc lost --undo`; each with `--yes` or `--force-yes`. |
+| `damage` | Random damage detection ("Random damage detection"). |
+| `cross-runner` | Two jobs ("Cross-runner restore"). |
+
+**Random damage detection.** The test uses a fresh seed on each run and
+prints the seed. A seed given on the command line or in an environment
+variable reproduces the run. A fixed list of known seeds also runs on each
+run. The test changes random bytes of an image. Then `verify` of the disc
+must report the disc bad and name what is damaged. `restore` must not write
+wrong data: it fails loudly for each damaged file.
+
+**Cross-runner restore.** Job one builds a small set of images of several
+discs. It uploads the images as an artifact, with the checksums of the source
+tree. Job two runs on a clean runner. It downloads the images and has no
+repository. It runs `recover` for each disc, then `restore`. It compares the
+result with the checksums of the source tree, byte for byte.
+
+**Frozen format-1 test data.** The disc-root fixtures under
+`reference/testdata/` are the frozen test data of format major 1. They are
+regenerated one time before the first tag. After the first tag, nobody
+regenerates them. A Go test reads them, and runs `verify`, `recover` and
+`restore` on each. Each later format major adds its own set of fixtures, and
+keeps the sets of the earlier majors.
 
 ## 21. Manual physical checklist
 
-These steps need a real drive and real media. Do them before a release and
-after a change to the burn path.
+These steps need a real drive and real media. Do them after a change to the
+burn path. A physical burn is not a release gate.
 
 1. `dvd+rw-mediainfo` on a blank disc shows the media type and the capacity.
 2. A burn completes with the `growisofs` line that `status` printed.

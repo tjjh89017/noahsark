@@ -1,16 +1,16 @@
 # NoahsArk on-disc format
 
-Format major version 1. Document version 0.5.2.
+Format major version 1. Document version 0.8.0.
 
 This document defines every byte that NoahsArk writes onto a disc and every
-rule a reader applies to those bytes. It covers the binary conventions, object
-identity, chunking, compression, every object kind, the disc and run
-structures, the filesystem layout, forward error correction, the run index
-and catalog tables, and the checks a reader performs. The rules of this
-document are normative. A second implementation that follows it produces
-byte-identical discs from the same inputs and makes identical accept and
-reject decisions on the same bytes. Commands, configuration, workflow,
-rationale and local state live in other documents and are not repeated here.
+rule a reader applies to those bytes. It covers the binary conventions,
+object identity, chunking, compression, every object kind, the disc and run
+structures, the filesystem layout, the run index and catalog tables, and the
+checks a reader performs. The rules of this document are normative. A second
+implementation that follows it produces byte-identical discs from the same
+inputs and makes identical accept and reject decisions on the same bytes.
+Commands, configuration, workflow, rationale and local state live in other
+documents and are not repeated here.
 
 A writer puts this document on every disc as `/NOAHSARK/FORMAT.txt`, byte for
 byte (section 8.5). The copy on a disc is the document version that wrote the
@@ -30,16 +30,14 @@ disc, so it describes that disc exactly. This document is plain ASCII.
 - [6. Objects](#6-objects)
   [6.1](#61-object-kinds-and-the-object-header) | [6.2](#62-chunk) | [6.3](#63-blob) | [6.4](#64-tree) | [6.5](#65-tree-entry-fixed-header) | [6.6](#66-entry-flags) | [6.7](#67-variable-areas-and-the-content-area) | [6.8](#68-extension-tlv-record) | [6.9](#69-tlv-type-registry) | [6.10](#610-name-validation) | [6.11](#611-what-is-never-stored) | [6.12](#612-hardlinks) | [6.13](#613-snapshot) | [6.14](#614-the-root-tree) | [6.15](#615-ref) | [6.16](#616-canonical-ordering)
 - [7. Disc and run model](#7-disc-and-run-model)
-  [7.1](#71-the-physical-disc) | [7.2](#72-the-run-and-the-fec-terms) | [7.3](#73-what-the-parity-does-and-does-not-cover) | [7.4](#74-disc-superblock) | [7.5](#75-run-header) | [7.6](#76-run-header-copies)
+  [7.1](#71-the-physical-disc) | [7.2](#72-the-run) | [7.3](#73-disc-superblock) | [7.4](#74-run-header) | [7.5](#75-run-header-copies)
 - [8. Filesystem and the volume tree](#8-filesystem-and-the-volume-tree)
-  [8.1](#81-filesystem-requirements) | [8.2](#82-files-at-the-volume-root) | [8.3](#83-run-directory-naming) | [8.4](#84-readmetxt) | [8.5](#85-formattxt) | [8.6](#86-reference-decoder) | [8.7](#87-fill-order-inside-a-run) | [8.8](#88-name-and-path-budget)
-- [9. Forward error correction](#9-forward-error-correction)
-  [9.1](#91-parity-layout) | [9.2](#92-the-code) | [9.3](#93-checksum-column) | [9.4](#94-header-replication-and-parity-files) | [9.5](#95-decode-rule) | [9.6](#96-scheme-0-no-fec)
-- [10. The run index and the catalog](#10-the-run-index-and-the-catalog)
-  [10.1](#101-index) | [10.2](#102-refs) | [10.3](#103-discs) | [10.4](#104-catalog-contents-per-run) | [10.5](#105-dedup-rule) | [10.6](#106-proof-of-absence-and-coverage)
-- [11. Reader and writer rules](#11-reader-and-writer-rules)
-  [11.1](#111-reader-procedure) | [11.2](#112-writer-rules) | [11.3](#113-which-catalog-a-reader-trusts) | [11.4](#114-conformance) | [11.5](#115-change-mechanisms) | [11.6](#116-cross-version-and-unknown-value-reading) | [11.7](#117-refusal-and-partial-reading)
-- [12. Golden vectors](#12-golden-vectors)
+  [8.1](#81-filesystem-requirements) | [8.2](#82-files-at-the-volume-root) | [8.3](#83-run-directory-naming) | [8.4](#84-readmetxt) | [8.5](#85-formattxt) | [8.6](#86-fill-order-inside-a-run) | [8.7](#87-name-and-path-budget)
+- [9. The run index and the catalog](#9-the-run-index-and-the-catalog)
+  [9.1](#91-index) | [9.2](#92-refs) | [9.3](#93-discs) | [9.4](#94-catalog-contents-per-run) | [9.5](#95-dedup-rule) | [9.6](#96-proof-of-absence-and-coverage)
+- [10. Reader and writer rules](#10-reader-and-writer-rules)
+  [10.1](#101-reader-procedure) | [10.2](#102-writer-rules) | [10.3](#103-which-catalog-a-reader-trusts) | [10.4](#104-conformance) | [10.5](#105-change-mechanisms) | [10.6](#106-cross-version-and-unknown-value-reading) | [10.7](#107-refusal-and-partial-reading)
+- [11. Golden vectors](#11-golden-vectors)
 
 ## 1. Scope and conventions
 
@@ -52,14 +50,11 @@ structures and no raw areas outside the filesystem.
     DISC.bin                     disc superblock
     README.txt                   plain-text explanation for a human
     FORMAT.txt                   this document
-    REFERENCE/decoder.py         a standalone Python 3 reference decoder
     runs/<seq>/
         RUN.bin                  run header
         INDEX.bin                file order, object table, prerequisites
         catalog/REFS.bin         named pointers to snapshots
         catalog/DISCS.bin        the disc directory table
-        checksum.bin             the checksum column of the FEC stream
-        parity/pNNNN.bin         one file per parity column
         RUN2.bin                 run header copy
     objects/<ab>/<name>          chunks, blobs and trees
     snapshots/<name>             snapshot objects
@@ -68,8 +63,8 @@ structures and no raw areas outside the filesystem.
 `<ab>` is the first two hex digits of the digest. `<name>` is the full
 68-character multihash hex (section 3.5).
 
-A run is the unit of packing, of the object index, of the Reed-Solomon parity
-and of the catalog copy. One disc holds one run.
+A run is the unit of packing, of the object index and of the catalog copy.
+One disc holds one run.
 
 A burned disc is immutable. Nothing rewrites it and nothing adds to it. Format
 version 1 never removes a snapshot and never frees disc space on a burned
@@ -87,9 +82,9 @@ record.
    appears inside a fixed header.
 3. Every structure is packed with manual alignment. Every gap is a named
    reserved field. A writer writes zero into every reserved field, every
-   reserved bit and every padding byte. A reader does not interpret a
-   reserved field, a reserved bit or a padding byte, and does not reject a
-   nonzero value in one. A golden test checks that the writer wrote zero into
+   reserved bit and every padding byte. A reader refuses a nonzero reserved
+   field, reserved bit or padding byte, and names the field and the value. A
+   golden test checks that the writer wrote zero into
    every reserved field and every padding byte.
 4. Every structure begins with the 32-byte common header of section 2.3.
 5. A structure is a file-level container or an object payload header. A
@@ -99,14 +94,12 @@ record.
    own table states one. Every record has the fixed size that its table
    states. No structure stores a record size.
 6. A reader refuses an unknown `version_major`. There is no minor version.
-7. A later writer adds a field in one of two ways only: it gives meaning to
-   reserved space, or it appends the field to the end of the fixed part and
-   enlarges `header_len` (section 2.3). A reader of today reads both forms
-   correctly, by rule 3 and by the `header_len` rule. Any other change is a
-   `version_major` bump, and an old reader refuses it.
+7. A later writer adds or changes a field of a structure in one way only: it
+   bumps the `version_major` of that structure (section 2.6). A reader that
+   does not know the new value refuses the structure.
 8. A checksum covers only bytes the writer finalized before computing it.
-   The object header, the disc superblock, the run header and the checksum
-   block carry one CRC each, over the bytes before the CRC field. INDEX, REFS
+   The object header, the disc superblock and the run header carry one CRC
+   each, over the bytes before the CRC field. INDEX, REFS
    and DISCS carry no CRC: a SHA-256 hash in another structure covers every
    byte of each (section 2.7).
 9. CRCs are CRC-32C: polynomial 0x1EDC6F41, reflected, initial value
@@ -136,22 +129,17 @@ mismatch in a trailing zero byte is as final as a mismatch in a letter.
 | `magic_kind` (padded to 8 bytes) | Structure | Section |
 |---|---|---|
 | `CHUNK\0\0\0` | Chunk object | 6.2 |
-| `BLOB\0\0\0\0` | Blob object | 6.4 |
-| `TREE\0\0\0\0` | Tree object | 6.5 |
-| `SNAPSHOT` | Snapshot object | 6.14 |
-| `DISC\0\0\0\0` | Disc superblock | 7.5 |
-| `RUN\0\0\0\0\0` | Run header | 7.6 |
-| `INDEX\0\0\0` | Run index | 11.1 |
-| `CHECKSUM` | Checksum column record | 10.3 |
-| `REFS\0\0\0\0` | Ref table | 11.2 |
-| `DISCS\0\0\0` | Disc directory table | 11.3 |
+| `BLOB\0\0\0\0` | Blob object | 6.3 |
+| `TREE\0\0\0\0` | Tree object | 6.4 |
+| `SNAPSHOT` | Snapshot object | 6.13 |
+| `DISC\0\0\0\0` | Disc superblock | 7.3 |
+| `RUN\0\0\0\0\0` | Run header | 7.4 |
+| `INDEX\0\0\0` | Run index | 9.1 |
+| `REFS\0\0\0\0` | Ref table | 9.2 |
+| `DISCS\0\0\0` | Disc directory table | 9.3 |
 
 An implementation computes the eight bytes from the ASCII name and never
 copies a hexadecimal column. A test asserts the two agree.
-
-A parity file carries no magic and no header. It holds the blocks of one
-parity column and nothing else (section 9.1). A reader identifies it by its
-name.
 
 ### 2.3 Common header
 
@@ -197,27 +185,19 @@ The writer of this version writes these values:
 | INDEX | 56 | The common header and the 24-byte fixed body. |
 | REFS, DISCS | 56 | The common header and the 24-byte fixed body. |
 
-A reader obeys `header_len`. Let `known_len` be the value of the table above
-for the structure.
-
-- When `header_len` equals `known_len`, the reader reads the structure as its
-  table states.
-- When `header_len` is above `known_len`, the reader reads the fields it
-  knows at their stated offsets, ignores the bytes from `known_len` to
-  `header_len`, and takes the variable part from offset `header_len`. It
-  never takes the variable part from its own compiled size.
-- When `header_len` is below `known_len`, the reader refuses the structure
-  and names both values.
+A reader checks `header_len`. It refuses a structure whose `header_len`
+differs from the value of the table above for that structure and its
+`version_major`, and names both values. Where a structure has a variable
+part, the variable part starts at offset `header_len`, and a reader takes it
+from there after the check. It never takes the variable part from its own
+compiled size.
 
 A CRC field keeps the offset that its table states, and it covers the bytes
-before that offset, whatever the value of `header_len`. Bytes that a larger
-`header_len` adds lie after the CRC field. In an object they are payload
-bytes, and the content id covers them. A chunk has no fixed body: its
-`header_len` is 64, and a reader refuses a chunk with another value, because
-every payload byte of a chunk is file content. The disc superblock and the
-run header are files of a fixed size, 2048 and 512 bytes. A writer of format
-major 1 never enlarges them, and a later field goes into their reserved
-space.
+before that offset. A chunk has no fixed body: its `header_len` is 64,
+because every payload byte of a chunk is file content. The disc superblock
+and the run header are files of a fixed size, 2048 and 512 bytes. Their
+reserved space gives a later `version_major` room for new fields without a
+large move of the layout.
 
 A record inside a structure never carries this header.
 
@@ -227,7 +207,7 @@ carries no magic or version fields of its own; those live once, in the
 common header.
 
 Hash and CRC coverage, and reader checks, are stated once per structure in
-sections 2.7, 2.8 and 11.1; this section states the shape only.
+sections 2.7, 2.8 and 10.1; this section states the shape only.
 
 ### 2.4 Strings
 
@@ -251,7 +231,7 @@ A registry id is assigned once. It is never reused and never renumbered.
 | 0x12 | `sha2-256` | 32 | The only algorithm. Every reader must read it. |
 
 A `hash_algo` field is one byte, so a code in this registry is at most 0xFF.
-Two structures hold a `hash_algo` field: the run header (section 7.5) and the
+Two structures hold a `hash_algo` field: the run header (section 7.4) and the
 object header (section 6.1). Every digest field of this document is 32 bytes.
 A future algorithm whose digest is longer, or whose code is above 0xFF, needs
 a new major version.
@@ -273,20 +253,19 @@ a new major version.
 | 3 | `tree` |
 | 4 | `snapshot` |
 
-A ref is a row of the REFS table, section 10.2. It is not an object kind and
+A ref is a row of the REFS table, section 9.2. It is not an object kind and
 carries no id in this registry.
 
-**File role registry.** Section 11.1 states the full table; this is the
+**File role registry.** Section 9.1 states the full table; this is the
 registry index. The ids name the roles a Files row in INDEX may hold: the
 files of a run.
 
 **FEC scheme registry.**
 
-| Id | Name | Field | Shards | Status |
-|---:|---|---|---:|---|
-| 0 | `none` | - | - | **Default.** No FEC. A run with this scheme carries no checksum column and no parity files (section 9.6). |
-| 1 | `rs255-gf8` | GF(2^8) | 255 | A stripe is `k + 1 + m = 255` blocks; the code is over the `k + m` data and parity shards (section 9.1). |
-| 2-255 | reserved | | | |
+| Id | Name | Status |
+|---:|---|---|
+| 0 | `none` | The only scheme of format major 1. The run carries no data for error correction, and `fec_k` and `fec_m` are 0. |
+| 1-255 | reserved | For a later scheme. A reader that finds one still reads the objects of the run (section 7.4). |
 
 ### 2.6 Version policy
 
@@ -296,29 +275,47 @@ writes the format, and each structure's own `version_major` in its common
 header. A bump to one never implies a bump to another.
 
 Every structure's `version_major` is 1 as this document stands. There is no
-minor version. Until the document reaches version 1.0.0 the on-disc format
-is not frozen: a structure's layout may change without a version bump, and a
-disc burned under a pre-1.0.0 document version carries no compatibility
-promise to a later one. Such a disc carries its own `FORMAT.txt` and its own
-reference decoder, and those two files describe it exactly. NOTES.md's change
-log states what changed at each document version.
+minor version. The format freezes when this document reaches version 1.0.0.
+The document goes to 1.0.0 at the first tag of the program, `v0.1`. Until
+then the on-disc format is not frozen: a structure's layout may change
+without a version bump, and a disc burned under a pre-1.0.0 document version
+carries no compatibility promise to a later one. Such a disc carries its own
+`FORMAT.txt`, and that file describes it exactly. NOTES.md's change log
+states what changed at each document version.
 
 The whole compatibility mechanism is this:
 
 1. A reader refuses a structure whose `version_major` it does not know, and
    prints the value.
-2. A writer writes zero into reserved space, and a reader ignores reserved
-   space (section 2.1, rule 3). A later writer can therefore give meaning to
-   reserved space, and a reader of today still reads the structure.
-3. A reader obeys `header_len` (section 2.3). A later writer can therefore
-   append a field to the fixed part of a structure, and a reader of today
-   still finds the variable part.
+2. A writer writes zero into reserved space, and a reader refuses a nonzero
+   value there (section 2.1, rule 3).
+3. A reader refuses a `header_len` other than the one it knows for the
+   structure and its `version_major` (section 2.3).
 4. A registry id that a reader does not know, in a field that the reader
-   must interpret, is refused by name (section 11.5).
-5. Any change that a reader of today would misread is a `version_major`
-   bump.
+   must interpret, is refused by name (section 10.6).
+5. Every new field and every change of a layout is a `version_major` bump
+   of that structure.
 
-`tool_version` (sections 7.4 and 7.5) is informational only. It never gates
+These rules hold for `version_major`:
+
+- `version_major` only goes up. A value that was used once means that
+  layout for ever, and is never used for another layout.
+- The value 0 is not valid. A reader refuses it.
+- When a structure needs a fresh start, a new `magic_kind` is defined, and
+  its `version_major` starts at 1. The old `magic_kind` stays readable, with
+  all its versions.
+
+From document version 1.0.0 on, this document is cumulative. It describes
+every released `version_major` of every structure and every released
+registry id. A new version adds its layout. The layout of an older released
+version is never deleted and never changed. A layout from before document
+version 1.0.0 is not kept, because no compatibility promise covers it.
+
+The promise to a disc in the field is this: a newer reader reads every older
+disc. An older reader refuses a structure with a newer `version_major`, and
+says so. There is no promise that an older reader reads a newer disc.
+
+`tool_version` (sections 7.3 and 7.4) is informational only. It never gates
 what a reader accepts; a reader never refuses a structure on the strength of
 its value.
 
@@ -330,12 +327,11 @@ hash of this table is SHA-256, the run header's `hash_algo`.
 
 | Field | In | Covers |
 |---|---|---|
-| `index_hash` | Run header (section 7.5) | Every byte of `INDEX.bin`. |
-| `file_hash` | INDEX Files row (section 10.1) | Every byte of the named file, for the roles that section 10.1 lists. This is what protects `DISC.bin`, `README.txt`, `FORMAT.txt`, `decoder.py`, `REFS.bin` and `DISCS.bin`. |
-| `run_hash` | DISCS row (section 10.3) | The 512 bytes of that run's `RUN.bin`, CRC included. |
+| `index_hash` | Run header (section 7.4) | Every byte of `INDEX.bin`. |
+| `file_hash` | INDEX Files row (section 9.1) | Every byte of the named file, for the roles that section 9.1 lists. This is what protects `DISC.bin`, `README.txt`, `FORMAT.txt`, `REFS.bin` and `DISCS.bin`. |
+| `run_hash` | DISCS row (section 9.3) | The 512 bytes of that run's `RUN.bin`, CRC included. |
 | `content_id` | Object file name | The uncompressed payload only (section 3.1). Never the header. |
-| `content_id` | INDEX Objects row and Prereqs row (section 10.1) | The referenced object, as above. |
-| Block digest | Checksum block (section 9.3) | The 2048 bytes of one data block as they lie in the FEC stream. The first 8 bytes of the 32-byte SHA-256 digest. |
+| `content_id` | INDEX Objects row and Prereqs row (section 9.1) | The referenced object, as above. |
 
 The chain of trust of one disc is: the run header CRC proves the run header;
 `index_hash` in the run header proves `INDEX.bin`; a `file_hash` in INDEX
@@ -350,10 +346,9 @@ reaches a disc, and the operations document holds their coverage table.
 |---|---|---|
 | Object header (section 6.1) | `header_crc32c` | The common header plus bytes 0 to 23 of the object header, that is bytes 0 to 55 of the file. |
 | Blob, tree and snapshot payloads (sections 6.3, 6.4, 6.13) | none | The content id covers the whole payload, records included. |
-| Disc superblock (section 7.4) | `super_crc32c` | Bytes 0 to 2043. |
-| Run header (section 7.5) | `header_crc32c` | Bytes 0 to 503. |
-| Checksum block (section 9.3) | `header_crc32c` | Bytes 0 to 15 of the block. The digests are checked as section 9.3 states. |
-| INDEX, REFS, DISCS (sections 10.1 to 11.3) | none | `index_hash` covers INDEX. The `file_hash` of their Files rows covers REFS and DISCS. |
+| Disc superblock (section 7.3) | `super_crc32c` | Bytes 0 to 2043. |
+| Run header (section 7.4) | `header_crc32c` | Bytes 0 to 503. |
+| INDEX, REFS, DISCS (sections 9.1 to 9.3) | none | `index_hash` covers INDEX. The `file_hash` of their Files rows covers REFS and DISCS. |
 
 Host-only structures carry CRC fields of their own. None of those bytes
 reaches a disc, and the operations document holds their coverage table.
@@ -370,18 +365,17 @@ limit. A reader refuses a structure that exceeds one and names the limit.
 | Tree entries per directory | 2^32 - 1 | `entry_count`, section 6.4. |
 | Blob entries | 2^64 - 1 | `entry_count`, section 6.3. |
 | Tree entry length | 2^32 - 1 bytes | `entry_len`, section 6.5. |
-| TLV payload | Always inline. At most `entry_len` minus the 72-byte fixed header minus the TLV's own 8-byte prefix, that is at most `2^32 - 1 - 72 - 8` bytes (4,294,967,215), and far less once the name, the content area and any other TLV of the entry are counted. | Section 6.9. |
+| TLV payload | Always inline. At most `entry_len` minus the 72-byte fixed header minus the TLV's own 8-byte prefix, that is at most `2^32 - 1 - 72 - 8` bytes (4,294,967,215), and far less once the name, the content area and any other TLV of the entry are counted. | Section 6.8. |
 | Snapshot metadata TLVs | 65,535 per snapshot | `meta_count`, section 6.13. |
 | Ref name | 1 to 40 bytes | Section 6.15. |
-| Disc label | 64 bytes, in the superblock and in the DISCS row alike | Sections 7.4 and 10.3. |
+| Disc label | 64 bytes, in the superblock and in the DISCS row alike | Sections 7.3 and 9.3. |
 | Run sequence number | 1 to 9,999,999,999 | The 10-digit run directory name, section 8.3. |
-| Objects per run | 2^32 - 1 | `object_count`, section 10.1, is u32, so this is the limit INDEX can index; a writer refuses to pack a run past it. |
+| Objects per run | 2^32 - 1 | `object_count`, section 9.1, is u32, so this is the limit INDEX can index; a writer refuses to pack a run past it. |
 | File size | 2^64 - 1 bytes | Every size field is u64, section 2.1. |
-| Disc capacity | 2^64 - 1 sectors of 2048 bytes, a physical medium unit. | Section 7.4. |
-| FEC geometry | `k = 231`, `m = 23` | Sections 7.5 and 9.1. |
+| Disc capacity | 2^64 - 1 sectors of 2048 bytes, a physical medium unit. | Section 7.3. |
 | On-disc object name | 68 characters | Section 3.4. |
-| Any on-disc name | 126 characters | Section 8.8. |
-| Any on-disc path | under 220 characters | Section 8.8. |
+| Any on-disc name | 126 characters | Section 8.7. |
+| Any on-disc path | under 220 characters | Section 8.7. |
 
 The host limits of the capacity and the host filesystems are not in this
 table. The operations document holds them.
@@ -457,8 +451,7 @@ forms of the three ids take the `1220` multihash prefix of section 3.4.
 SHA-256 is the only algorithm of this version. The run header and every
 object header state it in `hash_algo`, as the code 0x12.
 
-Digests are never truncated. A digest is 256 bits. The 8-byte digests of the
-checksum column are not content ids.
+Digests are never truncated. A digest is 256 bits.
 
 ### 3.3 Digest fields in records
 
@@ -631,7 +624,7 @@ Frozen values:
 The two values follow from the rule. The rule is the authority; the printed
 values let a reader check an implementation by eye. The implementation must
 compute them once, check them in as literals, and cover them with the golden
-vectors of section 12.
+vectors of section 11.
 
 ---
 
@@ -693,13 +686,12 @@ object stays valid forever. A writer must emit the parameters above.
 
 Byte identity of a compressed payload additionally requires the **same
 writer**: the same `tool_version` registry id and the same `tool_version`
-version value (section 7.4). A later encoder may produce different, equally
+version value (section 7.3). A later encoder may produce different, equally
 valid bytes at the same level. This never changes a content id, because the
 id is the hash of the kind byte and the uncompressed payload (section 3.1).
 It does change
-`stored_len`, and therefore the byte offset of every object after it in the
-run's FEC stream, so a golden vector that names compressed bytes also names
-the `tool_version` that produced them (section 12).
+`stored_len`, so a golden vector that names compressed bytes also names the
+`tool_version` that produced them (section 11).
 
 Conformance is judged on ids, structures and readability, never on compressed
 bytes. Two writers with different `tool_version` values that produce the same
@@ -746,7 +738,7 @@ variable data.
 | 4 | `snapshot` | Root tree, parent, time, text. | Root tree, parent snapshot. | One file. |
 
 A ref is a named pointer to a snapshot. It is a row of the REFS table
-(section 10.2), never an object file and never a value of `kind`. A reader
+(section 9.2), never an object file and never a value of `kind`. A reader
 that finds a `kind` value outside 1 to 4 refuses the record and names the
 structure.
 
@@ -922,8 +914,9 @@ only. The type is not in the mode.
 | 7 | `UNSTABLE` | The file changed while it was being read, and no earlier consistent version existed. The content is one possible read of a moving file. The operations document states when a writer sets it and what a restore does with it. |
 
 A critical new per-entry fact takes a TLV type in the reserved critical range
-0x8000 to 0xBFFF, never a reserved bit of this byte, because a reader ignores
-a reserved bit.
+0x8000 to 0xBFFF, never a reserved bit of this byte. A reserved bit of this
+byte is set only by a new `version_major` of the tree, and a reader of today
+refuses a nonzero reserved bit.
 
 ctime storage is conditioned on one configuration key. A writer stores ctime
 when `metadata.ctime` is true and the source reports one, and sets
@@ -1162,7 +1155,7 @@ time. An encoded name above 4095 bytes is refused.
 ### 6.15 Ref
 
 Purpose: a named pointer to a snapshot, stored as a row in the REFS table
-(section 10.2), never as a separate object file.
+(section 9.2), never as a separate object file.
 
 Ref record, 88 bytes:
 
@@ -1238,50 +1231,20 @@ The `disc_uuid` is the identity of a disc. `run_seq` and `disc_seq` are
 counters of one repository state. When a repository is rebuilt after a loss,
 a new disc can receive a `run_seq` that a lost disc already carries. Every
 reference from one disc to another therefore names the `disc_uuid`, never the
-`run_seq` (section 10.1, the Prereqs table).
+`run_seq` (section 9.1, the Prereqs table).
 
 One disc holds one run. A writer writes the whole `/NOAHSARK/` tree in one
 burn and never adds to it.
 
-### 7.2 The run and the FEC terms
+### 7.2 The run
 
 A run is what one pack writes for one disc. It is the unit of packing, of the
-object index, of the Reed-Solomon parity and of the catalog copy.
+object index and of the catalog copy.
 
-A run is self-contained: it carries its own header in two files, its own
-INDEX, and, when `fec_scheme` is 1, its own parity.
+A run is self-contained: it carries its own header in two files and its own
+INDEX.
 
-**FEC terms.** This table is a complete forward definition of every term that
-sections 7.4 to 7.6 and section 9 use. Section 9.1 repeats it with the burst
-bound and the encoding order.
-
-| Term | Meaning |
-|---|---|
-| `k`, `m` | The data column count and the parity column count. Version 1 fixes `k = 231` and `m = 23`, so `k + 1 + m = 255`. |
-| Stream file | A file whose Files row in INDEX has a role inside the FEC stream (section 10.1, the file role registry). `RUN.bin`, `RUN2.bin`, `checksum.bin` and every parity file are not stream files. |
-| FEC stream | The stream files, in the order of their Files rows in INDEX, each file's bytes padded with zero bytes up to a multiple of 2048, concatenated in that order. `INDEX.bin` is the first file of the stream. An empty file adds no block. |
-| `stream_bytes`, `stream_blocks` | The byte length of the FEC stream, padding included, so a multiple of 2048; and that length divided by 2048: the number of 2048-byte blocks in the stream. |
-| `L`, `column_blocks` | The number of blocks in one column. `L = ceil(stream_blocks / k)`. |
-| Column | A range of `L` blocks of the FEC stream. Data column `c` is blocks `[c*L, (c+1)*L)` of the stream, for `c = 0 .. k-1`. A block at or past `stream_blocks` is 2048 zero bytes. Column `k`, the checksum column, is the `L` blocks of `runs/<seq>/checksum.bin`. Columns `k+1` to 254 are the `m` parity columns, each the `L` blocks of one `parity/pNNNN.bin` file. |
-| Stripe | Block `i` of every column, for `i = 0 .. L-1`. A stripe is 255 blocks: `k` data, 1 checksum, `m` parity. The code covers the `k` data and the `m` parity blocks; the checksum block is outside the code (section 9.3). |
-
-A reader finds the first stream block of a stream file this way: go over the
-Files rows in order, skip the rows that are not stream files, and add
-`ceil(byte_len / 2048)` for each stream file before the wanted one.
-
-The FEC stream has no relationship to where its bytes physically sit on the
-medium. A block index is a position inside the stream, never a medium address.
-
-### 7.3 What the parity does and does not cover
-
-The parity covers exactly the bytes of the FEC stream: the run's stream
-files, in INDEX's file order, zero-padded per file to a 2048 boundary.
-Filesystem metadata, such as a directory record, is never part of the stream
-and is never covered by the parity. The parity therefore does not depend on
-where the filesystem places a file, or on whether the filesystem stores a
-small file inside its own metadata blocks.
-
-### 7.4 Disc superblock
+### 7.3 Disc superblock
 
 Purpose: the immutable facts of one physical disc, written as
 `/NOAHSARK/DISC.bin`.
@@ -1298,7 +1261,7 @@ Fixed body, after the 32-byte common header (`magic_kind` `DISC`):
 | 64 | 8 | u64 | `disc_seq` | Monotonic position in the repository, 0-based. |
 | 72 | 8 | u64 | `capacity_sectors` | The capacity that the writer packed this disc for, in sectors of 2048 bytes. |
 | 80 | 40 | u8[40] | `reserved_a` | Zero. |
-| 120 | 8 | i64 | `created_sec` | Pack time of the run, seconds since 1970-01-01 UTC: the moment `pack` finalized the image. Not the burn time, which is unknown when these bytes are hashed (section 7.5). |
+| 120 | 8 | i64 | `created_sec` | Pack time of the run, seconds since 1970-01-01 UTC: the moment `pack` finalized the image. Not the burn time, which is unknown when these bytes are hashed (section 7.4). |
 | 128 | 4 | u32 | `created_nsec` | Nanoseconds. |
 | 132 | 4 | i32 | `tz_offset_sec` | Local zone offset at that pack time, seconds east of UTC. |
 | 136 | 8 | u8[8] | `reserved_b` | Zero. Keeps `label_len` aligned. |
@@ -1311,8 +1274,8 @@ Fixed body, after the 32-byte common header (`magic_kind` `DISC`):
 Total: 2048 bytes. `header_len` is 2048.
 
 Field rules. The superblock holds only facts of the disc. Every per-run
-parameter, that is the hash algorithm and the FEC scheme and geometry, lives
-in the run header (section 7.5) only; the superblock never repeats it.
+parameter, that is the hash algorithm and the FEC scheme fields, lives in the
+run header (section 7.4) only; the superblock never repeats it.
 
 `capacity_sectors` is the one capacity field. It is the limit that the run
 was packed for. The capacity that a drive reports for the medium is not
@@ -1323,10 +1286,10 @@ stored.
 id 1 is the reference implementation. Registry id 0 is invalid. Ids 2 to 255
 are assigned once, on request, and are never reused. A reader never interprets
 the low 24 bits of a writer it does not know; it prints the pair. The run
-header records the same value (section 7.5).
+header records the same value (section 7.4).
 
-The superblock needs no second copy. It lies inside the FEC stream, and the
-run header carries the disc uuid, the repository uuid and the disc sequence.
+The superblock has one copy. The run header carries the disc uuid, the
+repository uuid and the disc sequence too.
 
 Hash and CRC coverage. `super_crc32c` covers bytes 0 to 2043. The `file_hash`
 of the role 3 Files row in INDEX covers all 2048 bytes.
@@ -1335,7 +1298,7 @@ Reader checks. Check `magic_project`, `magic_kind` and `version_major`.
 Verify `super_crc32c` before using any field. Check that `disc_uuid`,
 `repo_uuid` and `disc_seq` equal those of the run header.
 
-### 7.5 Run header
+### 7.4 Run header
 
 Purpose: the identity, geometry and pointers of one run. It is the root of
 trust of the disc.
@@ -1351,18 +1314,18 @@ files are byte-identical.
 | 48 | 16 | u8[16] | `repo_uuid` | The repository. |
 | 64 | 8 | u64 | `run_seq` | Run number in the repository, 1-based. It equals `<seq>` of the run directory. |
 | 72 | 8 | u64 | `disc_seq` | Disc sequence number, 0-based. |
-| 80 | 2 | u16 | `fec_k` | Data columns. 231 when `fec_scheme` is 1, 0 when it is 0. |
-| 82 | 2 | u16 | `fec_m` | Parity columns. 23 when `fec_scheme` is 1, 0 when it is 0. |
-| 84 | 1 | u8 | `fec_scheme` | FEC scheme registry. |
+| 80 | 2 | u16 | `fec_k` | 0. A later FEC scheme defines its meaning. |
+| 82 | 2 | u16 | `fec_m` | 0. A later FEC scheme defines its meaning. |
+| 84 | 1 | u8 | `fec_scheme` | FEC scheme registry. 0 in format major 1. |
 | 85 | 1 | u8 | `hash_algo` | Multicodec code of every digest on this disc. 0x12. |
 | 86 | 10 | u8[10] | `reserved_a` | Zero. Keeps `index_bytes` aligned. |
 | 96 | 8 | u64 | `index_bytes` | Byte length of `INDEX.bin`. |
 | 104 | 32 | u8[32] | `index_hash` | Hash of `INDEX.bin`'s bytes. |
-| 136 | 8 | u64 | `stream_bytes` | Byte length of the FEC stream, section 7.2. A multiple of 2048. |
+| 136 | 8 | u64 | `reserved_d` | Zero. |
 | 144 | 32 | u8[32] | `reserved_b` | Zero. |
 | 176 | 8 | i64 | `created_sec` | Pack time, seconds since 1970-01-01 UTC: the moment `pack` finalized this run's image. Never the burn time, which is unknown when these bytes are hashed; the actual burn time lives only in the local state log; see the operations document. |
 | 184 | 4 | u32 | `created_nsec` | Nanoseconds. |
-| 188 | 4 | u32 | `tool_version` | Writer registry id in the high 8 bits, writer-defined version in the low 24 bits, as in the superblock (section 7.4). Informational only. |
+| 188 | 4 | u32 | `tool_version` | Writer registry id in the high 8 bits, writer-defined version in the low 24 bits, as in the superblock (section 7.3). Informational only. |
 | 192 | 312 | u8[312] | `reserved_c` | Zero. |
 | 504 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 503. |
 | 508 | 4 | u8[4] | `reserved_final` | Zero. |
@@ -1372,39 +1335,35 @@ Total: 512 bytes. `header_len` is 512.
 Field rules. `created_sec` is pack time, never burn time. It equals
 `created_sec` of the superblock.
 
-`fec_k` and `fec_m` are 231 and 23 when `fec_scheme` is 1. Both are 0 when
-`fec_scheme` is 0, and a reader then derives no geometry. A reader refuses a
-`fec_scheme` 1 run with any other pair for repair, and still reads its
-objects.
+A writer of format major 1 writes `fec_scheme`, `fec_k` and `fec_m` as 0: the
+run carries no data for error correction. A reader that finds a nonzero
+`fec_scheme` cannot use that scheme and says so, naming the value. It still
+reads every object of the run through the filesystem, and it ignores `fec_k`
+and `fec_m`.
 
 The run header records no chunker parameter and no compression default. A
 reader needs neither: every object header states its own compression.
 
-A reader derives the FEC geometry from `stream_bytes`, `fec_k` and `fec_m`:
-`stream_blocks` is `stream_bytes` divided by 2048, and `L`, section 7.2, is
-`stream_blocks` divided by `fec_k`, rounded up. Neither `stream_blocks` nor
-`L` is stored. `checksum.bin` and every parity file are `L * 2048` bytes
-long.
-
 `index_bytes` and `index_hash` let a reader verify `INDEX.bin` before it
-uses any row. `INDEX.bin` is always the first file of the FEC stream
-(section 7.2).
+uses any row. `INDEX.bin` is always the first row of the Files table
+(section 8.6).
 
 Reader checks. Check `magic_project`, `magic_kind` and `version_major`.
 Verify `header_crc32c`. Refuse a `hash_algo` other than 0x12 and name the
 value. Verify `index_hash` against the bytes of `INDEX.bin`.
 
-### 7.6 Run header copies
+### 7.5 Run header copies
 
 The run header exists two times: `RUN.bin` and `RUN2.bin`. Both files are
-512 bytes and byte-identical. Both are outside the FEC stream, because the
-header holds `index_hash` and `stream_bytes`, which are final only after the
-stream is. Two copies exist so that one survives damage to the other. A
+512 bytes and byte-identical. No `file_hash` covers them, because the header
+holds `index_hash`, which is final only after INDEX is; the header CRC covers
+each copy. Two copies exist so that one survives damage to the other. A
 writer lays `RUN.bin` near the start of the run and `RUN2.bin` at its end
-(section 8.7).
+(section 8.6).
 
 A reader reads `RUN.bin`. When that file is unreadable or its checks fail,
-the reader reads `RUN2.bin` and applies the same checks.
+the reader reads `RUN2.bin` and applies the same checks. `RUN2.bin` is a copy
+of the one run header of the disc. It is never a second run.
 
 ---
 ## 8. Filesystem and the volume tree
@@ -1428,6 +1387,9 @@ below:
 A disc whose filesystem does not mount counts as lost: this format defines no
 recovery from the raw medium.
 
+The format requires no volume label, and a reader never depends on the
+label: it is for the operator only.
+
 The recommended volume is pure UDF at revision 2.01, built with `mkudffs`.
 ISO 9660 with Rock Ridge also conforms, and so does ISO 9660 at level 4.
 Joliet alone does not conform, because it cuts the names. A UDF bridge on an
@@ -1445,9 +1407,8 @@ type: one disc holds one run.
 The filesystem metadata bytes depend on the tool that builds the volume and on
 its version. Two writers that hold every rule of this document still differ
 inside those bytes. The run header records the writer in `tool_version`
-(section 7.5). A golden vector therefore covers the files NoahsArk itself
-writes and the parity computed over the actual FEC stream, never the
-filesystem metadata bytes.
+(section 7.4). A golden vector therefore covers the files NoahsArk itself
+writes, never the filesystem metadata bytes.
 
 A filesystem may store the data of a small file inside its own metadata
 blocks. The format allows that. No rule of this document depends on the
@@ -1458,21 +1419,18 @@ embedding.
 
 Every byte that NoahsArk writes is an ordinary file.
 
-| Path | Content | FEC stream |
-|---|---|---|
-| `/NOAHSARK/DISC.bin` | Disc superblock (section 7.4). | Inside. |
-| `/NOAHSARK/README.txt` | Plain-text explanation of the format for a human (section 8.4). | Inside. |
-| `/NOAHSARK/FORMAT.txt` | This document (section 8.5). | Inside. |
-| `/NOAHSARK/REFERENCE/decoder.py` | A standalone Python 3 reference decoder (section 8.6). | Inside. |
-| `/NOAHSARK/runs/<seq>/RUN.bin` | The run header, 512 bytes. | Outside. |
-| `/NOAHSARK/runs/<seq>/INDEX.bin` | File order, the Objects table, the Prereqs table (section 10.1). | Inside, the first file. |
-| `/NOAHSARK/runs/<seq>/catalog/REFS.bin` | The ref table (section 10.2). | Inside. |
-| `/NOAHSARK/runs/<seq>/catalog/DISCS.bin` | The disc directory table (section 10.3). | Inside. |
-| `/NOAHSARK/runs/<seq>/checksum.bin` | The checksum column, `L` blocks. Only when `fec_scheme` is 1. | Outside. |
-| `/NOAHSARK/runs/<seq>/parity/pNNNN.bin` | One file per parity column, `L` blocks. Only when `fec_scheme` is 1. | Outside. |
-| `/NOAHSARK/runs/<seq>/RUN2.bin` | Run header copy, 512 bytes. | Outside. |
-| `/NOAHSARK/objects/<ab>/<name>` | Chunks, blobs and trees. | Inside, in the order of INDEX. |
-| `/NOAHSARK/snapshots/<name>` | Snapshot objects: every snapshot of the repository (section 10.4). | Inside, in the order of INDEX. |
+| Path | Content |
+|---|---|
+| `/NOAHSARK/DISC.bin` | Disc superblock (section 7.3). |
+| `/NOAHSARK/README.txt` | Plain-text explanation of the format for a human (section 8.4). |
+| `/NOAHSARK/FORMAT.txt` | This document (section 8.5). |
+| `/NOAHSARK/runs/<seq>/RUN.bin` | The run header, 512 bytes. |
+| `/NOAHSARK/runs/<seq>/INDEX.bin` | File order, the Objects table, the Prereqs table (section 9.1). |
+| `/NOAHSARK/runs/<seq>/catalog/REFS.bin` | The ref table (section 9.2). |
+| `/NOAHSARK/runs/<seq>/catalog/DISCS.bin` | The disc directory table (section 9.3). |
+| `/NOAHSARK/runs/<seq>/RUN2.bin` | Run header copy, 512 bytes. |
+| `/NOAHSARK/objects/<ab>/<name>` | Chunks, blobs and trees. |
+| `/NOAHSARK/snapshots/<name>` | Snapshot objects: every snapshot of the repository (section 9.4). |
 
 Every fixed name is short, uses the charset `[A-Za-z0-9._/-]`, and avoids every
 Windows reserved name.
@@ -1481,7 +1439,8 @@ Windows reserved name.
 
 `<seq>` is the run sequence number, zero-padded to 10 decimal digits. A disc
 holds exactly one run directory. A reader lists `/NOAHSARK/runs/` and takes
-it.
+it. A disc with more than one entry in `/NOAHSARK/runs/` is damaged, and a
+reader refuses it (section 10.3).
 
 ### 8.4 README.txt
 
@@ -1504,10 +1463,6 @@ the text is substituted, wherever it appears.** The substitution rules are:
 | `{label}` | The `label` bytes of the superblock, as they are, with every byte outside 0x20 to 0x7E replaced by `?`. |
 | `{hash_algo}` | The constant `sha2-256`, the name of the `hash_algo` in the run header. |
 | `{created}` | `created_sec` and `tz_offset_sec` of the superblock, as `YYYY-MM-DDTHH:MM:SS+HH:MM`, with `-` in place of `+` for a negative offset. |
-| `{fec_k}`, `{fec_m}` | 231 and 23, in decimal. The two slots appear inside `{parity_repair}` alone, so a run with `fec_scheme` 0 never writes them. |
-| `{parity_identity}` | With `fec_scheme` 1, the text `parity geometry: k={fec_k} data columns, m={fec_m} parity columns`. With `fec_scheme` 0, the text `parity: none`. |
-| `{parity_files}` | With `fec_scheme` 1, the two lines that name `checksum.bin` and `parity/`, which follow the text. With `fec_scheme` 0, the empty value. |
-| `{parity_repair}` | The repair paragraph of part 7, in the form for the run's `fec_scheme`. Both forms follow the text. |
 
 The text:
 
@@ -1531,18 +1486,15 @@ disc sequence: {disc_seq}
 label: {label}
 hash algorithm: {hash_algo}
 pack time: {created}
-{parity_identity}
 
 3. HOW TO FIND THINGS
 ---------------------
 /NOAHSARK/DISC.bin              disc superblock
 /NOAHSARK/README.txt            this file
 /NOAHSARK/FORMAT.txt            the full definition of the format
-/NOAHSARK/REFERENCE/decoder.py  a standalone Python 3 reference decoder
 /NOAHSARK/runs/<seq>/RUN.bin    run header, 512 bytes
 /NOAHSARK/runs/<seq>/INDEX.bin  file order and the object table
 /NOAHSARK/runs/<seq>/catalog/   REFS.bin and DISCS.bin
-{parity_files}
 /NOAHSARK/runs/<seq>/RUN2.bin   run header copy
 /NOAHSARK/objects/<ab>/<name>   chunks, blobs, trees
 /NOAHSARK/snapshots/<name>      snapshot objects
@@ -1588,37 +1540,33 @@ Concatenate the chunk payloads in order and the file is restored. An object
 that is not on this disc is on another disc of the repository; INDEX.bin
 names that disc by its uuid, and catalog/DISCS.bin gives its label.
 
-7. HOW TO REPAIR
-----------------
-{parity_repair}
+7. WHEN AN OBJECT IS DAMAGED
+----------------------------
+This disc carries no data for error correction. A damaged object on this
+disc cannot be repaired from this disc. Read the object from the second copy
+of this disc, or from another disc of the repository that holds the same
+object.
 
 8. WHERE THE BYTE LAYOUTS ARE
 -----------------------------
 FORMAT.txt in this directory is the full format document. It holds the
 offset, size, type, name and meaning of every field of every structure, the
-registries, the magic values, the chunking constants and the Reed-Solomon
-definition. It is enough to extract every file from this disc, and to repair
-a damaged disc that has parity, with no NoahsArk software.
-REFERENCE/decoder.py in this directory is a runnable Python 3 program that
-does the extraction in code: it parses DISC.bin, RUN.bin, INDEX.bin and
-every object header, verifies content ids, walks a snapshot and prints the
-listing. It verifies and it restores. It does not repair: the forward error
-correction part of FORMAT.txt is the full recipe for a repair. Its restore,
-verify and list commands take more than one disc root: mount every disc of
-the repository and name each root on the one command line, because a
-snapshot can span several discs.
+registries, the magic values and the chunking constants. The NoahsArk
+program is the normal way to restore from this disc. It needs only the discs
+of the repository. FORMAT.txt is enough to write a new reader that extracts
+every file from this disc.
 
 9. THE FORMAT RULES
 --------------------
 1. Every integer is little-endian. No big-endian field exists.
 2. Every type is fixed width: u8, u16, u32, u64, i32, i64.
 3. Every structure is packed, and every gap is a named reserved field. A
-   writer writes zero there, and a reader ignores it.
+   writer writes zero there, and a reader refuses a nonzero value.
 4. Every structure starts with an 8-byte project magic, an 8-byte kind name,
    then version_major and header_len.
 5. A reader refuses an unknown version_major. There is no minor version.
 6. header_len is the offset of the first byte after the fixed part of a
-   structure. A reader obeys it and skips fixed bytes it does not know.
+   structure. A reader refuses a value that it does not know.
 7. Checksums are CRC-32C, polynomial 0x1EDC6F41, reflected, init
    0xFFFFFFFF, final xor 0xFFFFFFFF. A checksum lies after the bytes it
    covers.
@@ -1626,43 +1574,6 @@ snapshot can span several discs.
 9. A string is encoding, three zero bytes, a 32-bit length, then the bytes.
    Encoding 0 is UTF-8. There is no terminator and no normalization.
 10. Every structure has a byte-offset table, and FORMAT.txt holds it.
-```
-
-A slot that stands alone on a line takes the empty value when its rule says
-so. The writer then removes that line, its LF included, and writes no blank
-line in its place. `{parity_files}` is the only such slot.
-
-The value of `{parity_files}` under `fec_scheme` 1 is these two lines, the
-second with no LF after it, because the slot's own line ends the value:
-
-```
-/NOAHSARK/runs/<seq>/checksum.bin   per-block digests of the data blocks
-/NOAHSARK/runs/<seq>/parity/        one file per parity column
-```
-
-The value of `{parity_repair}` under `fec_scheme` 1:
-
-```
-The run carries Reed-Solomon parity over its own data files, concatenated in
-the order INDEX.bin lists them, each padded to 2048 bytes: the FEC stream.
-The stream is cut into {fec_k} equal columns of L blocks of 2048 bytes each;
-FORMAT.txt says how to derive L from the run header. Stripe i is block i of
-every column. checksum.bin is one more column: its block i holds an 8-byte
-digest of each of the {fec_k} data blocks of stripe i, so a damaged block can
-be found. The {fec_m} files under parity/ are the parity columns. Any
-{fec_k} of the {fec_k} data plus {fec_m} parity blocks of one stripe
-reconstruct the rest. The forward error correction part of FORMAT.txt gives
-the field arithmetic, the matrix and a worked example. It is the full recipe
-for a repair.
-```
-
-The value of `{parity_repair}` under `fec_scheme` 0:
-
-```
-This disc carries no parity: the run directory holds no checksum.bin and no
-parity/ directory. A damaged byte on this disc cannot be repaired from this
-disc. Read the object from the second copy of this disc, or from another
-disc of the repository that holds the same object.
 ```
 
 ### 8.5 FORMAT.txt
@@ -1673,54 +1584,31 @@ embeds that file and writes its bytes and no others. There is no second,
 shorter text. A test compares the embedded bytes with `FORMAT.md` and fails
 on any difference.
 
+From document version 1.0.0 on, this document describes every released
+version of every structure (section 2.6). Thus each disc describes every
+structure version that it can hold, and the newest disc of a set describes
+the whole set.
+
 `FORMAT.txt` is plain ASCII with LF line endings. It has no size limit of its
-own. Its INDEX file role is 5 (section 10.1), and the `file_hash` of that
+own. Its INDEX file role is 5 (section 9.1), and the `file_hash` of that
 row covers it.
 
 The file is Markdown. A reader needs no Markdown software: a table row is one
 line with `|` between the columns, and a code block lies between two lines
 of three backquotes.
 
-### 8.6 Reference decoder
-
-Purpose: a runnable check on this document, carried on the disc itself, so
-that a reader with a Python interpreter and no NoahsArk software can extract
-and verify a file without transcribing FORMAT.txt by hand.
-
-Every disc carries `/NOAHSARK/REFERENCE/decoder.py`: a single-file Python 3
-program that uses only the standard library, plus, for zstd payloads, the
-`compression.zstd` module where the interpreter provides it or the `zstd`
-command-line tool otherwise. It parses DISC.bin, a run's RUN.bin and
-INDEX.bin, and every object's common header and object header; it verifies
-every SHA-256 content id; it walks a snapshot's tree from `catalog/REFS.bin`;
-it prints the resulting listing; and it restores a snapshot into a
-directory. It does not repair a damaged disc: section 9 is the recipe for a
-repair. Its restore, verify and list commands take more than one disc root,
-because a snapshot can span several discs.
-
-`decoder.py` is a fixed file, checked into the NoahsArk source repository and
-versioned with this document. A writer copies it byte for byte from that
-checked-in file; it is never generated or altered per repository or per
-disc. Its INDEX file role is 14 (section 10.1), and it is at most 64 KiB.
-
-### 8.7 Fill order inside a run
+### 8.6 Fill order inside a run
 
 The Files table of INDEX is the authority for the file order of a run. The
 writer lists the files in this order:
 
 1. `INDEX.bin`.
 2. `RUN.bin`, the run header.
-3. `DISC.bin`, `README.txt`, `FORMAT.txt`, `REFERENCE/decoder.py`.
+3. `DISC.bin`, `README.txt`, `FORMAT.txt`.
 4. `catalog/REFS.bin`, then `catalog/DISCS.bin`.
 5. Every object file, snapshots, trees, blobs and chunks alike, by content
    id ascending. This is the row order of the Objects table of INDEX.
-6. `checksum.bin`, the checksum column, when `fec_scheme` is 1.
-7. The parity files, in column order, when `fec_scheme` is 1.
-8. `RUN2.bin`, the run header copy.
-
-The FEC stream is steps 1 and 3 to 5, in that order: `INDEX.bin` first, then
-every other file of those steps (section 7.2). `RUN.bin`, `checksum.bin`, the
-parity files and `RUN2.bin` are outside the stream.
+6. `RUN2.bin`, the run header copy.
 
 The order is total. Two conforming writers with the same file set produce the
 same order. The order follows hashes, so it does not keep the files of one
@@ -1734,23 +1622,19 @@ An object is listed once.
 A chunk, a blob or a tree that another disc of the repository already holds
 need not be written again. The packer then gives it no Objects row in this
 run, and lists it in the Prereqs table when an object of this run references
-it (section 10.1). Every snapshot object is written onto every disc (section
-10.4).
+it (section 9.1). Every snapshot object is written onto every disc (section
+9.4).
 
 Invariants:
 
 1. `DISC.bin`, `catalog/DISCS.bin`, `INDEX.bin` and the run header become
    final in that order, each from values already final. INDEX holds the
-   `file_hash` of every fixed-name stream file, and the run header holds
+   `file_hash` of every fixed-name file, and the run header holds
    `index_hash`.
-2. The rows of `INDEX.bin`, `RUN.bin`, `RUN2.bin`, `checksum.bin`, the
-   parity files and every object file carry an all-zero `file_hash` (section
-   10.1).
-3. The FEC stream is fully determined before the checksum column or the
-   parity is computed.
-4. Every column file is contiguous inside itself and holds `L` blocks.
+2. The rows of `INDEX.bin`, `RUN.bin`, `RUN2.bin` and every object file
+   carry an all-zero `file_hash` (section 9.1).
 
-### 8.8 Name and path budget
+### 8.7 Name and path budget
 
 These limits hold on every filesystem that meets section 8.1.
 
@@ -1764,263 +1648,17 @@ These limits hold on every filesystem that meets section 8.1.
 Never rely on case to distinguish two names.
 
 ---
-## 9. Forward error correction
+## 9. The run index and the catalog
 
-FEC is optional per run: `fec_scheme` 0, `none`, writes no checksum column and
-no parity, and `fec_scheme` 1, `rs255-gf8`, writes both, as this section
-describes. The section "Scheme 0: no FEC" states the scheme 0 rules; every
-other subsection describes scheme 1.
-
-### 9.1 Parity layout
-
-The FEC scheme is `rs255-gf8`: a systematic erasure code over GF(2^8) with `k`
-information shards and `m` parity shards per stripe.
-
-A shard is exactly one 2048-byte block of the FEC stream (section 7.2), or,
-for the checksum and parity columns, one block of the file that carries that
-column.
-
-A stripe is 255 shards: `k` data, 1 checksum and `m` parity. The code covers
-the `k` data and the `m` parity shards. The checksum shard is outside the
-code.
-
-Format version 1 fixes `k = 231` and `m = 23`. A version 1 writer writes no
-other pair and a version 1 reader refuses any other pair. Both values are still
-recorded, in the run header.
-
-`stream_blocks = stream_bytes / 2048`, and
-`L = ceil(stream_blocks / k)`. The FEC stream is the stream files in INDEX
-order, zero-padded per file to a multiple of 2048, as section 7.2 states.
-
-Data column `c` is blocks `[c*L, (c+1)*L)` of the FEC stream, for
-`c = 0 .. k-1`. A block at or past `stream_blocks` is 2048 zero bytes. Such
-a block exists in the last column or columns whenever `stream_blocks` is
-below `k*L`.
-
-Column `k`, the checksum column, is the `L` blocks of `runs/<seq>/checksum.bin`.
-
-Column `c` for `c = k+1 .. 254` is the `L` blocks of
-`runs/<seq>/parity/pNNNN.bin`, where `NNNN` is `c` in decimal zero-padded to
-four digits: `p0232.bin` to `p0254.bin`. Block `i` of the column is bytes
-`i*2048` to `i*2048 + 2047` of the file. The file is exactly `L` blocks,
-with no header.
-
-Every column file is contiguous. INDEX records the byte length of each, and
-the run header records `stream_bytes`; a reader derives `stream_blocks` and
-`L` from it and from `fec_k` by the formulas of section 7.5.
-
-Stripe `i` is block `i` of every column, for `i = 0 .. L-1`.
-
-Encoding is byte-column-wise: take one byte from each of the `k` data blocks
-at the same byte offset, in column order 0 to `k-1`, and produce `m` parity
-bytes at that offset, column `k+1` first, for all 2048 byte offsets.
-
-**The burst bound.** The maximum correctable single burst is `m * L` blocks
-of the FEC stream. A burst longer than `m * L` blocks puts more than `m`
-erasures into one stripe, which section 9.5 refuses to decode.
-
-### 9.2 The code
-
-**Field.** GF(2^8) with the polynomial `x^8 + x^4 + x^3 + x^2 + 1`, 0x11D.
-A byte is a field element. Addition is XOR. Multiplication is carry-less
-polynomial multiplication reduced modulo 0x11D:
-
-```
-mul(a, b):
-    r = 0
-    while b != 0:
-        if b & 1: r = r ^ a
-        a = a << 1
-        if a & 0x100: a = a ^ 0x11D
-        b = b >> 1
-    return r                                  # r fits in 8 bits
-inv(a): the unique x with mul(a, x) == 1, for a != 0
-div(a, b) = mul(a, inv(b))
-```
-
-**Shards.** The information shards are the `k` data columns of the stripe,
-in column order `i = 0 .. k-1`. The parity shards are the `m` parity
-columns, `j = 0 .. m-1`, where parity shard `j` is column `k + 1 + j`.
-
-**Generator matrix.** The code is systematic. Parity shard `j` is a linear
-combination of the `k` information shards with the coefficients of row `j`
-of an `m x k` Cauchy matrix `C`:
-
-```
-x_j = k + j                 for j = 0 .. m-1       # 231 .. 253 in version 1
-y_i = i                     for i = 0 .. k-1       #   0 .. 230 in version 1
-C[j][i] = inv(x_j ^ y_i)                            # 1 / (x_j + y_i) in GF(2^8)
-```
-
-Every `x_j` differs from every `y_i`, so no denominator is zero, and every
-square submatrix of `[I_k ; C]` is invertible. That is what lets any `k`
-surviving shards of a stripe, data or parity, determine the missing ones.
-
-**Encoding.** For every byte offset `t` in `0 .. 2047`:
-
-```
-p_j[t] = XOR over i = 0 .. k-1 of mul(C[j][i], d_i[t])
-```
-
-where `d_i` is data shard `i` and `p_j` is parity shard `j`.
-
-**Decoding.** Take the `k` rows of the `(k + m) x k` matrix `[I_k ; C]`
-that correspond to `k` surviving shards, invert that `k x k` matrix over the
-field, and multiply it by the surviving shard bytes at each offset. The
-result is every data shard; the missing parity shards are then re-encoded.
-A stripe with more than `m` erasures is not decodable, and the decoder must
-say so. The ordering of the shards is the only implementation
-freedom, and this subsection fixes it.
-
-**Worked example, `k = 3`, `m = 2`.** The geometry is not a version 1
-geometry; the example exists so that an implementer can test the arithmetic
-by hand. With `k = 3`, `x_0 = 3`, `x_1 = 4`, and `y = (0, 1, 2)`:
-
-| Inverse | Value |
-|---|---|
-| `inv(1)` | 0x01 |
-| `inv(2)` | 0x8E |
-| `inv(3)` | 0xF4 |
-| `inv(4)` | 0x47 |
-| `inv(5)` | 0xA7 |
-| `inv(6)` | 0x7A |
-
-```
-C[0] = ( inv(3^0), inv(3^1), inv(3^2) ) = ( 0xF4, 0x8E, 0x01 )
-C[1] = ( inv(4^0), inv(4^1), inv(4^2) ) = ( 0x47, 0xA7, 0x7A )
-```
-
-One byte offset, with data bytes `d = (0x53, 0xA7, 0x0C)`:
-
-```
-p_0 = mul(0xF4,0x53) ^ mul(0x8E,0xA7) ^ mul(0x01,0x0C)
-    = 0x31 ^ 0xDD ^ 0x0C = 0xE0
-p_1 = mul(0x47,0x53) ^ mul(0xA7,0xA7) ^ mul(0x7A,0x0C)
-    = 0xDD ^ 0x72 ^ 0x02 = 0xAD
-```
-
-Recovery check: with `d_0` and `d_1` lost, the surviving shards are `d_2`,
-`p_0` and `p_1`. Solving the three equations above for `d_0` and `d_1`
-returns `0x53` and `0xA7`. The full-size golden vector of section 12 is
-computed by the same rules at `k = 231`, `m = 23`.
-
-The ordering of the shards is the only implementation freedom, and this section
-fixes it. Any encoder that produces the same parity bytes for the same
-information bytes conforms.
-
-### 9.3 Checksum column
-
-Purpose: an 8-byte digest of every data block of a stripe, so a damaged block
-can be located before the code is applied.
-
-Block `i` of the checksum column holds the digests of the `k` data blocks of
-stripe `i`, and of no other block. There is no offset and no wrap.
-
-The digest is the first 8 bytes of the 32-byte SHA-256 digest of the
-block, computed over the 2048 bytes of the FEC stream at that position. The
-digest of a block at or past `stream_blocks` is the digest of 2048 zero
-bytes.
-
-Every block of `checksum.bin` is a self-delimiting record of 2048 bytes,
-repeated `L` times; it carries the 8-byte `magic_kind` `CHECKSUM` as a record
-magic (section 2.1, rule 5) but not the rest of the 32-byte common header,
-because a block is a record of the checksum column, not a structure of its
-own:
-
-| Offset | Size | Type | Name | Meaning |
-|---:|---:|---|---|---|
-| 0 | 8 | u8[8] | `magic_kind` | ASCII `"CHECKSUM"`. |
-| 8 | 4 | u32 | `stripe_index` | `i`, the stripe whose data digests follow. Equals the block's own index inside the column. |
-| 12 | 2 | u16 | `digest_count` | `k`. 231 in version 1. |
-| 14 | 2 | u16 | `reserved_u16` | Zero. |
-| 16 | 4 | u32 | `header_crc32c` | CRC-32C over bytes 0 to 15. |
-| 20 | 1848 | u8[1848] | `digests` | `k` digests of 8 bytes each, in data column order 0 to `k - 1`. |
-| 1868 | 180 | u8[180] | `reserved` | Zero. |
-
-Total: 2048 bytes.
-
-Field rules. `digest_count` equals `k`. A digest is always 8 bytes and always
-SHA-256. The digest of data column `c` is bytes `20 + 8*c` to `27 + 8*c` of
-the block.
-
-The checksum column is outside the Reed-Solomon code. The parity neither covers
-it nor reconstructs it.
-
-Reader checks. Check the magic and verify `header_crc32c`. When a checksum
-block is unreadable or its header CRC fails, check that stripe's data blocks
-through the content ids of the object files that INDEX maps them to, and
-through the `file_hash` of the fixed-name files, and treat a failing block as
-an erasure. A block that no Files row covers is 2048 zero bytes.
-
-A silently wrong digest makes a verifier treat a good data block as an
-erasure. Reconstruction returns the same bytes and the content id passes, and
-the verifier reports the checksum block as damaged. No data is lost.
-
-A parity block has no digest. An unreadable parity block is an erasure from
-the start.
-
-### 9.4 Header replication and parity files
-
-The run header exists two times: `RUN.bin` and `RUN2.bin` (section 7.6). A
-parity file holds its column and nothing else.
-
-The parity geometry is derivable from either header copy: `stream_bytes`,
-`fec_k` and `fec_m` determine every column boundary through the formulas of
-section 7.5.
-
-### 9.5 Decode rule
-
-Take the `k` rows of `[I_k ; C]` that correspond to `k` surviving shards,
-invert that `k x k` matrix over the field, and multiply it by the surviving
-shard bytes at each byte offset. The result is every data shard. The missing
-parity shards are then re-encoded.
-
-When more than `k` blocks of a stripe are present, the decoder uses the `k`
-present blocks with the lowest column index. This choice is normative, so
-that healing the same damaged stripe always reproduces the same output.
-
-A stripe with more than `m` erasures is not decodable, and the decoder must say
-so.
-
-The single-parity retry is bounded and normative. Let `E` be the erasures the
-stripe already has. The decoder tries each single parity shard of the stripe
-in turn as one more erasure, which is at most `m - E` attempts, and it makes an
-attempt only while `E + 1 <= m`. An attempt succeeds when every reconstructed
-data block matches its digest, or, with no usable checksum block, when every
-object that INDEX maps into the stripe passes its content id. If no
-single-parity attempt decodes, the stripe is undecodable. The decoder must not
-try pairs or larger subsets.
-
-### 9.6 Scheme 0: no FEC
-
-A run whose `fec_scheme` is 0, `none`, carries no `checksum.bin` file and no
-parity files. Its INDEX carries no Files rows for roles 10 (`checksum.bin`)
-and 11 (a parity file), and its Objects and Prereqs tables are unaffected.
-`RUN.bin` and `RUN2.bin` still exist.
-
-The stream definition of section 7.2 still applies to the file order: INDEX
-lists every stream file in the same fill order whether or not the run carries
-FEC, and the run header still records `stream_bytes`.
-
-A reader verifies a scheme 0 run by checking every object's content id
-(section 11.1) and the `file_hash` of every fixed-name Files row against the
-bytes on disc; it performs no checksum-column or parity check, because none
-exists. Heal refuses a scheme 0 run and reports that the run has no FEC,
-naming the run seq; it repairs nothing, because there is no parity to repair
-from.
-
----
-## 10. The run index and the catalog
-
-### 10.1 INDEX
+### 9.1 INDEX
 
 Purpose: the one structure a reader opens first inside a run. It lists every
-file the run wrote, in FEC stream order; it names every object the run
+file the run wrote, in fill order (section 8.6); it names every object the run
 stores; and it names every object the run references but does not store.
 
 There is no membership filter in this format: a reader proves absence by
 consulting the INDEX Objects table of every disc a catalog lists (section
-10.6).
+9.6).
 
 Fixed body, after the 32-byte common header (`magic_kind` `INDEX`):
 
@@ -2046,7 +1684,7 @@ a reader refuses an INDEX whose length differs.
 
 | Offset | Size | Type | Name | Meaning |
 |---:|---:|---|---|---|
-| 0 | 32 | u8[32] | `file_hash` | SHA-256 of the whole file's bytes, for roles 3, 4, 5, 7, 8 and 14. All zero for every other role. |
+| 0 | 32 | u8[32] | `file_hash` | SHA-256 of the whole file's bytes, for roles 3, 4, 5, 7 and 8. All zero for every other role. |
 | 32 | 8 | u64 | `byte_len` | Length of the file in bytes. |
 | 40 | 1 | u8 | `role` | File role registry, below. |
 | 41 | 7 | u8[7] | `reserved` | Zero. |
@@ -2055,43 +1693,32 @@ Total: 48 bytes.
 
 File role registry:
 
-| Id | Role | In the FEC stream | `file_hash` |
-|---:|---|---|---|
-| 0 | reserved | | |
-| 1 | `INDEX.bin`, this file | Yes, the first file | Zero. `index_hash` of the run header covers it. |
-| 2 | `RUN.bin` | No | Zero. Its own CRC covers it. |
-| 3 | `DISC.bin` | Yes | Set. |
-| 4 | `README.txt` | Yes | Set. |
-| 5 | `FORMAT.txt` | Yes | Set. |
-| 6 | reserved | | |
-| 7 | `catalog/REFS.bin` | Yes | Set. |
-| 8 | `catalog/DISCS.bin` | Yes | Set. |
-| 9 | reserved | | |
-| 10 | `checksum.bin` | No | Zero. |
-| 11 | a parity file | No | Zero. |
-| 12 | `RUN2.bin` | No | Zero. Its own CRC covers it. |
-| 13 | an object file under `/NOAHSARK/objects/` or `/NOAHSARK/snapshots/` | Yes | Zero. The content id and the object header CRC cover it. |
-| 14 | `/NOAHSARK/REFERENCE/decoder.py` | Yes | Set. |
+| Id | Role | `file_hash` |
+|---:|---|---|
+| 0 | reserved | |
+| 1 | `INDEX.bin`, this file | Zero. `index_hash` of the run header covers it. |
+| 2 | `RUN.bin` | Zero. Its own CRC covers it. |
+| 3 | `DISC.bin` | Set. |
+| 4 | `README.txt` | Set. |
+| 5 | `FORMAT.txt` | Set. |
+| 6 | reserved | |
+| 7 | `catalog/REFS.bin` | Set. |
+| 8 | `catalog/DISCS.bin` | Set. |
+| 9 to 11 | reserved | |
+| 12 | `RUN2.bin` | Zero. Its own CRC covers it. |
+| 13 | an object file under `/NOAHSARK/objects/` or `/NOAHSARK/snapshots/` | Zero. The content id and the object header CRC cover it. |
+| 14 to 255 | reserved | |
 
-Field rules. The rows are in the fill order of section 8.7: role 1, role 2,
-roles 3, 4, 5 and 14, roles 7 and 8, every role 13 row, role 10, the role 11
-rows in column order, role 12. Role 14 sits with roles 3 to 5 despite its
-higher number: a role id is assigned once and never renumbered. This order
-is authoritative: it is the order the writer laid the files in, and a reader
+A reserved role id is never assigned again (section 2.5). A reader refuses a
+Files row with a reserved role and names the role.
+
+Field rules. The rows are in the fill order of section 8.6: role 1, role 2,
+roles 3, 4 and 5, roles 7 and 8, every role 13 row, role 12. This order is
+authoritative: it is the order the writer laid the files in, and a reader
 relies on it and never sorts.
 
-The FEC stream (section 7.2) is the rows whose role is in the stream, in row
-order. The rows of roles 2, 10, 11 and 12 describe files of the run that are
-outside the stream, and a reader skips them when it adds up stream blocks.
-
-A run whose `fec_scheme` is 0, `none` (section 9.6), carries no role 10 or
-role 11 rows: there is no `checksum.bin` and no parity file. `RUN2.bin`,
-role 12, still appears.
-
 File names are not stored. A reader derives a fixed-name file's path from its
-role, a parity file's name from its position among the role 11 rows (the
-first is column `k + 1`), and an object file's name from the Objects table,
-as follows.
+role, and an object file's name from the Objects table, as follows.
 
 The role 13 rows and the Objects rows pair by position. The number of role
 13 rows equals `object_count`. The role 13 rows are in ascending `content_id`
@@ -2130,14 +1757,14 @@ list is one edge deep. It holds every id that a tree, a blob or a new
 snapshot of this run references directly, and that this run does not store
 as an object of its own. A new snapshot is one that no earlier disc of the
 repository carries. A snapshot that the run carries over from an earlier disc
-(section 10.4) adds no row, and a snapshot's `parent` id is never listed. No
+(section 9.4) adds no row, and a snapshot's `parent` id is never listed. No
 `content_id` appears two times.
 
 The row names the disc by `disc_uuid`, never by a run number, because a
 `run_seq` can repeat after a repository is rebuilt (section 7.1). When
 several discs store the object, the writer names one of them; the choice is
 host behaviour. A reader finds the label of the disc in DISCS (section
-10.3). A reader accepts the object from any disc whose INDEX lists it, not
+9.3). A reader accepts the object from any disc whose INDEX lists it, not
 only from the named one.
 
 Hash and CRC coverage. INDEX carries no CRC. The run header records
@@ -2149,11 +1776,11 @@ row. Check that `run_seq` equals that of the run header. Check the file
 length as above. Check that the count of role 13 rows equals `object_count`.
 Refuse an Objects row whose `kind` is outside 1 to 4.
 
-### 10.2 REFS
+### 9.2 REFS
 
 Purpose: the repository-wide table of named pointers to snapshots.
 
-REFS and DISCS (section 10.3) share one container shape. Fixed body, after
+REFS and DISCS (section 9.3) share one container shape. Fixed body, after
 the 32-byte common header (`magic_kind` `REFS` or `DISCS`):
 
 | Offset | Size | Type | Name | Meaning |
@@ -2181,7 +1808,7 @@ of the role 7 Files row against the bytes of `REFS.bin`. Check that
 `repo_uuid` equals that of the run header. Find the newest record of a name
 by the rule of section 6.15.
 
-### 10.3 DISCS
+### 9.3 DISCS
 
 Purpose: one row per disc that the repository knew at pack time, the disc
 that carries the table included. It gives a reader the label to ask for when
@@ -2195,14 +1822,14 @@ bytes ascending:
 | 0 | 8 | u64 | `run_seq` | The run on that disc, 1-based. |
 | 8 | 8 | u64 | `disc_seq` | The disc sequence number, 0-based. |
 | 16 | 16 | u8[16] | `disc_uuid` | That disc's uuid. The identity of the row. |
-| 32 | 32 | u8[32] | `run_hash` | SHA-256 of the 512 bytes of that disc's `RUN.bin` (section 2.7). All zero in the row of the disc that **carries** this table: that header is written after the table (section 8.7), so its hash is not yet known. A table on a later disc holds the real value. |
-| 64 | 8 | i64 | `created_sec` | Pack time of the run, as in the run header (section 7.5). Not the burn time. |
+| 32 | 32 | u8[32] | `run_hash` | SHA-256 of the 512 bytes of that disc's `RUN.bin` (section 2.7). All zero in the row of the disc that **carries** this table: that header is written after the table (section 8.6), so its hash is not yet known. A table on a later disc holds the real value. |
+| 64 | 8 | i64 | `created_sec` | Pack time of the run, as in the run header (section 7.4). Not the burn time. |
 | 72 | 8 | u64 | `reserved_u64a` | Zero. |
-| 80 | 8 | u64 | `capacity_sectors` | `capacity_sectors` of that disc's superblock (section 7.4). |
+| 80 | 8 | u64 | `capacity_sectors` | `capacity_sectors` of that disc's superblock (section 7.3). |
 | 88 | 8 | u64 | `reserved_u64b` | Zero. |
 | 96 | 4 | u32 | `reserved_u32` | Zero. |
 | 100 | 2 | u16 | `label_len` | Byte length of the label, 0 to 64. |
-| 102 | 64 | u8[64] | `label` | UTF-8, zero-padded. The disc's label, the same 64 bytes the superblock carries (section 7.4). |
+| 102 | 64 | u8[64] | `label` | UTF-8, zero-padded. The disc's label, the same 64 bytes the superblock carries (section 7.3). |
 | 166 | 10 | u8[10] | `reserved` | Zero. |
 
 Total: 176 bytes.
@@ -2234,7 +1861,7 @@ Reader checks. Check the magic and `version_major`. Verify the `file_hash`
 of the role 8 Files row against the bytes of `DISCS.bin`. Check that
 `repo_uuid` equals that of the run header.
 
-### 10.4 Catalog contents per run
+### 9.4 Catalog contents per run
 
 Every run carries INDEX, a catalog of REFS and DISCS, and every snapshot
 object of the repository.
@@ -2251,10 +1878,10 @@ REFS, DISCS and the snapshot objects are carried in full on every disc.
 A snapshot object has one place on a disc: `/NOAHSARK/snapshots/<name>`.
 There is no second copy under `catalog/`. A snapshot of an earlier run is an
 ordinary object file of this run: it has a role 13 Files row and an Objects
-row with `kind` 4, and it lies in the FEC stream. The dedup rule of section
-10.5 never drops a snapshot object.
+row with `kind` 4. The dedup rule of section
+9.5 never drops a snapshot object.
 
-### 10.5 Dedup rule
+### 9.5 Dedup rule
 
 Never drop chunk data on the strength of a hint. Only an exact INDEX Objects
 lookup permits dropping the data.
@@ -2267,7 +1894,7 @@ covers the object kind (section 3.1), so ids of different kinds never compare
 equal, and an INDEX hit always names an object of the kind the caller asked
 for.
 
-### 10.6 Proof of absence and coverage
+### 9.6 Proof of absence and coverage
 
 There is no membership filter in this format. Proof of absence comes
 directly from the INDEX Objects tables of the discs the catalog's DISCS table
@@ -2292,25 +1919,27 @@ against its own INDEX when the disc is in the drive, which is the first
 thing the reader reads from that disc.
 
 ---
-## 11. Reader and writer rules
+## 10. Reader and writer rules
 
-### 11.1 Reader procedure
+### 10.1 Reader procedure
 
 A reader applies these steps in order, for every structure:
 
 1. Check `magic_project` and `magic_kind`. Refuse on a mismatch.
 2. Check `version_major`. Refuse an unknown value and print the value.
-3. Read `header_len` from the common header and obey it (section 2.3). Never
-   assume the compiled size.
+3. Read `header_len` from the common header, and refuse a value other than
+   the one it knows for the structure and its `version_major` (section 2.3).
 4. Verify the CRC, or the hash that another structure holds for this one,
    before using any field (sections 2.7 and 2.8).
 5. Verify the content id after decompression, for an object: hash the kind
    byte and the payload.
-6. Ignore every reserved field, every reserved bit and every padding byte.
+6. Refuse a nonzero reserved field, reserved bit or padding byte, and name
+   the field and the value.
 
 For one disc, the order is:
 
-1. List `/NOAHSARK/runs/` and take the run directory.
+1. List `/NOAHSARK/runs/` and take the run directory. Refuse the disc when
+   the listing holds more than one entry (section 10.3).
 2. Read `RUN.bin`, or `RUN2.bin` when `RUN.bin` fails, and verify its CRC.
 3. Read `INDEX.bin` and verify `index_bytes` and `index_hash`.
 4. Verify `DISC.bin`, `catalog/REFS.bin` and `catalog/DISCS.bin` against
@@ -2320,14 +1949,15 @@ For one disc, the order is:
    the trees, the blobs and the chunks. For an object that the Objects table
    of this disc does not list, look the id up in the Prereqs table, find the
    label of the named disc in DISCS, and ask for that disc.
-6. When a file of a `fec_scheme` 1 run is unreadable or fails its check,
-   repair it by sections 9.1 to 10.5.
+6. When a file is unreadable or fails its check, the disc is damaged there.
+   This disc cannot repair it. Read the object from another disc whose INDEX
+   lists it, such as a second copy of this disc.
 
 Every object's content id is verified after it is read. A mismatch is a hard
 error. Every function that returns object bytes verifies the content id before
 it returns. There is no trusted path.
 
-### 11.2 Writer rules
+### 10.2 Writer rules
 
 1. Never reuse a registry id.
 2. Never change a frozen table under an existing name.
@@ -2336,16 +1966,17 @@ it returns. There is no trusted path.
 4. Write zero into every reserved field, every reserved bit and every padding
    byte.
 
-### 11.3 Which catalog a reader trusts
+### 10.3 Which catalog a reader trusts
 
 A disc holds one run, and a reader takes the catalog of that run. A run
 verifies when both of these pass: the `header_crc32c` of a run header copy the
 reader could read, and `index_hash`, checked against the bytes of
 `INDEX.bin`.
 
-A writer of this version never writes a second run directory. A reader that
-finds more than one takes the verified run with the highest `<seq>` and
-reports the others.
+A writer writes exactly one run on a disc. A reader that finds more than one
+entry in `/NOAHSARK/runs/` treats the disc as damaged. It refuses the disc
+loudly, reads no run of it, and names every entry that it found. `RUN2.bin`
+is the copy of the one run header (section 7.5), not a second run.
 
 Among several discs of one repository, the newest catalog is the one whose
 run header has the latest `created_sec`, then `created_nsec`.
@@ -2355,27 +1986,28 @@ That catalog is host state. A reader of this format never needs it: every
 rule of this document reads the disc alone. After the loss of the host, the
 host builds its catalog again from the discs.
 
-### 11.4 Conformance
+### 10.4 Conformance
 
 A conforming reader of format major 1:
 
 1. reads every structure of this document at `version_major` 1, by the rules
-   of section 11.1;
+   of section 10.1;
 2. reads objects whose `hash_algo` is `sha2-256`, and refuses an object
    whose `hash_algo` it does not implement, naming the code; it reads
    compression ids 0 and 1 and refuses any other id, naming it;
 3. finds every object through the filesystem, the run header, INDEX and the
    catalog, with no host catalog and no disc other than the ones the plan
-   names; a disc whose filesystem does not mount counts as lost;
+   names; a disc whose filesystem does not mount counts as lost; a disc with
+   more than one run is refused (section 10.3);
 4. verifies every CRC, every hash of section 2.7 and every content id before it
    uses the bytes;
-5. repairs a `fec_scheme` 1 run with `k = 231`, `m = 23`, or says that it
-   cannot repair; the reference decoder holds no Reed-Solomon code and says
-   so; a `fec_scheme` 0 run has nothing to repair from;
+5. reads the objects of a run whose `fec_scheme` is not 0, and says that it
+   cannot use that scheme;
 6. refuses an unknown `version_major`, an unknown registry id in a field it
    must interpret, and a critical TLV it does not know, and says which;
-7. ignores a nonzero reserved field, reserved bit or padding byte, and obeys
-   a `header_len` above the value it knows.
+7. refuses a nonzero reserved field, reserved bit or padding byte, a
+   `header_len` other than the one it knows, and a `version_major` of 0, and
+   names the field and the value.
 
 A conforming writer of format major 1:
 
@@ -2385,19 +2017,18 @@ A conforming writer of format major 1:
 2. writes SHA-256 content ids over the kind byte and the uncompressed
    payload, and FastCDC cut points by section 4.2;
 3. writes one run per disc, with `RUN.bin`, `RUN2.bin`, the file order of
-   section 8.7 and the catalog of section 10.4; a `fec_scheme` 1 run also
-   carries `k = 231`, `m = 23`, the checksum column of section 9.3 and the
-   `m` parity files; a `fec_scheme` 0 run carries no checksum column and no
-   parity;
+   section 8.6 and the catalog of section 9.4, and with `fec_scheme`,
+   `fec_k` and `fec_m` 0;
 4. writes every byte as an ordinary file under `/NOAHSARK/`, adds no padding
    for alignment on the medium, and never rewrites or extends a burned disc;
 5. never writes a reserved id, bit or value.
 
-### 11.5 Change mechanisms
+### 10.5 Change mechanisms
 
-A later writer has three mechanisms, and no other: a new registry id, a new
-field in reserved space or behind a larger `header_len`, and a
-`version_major` bump (section 2.6).
+A later writer has two mechanisms, and no other: a new registry id, and a
+`version_major` bump of a structure (section 2.6). A new field or a changed
+layout always needs the bump. A new optional fact of one tree entry or of
+one snapshot can also take a new TLV type, which is a new registry id.
 
 A registry id is never reused and never renumbered. A new value in an
 existing registry field needs no version bump at all: an old reader already
@@ -2408,14 +2039,13 @@ refuses a registry id it does not know, in the field it was already reading.
 | New hash algorithm | New id in the hash registry, for a digest of 32 bytes. | Refuses the run and every object whose `hash_algo` it does not know, and says the code. Old discs stay readable. | Reads both. |
 | Chunker parameter or Gear table change | None on the disc. No structure records them. | Unaffected. A reader never needs them. | Unaffected. |
 | New compression algorithm | New id in the compression registry. | Refuses an object whose `compression` it does not know. The object is unreadable, not misread. | Reads it. |
-| FEC parameter change | None. The run header already records `k` and `m`. | Refuses the run for repair, because version 1 accepts no pair other than 231 and 23. Still reads the objects through the filesystem. | Reads the recorded pair. |
-| New FEC scheme | New id in the FEC scheme registry. | Refuses the run for repair, but still reads its objects. | Repairs it. |
+| New FEC scheme | New id in the FEC scheme registry. | Cannot use the scheme, and says so. Still reads every object of the run. | Uses it. |
 | New object kind | New id in the object kind registry. | Refuses the structure, since `kind` is already outside 1 to 4. | Reads it. |
 | New tree TLV | New id in the TLV registry. The critical bit decides. | Refuses the entry when the critical bit is set. Preserves and reports the TLV otherwise. | Applies it. |
-| New informational field | Reserved space, or the end of the fixed part with a larger `header_len`. | Ignores it. | Reads it. |
+| New field in a structure | A `version_major` bump of that structure. | Refuses the structure and prints `version_major`. | Reads both versions. |
 | Snapshot signature | New snapshot TLV, non-critical. | Ignores it. | Verifies it. |
 
-### 11.6 Cross-version and unknown-value reading
+### 10.6 Cross-version and unknown-value reading
 
 `Y` means full use. `~` means partial use with the loss named. `N` means a
 clean refusal that names the reason.
@@ -2424,8 +2054,8 @@ By format version:
 
 | Writer | Reader of major 1 | Reader of a later major |
 |---|---|---|
-| Major 1 | Y | Y. It reads the fixed sizes of major 1. |
-| Major 1, with a field in reserved space or a larger `header_len` | Y. It ignores the reserved space and skips `header_len - known_len` bytes. | Y |
+| Major 1 | Y | Y. It keeps the parser of major 1. |
+| Major 1, with a nonzero reserved field or another `header_len` | N. Refuses the structure and names the field and the value. | N |
 | A later major | N. Refuses and prints `version_major`. | Y |
 
 By algorithm and registry id:
@@ -2438,10 +2068,9 @@ By algorithm and registry id:
 | A new compression id | Y | N. Refuses the object and names the id. |
 | A non-critical unknown tree TLV | Y | ~ Preserves it on copy, reports it on restore, does not apply it. |
 | A critical unknown tree TLV, 0x8000 to 0xBFFF | Y | N. Refuses the entry and names the type. |
-| `k`, `m` other than 231, 23 | Y | N for repair; still reads every object. |
-| A new FEC scheme id | Y | N for repair; still reads every object. |
+| A new FEC scheme id | Y | ~ Cannot use the scheme; still reads every object. |
 
-### 11.7 Refusal and partial reading
+### 10.7 Refusal and partial reading
 
 Every refusal is loud, names the field and the value, and never touches the
 bytes it refused. Every partial case reads the data in full and puts the loss
@@ -2451,7 +2080,7 @@ An error about an object names the object. An error about a run names the run
 seq and the disc uuid.
 
 ---
-## 12. Golden vectors
+## 11. Golden vectors
 
 Every implementation ships a golden-file test per structure: write known values
 and compare bytes, then read the file back and compare fields. The same test
@@ -2459,11 +2088,15 @@ checks that every reserved field and every padding byte of the written file
 is zero.
 
 A golden vector is a checked-in input and its expected output. The expected
-values are not printed in this document, apart from the printed `k = 3`,
-`m = 2` parity example of section 9.2, the two root name examples of section
-6.14 and the CRC-32C check value of section 2.1. A vector file is named by
-the structure and the version. A vector is never changed under a frozen
-version; a format change adds a vector.
+values are not printed in this document, apart from the two root name
+examples of section 6.14 and the CRC-32C check value of section 2.1. A vector
+file is named by the structure and the version. A vector is never changed
+under a frozen version; a format change adds a vector.
+
+The disc roots under `reference/testdata/` of the NoahsArk source tree are
+the frozen test data of format major 1. After the first tag of the program,
+nobody regenerates them. Each later format major adds its own set, and keeps
+the sets of the earlier majors.
 
 The Gear table and the mask constants are vendored: they are generated exactly
 once, checked in as a literal array, and never regenerated from a dependency.
@@ -2482,14 +2115,13 @@ The golden vectors cover them.
 | Snapshot | A stated root tree, parent, times and TLVs |
 | Ref record | A stated name, snapshot id and time |
 | Disc superblock | Stated identity and capacity values |
-| Run header | Stated identity and geometry |
+| Run header | Stated identity values |
 | INDEX | Ten stated Files rows, of which four have role 13, four stated Objects rows, and two stated Prereqs rows that name two discs |
 | README.txt | The identity values of the disc superblock vector |
 | FORMAT.txt | The embedded bytes equal `FORMAT.md` byte for byte (section 8.5) |
 | REFS and DISCS | Two stated rows of each table |
-| Enlarged `header_len` | One file per structure kind except chunk, disc superblock and run header, with `header_len` 8 above the value of section 2.3 and 8 nonzero bytes in the gap. A reader must decode the same fields as from the plain vector. |
-| Nonzero reserved bytes | One file per structure with a nonzero byte in every reserved field, and correct CRCs and ids. A reader must decode the same fields as from the plain vector. |
-| Checksum block | The 231 stated data blocks of one stripe |
-| Parity | A stated stripe of `k` data blocks, plus recovery after `m` erasures |
+| Other `header_len` | One file per structure kind except chunk, disc superblock and run header, with `header_len` 8 above the value of section 2.3 and 8 nonzero bytes in the gap. A reader must refuse it and name `header_len`. |
+| Nonzero reserved bytes | One file per structure with a nonzero byte in one reserved field, and correct CRCs and ids. A reader must refuse it and name the field. |
+| `version_major` 0 | One file per structure kind with `version_major` 0. A reader must refuse it. |
 | Root tree name encoding | `/srv/data`, `/a%b/c`, `/x\y` |
 | CRC-32C | The 9-byte string `123456789` |
