@@ -633,8 +633,9 @@ func packStore(layout repoLayout, c *catalog.Catalog, l *stage.Log) image.Store 
 }
 
 // refuseWhileMissing refuses the command cmd while a disc is missing. It
-// prints `disc SEQ "LABEL" is missing` for each missing disc, and
-// reports true. The number and the label come from the disc ledger.
+// prints `disc SEQ "LABEL" is missing` for each missing disc, in the
+// order of the disc number, and reports true. The number and the label
+// come from the disc ledger.
 func refuseWhileMissing(cmd string, layout repoLayout, cfg repoConfig, discs *stage.DiscLog, stderr io.Writer) bool {
 	missing := discs.InState(stage.DiscMissing)
 	if len(missing) == 0 {
@@ -646,8 +647,7 @@ func refuseWhileMissing(cmd string, layout repoLayout, cfg repoConfig, discs *st
 			rows = ledger.Rows
 		}
 	}
-	for _, d := range missing {
-		row := discRow(rows, d.UUID)
+	for _, row := range missingRows(missing, rows) {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is missing\n", cmd, discNameShort(row.DiscSeq, labelText(row.Label[:row.LabelLen])))
 	}
 	return true
