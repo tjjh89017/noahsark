@@ -707,84 +707,57 @@ func (opts PackOptions) asBuildOptions() BuildOptions {
 	}
 }
 
-// selectRunMaxIterations bounds the fixed-point search selectRun runs
-// over the run's own file count: the filesystem overhead estimate
-// shrinks the data budget as more objects are selected, and a smaller
-// budget can select fewer objects in turn. Each round only moves the
-// object count by a handful, so a handful of rounds always settles;
-// the bound is only a backstop against an unbroken back-and-forth.
-const selectRunMaxIterations = 20
-
 // selectRun walks candidates in dependency order and greedily takes the
 // longest prefix whose sectors (the run's fixed files, the INDEX, and
 // every selected object, each rounded up to a whole sector) stay within
 // the run's data budget: the sectors of opts.TargetCapacitySectors left
 // once the two run header copies and the filesystem overhead of the
 // run's own file count are set aside, matching OPERATIONS.md's budget
-// formula. Because the file count that sets the overhead is itself
-// the count of objects selected, selectRun iterates to a fixed point.
-// It returns the selected prefix of candidates and the set of external
-// ids it references: the children that a disc holds.
+// formula. Each trial computes the budget for the file count of the
+// trial prefix itself. The budget only shrinks as the prefix grows, thus
+// the first candidate that does not fit ends the prefix. It returns the
+// selected prefix of candidates and the set of external ids it
+// references: the children that a disc holds.
 func selectRun(opts PackOptions, candidates []packUnit, fixedSectorsExclIndex uint64, fixedFileCount int) ([]packUnit, map[object.ID]bool, error) {
-	var selected []packUnit
-	prereqSet := make(map[object.ID]bool)
-	objectCount := 0
-	for range selectRunMaxIterations {
-		fileCount := fixedFileCount + objectCount + run2RowCount
-		dataBudget := DataBudgetSectors(opts.TargetCapacitySectors, fileCount)
+	n := 0
+	prereqs := make(map[object.ID]bool)
+	var selectedSectors uint64
+	for _, cand := range candidates {
+		candSectors := sectorCount(cand.ByteLen)
 
-		n := 0
-		roundPrereqs := make(map[object.ID]bool)
-		var selectedSectors uint64
-
-		for _, cand := range candidates {
-			candSectors := sectorCount(cand.ByteLen)
-
-			var newPrereqs []object.ID
-			for _, c := range cand.Children {
-				if !roundPrereqs[c] {
-					newPrereqs = append(newPrereqs, c)
-				}
+		var newPrereqs []object.ID
+		for _, c := range cand.Children {
+			if !prereqs[c] {
+				newPrereqs = append(newPrereqs, c)
 			}
-
-			trialObjectCount := n + 1
-			trialPrereqCount := len(roundPrereqs) + len(newPrereqs)
-			trialFileCount := fixedFileCount + trialObjectCount + run2RowCount
-			trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
-				trialObjectCount*format.IndexObjectRecordLen + trialPrereqCount*format.IndexPrereqRecordLen
-			trialIndexSectors := sectorCount(uint64(trialIndexLen))
-			trialTotalSectors := fixedSectorsExclIndex + trialIndexSectors + selectedSectors + candSectors
-
-			if trialTotalSectors > dataBudget {
-				break
-			}
-
-			n++
-			for _, p := range newPrereqs {
-				roundPrereqs[p] = true
-			}
-			selectedSectors += candSectors
 		}
 
-		selected = candidates[:n:n]
-		prereqSet = roundPrereqs
-		if n == objectCount {
+		trialObjectCount := n + 1
+		trialPrereqCount := len(prereqs) + len(newPrereqs)
+		trialFileCount := fixedFileCount + trialObjectCount + run2RowCount
+		trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
+			trialObjectCount*format.IndexObjectRecordLen + trialPrereqCount*format.IndexPrereqRecordLen
+		trialIndexSectors := sectorCount(uint64(trialIndexLen))
+		trialTotalSectors := fixedSectorsExclIndex + trialIndexSectors + selectedSectors + candSectors
+
+		if trialTotalSectors > DataBudgetSectors(opts.TargetCapacitySectors, trialFileCount) {
 			break
 		}
-		objectCount = n
+
+		n++
+		for _, p := range newPrereqs {
+			prereqs[p] = true
+		}
+		selectedSectors += candSectors
 	}
-	return selected, prereqSet, nil
+	return candidates[:n:n], prereqs, nil
 }
 
 // minimumSectorsToPlaceOne finds the smallest target capacity at which
 // selectRun, run over these same candidates and fixed sizes, places at
 // least one object. It calls selectRun itself at each trial capacity,
-// rather than re-deriving its fixed-point budget algebraically, since
-// selectRun's own iteration can dip back to nothing at a capacity right
-// at the edge before settling; only selectRun's own answer is
-// authoritative. A binary search assumes that answer turns and stays
-// positive once capacity grows enough, which holds once the trial
-// capacity clears the edge region.
+// so that selectRun's own answer decides. A binary search holds: a
+// larger capacity never places fewer objects.
 func minimumSectorsToPlaceOne(opts PackOptions, candidates []packUnit, fixedSectorsExclIndex uint64, fixedFileCount int) (uint64, error) {
 	placesOne := func(targetSectors uint64) (bool, error) {
 		trial := opts
