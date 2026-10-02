@@ -209,7 +209,9 @@ The next `pack` takes each `staged` item, also an item below trees and a
 snapshot object that another disc holds (OPERATIONS.md, "Packing rules").
 A `staged` item that `pack` cannot read stays `staged`, with the trees
 above it and its snapshot object. `pack` and `status` then print a warning
-and exit 1.
+and exit 1. A `staged` item with no file in the staging store is not counted
+in the staged total of `status` and `commit`. `status` then prints one
+warning with the count of such items, and exits 1 (row 71f).
 
 Transitions, with the `reason` of the new record in brackets:
 
@@ -479,6 +481,7 @@ lists that last line where a row prints it.
 | 71c | the staging directory does not exist, and the state log holds a Staged or a Packed item | a command that takes the lock, other than `recover`, for example `disc burned SEQ` or `commit` | refused. Nothing is written. | `staging directory DIR does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir` | 1 | `noahsark status`: its block names the directory |
 | 71d | the staging directory does not exist, and the state log holds no Staged and no Packed item, for example a clone of a repository whose data is all on discs | status | unchanged | as row 71. No warning: no file waits in the staging directory. A command that needs the directory creates it. | 0 | the `next:` block |
 | 71e | lost, `on disc only` when marked lost, and an item of the disc is still stored as Lost | status | unchanged | `staged: N items, B bytes`, then `lost: I items; only a lost disc holds them`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the full `next:` block for the whole repository. The `lost:` line stays after a `commit` that does not stage each lost item again. | 0 | the `next:` block. A `commit` of a source that still holds the data ends the `lost:` line. When the source no longer holds it, the data is gone, and `restore` names each file that it cannot restore (row 85). |
+| 71f | staged, and a `staged` item has no file in the staging store, for example after the operator emptied the staging directory | status | unchanged | `staged: N items, B bytes`, which counts only the items whose file exists, then the other lines of row 71, then `warning: I staged item(s) have no file in the staging store; commit the same source again` on standard error | 1 | `noahsark commit` of the same source, then `noahsark status` |
 | 72 | any | a global option after the command name, for example `noahsark status --repo=PATH` | refused, usage error | `--repo is a global option; give it before the command name: noahsark --repo=PATH status` | 2 | the same line with the option before the command name |
 | 73 | any | a command option before the command name, or between a group and its subcommand, for example `noahsark --undo disc burned 0` or `noahsark disc --undo burned 0` | refused, usage error | `--undo is an option of disc burned; give it after the last subcommand word: noahsark disc burned --undo 0; see: noahsark disc burned -h` | 2 | the same line with the option after the last subcommand word. `-h` is the one exception to the position rule: `noahsark COMMAND -h` is not a usage error. |
 | 74 | any | a group with no subcommand, for example `noahsark disc` | refused, usage error | `disc needs a subcommand:`, then one line for each subcommand: `burned`, `lost`, `verified` | 2 | the same line with a subcommand, or `noahsark disc -h` |

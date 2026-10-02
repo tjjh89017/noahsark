@@ -109,9 +109,10 @@ A staging directory with no mark is not a roll back: a new clone on a second
 computer, or a staging directory that the operator deleted and then created
 again with `mkdir -p` (a staging directory that does not exist follows below).
 The first command with the lock writes the mark. The chunk files of the Staged
-items are not there. `status` and `pack` then fail on the first missing chunk
-file. A `commit` of the same source writes each missing chunk file again, and
-`pack` then works. The disc root of a `packed` disc is gone too: its `next:`
+items are not there. `status` and `commit` then count only the files that
+exist, and warn about the rest ("Command notes"). `pack` takes the other
+items, and warns about each item that it cannot take. A `commit` of the same
+source writes each missing chunk file again, and `pack` then works. The disc root of a `packed` disc is gone too: its `next:`
 block gives `disc lost` ("State to `next:` block" in `docs/states.md`).
 
 A staging directory that does not exist is not the same as an empty one. Its
@@ -1611,7 +1612,11 @@ items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped,
 special or left-out path ("Source policy"), `staged: N items, B bytes`, and `next: noahsark status`. `ID`
 is the full text form of the snapshot id ("Refs"). `B` is
 the sum of the stored file sizes of the Staged items: the chunk files in
-`staging/chunks/` and the metadata object files in `catalog/`. Exit: 1
+`staging/chunks/` and the metadata object files in `catalog/`. `N` and `B`
+count only the Staged items whose file exists. When a Staged item has no file,
+`commit` prints `noahsark: commit: warning: N staged item(s) have no file in
+the staging store; commit the same source again` on standard error after the
+`staged:` line; the warning does not change the exit code. Exit: 1
 when a file was skipped or unstable; the snapshot is committed all the same,
 and `commit` still prints the `next:` line. A special file never changes the
 exit code.
@@ -1742,6 +1747,18 @@ warning of `pack` on standard error, with `status` in place of `pack`. For a
 snapshot object that a disc holds and whose catalog file is missing or does
 not verify, `REPAIR` is `run recover with a disc that holds it`. `status`
 prints all its lines on standard output as usual, then exits 1.
+
+`status` reads no chunk file, thus it does not check a chunk. It looks only
+whether the file of each Staged item exists. The `staged:` line counts only
+the Staged items whose file exists. When a Staged item has no file, for
+example after the operator emptied the staging directory, `status` prints its
+other lines as usual, then this line on standard error, and exits 1. `N` is
+the number of the Staged items with no file. The snapshot lines still count
+such an item.
+
+```
+noahsark: status: warning: N staged item(s) have no file in the staging store; commit the same source again
+```
 
 When the staging directory does not exist and the state log holds a Staged
 or a Packed item, `status` prints no `staged:` line and no snapshot line. It prints the warning that "The repository directory"
@@ -2035,6 +2052,7 @@ Every command uses exactly these three codes.
 | 13 | `pack` stops: a read error or a sync error occurs while it writes the disc root | `pack` records nothing. Correct the cause, then run `pack` again. |
 | 13a | `pack` or `status`: `warning: snapshot ID: cannot pack all of it: KIND ID is damaged; ...`, or `... the file of KIND ID is missing; ...` | `pack` took the other items. For a tree, a blob or a snapshot object: `commit` the same source again; `commit` writes the object again, then run `pack`. For a damaged chunk: delete the chunk file that the warning names, `commit` the same source again, then run `pack`; for a missing chunk file, `commit` then `pack`. When the source no longer holds the data, the item cannot be packed, and the snapshot stays Staged and not complete on discs. The other snapshots are not affected. No command drops a snapshot. |
 | 13b | `pack`: `snapshot ID: ...; each disc carries it: run recover with a disc that holds it` | The catalog copy of a snapshot object that a disc holds is missing or damaged. Run `recover` with a disc that holds it; `recover` writes the object again. Then run `pack`. |
+| 13c | `status` or `commit`: `warning: N staged item(s) have no file in the staging store; commit the same source again` | `commit` the same source; `commit` writes each missing file again. Then `status` and `pack`. When the source no longer holds the data, `pack` names each item that it cannot take (row 13a). |
 | 14 | `pack`: `capacity ... holds not one item` | Give a larger `--capacity`. |
 | 15 | `pack needs --capacity` | Give `--capacity`. |
 | 16 | `image build needs root for the loop mount; run: ...` | Run the printed `sudo` line. |
@@ -2090,7 +2108,8 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   the ref name rule, exit codes, the `DISC` argument, the
   confirmations with a terminal, with no terminal, with `--yes` and with
   `--force-yes`, `config.yaml` with an unknown key, each command that takes
-  the repository lock while another process holds it.
+  the repository lock while another process holds it, `commit` and `status`
+  with a Staged item that has no file.
 - `cmd/noahsark`, the rebuild after `disc lost`: with the real commands,
   `commit`, `pack`, a counted `verify`, `gc`, `disc lost` of the `on disc
   only` disc, `status`, `commit` of the same source, `status`, and `pack` to
