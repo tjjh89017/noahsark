@@ -123,8 +123,8 @@ scenario_lifecycle() {
 	expect_exit 1 "nothing changed; disc lost needs --force-yes" "${yes[@]}" disc lost 0
 	assert_disc_state "$repo" "$uuid0" "on disc only, last check *"
 	expect_exit 0 "marked lost; " "${force[@]}" disc lost 0
-	grep -qE 'marked lost; [1-9][0-9]* item\(s\) need a new commit$' <<<"$EXPECT_OUT" ||
-		fail "lifecycle: disc lost of an on disc only disc did not name its items"
+	grep -qE 'marked lost; [1-9][0-9]* item\(s\) returned to staged; [1-9][0-9]* item\(s\) need a new commit$' <<<"$EXPECT_OUT" ||
+		fail "lifecycle: disc lost of an on disc only disc did not count its staged and its lost items"
 	assert_disc_state "$repo" "$uuid0" "lost"
 	expect_exit 1 "disc 0 is marked lost" "${n[@]}" verify "$mnt"
 	expect_exit 1 "disc 0 is already marked lost" "${force[@]}" disc lost 0
