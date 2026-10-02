@@ -425,6 +425,23 @@ OnDisc means that a disc holds the item and staging holds no file for it.
 `gc` and `recover` both record it, because both say the same thing. Lost means
 that the only disc of a freed item is gone.
 
+**`disc lost` stages the objects of the catalog at once; only a chunk is
+Lost.** `gc` frees the data of a disc as soon as it is verified, thus a lost
+disc is often `on disc only`. The catalog keeps each snapshot, tree and blob
+object for ever, and `pack` reads them from there. A rebuild from the source
+is needed only for the chunks. Thus the next `pack` puts the old snapshots and
+their trees on a new disc, also for a file that the source no longer holds.
+`disc lost --undo` gives these objects back to the found disc only in the
+batch that gives back a Lost chunk, so that the records tell one story.
+
+**`status` shows Lost items for as long as they are Lost.** The `next:` block
+asks for one `commit`; a second commit cannot bring back data that the source
+no longer holds. The `lost:` line stays, so that the operator always sees that
+data is gone. No command dismisses it: the record is the truth. The line is a
+count from the state log. To name the snapshots that need a Lost item,
+`status` would read every tree and blob of the catalog on each run; `restore
+--dry-run` of a snapshot gives that answer when the operator asks.
+
 **Two append-only logs with fixed-width records.** `state/state.db` holds one
 70-byte record for each change of an item. `state/discstate.db` holds one
 54-byte record for each event of a disc: pack, burn, check, verified mark,

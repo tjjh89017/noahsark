@@ -2,6 +2,8 @@ package main
 
 import (
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -205,5 +207,48 @@ func init() {
 			noEvent: true, sameCatalog: true,
 			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
 		},
+		// Row 71e: the freed chunks of a lost disc are lost. status counts
+		// them on the lost line, before the disc lines.
+		stateCase{
+			row: "71e", name: "status after disc lost of an on disc only disc",
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost, setup: lostCountSetup,
+			args:    []string{"status"},
+			also:    []string{"\nlost: {LOST} items; only a lost disc holds them\ndisc {SEQ} "},
+			noEvent: true, sameCatalog: true,
+			end: stage.DiscLost, word: stage.WordLost,
+		},
+		// Row 71e after a commit of a source that no longer holds one
+		// file: the chunk of that file stays lost, and so does the line.
+		stateCase{
+			row: "71e", name: "the lost line stays after a commit",
+			start: stage.DiscOnDiscOnly, from: stage.DiscLost,
+			setup: func(t *testing.T, fx *discFixture) {
+				lostSetup(t, fx)
+				if err := os.Remove(filepath.Join(fx.src, "a.txt")); err != nil {
+					t.Fatal(err)
+				}
+				fx.mustRun(t, "commit", fx.src)
+				lostCountSetup(t, fx)
+				if fixtureNumber(t, fx, "{LOST}") != 1 {
+					t.Fatalf("%s items stay lost, want 1: the chunk of a.txt", fx.vars["{LOST}"])
+				}
+			},
+			args:    []string{"status"},
+			noEvent: true, sameCatalog: true,
+			end: stage.DiscLost, word: stage.WordLost,
+		},
 	)
+}
+
+// lostCountSetup marks the disc of fx lost with disc lost, when it is
+// not lost yet. Then {LOST} and the cell I are the number of Lost items.
+func lostCountSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	if discState(t, fx.repo, fx.uuid).State != stage.DiscLost {
+		lostSetup(t, fx)
+	}
+	n := strconv.Itoa(countByState(t, fx.repo, stage.Lost))
+	fx.set("{LOST}", n)
+	fx.cell("I", n)
+	fx.cell("N", "")
 }

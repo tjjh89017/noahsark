@@ -258,6 +258,38 @@ func TestCheckCompleteReportsMissingTree(t *testing.T) {
 	}
 }
 
+// TestHolds checks that Holds reports a good tree and a good snapshot,
+// and no chunk id, no unknown id and no damaged file.
+func TestHolds(t *testing.T) {
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunkID := object.ComputeID(format.ObjectKindChunk, []byte("chunk data"))
+	rootTree, rootID := encodeTestTree(t, format.TreeEntry{EntryType: format.EntryTypeDirectory, Name: []byte("d"), ContentID: chunkID})
+	if err := c.WriteObject(format.ObjectKindTree, rootID, rootTree); err != nil {
+		t.Fatal(err)
+	}
+	snapBuf, snapID := encodeTestSnapshot(t, rootID)
+	if err := c.WriteObject(format.ObjectKindSnapshot, snapID, snapBuf); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Holds(rootID) || !c.Holds(snapID) {
+		t.Fatal("Holds misses an object that the catalog holds")
+	}
+	if c.Holds(chunkID) {
+		t.Fatal("Holds reports a chunk")
+	}
+	damaged := append([]byte(nil), rootTree...)
+	damaged[len(damaged)-1] ^= 0xFF
+	if err := os.WriteFile(c.MetaPath(format.ObjectKindTree, rootID), damaged, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c.Holds(rootID) {
+		t.Fatal("Holds reports a damaged file")
+	}
+}
+
 // TestCheckCompleteReportsMissingBlob builds a catalog that holds a
 // snapshot and its root tree, but not the blob of a file of the tree.
 // The snapshot is partial, and CheckComplete names the blob.

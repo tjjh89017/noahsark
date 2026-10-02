@@ -138,6 +138,20 @@ func (c *Catalog) readObject(kind format.ObjectKind, id object.ID) ([]byte, erro
 	return raw, nil
 }
 
+// Holds reports whether the catalog holds a snapshot, tree or blob object
+// with the content id id whose file gives that id. It reports false for a
+// chunk: the catalog holds no chunk. A content id covers the kind, thus
+// at most one kind can give id.
+func (c *Catalog) Holds(id object.ID) bool {
+	for _, kind := range []format.ObjectKind{format.ObjectKindSnapshot, format.ObjectKindTree, format.ObjectKindBlob} {
+		raw, err := os.ReadFile(c.MetaPath(kind, id))
+		if err == nil && checkObject(kind, id, raw) == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // FileSizeError reports a tree entry whose size is not the sum of the
 // chunk lengths of its blob.
 type FileSizeError struct {

@@ -79,7 +79,7 @@ func completeByHand(t *testing.T, fx *discFixture, e stage.DiscEvent) {
 	if err := logs.Discs.Append(discEvent(fakeNow(), u, e)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := logs.CompleteDisc(u, catalogIndexItems(fx.repo)); err != nil {
+	if _, err := logs.CompleteDisc(u, catalogIndexItems(fx.repo), catalogHolds(fx.repo)); err != nil {
 		t.Fatal(err)
 	}
 }

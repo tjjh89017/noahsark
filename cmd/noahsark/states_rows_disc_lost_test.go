@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -147,17 +148,31 @@ func init() {
 				}
 			},
 		},
-		// Row 58 with the count: each freed item is lost.
+		// Row 58 with the counts: each freed chunk is lost, and each
+		// object that the catalog holds is staged. status prints the lost
+		// line, and pack takes the staged objects from the catalog.
 		stateCase{
-			row: "58", name: "on disc only disc marked lost, the count",
-			start: stage.DiscOnDiscOnly, setup: countItemsSetup,
+			row: "58", name: "on disc only disc marked lost, the counts",
+			start: stage.DiscOnDiscOnly, setup: catalogSplitSetup,
 			args: []string{"--force-yes", "disc", "lost", "0"},
 			end:  stage.DiscLost, word: stage.WordLost,
-			check: func(t *testing.T, fx *discFixture, _, _ string) {
-				if got := countByState(t, fx.repo, stage.Lost); got != itemCount(t, fx) {
-					t.Errorf("%d lost items, want %d", got, itemCount(t, fx))
-				}
-			},
+			check: allChecks(
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					if got := countByState(t, fx.repo, stage.Lost); got != fixtureNumber(t, fx, "{CHUNKS}") {
+						t.Errorf("%d lost items, want %s", got, fx.vars["{CHUNKS}"])
+					}
+					if got := countByState(t, fx.repo, stage.Staged); got != fixtureNumber(t, fx, "{OBJECTS}") {
+						t.Errorf("%d staged items, want %s", got, fx.vars["{OBJECTS}"])
+					}
+				},
+				statusShows("lost: {CHUNKS} items; only a lost disc holds them\n"),
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					out := fx.mustRun(t, "pack", "--capacity=64MiB")
+					if !strings.Contains(out, ": "+fx.vars["{OBJECTS}"]+" item(s), ") {
+						t.Errorf("pack output %q, want the %s staged objects", out, fx.vars["{OBJECTS}"])
+					}
+				},
+			),
 		},
 		// Row 61 after a real disc lost: the disc is burned with no
 		// verified time, and each item is burned again.
@@ -334,6 +349,29 @@ func countItemsSetup(t *testing.T, fx *discFixture) {
 	}
 	fx.set("{N}", strconv.Itoa(n))
 	fx.cell("N", strconv.Itoa(n))
+}
+
+// catalogSplitSetup counts the OnDisc items of the disc of fx: {OBJECTS}
+// and the cell I are the items that the catalog holds, {CHUNKS} and the
+// cell N the other items.
+func catalogSplitSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	holds := catalogHolds(fx.repo)
+	objects, chunks := 0, 0
+	for _, id := range openTestLog(t, fx.repo).ItemsOfDiscInState(fx.uuidBytes(t), stage.OnDisc) {
+		if holds(id) {
+			objects++
+		} else {
+			chunks++
+		}
+	}
+	if objects == 0 || chunks == 0 {
+		t.Fatalf("the disc holds %d catalog objects and %d chunks, want both", objects, chunks)
+	}
+	fx.set("{OBJECTS}", strconv.Itoa(objects))
+	fx.set("{CHUNKS}", strconv.Itoa(chunks))
+	fx.cell("I", strconv.Itoa(objects))
+	fx.cell("N", strconv.Itoa(chunks))
 }
 
 // itemCount is the {N} number of countItemsSetup.

@@ -90,7 +90,7 @@ func TestRepairsAfterEachEvent(t *testing.T) {
 				tc.prepare(t, logs, disc)
 			}
 			before := itemFile(t, dir)
-			repairs, err := logs.Repairs(index)
+			repairs, err := logs.Repairs(index, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -100,7 +100,7 @@ func TestRepairsAfterEachEvent(t *testing.T) {
 			if string(itemFile(t, dir)) != string(before) {
 				t.Fatal("Repairs wrote the item log")
 			}
-			done, err := logs.Complete(index)
+			done, err := logs.Complete(index, nil)
 			if err != nil || len(done) != 1 {
 				t.Fatalf("Complete = %+v, %v", done, err)
 			}
@@ -111,11 +111,84 @@ func TestRepairsAfterEachEvent(t *testing.T) {
 					t.Errorf("item %x: reason %d, want %d", id[:2], rec.Reason, tc.reason)
 				}
 			}
-			if left, err := again.Repairs(index); err != nil || len(left) != 0 {
+			if left, err := again.Repairs(index, nil); err != nil || len(left) != 0 {
 				t.Fatalf("Repairs after Complete = %+v, %v; want none", left, err)
 			}
 		})
 	}
+}
+
+// lostOnDiscOnlyDisc writes an on disc only disc that holds a chunk and
+// a catalog object, then its Lost event and the item records that the
+// repair writes. It returns the logs, the disc, the chunk, the object,
+// and the INDEX and the catalog of the disc.
+func lostOnDiscOnlyDisc(t *testing.T, dir string) (*Logs, [16]byte, object.ID, object.ID, IndexItems, CatalogHolds) {
+	t.Helper()
+	disc := fillDisc(0xC6)
+	chunk, meta := fillID(1), fillID(2)
+	index := func([16]byte) ([]object.ID, uint64, error) { return []object.ID{chunk, meta}, 7, nil }
+	holds := func(id object.ID) bool { return id == meta }
+	logs := openTestLogs(t, dir)
+	packedDisc(t, logs, disc, []object.ID{chunk, meta}, EventBurnRecorded, EventCheckOK, EventFreed)
+	if err := logs.Items.MarkOnDisc(chunk, meta); err != nil {
+		t.Fatal(err)
+	}
+	appendEvents(t, logs.Discs, disc, 200, EventLost)
+	if n, err := logs.CompleteDisc(disc, index, holds); err != nil || n != 2 {
+		t.Fatalf("CompleteDisc after Lost = %d, %v; want 2", n, err)
+	}
+	return logs, disc, chunk, meta, index, holds
+}
+
+// TestRepairsLostKeepsCatalogObjectsStaged checks that disc lost of an on
+// disc only disc stages an item that the catalog holds and marks the
+// other item Lost, and that disc lost --undo gives both back in one
+// batch.
+func TestRepairsLostKeepsCatalogObjectsStaged(t *testing.T) {
+	dir := t.TempDir()
+	logs, disc, chunk, meta, index, holds := lostOnDiscOnlyDisc(t, dir)
+	mustState(t, logs.Items, chunk, Lost)
+	if rec := mustState(t, logs.Items, meta, Staged); rec.Reason != ReasonDiscLost {
+		t.Fatalf("catalog object reason %d, want disc lost", rec.Reason)
+	}
+	if left, err := logs.Repairs(index, holds); err != nil || len(left) != 0 {
+		t.Fatalf("Repairs after disc lost = %+v, %v; want none", left, err)
+	}
+
+	appendEvents(t, logs.Discs, disc, 300, EventLostUndone)
+	repairs, err := logs.Repairs(index, holds)
+	if err != nil || len(repairs) != 1 || repairs[0].Items != 2 || repairs[0].Command != "disc lost --undo" {
+		t.Fatalf("Repairs after LostUndone = %+v, %v; want 2 items of disc lost --undo", repairs, err)
+	}
+	if _, err := logs.Complete(index, holds); err != nil {
+		t.Fatal(err)
+	}
+	again := openTestLogs(t, dir)
+	for _, id := range []object.ID{chunk, meta} {
+		rec := mustState(t, again.Items, id, OnDisc)
+		if rec.Reason != ReasonLostUndone || rec.DiscUUID != disc {
+			t.Errorf("item %x: record %+v, want OnDisc on the disc with reason lost undone", id[:2], rec)
+		}
+	}
+	if left, err := again.Repairs(index, holds); err != nil || len(left) != 0 {
+		t.Fatalf("Repairs after Complete = %+v, %v; want none", left, err)
+	}
+}
+
+// TestRepairsLostUndoAfterCommitKeepsObjectsStaged checks that disc lost
+// --undo leaves the catalog objects Staged when a commit staged each Lost
+// item again.
+func TestRepairsLostUndoAfterCommitKeepsObjectsStaged(t *testing.T) {
+	logs, disc, chunk, meta, index, holds := lostOnDiscOnlyDisc(t, t.TempDir())
+	if err := logs.Items.EnsureStaged(chunk, meta); err != nil {
+		t.Fatal(err)
+	}
+	appendEvents(t, logs.Discs, disc, 300, EventLostUndone)
+	if repairs, err := logs.Repairs(index, holds); err != nil || len(repairs) != 0 {
+		t.Fatalf("Repairs = %+v, %v; want none", repairs, err)
+	}
+	mustState(t, logs.Items, chunk, Staged)
+	mustState(t, logs.Items, meta, Staged)
 }
 
 // TestRepairsLostUndoNeedsNoPackedItem checks that a burned disc that
@@ -131,7 +204,7 @@ func TestRepairsLostUndoNeedsNoPackedItem(t *testing.T) {
 		t.Fatal(err)
 	}
 	index := func([16]byte) ([]object.ID, uint64, error) { return []object.ID{fillID(1), fillID(2)}, 1, nil }
-	if repairs, err := logs.Repairs(index); err != nil || len(repairs) != 0 {
+	if repairs, err := logs.Repairs(index, nil); err != nil || len(repairs) != 0 {
 		t.Fatalf("Repairs = %+v, %v; want none", repairs, err)
 	}
 }
@@ -146,7 +219,7 @@ func TestRepairsIndexError(t *testing.T) {
 	}
 	appendEvents(t, logs.Discs, disc, 200, EventLost, EventLostUndone)
 	bad := errors.New("no catalog")
-	if _, err := logs.Complete(func([16]byte) ([]object.ID, uint64, error) { return nil, 0, bad }); !errors.Is(err, bad) {
+	if _, err := logs.Complete(func([16]byte) ([]object.ID, uint64, error) { return nil, 0, bad }, nil); !errors.Is(err, bad) {
 		t.Fatalf("Complete error %v, want %v", err, bad)
 	}
 }
@@ -157,7 +230,7 @@ func TestCompleteDiscOnlyTouchesItsDisc(t *testing.T) {
 	logs := openTestLogs(t, dir)
 	packedDisc(t, logs, a, []object.ID{fillID(1)}, EventLost)
 	packedDisc(t, logs, b, []object.ID{fillID(2)}, EventLost)
-	n, err := logs.CompleteDisc(a, nil)
+	n, err := logs.CompleteDisc(a, nil, nil)
 	if err != nil || n != 1 {
 		t.Fatalf("CompleteDisc = %d, %v; want 1", n, err)
 	}

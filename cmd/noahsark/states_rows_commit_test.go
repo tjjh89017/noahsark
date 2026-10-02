@@ -31,25 +31,29 @@ func init() {
 			start: stage.DiscLost, args: []string{"commit", "{SRC}"},
 			end: stage.DiscLost,
 		},
-		// Row 3: the source still has the data. Each lost item is staged
+		// Row 3: the source still has the data. Each lost chunk is staged
 		// again, its chunk file is written again, and the staged line
-		// counts it. The old snapshot object is not in the new commit, so
-		// it stays lost.
+		// counts it with the objects that disc lost staged from the
+		// catalog and the new snapshot object. No item stays lost, thus
+		// status prints no lost line.
 		stateCase{
 			row: "3", name: "commit stages each lost item again",
 			start: stage.DiscOnDiscOnly, from: stage.DiscLost, setup: lostItemsSetup,
 			args: []string{"commit", "{SRC}"},
 			end:  stage.DiscLost,
-			check: func(t *testing.T, fx *discFixture, _, _ string) {
-				if n := countByState(t, fx.repo, stage.Lost); n != 1 {
-					t.Fatalf("%d items stay lost, want 1 (the old snapshot)", n)
-				}
-				if staged := countByState(t, fx.repo, stage.Staged); staged != lostCount(t, fx) {
-					t.Fatalf("%d items staged, want %d", staged, lostCount(t, fx))
-				}
+			check: allChecks(
+				func(t *testing.T, fx *discFixture, _, _ string) {
+					if n := countByState(t, fx.repo, stage.Lost); n != 0 {
+						t.Fatalf("%d items stay lost, want 0", n)
+					}
+					if staged, want := countByState(t, fx.repo, stage.Staged), lostCount(t, fx)+stagedCount(t, fx)+1; staged != want {
+						t.Fatalf("%d items staged, want %d", staged, want)
+					}
+				},
+				statusLacks("lost: "),
 				// pack reads the chunk file of each staged item.
-				fx.mustRun(t, "pack", "--capacity=64MiB")
-			},
+				func(t *testing.T, fx *discFixture, _, _ string) { fx.mustRun(t, "pack", "--capacity=64MiB") },
+			),
 		},
 		// Row 4: the source no longer has the data. The commit names no
 		// lost item, and each lost item stays lost.
@@ -79,8 +83,9 @@ func init() {
 					t.Fatalf("%d items lost, want %d", n, lostCount(t, fx))
 				}
 				// The commit ends the commit block, also for the items
-				// that stay lost.
+				// that stay lost. The lost line stays.
 				statusLacks(commitBlock[0])(t, fx, stdout, stderr)
+				statusShows("lost: {LOST} items; only a lost disc holds them\n")(t, fx, stdout, stderr)
 			},
 		},
 	)
@@ -144,28 +149,42 @@ func TestStatesRow1CommitSkippedPrintsNext(t *testing.T) {
 }
 
 // lostItemsSetup marks the on disc only disc of fx lost, as disc lost
-// does. Each item of the disc is then Lost. {LOST} is the number of lost
-// items. The count of the staged line of a commit is that number.
+// does. Each chunk of the disc is then Lost, and each other item Staged.
+// {LOST} is the number of lost items, and {STAGED} the number of staged
+// items. A commit of the same source stages the lost items again and adds
+// its snapshot object, thus the count of its staged line is the sum of
+// both and 1.
 func lostItemsSetup(t *testing.T, fx *discFixture) {
 	t.Helper()
 	markDiscLostInLog(t, fx)
 	lost := countByState(t, fx.repo, stage.Lost)
-	if lost == 0 {
-		t.Fatal("the fixture has no lost item")
-	}
-	if n := countByState(t, fx.repo, stage.Staged); n != 0 {
-		t.Fatalf("the fixture has %d staged items, want 0", n)
+	staged := countByState(t, fx.repo, stage.Staged)
+	if lost == 0 || staged == 0 {
+		t.Fatalf("the fixture has %d lost and %d staged items, want both", lost, staged)
 	}
 	fx.set("{LOST}", strconv.Itoa(lost))
-	fx.cell("N", strconv.Itoa(lost))
+	fx.set("{STAGED}", strconv.Itoa(staged))
+	fx.cell("N", strconv.Itoa(lost+staged+1))
 }
 
 // lostCount is the {LOST} number of lostItemsSetup.
 func lostCount(t *testing.T, fx *discFixture) int {
 	t.Helper()
-	n, err := strconv.Atoi(fx.vars["{LOST}"])
+	return fixtureNumber(t, fx, "{LOST}")
+}
+
+// stagedCount is the {STAGED} number of lostItemsSetup.
+func stagedCount(t *testing.T, fx *discFixture) int {
+	t.Helper()
+	return fixtureNumber(t, fx, "{STAGED}")
+}
+
+// fixtureNumber is the number that the placeholder key of fx stands for.
+func fixtureNumber(t *testing.T, fx *discFixture, key string) int {
+	t.Helper()
+	n, err := strconv.Atoi(fx.vars[key])
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%s: %v", key, err)
 	}
 	return n
 }

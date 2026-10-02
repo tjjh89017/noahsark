@@ -101,10 +101,11 @@ func (r *discLostRun) fail(cmd string, err error) int {
 }
 
 // markLost implements "disc lost DISC". After a critical confirmation, it
-// appends the Lost event, then returns the Packed items of the disc to
-// Staged and marks its OnDisc items Lost, then removes the plan directory
-// of the disc. It keeps the catalog data of the disc. A stop after the
-// event leaves item records that the next command with the lock writes.
+// appends the Lost event, then returns the Packed items of the disc and
+// its OnDisc items that the catalog holds to Staged, and marks its other
+// OnDisc items Lost. Then it removes the plan directory of the disc. It
+// keeps the catalog data of the disc. A stop after the event leaves item
+// records that the next command with the lock writes.
 func (r *discLostRun) markLost() int {
 	const cmd = "disc lost"
 	e, disc := r.e, r.disc
@@ -126,7 +127,7 @@ func (r *discLostRun) markLost() int {
 	if err := r.logs.Discs.Append(discEvent(e.now(), u, stage.EventLost)); err != nil {
 		return r.fail(cmd, err)
 	}
-	n, err := r.logs.CompleteDisc(u, nil)
+	n, err := r.logs.CompleteDisc(u, nil, catalogHolds(r.layout.repo))
 	if err != nil {
 		return r.fail(cmd, err)
 	}
@@ -138,7 +139,8 @@ func (r *discLostRun) markLost() int {
 
 	switch disc.info.State {
 	case stage.DiscOnDiscOnly:
-		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) need a new commit\n", disc.name(), n)
+		lost := len(r.logs.Items.ItemsOfDiscInState(u, stage.Lost))
+		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; %d item(s) returned to staged; %d item(s) need a new commit\n", disc.name(), n-lost, lost)
 	case stage.DiscMissing:
 		_, _ = fmt.Fprintf(e.stdout, "%s: marked lost; its items are not known; a new commit stages what the source still holds\n", disc.name())
 	default:
@@ -185,7 +187,7 @@ func (r *discLostRun) undo() int {
 	if err := r.logs.Discs.Append(discEvent(e.now(), u, stage.EventLostUndone)); err != nil {
 		return r.fail(cmd, err)
 	}
-	back, err := r.logs.CompleteDisc(u, index)
+	back, err := r.logs.CompleteDisc(u, index, catalogHolds(r.layout.repo))
 	if err != nil {
 		return r.fail(cmd, err)
 	}

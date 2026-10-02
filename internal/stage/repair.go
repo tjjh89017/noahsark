@@ -30,11 +30,19 @@ type Repair struct {
 // the catalog holds no INDEX of the disc.
 type IndexItems func(disc [16]byte) ([]object.ID, uint64, error)
 
+// CatalogHolds reports whether the catalog holds a good snapshot, tree or
+// blob object with the id. pack reads such an object from the catalog,
+// thus it needs no copy in the staging store and no disc.
+type CatalogHolds func(id object.ID) bool
+
 // Repairs returns each disc whose item records do not follow its state,
 // sorted by disc number and then by uuid. It writes nothing. index reads
-// the catalog INDEX of a burned disc that disc lost --undo gave back.
-func (s *Logs) Repairs(index IndexItems) ([]Repair, error) {
-	plans, err := s.plan(nil, index)
+// the catalog INDEX of a disc that disc lost --undo gave back. holds
+// tells which items the catalog holds; nil holds none. A nil holds
+// changes the records of a repair, and can change the count of a repair
+// of disc lost --undo, but never which discs need a repair.
+func (s *Logs) Repairs(index IndexItems, holds CatalogHolds) ([]Repair, error) {
+	plans, err := s.plan(nil, index, holds)
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +55,8 @@ func (s *Logs) Repairs(index IndexItems) ([]Repair, error) {
 
 // Complete writes the missing item records of each disc that Repairs
 // returns, one batch for each disc, and returns what it wrote.
-func (s *Logs) Complete(index IndexItems) ([]Repair, error) {
-	plans, err := s.plan(nil, index)
+func (s *Logs) Complete(index IndexItems, holds CatalogHolds) ([]Repair, error) {
+	plans, err := s.plan(nil, index, holds)
 	if err != nil {
 		return nil, err
 	}
@@ -65,8 +73,8 @@ func (s *Logs) Complete(index IndexItems) ([]Repair, error) {
 // CompleteDisc writes the item records that the state of the disc id asks
 // for, as one batch, and returns their number. A command calls it right
 // after it appends the event of the disc.
-func (s *Logs) CompleteDisc(id [16]byte, index IndexItems) (int, error) {
-	plans, err := s.plan(&id, index)
+func (s *Logs) CompleteDisc(id [16]byte, index IndexItems, holds CatalogHolds) (int, error) {
+	plans, err := s.plan(&id, index, holds)
 	if err != nil || len(plans) == 0 {
 		return 0, err
 	}
@@ -86,16 +94,20 @@ type repairPlan struct {
 // not nil. It reads the item log in one pass.
 //
 // The item records that each disc state asks for:
-//   - lost: each Packed item returns to Staged, and each OnDisc item is
-//     Lost, both with the reason disc lost.
+//   - lost: each Packed item and each OnDisc item that the catalog holds
+//     return to Staged, and each other OnDisc item is Lost, all with the
+//     reason disc lost.
 //   - undone: each Packed item returns to Staged, with the reason pack
 //     undone.
 //   - on disc only: each Packed item is OnDisc, as gc records it, and each
-//     Lost item is OnDisc with the reason lost undone.
+//     Lost item is OnDisc with the reason lost undone. While a Lost item
+//     remains and the newest event is LostUndone, each item that the INDEX
+//     of the disc lists, that the catalog holds, and that is Staged with
+//     the reason disc lost, is OnDisc too, with the reason lost undone.
 //   - burned, when the newest event is LostUndone and no item is Packed on
 //     the disc: each Staged item that the INDEX of the disc lists is
 //     Packed on the disc, with the reason lost undone.
-func (s *Logs) plan(only *[16]byte, index IndexItems) ([]repairPlan, error) {
+func (s *Logs) plan(only *[16]byte, index IndexItems, holds CatalogHolds) ([]repairPlan, error) {
 	plans := make(map[[16]byte]*repairPlan)
 	packed := make(map[[16]byte]int)
 	for id, rec := range s.Items.current {
@@ -109,7 +121,10 @@ func (s *Logs) plan(only *[16]byte, index IndexItems) ([]repairPlan, error) {
 		if !ok {
 			continue
 		}
-		next, cmd, ok := itemRepair(disc.State, rec)
+		// holds reads a catalog file, thus only an OnDisc item of a lost
+		// disc asks it.
+		inCatalog := disc.State == DiscLost && rec.State == OnDisc && holds != nil && holds(id)
+		next, cmd, ok := itemRepair(disc.State, rec, inCatalog)
 		if !ok {
 			continue
 		}
@@ -124,6 +139,14 @@ func (s *Logs) plan(only *[16]byte, index IndexItems) ([]repairPlan, error) {
 
 	for _, disc := range s.Discs.Discs() {
 		if only != nil && disc.UUID != *only {
+			continue
+		}
+		if p := plans[disc.UUID]; p != nil && p.Command == "disc lost --undo" && disc.State == DiscOnDiscOnly {
+			recs, err := s.catalogObjectsBack(disc, index, holds)
+			if err != nil {
+				return nil, err
+			}
+			p.recs = append(p.recs, recs...)
 			continue
 		}
 		if disc.State != DiscBurned || disc.LastEvent != EventLostUndone || packed[disc.UUID] > 0 || index == nil {
@@ -157,12 +180,34 @@ func (s *Logs) plan(only *[16]byte, index IndexItems) ([]repairPlan, error) {
 	return out, nil
 }
 
+// catalogObjectsBack returns the OnDisc records that disc lost --undo of
+// an on disc only disc writes for the catalog objects that disc lost
+// staged: each item that the catalog INDEX of the disc lists, that holds
+// reports, and that is Staged with the reason disc lost.
+func (s *Logs) catalogObjectsBack(disc DiscInfo, index IndexItems, holds CatalogHolds) ([]Record, error) {
+	if index == nil || holds == nil {
+		return nil, nil
+	}
+	ids, runSeq, err := index(disc.UUID)
+	if err != nil {
+		return nil, fmt.Errorf("stage: disc lost --undo of disc %d: %w", disc.DiscSeq, err)
+	}
+	var recs []Record
+	for _, id := range ids {
+		if rec, ok := s.Items.current[id]; ok && rec.State == Staged && rec.Reason == ReasonDiscLost && holds(id) {
+			recs = append(recs, Record{ContentID: id, State: OnDisc, RunSeq: runSeq, DiscUUID: disc.UUID, Reason: ReasonLostUndone})
+		}
+	}
+	return recs, nil
+}
+
 // itemRepair returns the record that an item whose newest record is rec
-// needs on a disc in state, and the command that writes it. ok is false
-// when the record already follows the state.
-func itemRepair(state DiscState, rec Record) (next Record, cmd string, ok bool) {
+// needs on a disc in state, and the command that writes it. inCatalog
+// tells that the catalog holds the item. ok is false when the record
+// already follows the state.
+func itemRepair(state DiscState, rec Record, inCatalog bool) (next Record, cmd string, ok bool) {
 	switch {
-	case state == DiscLost && rec.State == Packed:
+	case state == DiscLost && rec.State == Packed, state == DiscLost && inCatalog:
 		return Record{State: Staged, Reason: ReasonDiscLost}, "disc lost", true
 	case state == DiscLost && rec.State == OnDisc:
 		return Record{State: Lost, RunSeq: rec.RunSeq, DiscUUID: rec.DiscUUID, Reason: ReasonDiscLost}, "disc lost", true

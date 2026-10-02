@@ -102,7 +102,7 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
-	items, err := logs.CompleteDisc(discUUID, nil)
+	items, err := logs.CompleteDisc(discUUID, nil, nil)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1

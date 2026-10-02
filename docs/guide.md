@@ -750,27 +750,35 @@ $ noahsark disc lost 0
 warning: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): on disc only -> lost
 the tool stops trusting this disc
 Continue? [y/N] y
-disc 0 "2026-09-14 disc 0": marked lost; 8 item(s) need a new commit
+disc 0 "2026-09-14 disc 0": marked lost; 5 item(s) returned to staged; 3 item(s) need a new commit
 next: noahsark status
 ```
 
 For a disc that `gc` did not free yet, the items return to staged at
-once, and the next `pack` takes them. For an `on disc only` disc, run
-`commit`. It stages again each item that the source still holds. Until
-you commit, the `next:` block of `status` gives the line:
+once, and the next `pack` takes them. For an `on disc only` disc, the
+repository still holds the snapshots, the trees and the file lists: they
+return to staged at once. The file data is gone with the disc. Run
+`commit`. It stages again the data that the source still holds. Until you
+commit, the `next:` block of `status` gives the line:
 
 ```
 $ noahsark status
-staged: 0 items, 0 bytes
+staged: 5 items, 1503 bytes
+snapshot 3f1c09ab2d77: 5 items staged, not complete on discs; recover cannot find it from the discs alone
+lost: 3 items; only a lost disc holds them
 disc 0 "2026-09-14 disc 0"  lost  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: disc 0 is lost; a new commit stages what the source still holds; run:
 noahsark commit
 ```
 
-An old snapshot can still need data that only the lost disc held.
-`restore` then restores every file that the other discs hold, names each
-file that it cannot restore, and exits with code 1. The same holds for a
-disc that was `missing` when you marked it lost.
+The `lost:` line counts the data that no disc and no staged copy holds. It
+stays until a commit stages that data again. When the source no longer
+holds a file, its data stays lost, and the line stays. Then an old
+snapshot needs data that only the lost disc held. `restore` restores every
+file that the other discs hold, names each file that it cannot restore,
+and exits with code 1. `restore --dry-run` of a snapshot shows the lost
+disc in its plan, with ` (lost)` at the end of the line. The same holds
+for a disc that was `missing` when you marked it lost.
 
 ### Record a burn or a verified disc without a check
 
