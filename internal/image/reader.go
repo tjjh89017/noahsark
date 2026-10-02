@@ -548,11 +548,11 @@ func filesRow(idx *format.Index, role uint8) (format.IndexFileRecord, bool) {
 }
 
 // verifyOneObject reads the object file at path through
-// object.ReadVerified, the same read-and-check restore runs before it
+// object.CheckFile, the same read-and-check restore runs before it
 // trusts an object. It returns the stored byte count read, for progress
 // reporting.
 func verifyOneObject(path string, id object.ID) (int64, error) {
-	raw, _, err := object.ReadVerified(path, id)
+	raw, _, err := object.CheckFile(path, id)
 	if err != nil {
 		return 0, err
 	}
