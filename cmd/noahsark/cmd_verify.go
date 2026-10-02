@@ -11,11 +11,10 @@ import (
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
-	"github.com/tjjh89017/noahsark/internal/restore"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-const verifyUsage = "verify [--no-mark] [--heal --out=DIR] DISC-ROOT\nverify --undo DISC"
+const verifyUsage = "verify [--no-mark] DISC-ROOT\nverify --undo DISC"
 
 func init() {
 	register(&command{
@@ -29,16 +28,12 @@ func init() {
 // verifyOptions holds the command options of verify.
 type verifyOptions struct {
 	noMark bool
-	heal   bool
-	out    string
 	undo   bool
 }
 
 func verifyFlags(fs *flag.FlagSet) runFunc {
 	o := &verifyOptions{}
 	fs.BoolVar(&o.noMark, "no-mark", false, "check the disc and write nothing")
-	fs.BoolVar(&o.heal, "heal", false, "repair the disc root with the parity of the run into --out, then check --out")
-	fs.StringVar(&o.out, "out", "", "with --heal, the directory that receives the healed disc root")
 	fs.BoolVar(&o.undo, "undo", false, "remove the verified record of a verified disc")
 	return o.run
 }
@@ -62,31 +57,17 @@ const (
 func (o *verifyOptions) run(e *env, args []string) int {
 	stderr := e.stderr
 	if len(args) != 1 {
-		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--no-mark] [--heal --out=DIR] DISC-ROOT")
+		_, _ = fmt.Fprintln(stderr, "usage: noahsark verify [--no-mark] DISC-ROOT")
 		_, _ = fmt.Fprintln(stderr, "       noahsark verify --undo DISC")
 		return 2
 	}
 	if o.undo {
-		if o.noMark || o.heal || o.out != "" {
+		if o.noMark {
 			_, _ = fmt.Fprintln(stderr, "noahsark: verify: --undo takes no other option")
 			return 2
 		}
 		return undoVerify(e, args[0])
 	}
-	if o.heal && o.out == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: verify: --heal needs --out")
-		return 2
-	}
-	if o.out != "" && !o.heal {
-		_, _ = fmt.Fprintln(stderr, "noahsark: verify: --out needs --heal")
-		return 2
-	}
-	if o.heal {
-		if code := checkHealOut(o.out, stderr); code != 0 {
-			return code
-		}
-	}
-
 	repoDir, err := e.findRepo()
 	switch {
 	case errors.Is(err, errNoRepo):
@@ -123,32 +104,26 @@ func (o *verifyOptions) verifyWithoutRepo(e *env, root string, ident discIdentit
 		name:  fmt.Sprintf("disc %s %q", uuidText(ident.DiscUUID), ident.Label),
 		short: "disc " + uuidText(ident.DiscUUID),
 	}
-	if o.heal {
-		return c.heal(root, o.out, ident)
-	}
 	c.note = notCountedNoRepo
 	c.reason = reasonDiscRootDamaged
 	rr, checkErr := image.ReadWithProgress(root, e.progress())
+	printNotices(e.stderr, "verify", rr)
 	return c.report(rr, checkErr)
 }
 
 // verifyInRepo checks root with the repository at repoDir. It records
-// the check only when root is a counted mount, and neither --no-mark
-// nor --heal is given.
+// the check only when root is a counted mount, and --no-mark is not
+// given.
 func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, root string, ident discIdentity) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "verify"
 
-	verdict := mountNotMountPoint
-	if !o.heal {
-		v, err := countedMount(e, root, repoDir, layout.stagingDir())
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-			return 1
-		}
-		verdict = v
+	verdict, err := countedMount(e, root, repoDir, layout.stagingDir())
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
+		return 1
 	}
-	record := verdict == mountCounted && !o.noMark && !o.heal
+	record := verdict == mountCounted && !o.noMark
 	if record {
 		lk, code, ok := lockRepo(cmd, repoDir, stderr)
 		if !ok {
@@ -173,11 +148,8 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 		name:  discNameShort(ident.DiscSeq, ident.Label),
 		short: fmt.Sprintf("disc %d", ident.DiscSeq),
 	}
-	if o.heal {
-		return c.heal(root, o.out, ident)
-	}
-
 	rr, checkErr := image.ReadWithProgress(root, e.progress())
+	printNotices(stderr, cmd, rr)
 	if changed := discChangedRefusal(root, ident, rr); changed != "" {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, changed)
 		return 1
@@ -292,54 +264,6 @@ func (c verifyCheck) report(rr *image.ReadResult, checkErr error) int {
 	}
 	_, _ = fmt.Fprintf(stdout, "%s: %d items, ok\n", c.name, rr.ObjectsVerified)
 	_, _ = fmt.Fprintln(stdout, c.note)
-	return 0
-}
-
-// heal writes the healed disc root of root into out and checks out. A
-// healed tree is never a counted mount, so heal records nothing.
-func (c verifyCheck) heal(root, out string, ident discIdentity) int {
-	e := c.e
-	if ident.RunRead && !ident.FEC {
-		_, _ = fmt.Fprintf(e.stderr, "noahsark: verify: %s has no FEC; --heal needs a disc with FEC\n", c.short)
-		return 1
-	}
-	res, err := restore.HealWithOptions(root, out, restore.HealOptions{Progress: e.progress()})
-	if err != nil {
-		_, _ = fmt.Fprintf(e.stdout, "%s: bad; cannot heal; %v\n", c.name, err)
-		return 1
-	}
-	_, _ = fmt.Fprintf(e.stdout, "%s: healed %d file(s) into %s\n", c.name, len(res.Files), out)
-	c.note = notCountedDisc
-	c.reason = reasonDiscRootDamaged
-	rr, checkErr := image.ReadWithProgress(out, e.progress())
-	return c.report(rr, checkErr)
-}
-
-// checkHealOut refuses an --out path that holds files or that is not a
-// directory, with exit code 2: old files would stay in the healed disc
-// root. It returns 0 for an empty or absent directory.
-func checkHealOut(out string, stderr io.Writer) int {
-	fi, err := os.Stat(out)
-	if errors.Is(err, os.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: verify: %v\n", err)
-		return 1
-	}
-	if !fi.IsDir() {
-		_, _ = fmt.Fprintf(stderr, "noahsark: verify: --out=%s is not a directory\n", out)
-		return 2
-	}
-	entries, err := os.ReadDir(out)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: verify: %v\n", err)
-		return 1
-	}
-	if len(entries) > 0 {
-		_, _ = fmt.Fprintf(stderr, "noahsark: verify: --out=%s holds files; give an empty or absent directory\n", out)
-		return 2
-	}
 	return 0
 }
 
@@ -464,21 +388,14 @@ func labelText(b []byte) string {
 }
 
 // discIdentity is the uuid, the number and the label of a disc from its
-// DISC.bin, and the FEC flag of its newest run. It names the disc of a
-// failed check too.
+// DISC.bin. It names the disc of a failed check too.
 type discIdentity struct {
 	DiscUUID [16]byte
 	DiscSeq  uint64
 	Label    string
-	// RunRead is true when a run header copy of the newest run passed its
-	// checks. FEC is valid only then.
-	RunRead bool
-	FEC     bool
 }
 
-// readDiscIdentity reads DISC.bin and the run header of the newest run
-// under root, without the object and FEC checks. Damage to both run
-// header copies only clears RunRead: the full check reports it.
+// readDiscIdentity reads DISC.bin under root, without the object checks.
 func readDiscIdentity(root string) (discIdentity, error) {
 	names := image.NewNameCache()
 	base, err := image.FindNoahsark(root, names)
@@ -498,18 +415,18 @@ func readDiscIdentity(root string) (discIdentity, error) {
 		DiscSeq:  disc.DiscSeq,
 		Label:    labelText(disc.Label[:min(int(disc.LabelLen), len(disc.Label))]),
 	}
-
-	runDir, err := image.NewestRunDir(filepath.Join(base, names.Resolve(base, "runs")))
-	if err != nil {
-		return ident, nil
-	}
-	header, err := image.ReadRunHeader(runDir, names)
-	if err != nil {
-		return ident, nil
-	}
-	ident.RunRead = true
-	ident.FEC = header.Run.FECScheme == format.FECSchemeRS255GF8
 	return ident, nil
+}
+
+// printNotices prints each notice of the read rr to stderr. A nil rr
+// prints nothing.
+func printNotices(stderr io.Writer, cmd string, rr *image.ReadResult) {
+	if rr == nil {
+		return
+	}
+	for _, n := range rr.Notices {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, n)
+	}
 }
 
 // catalogRunFromDisc copies the tables and objects of root that the

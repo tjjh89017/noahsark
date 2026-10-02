@@ -41,7 +41,6 @@ func TestRestoreRefusesAChunkHeaderCRCMismatch(t *testing.T) {
 		RepoUUID:              [16]byte{9, 9, 9},
 		DiscUUID:              [16]byte{1},
 		Label:                 "agree-disc-chunk",
-		FECEnabled:            true,
 		Now:                   multiFixedClock,
 		StageLog:              l,
 	}

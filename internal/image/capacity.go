@@ -82,9 +82,8 @@ func EstimateFilesystemOverhead(fileCount int, capacitySectors uint64) uint64 {
 
 // usableSectors returns the sectors left of targetSectors once the
 // estimated filesystem overhead for fileCount files and the two RUN.bin
-// and RUN2.bin header copies are set aside. It is the shared first step
-// of both capacity budgets below: a target too small for the reserved
-// sectors alone yields zero.
+// and RUN2.bin header copies are set aside. A target too small for the
+// reserved sectors alone yields zero.
 func usableSectors(targetSectors uint64, fileCount int) uint64 {
 	reservedBytes := EstimateFilesystemOverhead(fileCount, targetSectors) + 2*RunFileLen
 	reservedSectors := (reservedBytes + SectorSize - 1) / SectorSize
@@ -94,38 +93,24 @@ func usableSectors(targetSectors uint64, fileCount int) uint64 {
 	return targetSectors - reservedSectors
 }
 
-// DataBudgetBlocks returns the number of blockSize stream blocks a run
-// may fill, given a target capacity of targetSectors and a UDF tree of
-// fileCount files, when the run carries FEC. It reserves the estimated
-// filesystem overhead for fileCount files, plus the two RUN.bin and
-// RUN2.bin header copies, then gives the rest to whole FEC stripes: k
-// data blocks out of every stripeWidth sectors, the checksum and parity
-// sectors of a stripe taking the remainder. A partial stripe's sectors
-// go unused, and a target too small for the reserved sectors alone
-// yields a zero budget.
-func DataBudgetBlocks(targetSectors uint64, fileCount int, k, stripeWidth int) uint64 {
-	stripes := usableSectors(targetSectors, fileCount) / uint64(stripeWidth)
-	return stripes * uint64(k)
-}
-
-// DataBudgetBlocksNoFEC returns the number of blockSize stream blocks a
-// run may fill when it carries no FEC: every usable sector after the
-// filesystem overhead estimate, with no stripe rounding and no share
-// given up to a checksum column or parity, since neither exists.
-func DataBudgetBlocksNoFEC(targetSectors uint64, fileCount int) uint64 {
+// DataBudgetSectors returns the number of sectors that the files of a run
+// other than the two run header copies may fill, given a target capacity
+// of targetSectors and a UDF tree of fileCount files: every sector left
+// once the filesystem overhead estimate and the two header copies are
+// set aside.
+func DataBudgetSectors(targetSectors uint64, fileCount int) uint64 {
 	return usableSectors(targetSectors, fileCount)
 }
 
-// CheckCapacity refuses a run whose total on-disc size, streamBytes plus
-// checksumBytes plus parityBytes plus runHeaderCopyBytes, exceeds
-// targetSectors once the filesystem overhead for fileCount files is
-// added. targetSectors of zero is always refused.
-func CheckCapacity(streamBytes, checksumBytes, parityBytes, runHeaderCopyBytes uint64, fileCount int, targetSectors uint64) error {
+// CheckCapacity refuses a run whose total on-disc size, fileBytes plus
+// runHeaderCopyBytes, exceeds targetSectors once the filesystem overhead
+// for fileCount files is added. targetSectors of zero is always refused.
+func CheckCapacity(fileBytes, runHeaderCopyBytes uint64, fileCount int, targetSectors uint64) error {
 	if targetSectors == 0 {
 		return fmt.Errorf("target capacity is required and must not be zero")
 	}
 	overhead := EstimateFilesystemOverhead(fileCount, targetSectors)
-	total := streamBytes + checksumBytes + parityBytes + runHeaderCopyBytes + overhead
+	total := fileBytes + runHeaderCopyBytes + overhead
 	limit := targetSectors * SectorSize
 	if total > limit {
 		return fmt.Errorf("run needs %d bytes (including %d bytes of estimated filesystem overhead), target capacity is %d bytes", total, overhead, limit)

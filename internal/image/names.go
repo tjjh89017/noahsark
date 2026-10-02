@@ -13,7 +13,7 @@ import (
 // NameCache lets a reader accept that output alongside the exact case
 // FORMAT.md defines.
 //
-// A caller creates one NameCache per Read, list, restore or heal call
+// A caller creates one NameCache per Read, list or restore call
 // and reuses it for every fixed name that call resolves, so a run with
 // many lookups scans each directory at most once.
 type NameCache struct {

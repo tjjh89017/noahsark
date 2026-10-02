@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/progress"
@@ -74,10 +73,6 @@ type PackOptions struct {
 	// again. Zero values add no limit.
 	MinRunSeq  uint64
 	MinDiscSeq uint64
-	// FECEnabled writes a Reed-Solomon checksum column and parity for
-	// this run when true (fec_scheme 1). When false, the default, the
-	// run carries no FEC (fec_scheme 0).
-	FECEnabled bool
 	// Now returns the pack time. Defaults to time.Now.
 	Now func() time.Time
 	// StageLog is the repository's staging state log. Pack reads it to
@@ -89,8 +84,7 @@ type PackOptions struct {
 	// the disc ledger row. A nil WriteCatalog writes nothing.
 	WriteCatalog func() error
 	// Progress reports bytes of object content placed into the run's
-	// tree, and FEC stripes encoded when FECEnabled. A nil Progress
-	// reports nothing.
+	// tree. A nil Progress reports nothing.
 	Progress *progress.Reporter
 	// Unreadable gets each item that pack cannot take, once for each
 	// snapshot that reaches it. pack takes the other items. A nil
@@ -345,25 +339,25 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 	// this run is the first to store is an ordinary candidate, and its
 	// root tree then gets a prerequisite row like any other reference.
 	carried := carriedSnapshots(allSnapshotIDs, opts.StageLog)
-	var carriedBlocks uint64
+	var carriedSectors uint64
 	for _, id := range carried {
-		carriedBlocks += blockCount(uint64(len(snapshotBytes[id])))
+		carriedSectors += sectorCount(uint64(len(snapshotBytes[id])))
 	}
 
-	fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
-		blockCount(uint64(len(readmeBuf))) +
-		blockCount(uint64(len(FormatTxt))) +
-		blockCount(uint64(len(refsBuf))) +
-		blockCount(uint64(len(discsBuf))) +
-		carriedBlocks
+	fixedSectorsExclIndex := sectorCount(uint64(len(discBuf))) +
+		sectorCount(uint64(len(readmeBuf))) +
+		sectorCount(uint64(len(FormatTxt))) +
+		sectorCount(uint64(len(refsBuf))) +
+		sectorCount(uint64(len(discsBuf))) +
+		carriedSectors
 	fixedFileCount := 7 + len(carried) // INDEX,RUN,DISC,README,FORMAT,REFS,DISCS
 
-	selected, prereqIDs, err := selectRun(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
+	selected, prereqIDs, err := selectRun(opts, candidates, fixedSectorsExclIndex, fixedFileCount)
 	if err != nil {
 		return nil, err
 	}
 	if len(selected) == 0 {
-		needed, needErr := minimumSectorsToPlaceOne(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
+		needed, needErr := minimumSectorsToPlaceOne(opts, candidates, fixedSectorsExclIndex, fixedFileCount)
 		if needErr != nil {
 			return nil, needErr
 		}
@@ -401,17 +395,17 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 
 	var rows []fileRow
 	indexRowIdx := len(rows)
-	rows = append(rows, fileRow{role: format.FileRoleIndex, path: "NOAHSARK/runs/%RUNSEQ%/INDEX.bin", inStream: true})
+	rows = append(rows, fileRow{role: format.FileRoleIndex, path: "NOAHSARK/runs/%RUNSEQ%/INDEX.bin"})
 	runRowIdx := len(rows)
 	rows = append(rows, fileRow{role: format.FileRoleRun, byteLen: RunFileLen, path: "NOAHSARK/runs/%RUNSEQ%/RUN.bin"})
-	rows = append(rows, fileRow{role: format.FileRoleDisc, byteLen: uint64(len(discBuf)), hash: discHash, data: discBuf, path: "NOAHSARK/DISC.bin", inStream: true})
-	rows = append(rows, fileRow{role: format.FileRoleReadme, byteLen: uint64(len(readmeBuf)), hash: readmeHash, data: readmeBuf, path: "NOAHSARK/README.txt", inStream: true})
-	rows = append(rows, fileRow{role: format.FileRoleFormat, byteLen: uint64(len(FormatTxt)), hash: formatHash, data: FormatTxt, path: "NOAHSARK/FORMAT.txt", inStream: true})
-	rows = append(rows, fileRow{role: format.FileRoleRefs, byteLen: uint64(len(refsBuf)), hash: refsHash, data: refsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/REFS.bin", inStream: true})
-	rows = append(rows, fileRow{role: format.FileRoleDiscs, byteLen: uint64(len(discsBuf)), hash: discsHash, data: discsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/DISCS.bin", inStream: true})
+	rows = append(rows, fileRow{role: format.FileRoleDisc, byteLen: uint64(len(discBuf)), hash: discHash, data: discBuf, path: "NOAHSARK/DISC.bin"})
+	rows = append(rows, fileRow{role: format.FileRoleReadme, byteLen: uint64(len(readmeBuf)), hash: readmeHash, data: readmeBuf, path: "NOAHSARK/README.txt"})
+	rows = append(rows, fileRow{role: format.FileRoleFormat, byteLen: uint64(len(FormatTxt)), hash: formatHash, data: FormatTxt, path: "NOAHSARK/FORMAT.txt"})
+	rows = append(rows, fileRow{role: format.FileRoleRefs, byteLen: uint64(len(refsBuf)), hash: refsHash, data: refsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/REFS.bin"})
+	rows = append(rows, fileRow{role: format.FileRoleDiscs, byteLen: uint64(len(discsBuf)), hash: discsHash, data: discsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/DISCS.bin"})
 
 	for _, h := range placed {
-		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, path: objectDiscPath(h.ID, h.Kind), inStream: true}
+		row := fileRow{role: format.FileRoleObject, byteLen: h.ByteLen, path: objectDiscPath(h.ID, h.Kind)}
 		switch {
 		case h.Bytes != nil:
 			row.data = h.Bytes
@@ -429,19 +423,14 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 	}
 
 	objectCount := len(placed)
-	fileCount := len(rows) + extraFixedRowCount(opts.FECEnabled)
+	fileCount := len(rows) + run2RowCount
 	indexLen := format.IndexHeaderLen + fileCount*format.IndexFileRecordLen +
 		objectCount*format.IndexObjectRecordLen + len(prereqs)*format.IndexPrereqRecordLen
 	rows[indexRowIdx].byteLen = uint64(indexLen)
 
-	plan, err := appendFECRows(rows, opts.FECEnabled)
-	if err != nil {
-		return nil, err
-	}
-	rows = plan.rows
-	run2RowIdx := plan.run2RowIdx
+	rows, run2RowIdx := appendRun2Row(rows)
 
-	if err := CheckCapacity(plan.streamBytesTotal, plan.checksumLen, uint64(fec.M)*plan.parityFileLen, 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
+	if err := CheckCapacity(fileBytes(rows), 2*RunFileLen, len(rows), opts.TargetCapacitySectors); err != nil {
 		return nil, fmt.Errorf("internal error: selected run does not fit after all: %w", err)
 	}
 
@@ -474,13 +463,12 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
 
-	runBuf, err := buildRun(opts.asBuildOptions(), packTime, indexBuf, indexHash, plan.streamBytesTotal, runSeq, discSeq, opts.FECEnabled)
+	runBuf, err := buildRun(opts.asBuildOptions(), packTime, indexBuf, indexHash, runSeq, discSeq)
 	if err != nil {
 		return nil, err
 	}
 	rows[runRowIdx].data = runBuf
 	rows[run2RowIdx].data = runBuf
-	plan.rows = rows
 
 	// A staged object that does not match its own content is caught while
 	// its bytes are copied, so the output tree is already part written
@@ -494,7 +482,7 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 		}
 		return err
 	}
-	if err := writeRunTree(opts.OutputDir, runSeq, plan, opts.Progress); err != nil {
+	if err := writeRunTree(opts.OutputDir, runSeq, rows, opts.Progress); err != nil {
 		return nil, removeTree(err)
 	}
 
@@ -554,7 +542,7 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 		// disc's ownership. objectBytes above already follows the same
 		// rule.
 		RunSeq: runSeq, DiscSeq: discSeq, ObjectCount: len(selected),
-		FileCount: len(rows), StreamBlocks: blockCount(plan.streamBytesTotal), StripeCount: plan.stripeCount,
+		FileCount:        len(rows),
 		RemainingObjects: remainingObjects,
 		RemainingBytes:   remainingBytes,
 	}, nil
@@ -634,9 +622,9 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 	}
 
 	carried := carriedSnapshots(allSnapshotIDs, opts.StageLog)
-	var carriedBlocks uint64
+	var carriedSectors uint64
 	for _, id := range carried {
-		carriedBlocks += blockCount(uint64(len(snapshotBytes[id])))
+		carriedSectors += sectorCount(uint64(len(snapshotBytes[id])))
 	}
 	fixedFileCount := 7 + len(carried)
 
@@ -666,19 +654,19 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		labelLen := copy(label[:], discOpts.Label)
 		readmeBuf := buildReadme(discOpts.asBuildOptions(), packTime, label[:labelLen], discSeq)
 
-		fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
-			blockCount(uint64(len(readmeBuf))) +
-			blockCount(uint64(len(FormatTxt))) +
-			blockCount(uint64(len(refsBuf))) +
-			blockCount(uint64(len(discsBuf))) +
-			carriedBlocks
+		fixedSectorsExclIndex := sectorCount(uint64(len(discBuf))) +
+			sectorCount(uint64(len(readmeBuf))) +
+			sectorCount(uint64(len(FormatTxt))) +
+			sectorCount(uint64(len(refsBuf))) +
+			sectorCount(uint64(len(discsBuf))) +
+			carriedSectors
 
-		selected, _, err := selectRun(discOpts, candidates, fixedBlocksExclIndex, fixedFileCount)
+		selected, _, err := selectRun(discOpts, candidates, fixedSectorsExclIndex, fixedFileCount)
 		if err != nil {
 			return discs, err
 		}
 		if len(selected) == 0 {
-			needed, needErr := minimumSectorsToPlaceOne(discOpts, candidates, fixedBlocksExclIndex, fixedFileCount)
+			needed, needErr := minimumSectorsToPlaceOne(discOpts, candidates, fixedSectorsExclIndex, fixedFileCount)
 			if needErr != nil {
 				return discs, needErr
 			}
@@ -728,37 +716,29 @@ func (opts PackOptions) asBuildOptions() BuildOptions {
 const selectRunMaxIterations = 20
 
 // selectRun walks candidates in dependency order and greedily takes the
-// longest prefix whose stream blocks (the run's fixed files, the INDEX,
-// and every selected object, each padded to a whole fec.BlockSize
-// block) stay within the run's data budget: the whole FEC stripes that
-// fit opts.TargetCapacitySectors once the filesystem overhead of the
-// run's own file count is set aside, matching OPERATIONS.md's capacity
-// budget rules. Because the file count that sets the overhead is itself
+// longest prefix whose sectors (the run's fixed files, the INDEX, and
+// every selected object, each rounded up to a whole sector) stay within
+// the run's data budget: the sectors of opts.TargetCapacitySectors left
+// once the two run header copies and the filesystem overhead of the
+// run's own file count are set aside, matching OPERATIONS.md's budget
+// formula. Because the file count that sets the overhead is itself
 // the count of objects selected, selectRun iterates to a fixed point.
 // It returns the selected prefix of candidates and the set of external
 // ids it references: the children that a disc holds.
-func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uint64, fixedFileCount int) ([]packUnit, map[object.ID]bool, error) {
-	stripeWidth := fec.K + fec.M + 1
-	extraRows := extraFixedRowCount(opts.FECEnabled)
-
+func selectRun(opts PackOptions, candidates []packUnit, fixedSectorsExclIndex uint64, fixedFileCount int) ([]packUnit, map[object.ID]bool, error) {
 	var selected []packUnit
 	prereqSet := make(map[object.ID]bool)
 	objectCount := 0
 	for range selectRunMaxIterations {
-		fileCount := fixedFileCount + objectCount + extraRows
-		var dataBudget uint64
-		if opts.FECEnabled {
-			dataBudget = DataBudgetBlocks(opts.TargetCapacitySectors, fileCount, fec.K, stripeWidth)
-		} else {
-			dataBudget = DataBudgetBlocksNoFEC(opts.TargetCapacitySectors, fileCount)
-		}
+		fileCount := fixedFileCount + objectCount + run2RowCount
+		dataBudget := DataBudgetSectors(opts.TargetCapacitySectors, fileCount)
 
 		n := 0
 		roundPrereqs := make(map[object.ID]bool)
-		var selectedBlocks uint64
+		var selectedSectors uint64
 
 		for _, cand := range candidates {
-			candBlocks := blockCount(cand.ByteLen)
+			candSectors := sectorCount(cand.ByteLen)
 
 			var newPrereqs []object.ID
 			for _, c := range cand.Children {
@@ -769,13 +749,13 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 
 			trialObjectCount := n + 1
 			trialPrereqCount := len(roundPrereqs) + len(newPrereqs)
-			trialFileCount := fixedFileCount + trialObjectCount + extraRows
+			trialFileCount := fixedFileCount + trialObjectCount + run2RowCount
 			trialIndexLen := format.IndexHeaderLen + trialFileCount*format.IndexFileRecordLen +
 				trialObjectCount*format.IndexObjectRecordLen + trialPrereqCount*format.IndexPrereqRecordLen
-			trialIndexBlocks := blockCount(uint64(trialIndexLen))
-			trialTotalBlocks := fixedBlocksExclIndex + trialIndexBlocks + selectedBlocks + candBlocks
+			trialIndexSectors := sectorCount(uint64(trialIndexLen))
+			trialTotalSectors := fixedSectorsExclIndex + trialIndexSectors + selectedSectors + candSectors
 
-			if trialTotalBlocks > dataBudget {
+			if trialTotalSectors > dataBudget {
 				break
 			}
 
@@ -783,7 +763,7 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 			for _, p := range newPrereqs {
 				roundPrereqs[p] = true
 			}
-			selectedBlocks += candBlocks
+			selectedSectors += candSectors
 		}
 
 		selected = candidates[:n:n]
@@ -805,11 +785,11 @@ func selectRun(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uin
 // authoritative. A binary search assumes that answer turns and stays
 // positive once capacity grows enough, which holds once the trial
 // capacity clears the edge region.
-func minimumSectorsToPlaceOne(opts PackOptions, candidates []packUnit, fixedBlocksExclIndex uint64, fixedFileCount int) (uint64, error) {
+func minimumSectorsToPlaceOne(opts PackOptions, candidates []packUnit, fixedSectorsExclIndex uint64, fixedFileCount int) (uint64, error) {
 	placesOne := func(targetSectors uint64) (bool, error) {
 		trial := opts
 		trial.TargetCapacitySectors = targetSectors
-		selected, _, err := selectRun(trial, candidates, fixedBlocksExclIndex, fixedFileCount)
+		selected, _, err := selectRun(trial, candidates, fixedSectorsExclIndex, fixedFileCount)
 		if err != nil {
 			return false, err
 		}
@@ -991,9 +971,7 @@ func mergeRefRecords(carried, fresh []format.RefRecord) []format.RefRecord {
 	return merged
 }
 
-// blockCount returns the number of fec.BlockSize blocks that hold n
-// bytes, zero padded to a block boundary; the same rule
-// fec.NewStreamLayout applies per stream file.
-func blockCount(n uint64) uint64 {
-	return (n + fec.BlockSize - 1) / fec.BlockSize
+// sectorCount returns the number of whole sectors that hold n bytes.
+func sectorCount(n uint64) uint64 {
+	return (n + SectorSize - 1) / SectorSize
 }

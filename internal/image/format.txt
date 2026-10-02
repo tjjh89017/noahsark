@@ -1339,7 +1339,8 @@ A writer of format major 1 writes `fec_scheme`, `fec_k` and `fec_m` as 0: the
 run carries no data for error correction. A reader that finds a nonzero
 `fec_scheme` cannot use that scheme and says so, naming the value. It still
 reads every object of the run through the filesystem, and it ignores `fec_k`
-and `fec_m`.
+and `fec_m`. When `fec_scheme` is 0, a reader refuses a nonzero `fec_k` or
+`fec_m` and names the field and the value.
 
 The run header records no chunker parameter and no compression default. A
 reader needs neither: every object header states its own compression.

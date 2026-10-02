@@ -16,7 +16,6 @@ func TestMagicValues(t *testing.T) {
 		{"DISC", MagicDisc, "DISC\x00\x00\x00\x00"},
 		{"RUN", MagicRun, "RUN\x00\x00\x00\x00\x00"},
 		{"INDEX", MagicIndex, "INDEX\x00\x00\x00"},
-		{"CHECKSUM", MagicChecksum, "CHECKSUM"},
 		{"REFS", MagicRefs, "REFS\x00\x00\x00\x00"},
 		{"DISCS", MagicDiscs, "DISCS\x00\x00\x00"},
 	}

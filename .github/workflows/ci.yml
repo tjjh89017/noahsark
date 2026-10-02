@@ -109,14 +109,10 @@ jobs:
         uses: ./.github/actions/unit
 
   # One matrix cell per scenario. lifecycle walks discs through the
-  # disc states with the real commands. The other seven cells cover
-  # what 14 used to:
-  # media/dvd+r also runs cli and iso in sequence (extras), and fec runs
-  # the four corrupt-* checks in sequence, since FEC is optional and off
-  # by default and does not need a cell of its own for each corruption
-  # pattern. Only one chain order runs; both orders cross the same three
-  # media and prove the same things, so the second added wall time
-  # without new coverage. Runs after lint and unit pass; every cell then
+  # disc states with the real commands. media/dvd+r also runs cli and
+  # iso in sequence (extras). Only one chain order runs; both orders
+  # cross the same three media and prove the same things, so the second
+  # added wall time without new coverage. Runs after lint and unit pass; every cell then
   # runs to the end regardless of the others' outcome (fail-fast is
   # off), and each cell uploads its own log and result so e2e-required
   # can report on all of them even when some fail.
@@ -139,7 +135,6 @@ jobs:
           - { scenario: lowmem, media: '', extras: '', name: lowmem, slug: lowmem }
           - { scenario: incremental, media: '', extras: '', name: incremental, slug: incremental }
           - { scenario: rebuild, media: '', extras: '', name: rebuild, slug: rebuild }
-          - { scenario: fec, media: '', extras: '', name: fec, slug: fec }
           - { scenario: lifecycle, media: '', extras: '', name: lifecycle, slug: lifecycle }
     steps:
       - name: Check out the repository

@@ -44,7 +44,7 @@ func stageFixture(t *testing.T) (string, object.ID) {
 
 // stageMultiChunkFixture commits a source tree with a multi-megabyte
 // pseudo-random file, large enough to split into several chunk objects
-// and to cross more than one FEC stripe, plus a second file that
+// plus a second file that
 // duplicates a slice of the first so dedup is exercised too.
 func stageMultiChunkFixture(t *testing.T, contentBytes int) (string, object.ID) {
 	t.Helper()
@@ -84,7 +84,6 @@ func testOpts(t *testing.T, stagingDir string, snapID object.ID, outDir string) 
 		RepoUUID:              [16]byte{1, 2, 3, 4},
 		DiscUUID:              [16]byte{5, 6, 7, 8},
 		Label:                 "test-disc",
-		FECEnabled:            true,
 		Now:                   fixedClock,
 	}
 }
@@ -203,7 +202,7 @@ func TestBuildRefusesTooSmallCapacity(t *testing.T) {
 }
 
 // TestBuildStreamsMultiChunkContent builds a run over a fixture whose
-// data crosses several chunk objects and several FEC stripes, streamed
+// data crosses several chunk objects, streamed
 // object by object rather than concatenated in memory, and checks Build
 // twice over the same staged objects still produces byte-identical
 // output, and that Read verifies the result.

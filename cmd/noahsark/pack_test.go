@@ -543,18 +543,16 @@ func onlyDisc(t *testing.T, repo string) stage.DiscInfo {
 }
 
 // TestPackRecordsThePackedEvent checks the one Packed event of a pack:
-// the disc uuid of the output, disc_seq 0, run_seq 1, and the close and
-// fec flags of the options.
+// the disc uuid of the output, disc_seq 0, run_seq 1, and the close
+// flag of the options.
 func TestPackRecordsThePackedEvent(t *testing.T) {
 	cases := []struct {
-		name       string
-		flags      []string
-		close, fec bool
+		name  string
+		flags []string
+		close bool
 	}{
-		{"no flag", nil, false, false},
-		{"close", []string{"--close"}, true, false},
-		{"fec", []string{"--fec"}, false, true},
-		{"close and fec", []string{"--close", "--fec"}, true, true},
+		{"no flag", nil, false},
+		{"close", []string{"--close"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -571,8 +569,8 @@ func TestPackRecordsThePackedEvent(t *testing.T) {
 			if disc.State != stage.DiscPacked || disc.DiscSeq != 0 || disc.RunSeq != 1 {
 				t.Fatalf("disc = %+v, want packed, disc_seq 0, run_seq 1", disc)
 			}
-			if disc.Close != c.close || disc.FEC != c.fec {
-				t.Fatalf("flags close=%v fec=%v, want close=%v fec=%v", disc.Close, disc.FEC, c.close, c.fec)
+			if disc.Close != c.close {
+				t.Fatalf("flag close=%v, want close=%v", disc.Close, c.close)
 			}
 		})
 	}

@@ -26,7 +26,7 @@ import (
 func init() {
 	register(&command{
 		name:    "pack",
-		usage:   "pack --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]\npack --undo DISC",
+		usage:   "pack --capacity=SIZE [--close] [--out=DIR] [--dry-run]\npack --undo DISC",
 		summary: "Pack staged items onto the next disc, or undo the pack of the newest disc.",
 		flags:   packFlags,
 	})
@@ -36,7 +36,6 @@ func init() {
 type packOptions struct {
 	capacity  string
 	outDir    string
-	fec       bool
 	closeDisc bool
 	dryRun    bool
 	undo      bool
@@ -46,7 +45,6 @@ func packFlags(fs *flag.FlagSet) runFunc {
 	o := &packOptions{}
 	fs.StringVar(&o.capacity, "capacity", "", "target capacity ("+capacityHelpText()+"); required")
 	fs.StringVar(&o.outDir, "out", "", "the directory that receives the disc root; it must be empty or absent")
-	fs.BoolVar(&o.fec, "fec", false, "write FEC for this disc")
 	fs.BoolVar(&o.closeDisc, "close", false, "make status print the sealing burn line for this disc")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "print the discs that the staged data needs at this capacity, and stop")
 	fs.BoolVar(&o.undo, "undo", false, "return the items of the newest disc to staged, while that disc is packed")
@@ -54,7 +52,7 @@ func packFlags(fs *flag.FlagSet) runFunc {
 }
 
 // packUsage is the usage line of a pack that takes staged items.
-const packUsage = "usage: noahsark pack --capacity=SIZE [--fec] [--close] [--out=DIR] [--dry-run]"
+const packUsage = "usage: noahsark pack --capacity=SIZE [--close] [--out=DIR] [--dry-run]"
 
 // packNothingStaged is the line of a pack that finds no staged item.
 const packNothingStaged = "pack: nothing staged"
@@ -172,7 +170,6 @@ func (o *packOptions) run(e *env, args []string) int {
 		RepoUUID:              repoUUID,
 		MinRunSeq:             runSeq,
 		MinDiscSeq:            discSeq,
-		FECEnabled:            o.fec,
 		Now:                   func() time.Time { return now },
 	}
 	// A warning about an item that pack cannot take makes the exit code
@@ -238,7 +235,7 @@ func (o *packOptions) run(e *env, args []string) int {
 	// The Packed event is the last durable write of a pack. A pack that
 	// stops before it leaves a ledger row with no event, and the next
 	// pack finishes the records of that disc.
-	if err := logs.Discs.Append(packedEvent(now, discUUID, result, o.closeDisc, o.fec)); err != nil {
+	if err := logs.Discs.Append(packedEvent(now, discUUID, result, o.closeDisc)); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
 		return 1
 	}
@@ -254,13 +251,10 @@ func (o *packOptions) run(e *env, args []string) int {
 }
 
 // packedEvent is the Packed event of the disc that result describes.
-func packedEvent(now time.Time, discUUID [16]byte, result *image.PackResult, closeDisc, fec bool) stage.DiscRecord {
+func packedEvent(now time.Time, discUUID [16]byte, result *image.PackResult, closeDisc bool) stage.DiscRecord {
 	var flags stage.DiscFlags
 	if closeDisc {
 		flags |= stage.FlagClose
-	}
-	if fec {
-		flags |= stage.FlagFEC
 	}
 	return stage.DiscRecord{
 		TimeSec:  now.Unix(),
@@ -685,8 +679,7 @@ func ledgerNames(layout repoLayout, repoUUID, discUUID [16]byte) bool {
 // stopped after its ledger row. finishInterruptedPacks records the
 // items that the catalog INDEX of the disc lists and that are still
 // Staged as Packed, then appends the Packed event. The event carries the
-// fec flag that the INDEX gives, and the close flag when the plan
-// directory holds planCloseName.
+// close flag when the plan directory holds planCloseName.
 func finishInterruptedPacks(layout repoLayout, c *catalog.Catalog, logs *stage.Logs, rows []format.DiscsRow, stderr io.Writer) error {
 	inLedger := make(map[[16]byte]format.DiscsRow, len(rows))
 	for _, r := range rows {
@@ -734,9 +727,6 @@ func finishInterruptedPacks(layout repoLayout, c *catalog.Catalog, logs *stage.L
 			return err
 		}
 		var flags stage.DiscFlags
-		if slices.ContainsFunc(idx.Files, func(f format.IndexFileRecord) bool { return f.Role == format.FileRoleChecksum }) {
-			flags |= stage.FlagFEC
-		}
 		if _, err := os.Lstat(filepath.Join(layout.planDir(row.DiscUUID), planCloseName)); err == nil {
 			flags |= stage.FlagClose
 		}

@@ -18,8 +18,8 @@ import (
 )
 
 // statusDiscLineRe matches one disc line of "status": the disc number,
-// the label, the state with its suffix, the fec field, and the uuid.
-var statusDiscLineRe = regexp.MustCompile(`^disc (\d+) "([^"]*)"  ([a-z]+(?: [a-z]+)*(?:, [a-z0-9-]+(?: [a-z0-9-]+)*)?)  (fec  )?([0-9a-f-]{36})$`)
+// the label, the state with its suffix, and the uuid.
+var statusDiscLineRe = regexp.MustCompile(`^disc (\d+) "([^"]*)"  ([a-z]+(?: [a-z]+)*(?:, [a-z0-9-]+(?: [a-z0-9-]+)*)?)  ([0-9a-f-]{36})$`)
 
 // statusLines runs status in the repository repo and returns its lines.
 func statusLines(t *testing.T, repo string) []string {
@@ -89,17 +89,16 @@ func TestStatusPackedBlockWithImage(t *testing.T) {
 	}
 }
 
-// TestStatusClosedFECDisc checks a disc packed with --close and --fec:
-// the disc line has the fec field, and the block has the sealing burn
-// line.
-func TestStatusClosedFECDisc(t *testing.T) {
+// TestStatusClosedDisc checks a disc packed with --close: the disc line
+// has the state and the uuid, and the block has the sealing burn line.
+func TestStatusClosedDisc(t *testing.T) {
 	repo, _ := initAndCommit(t)
-	out := statusMustRun(t, "--repo="+repo, "pack", "--capacity=64MiB", "--close", "--fec")
+	out := statusMustRun(t, "--repo="+repo, "pack", "--capacity=64MiB", "--close")
 	uuid := packedDiscUUID(t, out)
 	lines := statusLines(t, repo)
 	m := statusDiscLineRe.FindStringSubmatch(lines[1])
-	if m == nil || m[3] != "packed" || m[4] != "fec  " || m[5] != uuid {
-		t.Fatalf("disc line %q, want a packed fec disc %s", lines[1], uuid)
+	if m == nil || m[3] != "packed" || m[4] != uuid {
+		t.Fatalf("disc line %q, want a packed disc %s", lines[1], uuid)
 	}
 	var burn string
 	for _, l := range lines {

@@ -1,15 +1,17 @@
 package image
 
 import (
+	"crypto/sha256"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
 // RunFileLen is the on-disc length of RUN.bin and RUN2.bin. Each file is
 // exactly the run header.
 const RunFileLen = format.RunLen
+
+func sha256sum(b []byte) [32]byte { return sha256.Sum256(b) }
 
 func buildDisc(opts BuildOptions, packTime time.Time, discSeq uint64) ([]byte, [32]byte, error) {
 	_, tzOffset := packTime.Zone()
@@ -33,30 +35,19 @@ func buildDisc(opts BuildOptions, packTime time.Time, discSeq uint64) ([]byte, [
 	return buf, sha256sum(buf), nil
 }
 
-// runFECFields returns the fec_k, fec_m and fec_scheme fields a run
-// header carries for the given FEC mode: the fixed version 1 geometry
-// under fec_scheme 1, or zero under fec_scheme 0, which carries no
-// checksum column or parity for those fields to describe.
-func runFECFields(fecEnabled bool) (k, m uint16, scheme format.FECScheme) {
-	if fecEnabled {
-		return uint16(fec.K), uint16(fec.M), format.FECSchemeRS255GF8
-	}
-	return 0, 0, format.FECSchemeNone
-}
-
-func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, streamBytes uint64, runSeq, discSeq uint64, fecEnabled bool) ([]byte, error) {
-	fecK, fecM, fecScheme := runFECFields(fecEnabled)
+// buildRun encodes the run header. fec_scheme, fec_k, fec_m and every
+// reserved field stay zero.
+func buildRun(opts BuildOptions, packTime time.Time, indexBuf []byte, indexHash [32]byte, runSeq, discSeq uint64) ([]byte, error) {
 	r := format.Run{
 		Common: format.CommonHeader{
 			MagicProject: format.ProjectMagic, MagicKind: format.MagicRun,
 			VersionMajor: 1, HeaderLen: format.RunLen,
 		},
 		DiscUUID: opts.DiscUUID, RepoUUID: opts.RepoUUID, RunSeq: runSeq, DiscSeq: discSeq,
-		FECK: fecK, FECM: fecM, FECScheme: fecScheme,
+		FECScheme:  format.FECSchemeNone,
 		HashAlgo:   format.HashAlgoSHA256,
 		IndexBytes: uint64(len(indexBuf)), IndexHash: indexHash,
-		StreamBytes: streamBytes,
-		CreatedSec:  packTime.Unix(), CreatedNsec: uint32(packTime.Nanosecond()), ToolVersion: toolVersion,
+		CreatedSec: packTime.Unix(), CreatedNsec: uint32(packTime.Nanosecond()), ToolVersion: toolVersion,
 	}
 	buf := make([]byte, format.RunLen)
 	if err := r.Encode(buf); err != nil {

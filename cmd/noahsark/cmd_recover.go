@@ -103,6 +103,7 @@ func (o *recoverOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s: cannot read the disc: %v\n", cmd, root, err)
 		return 1
 	}
+	printNotices(stderr, cmd, rr)
 	if refusal := foreignDiscRefusal(repoDir, rr.Disc); refusal != "" {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, refusal)
 		return 1
@@ -304,11 +305,7 @@ func recordRecoveredDisc(e *env, layout repoLayout, logs *stage.Logs, rr *image.
 	}
 
 	now := e.now()
-	recovered := discEvent(now, discUUID, stage.EventRecovered)
-	if rr.Run.FECScheme != format.FECSchemeNone {
-		recovered.Flags |= stage.FlagFEC
-	}
-	events := []stage.DiscRecord{recovered}
+	events := []stage.DiscRecord{discEvent(now, discUUID, stage.EventRecovered)}
 	if len(rr.Damaged) > 0 {
 		events = append(events, discEvent(now, discUUID, stage.EventCheckFailed))
 	}

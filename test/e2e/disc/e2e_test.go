@@ -1,8 +1,7 @@
 // Package disc is the disc e2e harness: real mkudffs images, a real loop
-// mount, real corruption and healing, and the real noahsark binary. It
-// runs one scenario per test invocation, chosen by environment
-// variables, so a CI matrix cell runs exactly one scenario (and, for the
-// media scenario, one media preset).
+// mount, and the real noahsark binary. It runs one scenario per test
+// invocation, chosen by environment variables, so a CI matrix cell runs
+// exactly one scenario (and, for the media scenario, one media preset).
 //
 // Run with:
 //
@@ -25,19 +24,14 @@ import (
 // Only "media" reads NOAHSARK_E2E_MEDIA; the others use a fixed dvd+r
 // fixture.
 var scenarios = map[string]bool{
-	"media":          true,
-	"corrupt-heal":   true,
-	"corrupt-parity": true,
-	"corrupt-max":    true,
-	"corrupt-over":   true,
-	"fec":            true,
-	"cli":            true,
-	"iso":            true,
-	"chain":          true,
-	"lowmem":         true,
-	"incremental":    true,
-	"rebuild":        true,
-	"lifecycle":      true,
+	"media":       true,
+	"cli":         true,
+	"iso":         true,
+	"chain":       true,
+	"lowmem":      true,
+	"incremental": true,
+	"rebuild":     true,
+	"lifecycle":   true,
 }
 
 // requireHarness skips the test when NOAHSARK_E2E is not 1. When it is

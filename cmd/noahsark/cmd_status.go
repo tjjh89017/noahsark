@@ -200,13 +200,9 @@ func unreadableLine(cmd string, item image.UnreadableItem, snapshotOnDisc bool) 
 }
 
 // statusDiscLine is the line of one disc:
-// disc SEQ "LABEL"  STATE  [fec  ]UUID.
+// disc SEQ "LABEL"  STATE  UUID.
 func statusDiscLine(d discSummary) string {
-	fec := ""
-	if d.Info.FEC {
-		fec = "fec  "
-	}
-	return fmt.Sprintf("%s  %s  %s%s", discNameShort(d.Seq, d.Label), statusStateWord(d.Info), fec, d.UUID)
+	return fmt.Sprintf("%s  %s  %s", discNameShort(d.Seq, d.Label), statusStateWord(d.Info), d.UUID)
 }
 
 // statusStateWord is the state word of a disc with the suffix of its

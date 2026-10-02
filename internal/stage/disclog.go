@@ -69,10 +69,8 @@ type DiscFlags uint8
 const (
 	// FlagClose marks a disc that pack closed.
 	FlagClose DiscFlags = 1 << 0
-	// FlagFEC marks a disc that carries FEC parity.
-	FlagFEC DiscFlags = 1 << 1
 
-	discFlagsKnown = FlagClose | FlagFEC
+	discFlagsKnown = FlagClose
 )
 
 // DiscState is the state of a disc, as the replay of its events gives
@@ -154,14 +152,11 @@ func decodeDiscRecord(buf []byte) DiscRecord {
 	}
 }
 
-// eventFlags returns the flag bits that event e can carry: close and
-// fec in Packed, fec in Recovered, and none in every other event.
+// eventFlags returns the flag bits that event e can carry: close in
+// Packed, and none in every other event.
 func eventFlags(e DiscEvent) DiscFlags {
-	switch e {
-	case EventPacked:
-		return FlagClose | FlagFEC
-	case EventRecovered:
-		return FlagFEC
+	if e == EventPacked {
+		return FlagClose
 	}
 	return 0
 }
@@ -288,7 +283,6 @@ type DiscInfo struct {
 	DiscSeq uint64
 	RunSeq  uint64
 	Close   bool
-	FEC     bool
 	State   DiscState
 	// BeforeLost is the state before the Lost event while the disc is
 	// lost. It is DiscUnknown in every other state.
@@ -320,10 +314,6 @@ func (d DiscInfo) apply(rec DiscRecord) (DiscInfo, error) {
 		d.DiscSeq = rec.DiscSeq
 		d.RunSeq = rec.RunSeq
 		d.Close = rec.Flags&FlagClose != 0
-		d.FEC = rec.Flags&FlagFEC != 0
-	case EventRecovered:
-		d.Close = rec.Flags&FlagClose != 0
-		d.FEC = rec.Flags&FlagFEC != 0
 	case EventCheckOK:
 		d.LastCheck, d.LastCheckTime = CheckResultOK, at
 	case EventCheckFailed:

@@ -2,15 +2,20 @@ package stage
 
 import (
 	"bytes"
+	"flag"
 	"os"
 	"testing"
 )
 
+// updateGolden rewrites testdata/discstate_golden.bin from the encoder.
+// Run `go test ./internal/stage -update` after a deliberate change of the
+// record, and read the diff before you commit it.
+var updateGolden = flag.Bool("update", false, "rewrite the disc state golden file in testdata")
+
 // goldenDiscRecords is one record for each event code, in code order,
 // as testdata/discstate_golden.bin holds them. Record i has sequence i,
 // time 1790000000 + 60*i, and a disc uuid with each byte 0x10 + i.
-// Packed carries both flags and the numbers 4 and 9. Recovered carries
-// the fec flag.
+// Packed carries the close flag and the numbers 4 and 9.
 func goldenDiscRecords() []DiscRecord {
 	var recs []DiscRecord
 	for i := uint64(1); i <= 13; i++ {
@@ -22,11 +27,9 @@ func goldenDiscRecords() []DiscRecord {
 		}
 		switch rec.Event {
 		case EventPacked:
-			rec.Flags = FlagClose | FlagFEC
+			rec.Flags = FlagClose
 			rec.DiscSeq = 4
 			rec.RunSeq = 9
-		case EventRecovered:
-			rec.Flags = FlagFEC
 		}
 		recs = append(recs, rec)
 	}
@@ -46,6 +49,12 @@ func TestDiscRecordGolden(t *testing.T) {
 	got := make([]byte, len(recs)*discRecordLen)
 	for i := range recs {
 		recs[i].encode(got[i*discRecordLen : (i+1)*discRecordLen])
+	}
+	if *updateGolden {
+		if err := os.WriteFile("testdata/discstate_golden.bin", got, 0o644); err != nil {
+			t.Fatalf("write golden: %v", err)
+		}
+		want = got
 	}
 	if len(got) != len(want) {
 		t.Fatalf("length: got %d, want %d", len(got), len(want))

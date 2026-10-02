@@ -2,6 +2,8 @@ package format
 
 import (
 	"encoding/binary"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -15,12 +17,9 @@ func testRun() Run {
 		},
 		RunSeq:      1,
 		DiscSeq:     0,
-		FECK:        231,
-		FECM:        23,
-		FECScheme:   FECSchemeRS255GF8,
+		FECScheme:   FECSchemeNone,
 		HashAlgo:    HashAlgoSHA256,
 		IndexBytes:  65536,
-		StreamBytes: 471859200,
 		CreatedSec:  1700000000,
 		CreatedNsec: 500000000,
 		ToolVersion: 0x01000001,
@@ -115,5 +114,47 @@ func TestRunDecodeRejectsShort(t *testing.T) {
 	}
 	if err := r.Encode(make([]byte, RunLen-1)); err != ErrShort {
 		t.Fatalf("encode short buffer: got %v, want %v", err, ErrShort)
+	}
+}
+
+func TestRunDecodeRejectsFieldValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		set   func(buf []byte)
+		field string
+	}{
+		{"reserved_d", func(buf []byte) { binary.LittleEndian.PutUint64(buf[136:144], 7) }, "reserved_d is 7"},
+		{"fec_k", func(buf []byte) { binary.LittleEndian.PutUint16(buf[80:82], 231) }, "fec_k is 231"},
+		{"fec_m", func(buf []byte) { binary.LittleEndian.PutUint16(buf[82:84], 23) }, "fec_m is 23"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			buf := append([]byte(nil), readGolden(t, "run.golden")...)
+			c.set(buf)
+			binary.LittleEndian.PutUint32(buf[504:508], crc32c(buf[0:504]))
+			var r Run
+			err := r.Decode(buf)
+			if !errors.Is(err, ErrBadField) {
+				t.Fatalf("decode: got %v, want %v", err, ErrBadField)
+			}
+			if !strings.Contains(err.Error(), c.field) {
+				t.Fatalf("decode: error %q does not name %q", err, c.field)
+			}
+		})
+	}
+}
+
+func TestRunDecodeReadsUnknownFECScheme(t *testing.T) {
+	buf := append([]byte(nil), readGolden(t, "run.golden")...)
+	buf[84] = 1
+	binary.LittleEndian.PutUint16(buf[80:82], 231)
+	binary.LittleEndian.PutUint16(buf[82:84], 23)
+	binary.LittleEndian.PutUint32(buf[504:508], crc32c(buf[0:504]))
+	var r Run
+	if err := r.Decode(buf); err != nil {
+		t.Fatalf("decode fec_scheme 1: %v", err)
+	}
+	if r.FECScheme != 1 {
+		t.Fatalf("fec_scheme: got %d, want 1", r.FECScheme)
 	}
 }

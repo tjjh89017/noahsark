@@ -102,7 +102,6 @@ func TestPackTakesTheRestOfAnOldSnapshotFirst(t *testing.T) {
 	old := commitAt(t, stagingDir, l, "old", t1, 8, 1_000_000)
 
 	opts := packOpts(stagingDir, old, t.TempDir(), sectorsFor(7_000_000), 1, l)
-	opts.FECEnabled = false
 	if _, err := Pack(opts); err != nil {
 		t.Fatalf("pack: %v", err)
 	}

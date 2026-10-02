@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // RunLen is the encoded size of the run header. RUN.bin and RUN2.bin are
 // each exactly this long.
@@ -21,7 +24,7 @@ type Run struct {
 	ReservedA     [10]byte
 	IndexBytes    uint64
 	IndexHash     [32]byte
-	StreamBytes   uint64
+	ReservedD     uint64
 	ReservedB     [32]byte
 	CreatedSec    int64
 	CreatedNsec   uint32
@@ -52,7 +55,7 @@ func (r *Run) Encode(buf []byte) error {
 	copy(buf[86:96], r.ReservedA[:])
 	binary.LittleEndian.PutUint64(buf[96:104], r.IndexBytes)
 	copy(buf[104:136], r.IndexHash[:])
-	binary.LittleEndian.PutUint64(buf[136:144], r.StreamBytes)
+	binary.LittleEndian.PutUint64(buf[136:144], r.ReservedD)
 	copy(buf[144:176], r.ReservedB[:])
 	binary.LittleEndian.PutUint64(buf[176:184], uint64(r.CreatedSec))
 	binary.LittleEndian.PutUint32(buf[184:188], r.CreatedNsec)
@@ -66,8 +69,9 @@ func (r *Run) Encode(buf []byte) error {
 }
 
 // Decode reads a Run from buf. It rejects a short buffer, a magic_kind
-// mismatch, and a header_crc32c mismatch. It does not interpret a reserved
-// field or padding byte.
+// mismatch, a header_crc32c mismatch, a nonzero reserved_d, and a nonzero
+// fec_k or fec_m under fec_scheme 0. It does not interpret any other
+// reserved field or padding byte.
 func (r *Run) Decode(buf []byte) error {
 	if len(buf) < RunLen {
 		return ErrShort
@@ -89,7 +93,7 @@ func (r *Run) Decode(buf []byte) error {
 	copy(r.ReservedA[:], buf[86:96])
 	r.IndexBytes = binary.LittleEndian.Uint64(buf[96:104])
 	copy(r.IndexHash[:], buf[104:136])
-	r.StreamBytes = binary.LittleEndian.Uint64(buf[136:144])
+	r.ReservedD = binary.LittleEndian.Uint64(buf[136:144])
 	copy(r.ReservedB[:], buf[144:176])
 	r.CreatedSec = int64(binary.LittleEndian.Uint64(buf[176:184]))
 	r.CreatedNsec = binary.LittleEndian.Uint32(buf[184:188])
@@ -100,5 +104,22 @@ func (r *Run) Decode(buf []byte) error {
 		return ErrCRC
 	}
 	copy(r.ReservedFinal[:], buf[508:512])
+	return r.checkFields()
+}
+
+// checkFields refuses the field values that a reader of format major 1
+// cannot accept, and names the field and the value.
+func (r *Run) checkFields() error {
+	if r.ReservedD != 0 {
+		return fmt.Errorf("%w: run header reserved_d is %d, want 0", ErrBadField, r.ReservedD)
+	}
+	if r.FECScheme == FECSchemeNone {
+		if r.FECK != 0 {
+			return fmt.Errorf("%w: run header fec_k is %d under fec_scheme 0, want 0", ErrBadField, r.FECK)
+		}
+		if r.FECM != 0 {
+			return fmt.Errorf("%w: run header fec_m is %d under fec_scheme 0, want 0", ErrBadField, r.FECM)
+		}
+	}
 	return nil
 }

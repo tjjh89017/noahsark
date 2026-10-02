@@ -22,12 +22,11 @@ import (
 
 // memFixtureBytes is the pseudo-random content size the memory
 // assertion test stages: at least 256 MiB, well past the 16 MiB max
-// chunk size and the one FEC stripe the hard memory bound allows.
+// chunk size that the hard memory bound allows.
 const memFixtureBytes = 256 << 20
 
 // memPeakBudget is the peak heap-plus-stack budget this test asserts
-// against: bounded by the chunk size and one FEC stripe, never by the
-// fixture size.
+// against: bounded by the chunk size, never by the fixture size.
 const memPeakBudget = 128 << 20
 
 // peakMemSampler samples runtime.MemStats HeapInuse plus StackInuse
@@ -148,7 +147,6 @@ func buildMemoryFixtureTree(t *testing.T) (treeDir string, snapID object.ID) {
 		RepoUUID:              [16]byte{1, 2, 3, 4},
 		DiscUUID:              [16]byte{5, 6, 7, 8},
 		Label:                 "restore-mem-test",
-		FECEnabled:            true,
 		Now:                   fixedClock,
 	}
 	if _, err := image.Build(opts); err != nil {
@@ -196,27 +194,6 @@ func TestDiscSwapRestoreMemoryBounded(t *testing.T) {
 	t.Logf("disc-swap restore peak heap+stack: %d bytes (%.1f MiB)", peak, float64(peak)/(1<<20))
 	if peak > memPeakBudget {
 		t.Fatalf("the restore peaked at %d bytes, want under %d (%.1f MiB budget)", peak, memPeakBudget, float64(memPeakBudget)/(1<<20))
-	}
-}
-
-func TestHealMemoryBounded(t *testing.T) {
-	if testing.Short() {
-		t.Skip("memory assertion test, skipped under -short")
-	}
-	treeDir, _ := buildMemoryFixtureTree(t)
-
-	paths, sizes, layout := streamLayout(t, treeDir)
-	corruptDataBlockAt(t, paths, sizes, layout, 3, 0)
-	corruptParityBlock(t, treeDir, 0, 0)
-
-	sampler := startPeakMemSampler()
-	if _, err := Heal(treeDir, ""); err != nil {
-		t.Fatal(err)
-	}
-	peak := sampler.Stop()
-	t.Logf("Heal peak heap+stack: %d bytes (%.1f MiB)", peak, float64(peak)/(1<<20))
-	if peak > memPeakBudget {
-		t.Fatalf("Heal peaked at %d bytes, want under %d (%.1f MiB budget)", peak, memPeakBudget, float64(memPeakBudget)/(1<<20))
 	}
 }
 

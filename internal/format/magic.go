@@ -25,7 +25,6 @@ var (
 	MagicDisc     = magicFromString("DISC")
 	MagicRun      = magicFromString("RUN")
 	MagicIndex    = magicFromString("INDEX")
-	MagicChecksum = magicFromString("CHECKSUM")
 	MagicRefs     = magicFromString("REFS")
 	MagicDiscs    = magicFromString("DISCS")
 )
@@ -57,10 +56,7 @@ const (
 // FECScheme is the FEC scheme registry.
 type FECScheme uint8
 
-// FECSchemeNone is the default scheme: no checksum column and no
-// parity. Burning two identical discs is the primary redundancy; FEC is
-// a reserve feature a run opts into.
+// FECSchemeNone is the only scheme of format major 1: the run carries no
+// data for error correction. Every other id is reserved for a later
+// scheme.
 const FECSchemeNone FECScheme = 0
-
-// FECSchemeRS255GF8 is the Reed-Solomon scheme, opt-in.
-const FECSchemeRS255GF8 FECScheme = 1

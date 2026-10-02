@@ -11,9 +11,8 @@ import (
 )
 
 // dirBytes sums the apparent size of every regular file under dir,
-// matching what `du -sb` reports: real file content, not the run's own
-// checksum and parity structure padded to block boundaries any
-// differently than it already is on disk.
+// matching what `du -sb` reports: real file content, with no rounding
+// to sector boundaries.
 func dirBytes(t *testing.T, dir string) uint64 {
 	t.Helper()
 	var total uint64

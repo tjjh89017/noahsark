@@ -1,14 +1,12 @@
 package restore
 
 import (
-	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -18,8 +16,8 @@ func fixedClock() time.Time {
 }
 
 // buildFixtureSrc writes a small, deterministic source tree with enough
-// bytes to span several FEC stripes: two pseudo-random files, a
-// subdirectory, and a symlink.
+// bytes to span several chunks: two pseudo-random files, a subdirectory,
+// and a symlink.
 func buildFixtureSrc(t *testing.T) string {
 	t.Helper()
 	srcDir := t.TempDir()
@@ -70,75 +68,12 @@ func buildFixtureTree(t *testing.T, srcDir string) (stagingDir, treeDir string, 
 		RepoUUID:              [16]byte{1, 2, 3, 4},
 		DiscUUID:              [16]byte{5, 6, 7, 8},
 		Label:                 "restore-test",
-		FECEnabled:            true,
 		Now:                   fixedClock,
 	}
 	if _, err := image.Build(opts); err != nil {
 		t.Fatal(err)
 	}
 	return stagingDir, treeDir, snapID
-}
-
-// streamLayout resolves the FEC stream geometry and file paths for
-// treeDir's one run, the same way Heal does.
-func streamLayout(t *testing.T, treeDir string) (paths []string, sizes []uint64, layout *fec.StreamLayout) {
-	t.Helper()
-	base, err := image.FindNoahsark(treeDir, image.NewNameCache())
-	if err != nil {
-		t.Fatal(err)
-	}
-	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	paths, sizes, _, err = image.StreamFiles(base, runDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	layout, err = fec.NewStreamLayout(sizes, fec.K)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return paths, sizes, layout
-}
-
-// corruptDataBlockAt flips one byte of the FEC stream's data block at
-// (column, stripe), by writing directly into the underlying file the
-// given, already-resolved stream layout maps it to. It fails the test
-// if that block falls in a file's virtual zero padding, since there is
-// nothing real there to corrupt.
-func corruptDataBlockAt(t *testing.T, paths []string, sizes []uint64, layout *fec.StreamLayout, column, stripe uint64) {
-	t.Helper()
-	block := column*layout.StripeCount() + stripe
-	idx, off, err := layout.Locate(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if off >= sizes[idx] {
-		t.Fatalf("column %d stripe %d falls in padding of %s, nothing to corrupt", column, stripe, paths[idx])
-	}
-	flipByte(t, paths[idx], int64(off))
-}
-
-// corruptParityBlock flips one byte of parity column j's block for
-// stripe.
-func corruptParityBlock(t *testing.T, treeDir string, j int, stripe uint64) {
-	t.Helper()
-	base, err := image.FindNoahsark(treeDir, image.NewNameCache())
-	if err != nil {
-		t.Fatal(err)
-	}
-	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := filepath.Join(runDir, "parity", parityFileName(j))
-	off := int64(stripe) * fec.BlockSize
-	flipByte(t, p, off)
-}
-
-func parityFileName(j int) string {
-	return fmt.Sprintf("p%04d.bin", fec.K+1+j)
 }
 
 func flipByte(t *testing.T, path string, off int64) {

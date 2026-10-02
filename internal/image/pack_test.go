@@ -111,7 +111,6 @@ func packOpts(stagingDir string, snapID object.ID, outDir string, capacitySector
 		RepoUUID:              [16]byte{1, 2, 3, 4},
 		DiscUUID:              [16]byte{discUUID},
 		Label:                 "test-disc",
-		FECEnabled:            true,
 		Now:                   fixedClock,
 		StageLog:              l,
 	}
@@ -149,8 +148,8 @@ func commitNamedFixture(t *testing.T, stagingDir, name string) object.ID {
 // TestPackCarriesEverySnapshotObject packs a run after several
 // commits. Every disc stores every repository snapshot's own object
 // under snapshots/, whatever ref the run's REFS table names, so Read
-// must resolve the FEC stream over all of them, in the content id
-// order the role 13 rows hold.
+// must find all of them, in the content id order the role 13 rows
+// hold.
 func TestPackCarriesEverySnapshotObject(t *testing.T) {
 	stagingDir := t.TempDir()
 	l, err := stage.Open(stagingDir)

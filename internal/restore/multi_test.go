@@ -83,7 +83,6 @@ func packSequence(t *testing.T, stagingDir string, snapID object.ID, capacitiesB
 			RepoUUID:              [16]byte{9, 9, 9},
 			DiscUUID:              [16]byte{byte(i + 1)},
 			Label:                 fmt.Sprintf("disc-%d", i),
-			FECEnabled:            true,
 			Now:                   multiFixedClock,
 			StageLog:              l,
 		}
@@ -208,7 +207,7 @@ func restoreDiscs(t *testing.T, roots []string, lost map[int]bool, snapID object
 // on three discs, one disc at a time, and checks the plan counts.
 func TestAssemblerAcrossThreeDiscs(t *testing.T) {
 	stagingDir, srcDir, snapID := commitMultiFixture(t)
-	roots := packSequence(t, stagingDir, snapID, []uint64{7_000_000, 7_000_000, 10_000_000})
+	roots := packSequence(t, stagingDir, snapID, []uint64{6_000_000, 6_000_000, 10_000_000})
 	if len(roots) < 3 {
 		t.Fatalf("the fixture packed %d disc(s), want 3", len(roots))
 	}
@@ -231,7 +230,7 @@ func TestAssemblerAcrossThreeDiscs(t *testing.T) {
 // files that need it are not restored; every other file is restored.
 func TestAssemblerLostDiscFailsOnlyItsFiles(t *testing.T) {
 	stagingDir, srcDir, snapID := commitMultiFixture(t)
-	roots := packSequence(t, stagingDir, snapID, []uint64{7_000_000, 7_000_000, 10_000_000})
+	roots := packSequence(t, stagingDir, snapID, []uint64{6_000_000, 6_000_000, 10_000_000})
 	if len(roots) < 3 {
 		t.Fatalf("the fixture packed %d disc(s), want 3", len(roots))
 	}
