@@ -147,11 +147,48 @@ func TestNonTerminalGetsLineAtDoneWithNoAdd(t *testing.T) {
 	}
 }
 
+// TestClearErasesTerminalLine checks that Clear erases the rewritten line
+// of a terminal, so that a message does not join the progress text, and
+// that the next Add prints the line again at once.
+func TestClearErasesTerminalLine(t *testing.T) {
+	var buf bytes.Buffer
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	r := newTestReporter(&buf, true, clock)
+
+	r.Start("restore", 0)
+	r.Add(10)
+	buf.Reset()
+	r.Clear()
+	if buf.String() != "\r\x1b[K" {
+		t.Fatalf("Clear wrote %q, want the erase sequence only", buf.String())
+	}
+	buf.Reset()
+	r.Add(10)
+	if !strings.Contains(buf.String(), "restore:") {
+		t.Fatalf("expected a line at the first Add after Clear, got %q", buf.String())
+	}
+}
+
+// TestClearOnPlainStreamWritesNothing checks that Clear writes nothing
+// to a plain stream, where each progress line ends with a newline.
+func TestClearOnPlainStreamWritesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	r := newTestReporter(&buf, false, clock)
+
+	r.Start("restore", 0)
+	r.Clear()
+	if buf.Len() != 0 {
+		t.Fatalf("Clear wrote %q to a plain stream", buf.String())
+	}
+}
+
 // TestNilReporterIsSafe checks every method on a nil *Reporter is a
 // no-op, so a disabled Reporter costs nothing and never panics.
 func TestNilReporterIsSafe(t *testing.T) {
 	var r *Reporter
 	r.Start("x", 10)
 	r.Add(5)
+	r.Clear()
 	r.Done()
 }
