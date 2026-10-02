@@ -69,18 +69,21 @@ func (r *Run) Encode(buf []byte) error {
 }
 
 // Decode reads a Run from buf. It rejects a short buffer, a magic_kind
-// mismatch, a header_crc32c mismatch, a nonzero reserved_d, and a nonzero
-// fec_k or fec_m under fec_scheme 0. It does not interpret any other
-// reserved field or padding byte.
+// mismatch, a header_len other than RunLen, a header_crc32c mismatch, a
+// nonzero reserved field, and a nonzero fec_k or fec_m under fec_scheme
+// 0.
 func (r *Run) Decode(buf []byte) error {
 	if len(buf) < RunLen {
 		return ErrShort
 	}
-	if err := r.Common.Decode(buf[0:CommonHeaderLen]); err != nil {
+	if err := r.Common.decode(buf[0:CommonHeaderLen]); err != nil {
 		return err
 	}
 	if r.Common.MagicKind != MagicRun {
 		return ErrBadMagic
+	}
+	if _, err := r.Common.fixedPartEnd(RunLen); err != nil {
+		return err
 	}
 	copy(r.DiscUUID[:], buf[32:48])
 	copy(r.RepoUUID[:], buf[48:64])
@@ -110,8 +113,16 @@ func (r *Run) Decode(buf []byte) error {
 // checkFields refuses the field values that a reader of format major 1
 // cannot accept, and names the field and the value.
 func (r *Run) checkFields() error {
-	if r.ReservedD != 0 {
-		return fmt.Errorf("%w: run header reserved_d is %d, want 0", ErrBadField, r.ReservedD)
+	const name = "run header"
+	if err := firstError(
+		r.Common.checkReserved(),
+		zeroBytes(name, "reserved_a", r.ReservedA[:]),
+		zeroField(name, "reserved_d", r.ReservedD),
+		zeroBytes(name, "reserved_b", r.ReservedB[:]),
+		zeroBytes(name, "reserved_c", r.ReservedC[:]),
+		zeroBytes(name, "reserved_final", r.ReservedFinal[:]),
+	); err != nil {
+		return err
 	}
 	if r.FECScheme == FECSchemeNone {
 		if r.FECK != 0 {

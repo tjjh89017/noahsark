@@ -1,6 +1,10 @@
 package format
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
 
 // CommonHeaderLen is the encoded size of CommonHeader.
 const CommonHeaderLen = 32
@@ -37,8 +41,19 @@ func (h *CommonHeader) Encode(buf []byte) error {
 }
 
 // Decode reads a CommonHeader from buf. It rejects a short buffer, a
-// magic_project mismatch, and an unknown version_major.
+// magic_project mismatch, an unknown version_major, and a nonzero
+// reserved field.
 func (h *CommonHeader) Decode(buf []byte) error {
+	if err := h.decode(buf); err != nil {
+		return err
+	}
+	return h.checkReserved()
+}
+
+// decode reads a CommonHeader from buf. It rejects a short buffer, a
+// magic_project mismatch, and an unknown version_major. The structure
+// that holds the header checks the reserved fields after its CRC.
+func (h *CommonHeader) decode(buf []byte) error {
 	if len(buf) < CommonHeaderLen {
 		return ErrShort
 	}
@@ -50,7 +65,7 @@ func (h *CommonHeader) Decode(buf []byte) error {
 	}
 	versionMajor := binary.LittleEndian.Uint16(buf[16:18])
 	if versionMajor != 1 {
-		return ErrVersion
+		return fmt.Errorf("%w: %s version_major is %d", ErrVersion, kindName(magicKind), versionMajor)
 	}
 	h.MagicProject = magicProject
 	h.MagicKind = magicKind
@@ -62,14 +77,30 @@ func (h *CommonHeader) Decode(buf []byte) error {
 	return nil
 }
 
-// fixedPartEnd returns the offset of the first byte after the fixed part.
-// A header_len below the length this build knows is refused; a larger one
-// is obeyed, so the variable part starts where the writer put it.
+// checkReserved refuses a nonzero reserved field of h.
+func (h *CommonHeader) checkReserved() error {
+	name := kindName(h.MagicKind) + " common header"
+	return firstError(
+		zeroField(name, "reserved_u16a", uint64(h.ReservedU16a)),
+		zeroField(name, "reserved_u16b", uint64(h.ReservedU16b)),
+		zeroField(name, "reserved_u64", h.ReservedU64),
+	)
+}
+
+// fixedPartEnd checks that header_len is knownLen, the value this build
+// knows for the structure at version_major 1, and returns it: the
+// offset of the first byte after the fixed part.
 func (h *CommonHeader) fixedPartEnd(knownLen int) (int, error) {
-	if int(h.HeaderLen) < knownLen {
-		return 0, ErrHeaderLen
+	if int(h.HeaderLen) != knownLen {
+		return 0, fmt.Errorf("%w: %s header_len is %d, want %d", ErrHeaderLen, kindName(h.MagicKind), h.HeaderLen, knownLen)
 	}
-	return int(h.HeaderLen), nil
+	return knownLen, nil
+}
+
+// kindName is the magic_kind of a structure as quoted text, with the
+// zero padding removed, for an error message.
+func kindName(m Magic) string {
+	return fmt.Sprintf("%q", bytes.TrimRight(m[:], "\x00"))
 }
 
 // ObjectHeader follows the common header in every object file. An object
@@ -105,10 +136,19 @@ func (h *ObjectHeader) Encode(buf []byte) error {
 	return nil
 }
 
-// Decode reads an ObjectHeader from buf. It rejects a short buffer. The
-// object header carries no magic or version of its own; the common header
-// that precedes it carries those.
+// Decode reads an ObjectHeader from buf. It rejects a short buffer and
+// a nonzero reserved field. The object header carries no magic or
+// version of its own; the common header that precedes it carries those.
 func (h *ObjectHeader) Decode(buf []byte) error {
+	if err := h.decode(buf); err != nil {
+		return err
+	}
+	return h.checkReserved()
+}
+
+// decode reads an ObjectHeader from buf. It rejects a short buffer. The
+// object file checks the reserved fields after header_crc32c.
+func (h *ObjectHeader) decode(buf []byte) error {
 	if len(buf) < ObjectHeaderLen {
 		return ErrShort
 	}
@@ -124,24 +164,75 @@ func (h *ObjectHeader) Decode(buf []byte) error {
 	return nil
 }
 
+// checkReserved refuses a nonzero reserved field of h.
+func (h *ObjectHeader) checkReserved() error {
+	const name = "object header"
+	return firstError(
+		zeroField(name, "reserved_u8", uint64(h.ReservedU8)),
+		zeroBytes(name, "reserved_a", h.ReservedA[:]),
+		zeroField(name, "reserved_u32", uint64(h.ReservedU32)),
+	)
+}
+
+// objectHeaderLens maps the magic_kind of each object kind to its kind
+// value and to the header_len of version_major 1.
+var objectHeaderLens = map[Magic]struct {
+	kind      ObjectKind
+	headerLen int
+}{
+	MagicChunk:    {ObjectKindChunk, ChunkHeaderLen},
+	MagicBlob:     {ObjectKindBlob, BlobHeaderLen},
+	MagicTree:     {ObjectKindTree, TreeHeaderLen},
+	MagicSnapshot: {ObjectKindSnapshot, SnapshotHeaderLen},
+}
+
 // DecodeObjectFileHeader decodes the common header and the object header
 // from head, the first CommonHeaderLen+ObjectHeaderLen bytes of an object
-// file, and checks header_crc32c over the common header and bytes 0 to 23
-// of the object header. A kind's own Decode (Chunk, Blob, Tree, Snapshot)
-// redoes this same check as part of decoding its own fixed body; a caller
-// that only wants the header, before it commits to a kind's fixed body,
-// calls this function instead so the check cannot drift between callers.
+// file, and checks them in the order of the reader procedure: the magic,
+// version_major, header_len for the kind, header_crc32c over the common
+// header and bytes 0 to 23 of the object header, the reserved fields, a
+// kind that agrees with magic_kind, hash_algo and compression. A kind's
+// own Decode (Chunk, Blob, Tree, Snapshot) runs the same function before
+// it decodes its fixed body.
 func DecodeObjectFileHeader(head []byte) (CommonHeader, ObjectHeader, error) {
+	return decodeObjectHead(head, Magic{})
+}
+
+// decodeObjectHead is DecodeObjectFileHeader. A nonzero want is the
+// magic_kind that the caller expects.
+func decodeObjectHead(head []byte, want Magic) (CommonHeader, ObjectHeader, error) {
 	var ch CommonHeader
-	if err := ch.Decode(head); err != nil {
-		return ch, ObjectHeader{}, err
-	}
 	var oh ObjectHeader
-	if err := oh.Decode(head[CommonHeaderLen:]); err != nil {
+	if len(head) < CommonHeaderLen+ObjectHeaderLen {
+		return ch, oh, ErrShort
+	}
+	if err := ch.decode(head); err != nil {
+		return ch, oh, err
+	}
+	known, ok := objectHeaderLens[ch.MagicKind]
+	if !ok || (want != Magic{} && ch.MagicKind != want) {
+		return ch, oh, ErrBadMagic
+	}
+	if _, err := ch.fixedPartEnd(known.headerLen); err != nil {
+		return ch, oh, err
+	}
+	if err := oh.decode(head[CommonHeaderLen:]); err != nil {
 		return ch, oh, err
 	}
 	if crc32c(head[0:objectHeaderCRCOffset]) != oh.HeaderCRC32C {
 		return ch, oh, ErrCRC
+	}
+	if err := firstError(ch.checkReserved(), oh.checkReserved()); err != nil {
+		return ch, oh, err
+	}
+	if oh.Kind != known.kind {
+		return ch, oh, fmt.Errorf("%w: object header kind is %d, magic_kind %s wants %d", ErrBadField, oh.Kind, kindName(ch.MagicKind), known.kind)
+	}
+	if oh.HashAlgo != HashAlgoSHA256 {
+		return ch, oh, fmt.Errorf("%w: object header hash_algo is 0x%02x, want 0x%02x", ErrBadField, uint8(oh.HashAlgo), uint8(HashAlgoSHA256))
+	}
+	if oh.Compression != CompressionNone && oh.Compression != CompressionZstd {
+		return ch, oh, fmt.Errorf("%w: object header compression is %d, want 0 or 1", ErrBadField, oh.Compression)
 	}
 	return ch, oh, nil
 }

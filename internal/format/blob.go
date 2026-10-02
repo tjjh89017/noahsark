@@ -66,32 +66,19 @@ func (b *Blob) Encode(buf []byte) (int, error) {
 }
 
 // Decode reads a Blob from buf and returns the number of bytes read. It
-// rejects a short buffer, a magic_kind mismatch, a header_crc32c mismatch,
-// a header_len below the fixed part this build knows, and an entry
-// count that does not agree with payload_len. The entries start at
-// header_len, so a larger fixed part from a later writer is skipped.
+// rejects a short buffer, every fault of DecodeObjectFileHeader, and an
+// entry count that does not agree with payload_len.
 func (b *Blob) Decode(buf []byte) (int, error) {
 	if len(buf) < blobFixedLen {
 		return 0, ErrShort
 	}
-	if err := b.Header.Decode(buf[0:CommonHeaderLen]); err != nil {
-		return 0, err
-	}
-	if b.Header.MagicKind != MagicBlob {
-		return 0, ErrBadMagic
-	}
-	entriesOff, err := b.Header.fixedPartEnd(blobFixedLen)
+	ch, oh, err := decodeObjectHead(buf, MagicBlob)
 	if err != nil {
 		return 0, err
 	}
-	off := CommonHeaderLen
-	if err := b.ObjectHeader.Decode(buf[off : off+ObjectHeaderLen]); err != nil {
-		return 0, err
-	}
-	off += ObjectHeaderLen
-	if crc32c(buf[0:objectHeaderCRCOffset]) != b.ObjectHeader.HeaderCRC32C {
-		return 0, ErrCRC
-	}
+	b.Header, b.ObjectHeader = ch, oh
+	off := CommonHeaderLen + ObjectHeaderLen
+	entriesOff := blobFixedLen
 
 	b.EntryCount = binary.LittleEndian.Uint64(buf[off : off+8])
 

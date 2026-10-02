@@ -2,7 +2,9 @@ package format
 
 import (
 	"encoding/binary"
-	"reflect"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -18,9 +20,9 @@ func fill(buf []byte, b byte, ranges []rng) {
 	}
 }
 
-// structVector describes one structure for the two derived golden
-// vectors: the enlarged header_len vector and the nonzero reserved
-// vector. A reader must take the same fields from all three.
+// structVector describes one structure for the derived golden vectors:
+// the other header_len vector, the nonzero reserved vector and the
+// version_major 0 vector. A reader must refuse each of them.
 type structVector struct {
 	// name is the golden file base name.
 	name string
@@ -35,10 +37,10 @@ type structVector struct {
 	fixup func(buf []byte)
 	// enlarge raises the length fields that a larger fixed part changes.
 	enlarge func(buf []byte, extra int)
-	// fields decodes buf and returns the fields a reader takes, with the
-	// reserved fields, header_len and the lengths that the two variants
-	// change removed.
-	fields func(t *testing.T, buf []byte) any
+	// decode decodes buf as the structure.
+	decode func(buf []byte) error
+	// kind is true for a structure with a common header of its own.
+	kind bool
 }
 
 // crcAt recomputes a CRC-32C over buf[0:covered] and stores it at off.
@@ -72,24 +74,6 @@ func enlargeObject(buf []byte, extra int) {
 	base := CommonHeaderLen
 	binary.LittleEndian.PutUint64(buf[base+8:base+16], binary.LittleEndian.Uint64(buf[base+8:base+16])+uint64(extra))
 	binary.LittleEndian.PutUint64(buf[base+16:base+24], binary.LittleEndian.Uint64(buf[base+16:base+24])+uint64(extra))
-}
-
-// clearCommon zeroes the header fields the derived vectors change.
-func clearCommon(h *CommonHeader) {
-	h.HeaderLen = 0
-	h.ReservedU16a = 0
-	h.ReservedU16b = 0
-	h.ReservedU64 = 0
-}
-
-// clearObject zeroes the object header fields the derived vectors change.
-func clearObject(h *ObjectHeader) {
-	h.ReservedU8 = 0
-	h.ReservedA = [4]byte{}
-	h.ReservedU32 = 0
-	h.HeaderCRC32C = 0
-	h.PayloadLen = 0
-	h.StoredLen = 0
 }
 
 func encodeVector(t *testing.T, enc func([]byte) (int, error), size int) []byte {
@@ -150,13 +134,9 @@ func structVectors(t *testing.T) []structVector {
 			plain:    encodeVector(t, func(b []byte) (int, error) { h := testCommonHeader(); return CommonHeaderLen, h.Encode(b) }, CommonHeaderLen),
 			reserved: commonReserved,
 			fixup:    func([]byte) {},
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var h CommonHeader
-				if err := h.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&h)
-				return h
+				return h.Decode(buf)
 			},
 		},
 		{
@@ -164,16 +144,9 @@ func structVectors(t *testing.T) []structVector {
 			plain:    encodeVector(t, func(b []byte) (int, error) { h := testObjectHeader(); return ObjectHeaderLen, h.Encode(b) }, ObjectHeaderLen),
 			reserved: objectHeaderReserved(0),
 			fixup:    func([]byte) {},
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var h ObjectHeader
-				if err := h.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				payload, stored := h.PayloadLen, h.StoredLen
-				crc := h.HeaderCRC32C
-				clearObject(&h)
-				h.PayloadLen, h.StoredLen, h.HeaderCRC32C = payload, stored, crc
-				return h
+				return h.Decode(buf)
 			},
 		},
 		{
@@ -181,15 +154,12 @@ func structVectors(t *testing.T) []structVector {
 			plain:    encodeVector(t, chunk.Encode, chunk.EncodedLen()),
 			reserved: append(append([]rng(nil), commonReserved...), objectHeaderReserved(CommonHeaderLen)...),
 			fixup:    objectFixup,
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var c Chunk
-				if _, err := c.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&c.Header)
-				clearObject(&c.ObjectHeader)
-				return c
+				_, err := c.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 		{
 			name:     "blob",
@@ -198,15 +168,12 @@ func structVectors(t *testing.T) []structVector {
 			reserved: append(append([]rng(nil), commonReserved...), objectHeaderReserved(CommonHeaderLen)...),
 			fixup:    objectFixup,
 			enlarge:  enlargeObject,
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var b Blob
-				if _, err := b.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&b.Header)
-				clearObject(&b.ObjectHeader)
-				return b
+				_, err := b.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 		{
 			name:     "tree",
@@ -215,19 +182,12 @@ func structVectors(t *testing.T) []structVector {
 			reserved: treeReserved,
 			fixup:    objectFixup,
 			enlarge:  enlargeObject,
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var tr Tree
-				if _, err := tr.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&tr.Header)
-				clearObject(&tr.ObjectHeader)
-				tr.ReservedU32 = 0
-				for i := range tr.Entries {
-					tr.Entries[i].ReservedU32 = 0
-				}
-				return tr
+				_, err := tr.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 		{
 			name:     "snapshot",
@@ -237,48 +197,34 @@ func structVectors(t *testing.T) []structVector {
 				rng{128, 136}, rng{160, 168}, rng{168, 170}, rng{172, 176}),
 			fixup:   objectFixup,
 			enlarge: enlargeObject,
-			fields: func(t *testing.T, buf []byte) any {
-				var s Snapshot
-				if _, err := s.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&s.Common)
-				clearObject(&s.Object)
-				s.ReservedU64a, s.ReservedU64b, s.ReservedU16, s.ReservedU32 = 0, 0, 0, 0
-				return s
+			decode: func(buf []byte) error {
+				var sn Snapshot
+				_, err := sn.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 		{
 			name:     "disc",
 			plain:    encodeVector(t, func(b []byte) (int, error) { return DiscLen, disc.Encode(b) }, DiscLen),
 			reserved: append(append([]rng(nil), commonReserved...), rng{80, 120}, rng{136, 144}, rng{216, 2044}),
 			fixup:    crcAt(2044, 2044),
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var d Disc
-				if err := d.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&d.Common)
-				d.ReservedA, d.ReservedB, d.ReservedC = [40]byte{}, [8]byte{}, [1828]byte{}
-				d.SuperCRC32C = 0
-				return d
+				return d.Decode(buf)
 			},
+			kind: true,
 		},
 		{
 			name:     "run",
 			plain:    encodeVector(t, func(b []byte) (int, error) { return RunLen, run.Encode(b) }, RunLen),
 			reserved: append(append([]rng(nil), commonReserved...), rng{86, 96}, rng{144, 176}, rng{192, 504}, rng{508, 512}),
 			fixup:    crcAt(504, 504),
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var r Run
-				if err := r.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&r.Common)
-				r.ReservedA, r.ReservedB, r.ReservedC, r.ReservedFinal = [10]byte{}, [32]byte{}, [312]byte{}, [4]byte{}
-				r.HeaderCRC32C = 0
-				return r
+				return r.Decode(buf)
 			},
+			kind: true,
 		},
 		{
 			name:     "index",
@@ -287,21 +233,12 @@ func structVectors(t *testing.T) []structVector {
 			reserved: append(append([]rng(nil), commonReserved...), indexReserved...),
 			fixup:    func([]byte) {},
 			enlarge:  enlargeCommon,
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var got Index
-				if _, err := got.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&got.Header)
-				got.ReservedU32 = 0
-				for i := range got.Files {
-					got.Files[i].Reserved = [7]byte{}
-				}
-				for i := range got.Objects {
-					got.Objects[i].Reserved = [7]byte{}
-				}
-				return got
+				_, err := got.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 		{
 			name:     "refs",
@@ -310,17 +247,12 @@ func structVectors(t *testing.T) []structVector {
 			reserved: append(append([]rng(nil), commonReserved...), refsReserved...),
 			fixup:    func([]byte) {},
 			enlarge:  enlargeCommon,
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var got RefsTable
-				if _, err := got.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&got.Header)
-				for i := range got.Records {
-					got.Records[i].ReservedU16 = 0
-				}
-				return got
+				_, err := got.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 		{
 			name:     "discs",
@@ -329,28 +261,20 @@ func structVectors(t *testing.T) []structVector {
 			reserved: append(append([]rng(nil), commonReserved...), discsReserved...),
 			fixup:    func([]byte) {},
 			enlarge:  enlargeCommon,
-			fields: func(t *testing.T, buf []byte) any {
+			decode: func(buf []byte) error {
 				var got DiscsTable
-				if _, err := got.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				clearCommon(&got.Header)
-				for i := range got.Rows {
-					got.Rows[i].ReservedU64a = 0
-					got.Rows[i].ReservedU64b = 0
-					got.Rows[i].ReservedU32 = 0
-					got.Rows[i].Reserved = [10]byte{}
-				}
-				return got
+				_, err := got.Decode(buf)
+				return err
 			},
+			kind: true,
 		},
 	}
 }
 
-// TestEnlargedHeaderLenVectors checks that a reader obeys a header_len
-// above the one this build knows: it skips the added bytes and takes the
-// same fields.
-func TestEnlargedHeaderLenVectors(t *testing.T) {
+// TestOtherHeaderLenVectorsAreRefused checks that a reader refuses a
+// header_len 8 above the one this build knows, with 8 nonzero bytes in
+// the gap, and names header_len.
+func TestOtherHeaderLenVectorsAreRefused(t *testing.T) {
 	const extra = 8
 	for _, v := range structVectors(t) {
 		if v.knownLen == 0 {
@@ -367,9 +291,9 @@ func TestEnlargedHeaderLenVectors(t *testing.T) {
 			v.fixup(buf)
 			compareGolden(t, v.name+"_hdrlen.golden", buf)
 
-			golden := readGolden(t, v.name+"_hdrlen.golden")
-			if got, want := v.fields(t, golden), v.fields(t, v.plain); !reflect.DeepEqual(got, want) {
-				t.Fatalf("fields differ from the plain vector:\ngot  %+v\nwant %+v", got, want)
+			err := v.decode(readGolden(t, v.name+"_hdrlen.golden"))
+			if !errors.Is(err, ErrHeaderLen) || !strings.Contains(err.Error(), "header_len is") {
+				t.Fatalf("decode: got %v, want %v that names header_len", err, ErrHeaderLen)
 			}
 		})
 	}
@@ -386,37 +310,16 @@ func TestHeaderLenBelowKnownIsRefused(t *testing.T) {
 			buf := append([]byte(nil), v.plain...)
 			binary.LittleEndian.PutUint16(buf[20:22], binary.LittleEndian.Uint16(buf[20:22])-8)
 			v.fixup(buf)
-			var err error
-			switch v.name {
-			case "blob":
-				var b Blob
-				_, err = b.Decode(buf)
-			case "tree":
-				var tr Tree
-				_, err = tr.Decode(buf)
-			case "snapshot":
-				var s Snapshot
-				_, err = s.Decode(buf)
-			case "index":
-				var idx Index
-				_, err = idx.Decode(buf)
-			case "refs":
-				var r RefsTable
-				_, err = r.Decode(buf)
-			case "discs":
-				var d DiscsTable
-				_, err = d.Decode(buf)
-			}
-			if err != ErrHeaderLen {
+			if err := v.decode(buf); !errors.Is(err, ErrHeaderLen) {
 				t.Fatalf("decode short header_len: got %v, want %v", err, ErrHeaderLen)
 			}
 		})
 	}
 }
 
-// TestNonzeroReservedVectors checks that a reader ignores a nonzero byte
-// in every reserved field and takes the same fields.
-func TestNonzeroReservedVectors(t *testing.T) {
+// TestNonzeroReservedVectorsAreRefused checks that a reader refuses the
+// vector with a nonzero byte in every reserved field.
+func TestNonzeroReservedVectorsAreRefused(t *testing.T) {
 	for _, v := range structVectors(t) {
 		t.Run(v.name, func(t *testing.T) {
 			buf := append([]byte(nil), v.plain...)
@@ -424,9 +327,47 @@ func TestNonzeroReservedVectors(t *testing.T) {
 			v.fixup(buf)
 			compareGolden(t, v.name+"_reserved.golden", buf)
 
-			golden := readGolden(t, v.name+"_reserved.golden")
-			if got, want := v.fields(t, golden), v.fields(t, v.plain); !reflect.DeepEqual(got, want) {
-				t.Fatalf("fields differ from the plain vector:\ngot  %+v\nwant %+v", got, want)
+			if err := v.decode(readGolden(t, v.name+"_reserved.golden")); !errors.Is(err, ErrReserved) {
+				t.Fatalf("decode: got %v, want %v", err, ErrReserved)
+			}
+		})
+	}
+}
+
+// TestEachReservedRangeIsRefused sets one reserved range at a time to a
+// nonzero value. A reader refuses each one and names the value.
+func TestEachReservedRangeIsRefused(t *testing.T) {
+	for _, v := range structVectors(t) {
+		for _, r := range v.reserved {
+			t.Run(fmt.Sprintf("%s/%d-%d", v.name, r.lo, r.hi), func(t *testing.T) {
+				buf := append([]byte(nil), v.plain...)
+				fill(buf, 0xA5, []rng{r})
+				v.fixup(buf)
+				err := v.decode(buf)
+				if !errors.Is(err, ErrReserved) || !strings.Contains(err.Error(), "0xa5") {
+					t.Fatalf("decode: got %v, want %v that names the value 0xa5", err, ErrReserved)
+				}
+			})
+		}
+	}
+}
+
+// TestVersionMajorZeroVectors checks the vector with version_major 0 of
+// each structure kind. A reader refuses it and prints the value.
+func TestVersionMajorZeroVectors(t *testing.T) {
+	for _, v := range structVectors(t) {
+		if !v.kind {
+			continue
+		}
+		t.Run(v.name, func(t *testing.T) {
+			buf := append([]byte(nil), v.plain...)
+			binary.LittleEndian.PutUint16(buf[16:18], 0)
+			v.fixup(buf)
+			compareGolden(t, v.name+"_vmajor0.golden", buf)
+
+			err := v.decode(readGolden(t, v.name+"_vmajor0.golden"))
+			if !errors.Is(err, ErrVersion) || !strings.Contains(err.Error(), "version_major is 0") {
+				t.Fatalf("decode: got %v, want %v that prints version_major 0", err, ErrVersion)
 			}
 		})
 	}

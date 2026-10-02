@@ -167,7 +167,7 @@ func TestIndexDecodeRejectsBadObjectKind(t *testing.T) {
 	row := IndexHeaderLen + 10*IndexFileRecordLen
 	buf[row+32] = 9
 	var idx Index
-	if _, err := idx.Decode(buf); err != ErrObjectKind {
+	if _, err := idx.Decode(buf); !errors.Is(err, ErrObjectKind) {
 		t.Fatalf("decode bad kind: got %v, want %v", err, ErrObjectKind)
 	}
 }

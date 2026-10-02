@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // DiscLen is the encoded size of the disc superblock. It is one sector.
 const DiscLen = 2048
@@ -55,17 +58,21 @@ func (d *Disc) Encode(buf []byte) error {
 }
 
 // Decode reads a Disc from buf. It rejects a short buffer, a magic_kind
-// mismatch, and a super_crc32c mismatch. It does not interpret a reserved
-// field.
+// mismatch, a header_len other than DiscLen, a super_crc32c mismatch, a
+// label_len above the label field, a nonzero reserved field, and a
+// nonzero byte in the label padding.
 func (d *Disc) Decode(buf []byte) error {
 	if len(buf) < DiscLen {
 		return ErrShort
 	}
-	if err := d.Common.Decode(buf[0:CommonHeaderLen]); err != nil {
+	if err := d.Common.decode(buf[0:CommonHeaderLen]); err != nil {
 		return err
 	}
 	if d.Common.MagicKind != MagicDisc {
 		return ErrBadMagic
+	}
+	if _, err := d.Common.fixedPartEnd(DiscLen); err != nil {
+		return err
 	}
 	copy(d.DiscUUID[:], buf[32:48])
 	copy(d.RepoUUID[:], buf[48:64])
@@ -84,5 +91,14 @@ func (d *Disc) Decode(buf []byte) error {
 	if crc32c(buf[0:2044]) != d.SuperCRC32C {
 		return ErrCRC
 	}
-	return nil
+	if d.LabelLen > uint32(len(d.Label)) {
+		return fmt.Errorf("%w: disc superblock label_len is %d, want at most %d", ErrBadField, d.LabelLen, len(d.Label))
+	}
+	return firstError(
+		d.Common.checkReserved(),
+		zeroBytes("disc superblock", "reserved_a", d.ReservedA[:]),
+		zeroBytes("disc superblock", "reserved_b", d.ReservedB[:]),
+		zeroBytes("disc superblock", "label padding", d.Label[d.LabelLen:]),
+		zeroBytes("disc superblock", "reserved_c", d.ReservedC[:]),
+	)
 }

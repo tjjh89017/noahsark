@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 const (
 	// DiscsHeaderLen is the common header plus the fixed body.
@@ -44,7 +47,7 @@ func (r *DiscsRow) encode(buf []byte) {
 	copy(buf[166:176], r.Reserved[:])
 }
 
-func (r *DiscsRow) decode(buf []byte) {
+func (r *DiscsRow) decode(buf []byte) error {
 	r.RunSeq = binary.LittleEndian.Uint64(buf[0:8])
 	r.DiscSeq = binary.LittleEndian.Uint64(buf[8:16])
 	copy(r.DiscUUID[:], buf[16:32])
@@ -57,6 +60,17 @@ func (r *DiscsRow) decode(buf []byte) {
 	r.LabelLen = binary.LittleEndian.Uint16(buf[100:102])
 	copy(r.Label[:], buf[102:166])
 	copy(r.Reserved[:], buf[166:176])
+	if int(r.LabelLen) > DiscsLabelLen {
+		return fmt.Errorf("%w: DISCS row label_len is %d, want at most %d", ErrBadField, r.LabelLen, DiscsLabelLen)
+	}
+	const name = "DISCS row"
+	return firstError(
+		zeroField(name, "reserved_u64a", r.ReservedU64a),
+		zeroField(name, "reserved_u64b", r.ReservedU64b),
+		zeroField(name, "reserved_u32", uint64(r.ReservedU32)),
+		zeroBytes(name, "label padding", r.Label[r.LabelLen:]),
+		zeroBytes(name, "reserved", r.Reserved[:]),
+	)
 }
 
 // DiscsTable is DISCS, one row per disc the repository knew at pack time.
@@ -97,14 +111,14 @@ func (t *DiscsTable) Encode(buf []byte) (int, error) {
 
 // Decode reads a DiscsTable from buf and returns the number of bytes
 // read. It rejects a short buffer, a magic_kind mismatch, a header_len
-// below the fixed part this build knows, and a file length that does
-// not agree with record_count. It does not interpret a reserved field.
+// other than DiscsHeaderLen, a nonzero reserved field or padding byte,
+// and a file length that does not agree with record_count.
 func (t *DiscsTable) Decode(buf []byte) (int, error) {
 	if len(buf) < DiscsHeaderLen {
 		return 0, ErrShort
 	}
 	var h CommonHeader
-	if err := h.Decode(buf[0:CommonHeaderLen]); err != nil {
+	if err := h.decode(buf[0:CommonHeaderLen]); err != nil {
 		return 0, err
 	}
 	if h.MagicKind != MagicDiscs {
@@ -112,6 +126,9 @@ func (t *DiscsTable) Decode(buf []byte) (int, error) {
 	}
 	rowsOff, err := h.fixedPartEnd(DiscsHeaderLen)
 	if err != nil {
+		return 0, err
+	}
+	if err := h.checkReserved(); err != nil {
 		return 0, err
 	}
 
@@ -130,7 +147,9 @@ func (t *DiscsTable) Decode(buf []byte) (int, error) {
 	off := rowsOff
 	rows := make([]DiscsRow, recordCount)
 	for i := range rows {
-		rows[i].decode(buf[off : off+DiscsRowLen])
+		if err := rows[i].decode(buf[off : off+DiscsRowLen]); err != nil {
+			return 0, fmt.Errorf("DISCS row %d: %w", i, err)
+		}
 		off += DiscsRowLen
 	}
 
