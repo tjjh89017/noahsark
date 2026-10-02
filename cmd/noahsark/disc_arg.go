@@ -16,17 +16,12 @@ type discArgCandidate struct {
 	UUID  [16]byte
 }
 
-// uniqueDiscCandidates gives one candidate for each disc uuid. A disc
-// with more than one run has one ledger row for each run. The function
+// discCandidates gives one candidate for each ledger row. A disc holds
+// one run, thus the ledger holds one row for each disc. The function
 // drops a disc when hidden reports true for its uuid.
-func uniqueDiscCandidates(rows []format.DiscsRow, hidden func(uuid [16]byte) bool) []discArgCandidate {
-	seen := make(map[[16]byte]bool)
+func discCandidates(rows []format.DiscsRow, hidden func(uuid [16]byte) bool) []discArgCandidate {
 	var out []discArgCandidate
 	for _, r := range rows {
-		if seen[r.DiscUUID] {
-			continue
-		}
-		seen[r.DiscUUID] = true
 		if hidden != nil && hidden(r.DiscUUID) {
 			continue
 		}
@@ -53,7 +48,7 @@ const discNumberMaxDigits = 7
 // hidden hides no disc. The error text is the refusal for no match or
 // for more than one match; the caller exits with the usage error code.
 func resolveDiscArgExcept(rows []format.DiscsRow, arg string, hidden func(uuid [16]byte) bool) ([16]byte, error) {
-	discs := uniqueDiscCandidates(rows, hidden)
+	discs := discCandidates(rows, hidden)
 	var matches []discArgCandidate
 
 	if len(arg) <= discNumberMaxDigits {

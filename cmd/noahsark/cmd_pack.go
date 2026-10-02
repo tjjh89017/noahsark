@@ -647,7 +647,7 @@ func refuseWhileMissing(cmd string, layout repoLayout, cfg repoConfig, discs *st
 		}
 	}
 	for _, d := range missing {
-		row := newestDiscRow(rows, d.UUID)
+		row := discRow(rows, d.UUID)
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is missing\n", cmd, discNameShort(row.DiscSeq, labelText(row.Label[:row.LabelLen])))
 	}
 	return true

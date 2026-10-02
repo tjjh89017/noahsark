@@ -20,7 +20,7 @@ func buildSmallTree(t *testing.T) (root, runDir string) {
 	if _, err := Build(testOpts(t, stagingDir, snapID, root)); err != nil {
 		t.Fatal(err)
 	}
-	runDir, err := NewestRunDir(filepath.Join(root, "NOAHSARK", "runs"))
+	runDir, err := RunDir(filepath.Join(root, "NOAHSARK", "runs"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,5 +225,77 @@ func TestReadAcceptsASymlinkRoot(t *testing.T) {
 	}
 	if _, err := Read(link); err != nil {
 		t.Fatalf("Read through a symlink root: %v", err)
+	}
+}
+
+// TestReadRefusesMoreThanOneRunEntry adds a second entry to the runs
+// directory of a good disc root. Read refuses the disc, also with
+// KeepGoing, and the error names every entry.
+func TestReadRefusesMoreThanOneRunEntry(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+		add   func(t *testing.T, path string)
+	}{
+		{"a second run directory", "0000000099", func(t *testing.T, path string) {
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a stray file", "notes.txt", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, runDir := buildSmallTree(t)
+			tc.add(t, filepath.Join(filepath.Dir(runDir), tc.extra))
+			for _, keepGoing := range []bool{false, true} {
+				_, err := ReadWithOptions(root, ReadOptions{KeepGoing: keepGoing})
+				if err == nil {
+					t.Fatalf("Read (keep going %v) accepted a runs directory with two entries", keepGoing)
+				}
+				for _, name := range []string{filepath.Base(runDir), tc.extra} {
+					if !strings.Contains(err.Error(), `"`+name+`"`) {
+						t.Fatalf("Read (keep going %v): %v, want an error that names %q", keepGoing, err, name)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestRunDirRefusesAnEntryThatIsNotARunDirectory checks the one entry
+// of the runs directory: a file, or a directory whose name is not a run
+// sequence number, is no run directory.
+func TestRunDirRefusesAnEntryThatIsNotARunDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dir  bool
+	}{{"0000000001", false}, {"run1", true}, {"000000001", true}} {
+		runs := t.TempDir()
+		path := filepath.Join(runs, tc.name)
+		var err error
+		if tc.dir {
+			err = os.Mkdir(path, 0o755)
+		} else {
+			err = os.WriteFile(path, nil, 0o644)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := RunDir(runs); err == nil {
+			t.Fatalf("RunDir with the one entry %q (directory %v) = %s, want a refusal", tc.name, tc.dir, got)
+		}
+	}
+	runs := t.TempDir()
+	want := filepath.Join(runs, "0000000001")
+	if err := os.Mkdir(want, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RunDir(runs); err != nil || got != want {
+		t.Fatalf("RunDir = %q, %v; want %q", got, err, want)
 	}
 }
