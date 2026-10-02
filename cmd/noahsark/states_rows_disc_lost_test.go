@@ -238,8 +238,9 @@ func init() {
 		stateCase{
 			row: "63", name: "missing disc found",
 			start: stage.DiscMissing, from: stage.DiscLost, setup: lostSetup,
-			args: []string{"--yes", "disc", "lost", "--undo", "{UUID}"},
-			end:  stage.DiscMissing,
+			args:   []string{"--yes", "disc", "lost", "--undo", "{UUID}"},
+			absent: []string{"verify"},
+			end:    stage.DiscMissing,
 		},
 		stateCase{
 			row: "64", name: "on disc only disc found, answer no",
