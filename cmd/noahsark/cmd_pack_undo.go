@@ -20,7 +20,7 @@ const packUndoUsage = "usage: noahsark pack --undo DISC"
 // hasPackOption reports whether the call gave an option of pack other
 // than --undo.
 func (o *packOptions) hasPackOption() bool {
-	return o.capacity != "" || o.outDir != "" || o.fec || o.closeDisc || o.dryRun
+	return o.capacity != "" || o.outDir != "" || o.closeDisc || o.dryRun
 }
 
 // runUndo implements "noahsark pack --undo DISC". It returns the items

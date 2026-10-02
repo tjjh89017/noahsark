@@ -19,7 +19,7 @@ import (
 // partsCapacity is the capacity of each disc of the tests of a snapshot
 // that is packed in parts. writeSeededSource(t, 42, 6) needs three discs
 // of this capacity.
-var partsCapacity = packSectors(7_000_000)
+var partsCapacity = packSectors(6_000_000)
 
 // writeSeededSource creates a source of files subdirectories, each with
 // one file of 600,000 pseudo-random bytes from seed. Two seeds give two
@@ -44,11 +44,11 @@ func writeSeededSource(t *testing.T, seed int64, files int) string {
 	return src
 }
 
-// packPart packs one disc of partsCapacity with FEC into dir. It returns
+// packPart packs one disc of partsCapacity into dir. It returns
 // the disc uuid.
 func packPart(t *testing.T, repo, dir string) string {
 	t.Helper()
-	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+partsCapacity, "--fec", "--out="+dir)
+	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+partsCapacity, "--out="+dir)
 	if code != 0 {
 		t.Fatalf("pack %s: exit %d: %s", dir, code, out)
 	}

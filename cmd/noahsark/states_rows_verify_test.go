@@ -88,21 +88,9 @@ func init() {
 			end:    stage.DiscLost,
 		},
 		stateCase{
-			row: "44", name: "lost disc healed",
-			start: stage.DiscLost, args: []string{"verify", "--heal", "--out={ROOT}.healed", "{ROOT}"},
-			absent: []string{"healed", "items, ok"},
-			end:    stage.DiscLost,
-		},
-		stateCase{
 			row: "45", name: "missing disc verified",
 			start: stage.DiscMissing, args: []string{"verify", "{ROOT}"},
 			absent: []string{"items, ok"},
-			end:    stage.DiscMissing,
-		},
-		stateCase{
-			row: "45", name: "missing disc healed",
-			start: stage.DiscMissing, args: []string{"verify", "--heal", "--out={ROOT}.healed", "{ROOT}"},
-			absent: []string{"healed", "items, ok"},
 			end:    stage.DiscMissing,
 		},
 		stateCase{

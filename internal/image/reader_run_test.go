@@ -1,6 +1,8 @@
 package image
 
 import (
+	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +11,7 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
-// buildSmallTree builds the small fixture with FEC into a new directory
+// buildSmallTree builds the small fixture into a new directory
 // and returns the disc root and its run directory.
 func buildSmallTree(t *testing.T) (root, runDir string) {
 	t.Helper()
@@ -156,26 +158,32 @@ func TestReadRefusesAnIndexOfAnotherRun(t *testing.T) {
 	}
 }
 
-// TestReadRefusesBytesAfterTheLastColumnBlock appends one byte to the
-// checksum column file and, in a second case, to a parity file.
-func TestReadRefusesBytesAfterTheLastColumnBlock(t *testing.T) {
-	for _, rel := range []string{"checksum.bin", filepath.Join("parity", "p0240.bin")} {
-		t.Run(rel, func(t *testing.T) {
-			root, runDir := buildSmallTree(t)
-			f, err := os.OpenFile(filepath.Join(runDir, rel), os.O_WRONLY|os.O_APPEND, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.Write([]byte{0}); err != nil {
-				t.Fatal(err)
-			}
-			if err := f.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := Read(root); err == nil {
-				t.Fatalf("Read of a tree with a byte after the last block of %s: want an error, got none", rel)
-			}
-		})
+// TestReadReadsARunWithAnUnknownFECScheme sets fec_scheme 1 in both run
+// header copies. The read must take every object and say that it cannot
+// use the scheme, naming the value.
+func TestReadReadsARunWithAnUnknownFECScheme(t *testing.T) {
+	root, runDir := buildSmallTree(t)
+	for _, name := range []string{"RUN.bin", "RUN2.bin"} {
+		path := filepath.Join(runDir, name)
+		buf, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf[84] = 1
+		binary.LittleEndian.PutUint32(buf[504:508], crc32.Checksum(buf[0:504], crc32.MakeTable(crc32.Castagnoli)))
+		if err := os.WriteFile(path, buf, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rr, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if rr.ObjectsVerified != len(rr.Index.Objects) {
+		t.Fatalf("Read verified %d of %d objects", rr.ObjectsVerified, len(rr.Index.Objects))
+	}
+	if len(rr.Notices) != 1 || !strings.Contains(rr.Notices[0], "fec_scheme 1") {
+		t.Fatalf("notices %q: want one notice that names fec_scheme 1", rr.Notices)
 	}
 }
 

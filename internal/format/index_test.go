@@ -174,7 +174,7 @@ func TestIndexDecodeRejectsBadObjectKind(t *testing.T) {
 
 func TestIndexDecodeRejectsReservedFileRole(t *testing.T) {
 	golden := readGolden(t, "index.golden")
-	for _, role := range []uint8{0, 6, 9, 14, 255} {
+	for _, role := range []uint8{0, 6, 9, 10, 11, 14, 255} {
 		buf := append([]byte(nil), golden...)
 		buf[IndexHeaderLen+2*IndexFileRecordLen+40] = role
 		var idx Index

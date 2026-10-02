@@ -33,7 +33,7 @@ func TestOverheadMarginAtDVDRCapacity(t *testing.T) {
 
 // TestEstimateNeverExceedsCapacityAtDVDR checks that EstimateFilesystemOverhead
 // itself never claims more than dvd+r capacity for a realistic file
-// count, so DataBudgetBlocks always has something left for data.
+// count, so DataBudgetSectors always has something left for data.
 func TestEstimateNeverExceedsCapacityAtDVDR(t *testing.T) {
 	overhead := EstimateFilesystemOverhead(1000, dvdrCapacitySectors)
 	limit := uint64(dvdrCapacitySectors) * SectorSize

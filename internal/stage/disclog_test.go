@@ -127,11 +127,8 @@ func discEvent(id [16]byte, e DiscEvent, sec int64) DiscRecord {
 	rec := DiscRecord{TimeSec: sec, DiscUUID: id, Event: e}
 	switch e {
 	case EventPacked:
-		rec.Flags = FlagFEC
 		rec.DiscSeq = 3
 		rec.RunSeq = 5
-	case EventRecovered:
-		rec.Flags = FlagFEC
 	}
 	return rec
 }
@@ -245,13 +242,17 @@ func TestDiscLogReplayDamage(t *testing.T) {
 			discEvent(testDiscA, EventBurnRemoved, 3),
 		}, "BurnRecorded carries flags"},
 		{"close bit in Recovered", []DiscRecord{
-			{DiscUUID: testDiscA, Event: EventRecovered, Flags: FlagClose | FlagFEC},
+			{DiscUUID: testDiscA, Event: EventRecovered, Flags: FlagClose},
 			discEvent(testDiscA, EventCheckOK, 2),
 		}, "Recovered carries flags 0x01"},
 		{"unknown flag bit", []DiscRecord{
 			{DiscUUID: testDiscA, Event: EventPacked, Flags: 0x04},
 			discEvent(testDiscA, EventPackUndone, 2),
 		}, "unknown flag bits"},
+		{"bit 1 in Packed", []DiscRecord{
+			{DiscUUID: testDiscA, Event: EventPacked, Flags: 0x02},
+			discEvent(testDiscA, EventPackUndone, 2),
+		}, "unknown flag bits 0x02"},
 		{"disc number on a later event", []DiscRecord{
 			discEvent(testDiscA, EventPacked, 1),
 			{DiscUUID: testDiscA, Event: EventPackUndone, DiscSeq: 3},
@@ -350,7 +351,7 @@ func TestDiscLogBatchAppend(t *testing.T) {
 		t.Fatalf("state %s after a refused batch, want verified", d.State)
 	}
 
-	if err := l.Append(DiscRecord{TimeSec: 40, DiscUUID: testDiscA, Event: EventFreed, Flags: FlagFEC}); err == nil {
+	if err := l.Append(DiscRecord{TimeSec: 40, DiscUUID: testDiscA, Event: EventFreed, Flags: FlagClose}); err == nil {
 		t.Fatal("Append accepted flags on Freed")
 	}
 	if !bytes.Equal(readDiscFile(t, dir), before) {
@@ -395,7 +396,7 @@ func TestDiscInfoFields(t *testing.T) {
 
 	appendEvents(t, l, testDiscA, 100, EventPacked)
 	d := info()
-	if d.UUID != testDiscA || d.DiscSeq != 3 || d.RunSeq != 5 || d.Close || !d.FEC {
+	if d.UUID != testDiscA || d.DiscSeq != 3 || d.RunSeq != 5 || d.Close {
 		t.Fatalf("after Packed: %+v", d)
 	}
 	if d.LastCheck != CheckResultNone || !d.LastCheckTime.IsZero() || !d.VerifiedTime.IsZero() {
@@ -473,7 +474,7 @@ func TestDiscInfoRecovered(t *testing.T) {
 	}
 	appendEvents(t, l, testDiscA, 100, EventNamedMissing, EventRecovered)
 	d, _ := l.Disc(testDiscA)
-	if d.State != DiscOnDiscOnly || d.Close || !d.FEC || d.DiscSeq != 0 || d.LastCheck != CheckResultNone || !d.VerifiedTime.IsZero() {
+	if d.State != DiscOnDiscOnly || d.Close || d.DiscSeq != 0 || d.LastCheck != CheckResultNone || !d.VerifiedTime.IsZero() {
 		t.Fatalf("after Recovered: %+v", d)
 	}
 }

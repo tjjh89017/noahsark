@@ -31,17 +31,14 @@ func readObjectHeaderPrefix(r io.Reader) ([]byte, error) {
 
 // copyFileStream copies the whole staged object file at src to dst,
 // without reading src's bytes whole into memory, and confirms in that
-// same pass that the object really holds the content want names. When
-// sink is not nil, every byte read from src is also written to it, so a
-// caller can feed the bytes onward (for example to a blockDigester)
-// without a second read of src or dst.
+// same pass that the object really holds the content want names.
 //
 // The copy is the only pass that reads a staged chunk's payload, so it
 // is also the only place a truncated or corrupt staging file can be
 // caught before its bytes reach a disc. wantLen is the length the
 // caller sized the object by; a file that reads a different length is
 // the same kind of fault as a payload that hashes to another id.
-func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer, want object.ID, wantLen uint64) (err error) {
+func copyFileStream(src, dst string, mode os.FileMode, want object.ID, wantLen uint64) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -70,15 +67,11 @@ func copyFileStream(src, dst string, mode os.FileMode, sink io.Writer, want obje
 		}
 	}()
 
-	w := io.Writer(out)
-	if sink != nil {
-		w = io.MultiWriter(out, sink)
-	}
-	if _, err := w.Write(hdr); err != nil {
+	if _, err := out.Write(hdr); err != nil {
 		return err
 	}
 
-	got, payloadLen, err := copyAndHashPayload(format.ObjectKindChunk, w, in, oh.Compression, oh.StoredLen)
+	got, payloadLen, err := copyAndHashPayload(format.ObjectKindChunk, out, in, oh.Compression, oh.StoredLen)
 	if err != nil {
 		return stagedDamaged(want, format.ObjectKindChunk)
 	}

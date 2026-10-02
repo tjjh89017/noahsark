@@ -23,14 +23,12 @@ set -euo pipefail
 #
 # CHAIN_HALF_BYTES is scenario_chain's default size for each of A and B:
 # together big enough that three discs (dvd+r, bd25, bd25 forced to
-# 10GiB) cannot hold both. Data columns are 231 of every 255 FEC
-# columns, so a disc's usable payload is about 90% of its raw capacity;
-# at this size the three discs' usable capacity falls short of A+B by a
-# few GiB, landing the rest of B in the 1 to 10 GiB band the scenario
-# checks. Override with NOAHSARK_E2E_CHAIN_HALF_BYTES for a different
+# 10GiB) cannot hold both. At this size the three discs' usable
+# capacity falls short of A+B by a few GiB, landing the rest of B in the
+# 1 to 10 GiB band the scenario checks. Override with NOAHSARK_E2E_CHAIN_HALF_BYTES for a different
 # full-size run.
 #
-# The three discs' usable capacity, FEC off, is about
+# The three discs' usable capacity is about
 # 4.68 + 24.97 + 10.70 = 40.35 GB. CI run 34786269740 packed two
 # 20,500,000,000-byte fixtures (41.0 GB total) and left the remaining
 # bytes at 660,645,722 (dvd-bd25-bd10) and 655,469,257
@@ -75,8 +73,7 @@ chain_media_order() {
 
 # chain_media_pack_flags MEDIA prints the pack --capacity flag for one
 # real disc, at media_sectors' raw target: pack's own budget already
-# reserves the filesystem overhead a run needs, in whole FEC stripes,
-# so packing at the preset's full sector count leaves the run inside
+# reserves the filesystem overhead a run needs, so packing at the preset's full sector count leaves the run inside
 # the real UDF image mkudffs builds at the same capacity.
 # media_capacity_flags' preset names leave no room to compute this from
 # a preset name for the bd25-forced-10g case, so this builds the flag

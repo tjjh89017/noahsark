@@ -21,17 +21,15 @@ const (
 
 // File role registry. A role names what a Files row describes.
 const (
-	FileRoleIndex    = 1
-	FileRoleRun      = 2
-	FileRoleDisc     = 3
-	FileRoleReadme   = 4
-	FileRoleFormat   = 5
-	FileRoleRefs     = 7
-	FileRoleDiscs    = 8
-	FileRoleChecksum = 10
-	FileRoleParity   = 11
-	FileRoleRun2     = 12
-	FileRoleObject   = 13
+	FileRoleIndex  = 1
+	FileRoleRun    = 2
+	FileRoleDisc   = 3
+	FileRoleReadme = 4
+	FileRoleFormat = 5
+	FileRoleRefs   = 7
+	FileRoleDiscs  = 8
+	FileRoleRun2   = 12
+	FileRoleObject = 13
 )
 
 // knownFileRole reports whether role is an assigned id of the file role
@@ -39,8 +37,7 @@ const (
 func knownFileRole(role uint8) bool {
 	switch role {
 	case FileRoleIndex, FileRoleRun, FileRoleDisc, FileRoleReadme, FileRoleFormat,
-		FileRoleRefs, FileRoleDiscs, FileRoleChecksum, FileRoleParity,
-		FileRoleRun2, FileRoleObject:
+		FileRoleRefs, FileRoleDiscs, FileRoleRun2, FileRoleObject:
 		return true
 	default:
 		return false

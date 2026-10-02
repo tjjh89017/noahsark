@@ -1,18 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/tjjh89017/noahsark/internal/fec"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
@@ -349,112 +345,6 @@ func TestVerifyAcceptsPositionalDiscRoot(t *testing.T) {
 	}
 }
 
-// TestVerifyHealReportsFiles checks that verify --heal reports in the
-// operator's words: healed files, with no talk of stripes.
-func TestVerifyHealReportsFiles(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit"); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	tree := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-	healed := filepath.Join(work, "healed")
-	code, out := runCmd(t, "--repo="+repo, "verify", "--heal", "--out="+healed, tree)
-	if code != 0 {
-		t.Fatalf("verify --heal: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, `: healed 0 file(s) into `+healed+"\n") || !strings.Contains(out, "\n"+notCountedDisc+"\n") {
-		t.Fatalf("verify --heal output %q, want the healed line and the not counted line", out)
-	}
-	if strings.Contains(out, "stripe") {
-		t.Fatalf("verify --heal output %q still uses the word stripe", out)
-	}
-}
-
-// TestVerifyHealNeverCountsAsACopy verifies the real disc once, then
-// heals it into a directory on the hard disk. A heal must leave the disc
-// state log exactly as the one real verify left it, and it must say that
-// the healed tree is not counted.
-func TestVerifyHealNeverCountsAsACopy(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	mounted := filepath.Join(work, "mounted")
-	copyTree(t, packedTreeDir(t, repo, packOut), mounted)
-	if code, out := runCmd(t, "--repo="+repo, "disc", "burned", packedDiscUUID(t, packOut)); code != 0 {
-		t.Fatalf("disc burned: exit %d: %s", code, out)
-	}
-
-	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
-	if code != 0 {
-		t.Fatalf("verify: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, "\nverified\n") {
-		t.Fatalf("verify output %q, want the verified line", out)
-	}
-	logAfterVerify := discLogBytes(t, repo)
-
-	healed := filepath.Join(work, "healed")
-	code, out = runCmd(t, "--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
-	if code != 0 {
-		t.Fatalf("verify --heal: exit %d: %s", code, out)
-	}
-	if !strings.Contains(out, `disc 0 "`) || !strings.Contains(out, `: healed 0 file(s) into `+healed+"\n") {
-		t.Fatalf("verify --heal output %q, want the healed line", out)
-	}
-	if !strings.Contains(out, "\n"+notCountedDisc+"\n") {
-		t.Fatalf("verify --heal output %q, want the not counted line: a healed tree is not a disc", out)
-	}
-	if strings.Contains(out, nextStatusLine) {
-		t.Fatalf("verify --heal output %q, want no next line: a heal records nothing", out)
-	}
-	if !bytes.Equal(discLogBytes(t, repo), logAfterVerify) {
-		t.Fatal("verify --heal wrote the disc state log")
-	}
-}
-
-// TestVerifyHealRefusesWithNoOut checks that --heal with no --out is a
-// usage error: healing in place is no longer supported.
-func TestVerifyHealRefusesWithNoOut(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-	if code, out := runIn(t, repo, "init", "--source="+src); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit"); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	tree := filepath.Join(work, "tree")
-	if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec", "--out="+tree); code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, out)
-	}
-	code, out := runCmd(t, "--repo="+repo, "verify", "--heal", tree)
-	if code != 2 {
-		t.Fatalf("verify --heal (no --out): exit %d, want 2: %s", code, out)
-	}
-	if !strings.Contains(out, "--heal needs --out") {
-		t.Fatalf("verify --heal (no --out) output %q, want it to name the missing --out", out)
-	}
-}
-
 // TestVerifyUsageErrorsExitTwo checks the usage-error convention of the exit code registry for
 // verify: each case exits 2, never 0 or 1.
 func TestVerifyUsageErrorsExitTwo(t *testing.T) {
@@ -479,140 +369,11 @@ func TestVerifyUsageErrorsExitTwo(t *testing.T) {
 	}
 }
 
-// TestVerifyHealRepairsADamagedDisc damages one chunk of a disc with
-// FEC, heals it, and checks the three lines of a heal. The heal names
-// the one repaired file and records nothing. With no repository, the
-// lines name the disc by its uuid.
-func TestVerifyHealRepairsADamagedDisc(t *testing.T) {
-	work := t.TempDir()
-	repo := filepath.Join(work, "repo")
-	src := writeFixtureSource(t)
-	if code, out := runIn(t, repo, "init"); code != 0 {
-		t.Fatalf("init: exit %d: %s", code, out)
-	}
-	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-		t.Fatalf("commit: exit %d: %s", code, out)
-	}
-	code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec")
-	if code != 0 {
-		t.Fatalf("pack: exit %d: %s", code, packOut)
-	}
-	mounted := filepath.Join(work, "mounted")
-	copyTree(t, packedTreeDir(t, repo, packOut), mounted)
-	corruptDiscRoot(t, mounted)
-	logBefore := discLogBytes(t, repo)
-	discUUID := packedDiscUUID(t, packOut)
-	label := defaultRefName() + " disc 0"
-
-	healed := filepath.Join(work, "healed")
-	te := newTestEnv(work)
-	code, _ = te.run("--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
-	want := []string{
-		`disc 0 "` + label + `": healed 1 file(s) into ` + healed,
-		`disc 0 "` + label + `": ` + strconv.Itoa(objectsOnDisc(t, healed)) + ` items, ok`,
-		notCountedDisc,
-	}
-	if got := strings.Split(strings.TrimRight(te.out.String(), "\n"), "\n"); code != 0 || !slices.Equal(got, want) {
-		t.Fatalf("verify --heal: exit %d, lines %q, want 0 and %q\nstderr: %s", code, got, want, te.errOut.String())
-	}
-	if !bytes.Equal(discLogBytes(t, repo), logBefore) {
-		t.Fatal("verify --heal wrote the disc state log")
-	}
-
-	healedNoRepo := filepath.Join(work, "healed-no-repo")
-	code, _ = te.run("verify", "--heal", "--out="+healedNoRepo, mounted)
-	if code != 0 || !strings.HasPrefix(te.out.String(), `disc `+discUUID+` "`+label+`": healed 1 file(s) into `+healedNoRepo+"\n") {
-		t.Fatalf("verify --heal with no repository: exit %d: %s%s", code, te.out.String(), te.errOut.String())
-	}
-}
-
-// TestVerifyHealRepairsDamagedParity damages parity blocks of a disc with
-// FEC, alone and with one chunk, and heals it. The count of healed files
-// holds each repaired parity file, and the healed root checks ok.
-func TestVerifyHealRepairsDamagedParity(t *testing.T) {
-	cases := []struct {
-		name      string
-		chunk     bool
-		parity    []int
-		wantFiles int
-	}{
-		{"two parity files", false, []int{0, 1}, 2},
-		{"a chunk and three parity files", true, []int{1, 2, 22}, 4},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			work := t.TempDir()
-			repo := filepath.Join(work, "repo")
-			src := writeFixtureSource(t)
-			if code, out := runIn(t, repo, "init"); code != 0 {
-				t.Fatalf("init: exit %d: %s", code, out)
-			}
-			if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
-				t.Fatalf("commit: exit %d: %s", code, out)
-			}
-			code, packOut := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB", "--fec")
-			if code != 0 {
-				t.Fatalf("pack: exit %d: %s", code, packOut)
-			}
-			mounted := filepath.Join(work, "mounted")
-			copyTree(t, packedTreeDir(t, repo, packOut), mounted)
-			if tc.chunk {
-				corruptDiscRoot(t, mounted)
-			}
-			for _, j := range tc.parity {
-				flipByte(t, parityFilePath(t, mounted, j), 0)
-			}
-			label := defaultRefName() + " disc 0"
-
-			healed := filepath.Join(work, "healed")
-			te := newTestEnv(work)
-			code, _ = te.run("--repo="+repo, "verify", "--heal", "--out="+healed, mounted)
-			want := []string{
-				`disc 0 "` + label + `": healed ` + strconv.Itoa(tc.wantFiles) + ` file(s) into ` + healed,
-				`disc 0 "` + label + `": ` + strconv.Itoa(objectsOnDisc(t, healed)) + ` items, ok`,
-				notCountedDisc,
-			}
-			if got := strings.Split(strings.TrimRight(te.out.String(), "\n"), "\n"); code != 0 || !slices.Equal(got, want) {
-				t.Fatalf("verify --heal: exit %d, lines %q, want 0 and %q\nstderr: %s", code, got, want, te.errOut.String())
-			}
-		})
-	}
-}
-
-// parityFilePath gives the path of parity column j of the newest run of
-// the disc root root.
-func parityFilePath(t *testing.T, root string, j int) string {
-	t.Helper()
-	base, err := image.FindNoahsark(root, image.NewNameCache())
-	if err != nil {
-		t.Fatal(err)
-	}
-	runDir, err := image.NewestRunDir(filepath.Join(base, "runs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Join(runDir, "parity", fmt.Sprintf("p%04d.bin", fec.K+1+j))
-}
-
-// TestVerifyHealRefusesADiscWithNoFEC checks that --heal refuses a disc
-// whose run has no FEC, and writes nothing into --out.
-func TestVerifyHealRefusesADiscWithNoFEC(t *testing.T) {
-	fx := repoWithDisc(t, stage.DiscBurned)
-	healed := filepath.Join(fx.work, "healed")
-	code, out := fx.run(t, "verify", "--heal", "--out="+healed, fx.root)
-	if code != 1 || !strings.Contains(out, "disc 0 has no FEC; --heal needs a disc with FEC") {
-		t.Fatalf("verify --heal of a disc with no FEC: exit %d, want 1 and the refusal: %s", code, out)
-	}
-	if _, err := os.Stat(healed); !os.IsNotExist(err) {
-		t.Fatalf("verify --heal of a disc with no FEC wrote %s", healed)
-	}
-}
-
 // TestVerifyUndoTakesNoOtherOption checks that --undo with another
 // option of verify is a usage error.
 func TestVerifyUndoTakesNoOtherOption(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscVerified)
-	for _, opt := range []string{"--no-mark", "--heal", "--out=" + fx.work} {
+	for _, opt := range []string{"--no-mark"} {
 		code, out := fx.run(t, "verify", "--undo", opt, "0")
 		if code != 2 || !strings.Contains(out, "--undo takes no other option") {
 			t.Fatalf("verify --undo %s: exit %d, want 2: %s", opt, code, out)

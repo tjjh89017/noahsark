@@ -15,16 +15,15 @@ import (
 
 // memFixtureBytes is the pseudo-random content size the memory
 // assertion tests stage: at least 256 MiB, well past the 16 MiB max
-// chunk size and the one FEC stripe the hard memory bound allows.
+// chunk size that the hard memory bound allows.
 const memFixtureBytes = 256 << 20
 
 // memPeakBudget is the peak heap-plus-stack budget these tests assert
-// against: bounded by the chunk size and one FEC stripe, never by the
-// fixture size.
+// against: bounded by the chunk size, never by the fixture size.
 const memPeakBudget = 128 << 20
 
 // memFixtureCapacitySectors is a target capacity with enough headroom
-// over memFixtureBytes for the FEC parity and checksum overhead.
+// over memFixtureBytes for the filesystem overhead.
 var memFixtureCapacitySectors = sectorsFor(768 << 20)
 
 // peakMemSampler samples runtime.MemStats HeapInuse plus StackInuse

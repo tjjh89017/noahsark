@@ -114,7 +114,6 @@ func structVectors(t *testing.T) []structVector {
 	chunk := testChunk()
 	disc := testDisc()
 	run := testRun()
-	ck := testChecksumRecord()
 
 	indexReserved := []rng{{52, 56}}
 	for i := range idx.Files {
@@ -342,22 +341,6 @@ func structVectors(t *testing.T) []structVector {
 					got.Rows[i].ReservedU32 = 0
 					got.Rows[i].Reserved = [10]byte{}
 				}
-				return got
-			},
-		},
-		{
-			name:     "checksum",
-			plain:    encodeVector(t, func(b []byte) (int, error) { return ChecksumRecordLen, ck.Encode(b) }, ChecksumRecordLen),
-			reserved: []rng{{14, 16}, {1868, 2048}},
-			fixup:    crcAt(16, 16),
-			fields: func(t *testing.T, buf []byte) any {
-				var got ChecksumRecord
-				if err := got.Decode(buf); err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				got.ReservedU16 = 0
-				got.Reserved = [180]byte{}
-				got.HeaderCRC32C = 0
 				return got
 			},
 		},

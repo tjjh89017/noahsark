@@ -3,12 +3,7 @@
 // NOAHSARK tree from it, and builds a UDF image from that tree with
 // mkudffs, so an e2e scenario has a real disc image to loop-mount.
 //
-// Usage: ci-fixture [-fec] WORKDIR [TARGET-SECTORS] [CONTENT-BYTES]
-//
-// -fec builds the run with Reed-Solomon FEC (fec_scheme 1). Without it
-// the run carries no FEC (fec_scheme 0), the default. A scenario that
-// corrupts and heals a disc needs -fec; there is nothing to heal
-// otherwise.
+// Usage: ci-fixture WORKDIR [TARGET-SECTORS] [CONTENT-BYTES]
 //
 // TARGET-SECTORS defaults to 512 MiB, comfortably above the small
 // fixture tree; a scenario testing one media preset passes that
@@ -16,11 +11,7 @@
 // real, sparse size for that preset.
 //
 // CONTENT-BYTES adds one more deterministic pseudo-random file of that
-// size, on top of the two small fixed files always written. A scenario
-// that needs its real data to span more than one FEC stripe (one stripe
-// holds 231*2048 bytes) passes a size past that, e.g. corrupting a
-// second stripe and proving a different one stayed untouched needs real
-// data there to check.
+// size, on top of the two small fixed files always written.
 //
 // It prints three lines to stdout: the tree directory, the image path,
 // and the source directory the fixture snapshot was committed from.
@@ -48,9 +39,8 @@ func fixedClock() time.Time {
 
 func main() {
 	fs := flag.NewFlagSet("ci-fixture", flag.ExitOnError)
-	fec := fs.Bool("fec", false, "build the run with Reed-Solomon FEC (fec_scheme 1)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture [-fec] WORKDIR [TARGET-SECTORS] [CONTENT-BYTES]")
+		_, _ = fmt.Fprintln(os.Stderr, "usage: ci-fixture WORKDIR [TARGET-SECTORS] [CONTENT-BYTES]")
 	}
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
@@ -112,7 +102,6 @@ func main() {
 		RepoUUID:              [16]byte{0xaa, 0xbb, 0xcc, 0xdd},
 		DiscUUID:              [16]byte{0x11, 0x22, 0x33, 0x44},
 		Label:                 "ci-fixture",
-		FECEnabled:            *fec,
 		Now:                   fixedClock,
 	}
 	_, err = image.Build(opts)

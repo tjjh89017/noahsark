@@ -232,10 +232,10 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 	}
 
 	var discRoots []string
-	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
+	capacities := []string{packSectors(6_000_000), packSectors(6_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, "disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -286,14 +286,14 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	// them without also re-feeding the newest.
 	remainingDir := filepath.Join(work, "remaining")
 	var discRoots []string
-	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
+	capacities := []string{packSectors(6_000_000), packSectors(6_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		dir := remainingDir
 		if i == len(capacities)-1 {
 			dir = filepath.Join(work, "newest")
 		}
 		treeDir := filepath.Join(dir, "fed-disc"+string(rune('0'+i)))
-		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code == 2 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code == 2 {
 			t.Fatalf("pack %d: exit %d: %s", i, code, out)
 		}
 		discRoots = append(discRoots, treeDir)
@@ -456,10 +456,10 @@ func TestRecoverOneDiscAtATimeMergesLedger(t *testing.T) {
 	}
 
 	var discRoots []string
-	capacities := []string{packSectors(7_000_000), packSectors(7_000_000), packSectors(10_000_000)}
+	capacities := []string{packSectors(6_000_000), packSectors(6_000_000), packSectors(10_000_000)}
 	for i, cap := range capacities {
 		treeDir := filepath.Join(work, fmt.Sprintf("disc%d", i))
-		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--fec", "--out="+treeDir); code != 0 && i != len(capacities)-1 {
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+cap, "--out="+treeDir); code != 0 && i != len(capacities)-1 {
 			if code == 2 {
 				t.Fatalf("pack %d: exit %d: %s", i, code, out)
 			}
