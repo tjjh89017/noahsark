@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -197,6 +198,32 @@ func TestPartNameAvoidsASnapshotName(t *testing.T) {
 	}
 	if plain := plan.PartName("f.bin", map[string]bool{"f.bin": true}); plain != ".f.bin"+plan.PartSuffix {
 		t.Fatalf("part name %q, want the plain one", plain)
+	}
+}
+
+// TestPartNameOfALongName checks that the part name of a 255-byte name
+// fits a 255-byte name limit, also with a number, that it is the same on
+// each call, and that two long names with the same first bytes get two
+// part names.
+func TestPartNameOfALongName(t *testing.T) {
+	long := strings.Repeat("n", 255)
+	other := strings.Repeat("n", 254) + "m"
+	got := plan.PartName(long, map[string]bool{long: true})
+	if len(got) > 255 || !strings.HasPrefix(got, ".") || !strings.HasSuffix(got, plan.PartSuffix) {
+		t.Fatalf("part name %q (%d bytes) of a 255-byte name, want a hidden name of at most 255 bytes", got, len(got))
+	}
+	if again := plan.PartName(long, nil); again != got {
+		t.Fatalf("part name %q, then %q; want the same name", got, again)
+	}
+	if plan.PartName(other, nil) == got {
+		t.Fatal("two long names with the same first bytes get the same part name")
+	}
+	if numbered := plan.PartName(long, map[string]bool{got: true}); len(numbered) > 255 || numbered == got {
+		t.Fatalf("numbered part name %q (%d bytes)", numbered, len(numbered))
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, got), nil, 0o644); err != nil {
+		t.Fatalf("create the part file: %v", err)
 	}
 }
 

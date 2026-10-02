@@ -1,6 +1,8 @@
 package plan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -244,14 +246,32 @@ func treeError(id object.ID, err error) error {
 	return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 }
 
+// nameMax is the longest file name in bytes that most filesystems
+// hold. partNameMax leaves room in it for a number after PartSuffix.
+const (
+	nameMax     = 255
+	partNameMax = nameMax - 8
+)
+
+// partKeep is the number of bytes of a long name that its part name
+// keeps before the hash.
+const partKeep = 200
+
 // PartName returns the name of the part file of a file called name, in a
 // directory whose entry names are taken. When the snapshot itself holds
-// a file of the plain part name, the suffix carries a number. The names
-// come from the tree, thus every run picks the same name.
+// a file of the plain part name, the suffix carries a number. A name too
+// long for a part name keeps its first partKeep bytes, then "~" and the
+// first 16 hex digits of the SHA-256 of the whole name. The names come
+// from the tree, thus every run picks the same name.
 func PartName(name string, taken map[string]bool) string {
-	candidate := "." + name + PartSuffix
+	stem := name
+	if len("."+name+PartSuffix) > partNameMax {
+		sum := sha256.Sum256([]byte(name))
+		stem = name[:partKeep] + "~" + hex.EncodeToString(sum[:8])
+	}
+	candidate := "." + stem + PartSuffix
 	for i := 2; taken[candidate]; i++ {
-		candidate = fmt.Sprintf(".%s%s%d", name, PartSuffix, i)
+		candidate = fmt.Sprintf(".%s%s%d", stem, PartSuffix, i)
 	}
 	return candidate
 }
