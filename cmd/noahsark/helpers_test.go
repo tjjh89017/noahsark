@@ -865,8 +865,8 @@ func repoWithMissingDisc(t *testing.T) *discFixture {
 }
 
 // markDiscLostInLog writes the records that disc lost writes for the
-// disc of fx: its Packed items return to Staged, its OnDisc items become
-// Lost, the Lost event, and the removal of its plan directory.
+// disc of fx, with no confirmation: the Lost event, then the item records
+// of the lost disc, and the removal of its plan directory.
 func markDiscLostInLog(t *testing.T, fx *discFixture) {
 	t.Helper()
 	u := fx.uuidBytes(t)
@@ -874,13 +874,10 @@ func markDiscLostInLog(t *testing.T, fx *discFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := logs.Items.MarkStaged(stage.ReasonDiscLost, logs.Items.ItemsOfDiscInState(u, stage.Packed)...); err != nil {
-		t.Fatal(err)
-	}
-	if err := logs.Items.MarkLost(logs.Items.ItemsOfDiscInState(u, stage.OnDisc)...); err != nil {
-		t.Fatal(err)
-	}
 	if err := logs.Discs.Append(discEvent(fakeNow(), u, stage.EventLost)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := logs.CompleteDisc(u, nil, catalogHolds(fx.repo)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(testLayout(t, fx.repo).planDir(u)); err != nil {

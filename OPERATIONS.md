@@ -409,9 +409,9 @@ state. The item records that each disc state asks for:
 
 | Disc state | Item records |
 |---|---|
-| `lost` | Each Packed item of the disc returns to Staged, and each OnDisc item of the disc is Lost, both with reason 2. |
+| `lost` | Each Packed item of the disc returns to Staged. Each OnDisc item of the disc that is a snapshot, tree or blob object of the catalog returns to Staged: the catalog file of one of these kinds exists for its id and gives that id. Each other OnDisc item of the disc, a chunk, is Lost. All with reason 2. |
 | `undone` | Each Packed item of the disc returns to Staged, with reason 1. |
-| `on disc only` | Each Packed item of the disc is OnDisc, with reason 0. Each Lost item of the disc is OnDisc, with reason 3. |
+| `on disc only` | Each Packed item of the disc is OnDisc, with reason 0. Each Lost item of the disc is OnDisc, with reason 3. While a Lost item of the disc remains, the same batch also records as OnDisc on the disc, with the run number of the catalog INDEX of the disc and reason 3, each item that is Staged with reason 2, that the INDEX lists, and that is a snapshot, tree or blob object of the catalog. |
 | `burned`, when its newest event is `LostUndone` and no item is Packed on the disc | Each Staged item that the catalog INDEX of the disc lists is Packed on the disc, with the run number of that INDEX and reason 3. |
 
 Each command that holds the repository lock completes these records when it
@@ -547,8 +547,10 @@ The lock is advisory. It is not a security boundary.
 8. Move the ref in `refs.txt`.
 
 A `Lost` item counts as new in step 6 only when this commit makes the same
-object again. Then `commit` records it as Staged. The snapshot object of an
-earlier commit is not made again, thus it stays `Lost`.
+object again. Then `commit` records it as Staged. A `Lost` item is a chunk
+in almost all cases: `disc lost` stages each snapshot, tree and blob object
+that the catalog holds. A chunk of a file that the source no longer holds
+is not made again, thus it stays `Lost`.
 
 `commit` refuses to run while a disc is `missing`, with exit code 1.
 
@@ -1666,16 +1668,25 @@ lost` ask a critical confirmation. `disc burned --undo` and `disc lost
 --undo` ask an ordinary confirmation. `disc lost` removes
 `staging/plans/<disc-uuid>/` (for a `pack --out` disc, the symlink only), and
 keeps the catalog data of the disc. It does these steps in this order: it
-appends the `Lost` event, then the item records as one batch (Packed items
-to Staged, OnDisc items to Lost), then it removes the plan directory.
+appends the `Lost` event, then the item records as one batch, then it
+removes the plan directory. The batch returns each Packed item to Staged.
+It returns each OnDisc snapshot, tree and blob object that the catalog
+holds to Staged: `pack` reads these objects from the catalog. It records
+each other OnDisc item, a chunk whose file `gc` freed, as Lost. For a
+`packed`, `burned` or `verified` disc it prints `disc SEQ "LABEL": marked
+lost; N item(s) returned to staged`. For an `on disc only` disc it prints
+`disc SEQ "LABEL": marked lost; I item(s) returned to staged; N item(s) need
+a new commit`: `I` counts the objects of the catalog, and `N` the Lost
+items.
 `disc lost --undo` appends the `LostUndone` event, then the item records as
 one batch. For a disc that was `verified`, it finds the items of the disc
 in the catalog INDEX of the disc: a Staged record names no disc. It reads
 the INDEX before the event, and refuses with exit code 1 when it cannot. It
 gives back each item that the INDEX lists and that is Staged. For a disc
 that was `on disc only`, it takes the Lost items whose record names the
-disc. "State log replay" gives the item records, and the repair after a stop
-between the event and the item records.
+disc, and the catalog objects that `disc lost` staged and that the INDEX of
+the disc lists. "State log replay" gives the item records, and the repair
+after a stop between the event and the item records.
 
 **`verify`** prints `disc SEQ "LABEL": N items, ok` or `disc SEQ "LABEL":
 bad; REASON`, then one line that names what changed, as `docs/states.md`,
@@ -1689,12 +1700,14 @@ with another option. "Verify" gives the order of the checks, the `REASON`
 texts and the count `N`.
 
 **`status`** prints `staged: N items, B bytes`, then one snapshot line for
-each snapshot that is not complete on discs, then one disc line for each disc
-that is not undone, then one `next:` block:
+each snapshot that is not complete on discs, then the `lost:` line while an
+item is Lost, then one disc line for each disc that is not undone, then one
+`next:` block:
 
 ```
 snapshot ID: N items staged, not complete on discs; recover cannot find it from the discs alone
 snapshot ID: N items staged, not complete on discs; the discs alone cannot restore all of it
+lost: N items; only a lost disc holds them
 disc SEQ "LABEL"  STATE  UUID
 ```
 
@@ -1711,6 +1724,18 @@ total, less the Staged items that no snapshot reaches. The plural form
 `items` is fixed, also for 1. The snapshot lines come in the order in which
 `pack` takes the snapshots ("Packing rules"). The snapshot lines change no
 `next:` block: the staged items are staged data.
+
+`N` in the `lost:` line is the number of items whose newest record is Lost.
+The plural form is fixed. The state log holds no size, thus the line holds
+no byte count. The line stays for as long as an item is Lost, also after a
+`commit` that does not make the same data again. No command dismisses it.
+It goes away when the items leave Lost: a `commit` of a source that still
+holds the data, `recover` of a disc that holds them, or `disc lost --undo`.
+`status` counts the Lost records of the state log that it already reads. It
+reads no object file for the line, thus it names no snapshot.
+`restore --dry-run SNAPSHOT` names the lost disc that a snapshot needs. The
+line changes no `next:` block, and is printed also when the staging directory
+does not exist.
 
 For each item that `pack` cannot take ("Packing rules"), `status` prints the
 warning of `pack` on standard error, with `status` in place of `pack`. For a
@@ -2000,6 +2025,7 @@ Every command uses exactly these three codes.
 | 4 | `verify`: `disc UUID is not in this repository` | Give the right `--repo`, or run `recover` with the disc. |
 | 5 | A disc does not mount | The disc is bad. For a disc that is not yet `verified`: discard it, and run `disc burned --undo DISC` if `disc burned` ran. Then `status`. |
 | 6 | Every copy of a disc is lost | `disc lost DISC`. `restore` restores what the other discs hold and names each file that it cannot restore. |
+| 6a | `status`: `lost: N items; only a lost disc holds them` | `commit` the source. Each lost item that the source still holds is staged again, and the next `pack` takes it. The line stays while the source no longer holds an item: that data is gone. `restore` of an old snapshot then restores every other file, names each file that it cannot restore, and exits 1. When the disc turns up again, run `disc lost --undo DISC`. |
 | 7 | `no repository; run recover first, one time for each disc` | `recover --source=PATH --disc=DIR`, one time for each disc. Then `restore`. |
 | 8 | The repository directory is lost | `noahsark --repo=<new> recover --source=PATH --disc=DIR`, one time for each disc, in any order. Do not run `init` first. |
 | 9 | `recover: disc SEQ "LABEL" (UUID) named by another disc, not yet given` | Run `recover` with that disc. When it is gone for good, run `disc lost DISC`. |
@@ -2065,6 +2091,14 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   confirmations with a terminal, with no terminal, with `--yes` and with
   `--force-yes`, `config.yaml` with an unknown key, each command that takes
   the repository lock while another process holds it.
+- `cmd/noahsark`, the rebuild after `disc lost`: with the real commands,
+  `commit`, `pack`, a counted `verify`, `gc`, `disc lost` of the `on disc
+  only` disc, `status`, `commit` of the same source, `status`, and `pack` to
+  a new disc. Then `restore` of the old and the new snapshot from the new disc
+  alone gives the source back byte for byte. A second case deletes one source
+  file before the second `commit`: its items stay Lost, `status` keeps the
+  `lost:` line, and `restore` of the old snapshot restores every other file,
+  names the lost file, writes no wrong data, and exits 1.
 - `cmd/noahsark`, the state table test: a table-driven test reads the state x
   event table of `docs/states.md` row by row. It runs one case for each row,
   and checks the result, the message, the exit code and the next line. It

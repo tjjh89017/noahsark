@@ -40,8 +40,9 @@ func init() {
 }
 
 // cmdStatus implements "noahsark status": the staged total, one line
-// for each snapshot that is not complete on discs, one line for each
-// disc, and the one next block of the repository. It prints a warning on
+// for each snapshot that is not complete on discs, the count of the Lost
+// items while one exists, one line for each disc, and the one next block
+// of the repository. It prints a warning on
 // standard error for each item that pack cannot take, and then exits 1.
 // A staging directory that does not exist while a Staged or a Packed
 // item needs it gives a warning in place of the staged total and the
@@ -132,6 +133,9 @@ func cmdStatus(e *env, args []string) int {
 			}
 		}
 	}
+	if lost := logs.Items.CountState(stage.Lost); lost > 0 {
+		_, _ = fmt.Fprintln(stdout, statusLostLine(lost))
+	}
 	for _, d := range discs {
 		_, _ = fmt.Fprintln(stdout, statusDiscLine(d))
 	}
@@ -181,6 +185,13 @@ func statusSnapshotLine(g image.SnapshotGroup) string {
 		return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; the discs alone cannot restore all of it", shortID(g.ID), g.StagedItems)
 	}
 	return ""
+}
+
+// statusLostLine is the line of the items whose newest record is Lost.
+// The state log holds no size, thus the line holds no byte count. The
+// plural form is fixed, so that a script can parse it.
+func statusLostLine(n int) string {
+	return fmt.Sprintf("lost: %d items; only a lost disc holds them", n)
 }
 
 // unreadableLine is the warning of pack and status about an item that

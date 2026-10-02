@@ -175,7 +175,7 @@ the state log, `state/state.db`. The state log stores four states:
 | `burned` | `Packed`, its disc `burned` | Its disc has a burn record and no verified record. |
 | `clean` | `Packed`, its disc `verified` | Its disc has a verified record. The staged copy is kept. |
 | `on-disc` | `OnDisc` | `gc` freed the staged copy, or `recover` read the item from a disc. A disc alone holds its chunk data. |
-| `lost` | `Lost` | `disc lost` marked the item's disc gone after `gc` freed the item. The next `commit` treats it as not known. |
+| `lost` | `Lost` | `disc lost` marked the item's disc gone after `gc` freed the item, and no copy of the item is left. A chunk becomes `lost`. A snapshot, tree, or blob object becomes `lost` only when the catalog has no good copy of it. The next `commit` treats it as not known. |
 
 `status` never prints these words to the operator. It prints a disc's
 state (see "Disc states") and a staged total.
@@ -193,6 +193,17 @@ complete on discs; the discs alone cannot restore all of it`. `ID` is the
 short snapshot id, and `N` counts the `staged` items that `pack` takes
 with the snapshot. OPERATIONS.md, "Command notes", gives the order of the
 lines and the count. These lines change no `next:` block.
+
+While an item is `lost`, `status` prints one more line after the snapshot
+lines and before the disc lines: `lost: N items; only a lost disc holds
+them`. `N` counts the `lost` items. The line stays after a `commit` that
+does not make the same data again. It goes away only when no item is
+`lost`: a `commit` of a source that still holds the data stages the item
+again, `recover` reads a disc that holds the item, or `disc lost --undo`
+gives the item back to its disc. The line changes no `next:` block.
+`status` reads the state log only for this line. It reads no tree, thus it
+does not name the snapshots that need a `lost` item. `restore --dry-run`
+of a snapshot shows it: the plan line of a lost disc ends with ` (lost)`.
 
 The next `pack` takes each `staged` item, also an item below trees and a
 snapshot object that another disc holds (OPERATIONS.md, "Packing rules").
@@ -217,13 +228,22 @@ clean, verify --undo -> burned (no item record)
 clean, gc (verified) -> on-disc [normal]
 on-disc, verify ok or fail -> on-disc (a verify log event only)
 packed or burned or clean, disc lost -> staged [disc lost] (the staged file still exists)
-on-disc, disc lost -> lost [disc lost]
+on-disc, disc lost -> staged [disc lost] (a snapshot, tree, or blob object that the catalog holds)
+on-disc, disc lost -> lost [disc lost] (a chunk, or an object that the catalog does not hold)
 lost, commit (the source still has the data) -> staged [normal] (new record, same content id)
 staged, no later pack took it, disc lost --undo (the disc was verified) -> burned [lost undone]
 lost, disc lost --undo (the disc was on disc only) -> on-disc [lost undone]
+staged [disc lost], disc lost --undo (the disc was on disc only, see below) -> on-disc [lost undone]
 unknown, recover -> on-disc [normal]
 lost, recover (a disc that holds the item) -> on-disc [normal]
 ```
+
+`disc lost` of an `on disc only` disc stages each snapshot, tree, and
+blob object of the disc at once. The catalog keeps a byte copy of each of
+these objects for ever, and `pack` takes the bytes from the catalog, as it
+does after a `commit`. A chunk has no copy: `gc` freed its file. Thus only
+a chunk becomes `lost`. A snapshot, tree, or blob object whose catalog
+file is missing, or does not give its content id, also becomes `lost`.
 
 An item that is `lost` and that the source no longer has stays `lost`,
 until `recover` reads a disc that holds it. `recover` treats a `lost`
@@ -233,11 +253,15 @@ history.
 `disc lost --undo` gives an item back to the found disc in two cases
 only. For a disc that was `verified`, a `staged` item that no later
 pack took becomes `burned`, and `gc` holds it until a good `verify`. For
-a disc that was `on disc only`, a `lost` item becomes `on-disc`. An item
-that a later `commit` staged again stays `staged`, and the next `pack`
-takes it. An item that a later `pack` took stays on its new disc. The
-found disc also holds these items. The same data on two discs does no
-harm.
+a disc that was `on disc only`, a `lost` item becomes `on-disc`. In the
+same batch, each snapshot, tree, and blob object that the catalog holds,
+that the catalog INDEX of the disc lists, and that is still `staged` with
+the reason `disc lost`, becomes `on-disc` too. When no item of the disc
+is `lost` any more, because a later `commit` staged each one again, these
+objects stay `staged` with the chunks. An item that a later `commit`
+staged again stays `staged`, and the next `pack` takes it. An item that a
+later `pack` took stays on its new disc. The found disc also holds these
+items. The same data on two discs does no harm.
 
 ## 3. Disc states
 
@@ -361,8 +385,8 @@ lists that last line where a row prints it.
 |---:|---|---|---|---|---:|---|
 | 1 | (none) or staged | commit | staged | `staged: N items, B bytes`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 2 | a disc is `missing` | commit | refused | `disc SEQ "LABEL" is missing` | 1 | `noahsark status`: its block gives `recover` or `disc lost` |
-| 3 | lost | commit, the source still has the data | staged (new record) | `staged: N items, B bytes` (includes the re-staged items), then the last line `next: noahsark status` | 0 | `noahsark status` |
-| 4 | lost | commit, the source no longer has the data | lost (unchanged) | `staged: N items, B bytes`, then the last line `next: noahsark status`. No line names a lost item: `commit` reads the source, not the log. | 0 | `noahsark status`. The data that only this disc held is gone. |
+| 3 | lost | commit, the source still has the data | staged (new record) | `staged: N items, B bytes` (includes the re-staged items), then the last line `next: noahsark status` | 0 | `noahsark status`. It prints no `lost:` line when the commit staged each lost item again. |
+| 4 | lost | commit, the source no longer has the data | lost (unchanged) | `staged: N items, B bytes`, then the last line `next: noahsark status`. No line names a lost item: `commit` reads the source, not the log. | 0 | `noahsark status`. It prints the `lost:` line while an item stays lost (row 71e). The data that only this disc held is gone. |
 | 5 | staged | pack --capacity | packed | `packed disc SEQ "LABEL": N item(s), B bytes`, then `uuid: UUID`, then the last line `next: noahsark status`. The label is the newest ref and ` disc SEQ`, or `disc SEQ` with no ref. | 0 | `noahsark status` |
 | 6 | staged | pack, no `--capacity` | refused, usage error | `pack needs --capacity` | 2 | `noahsark status`: its block gives the `pack` line |
 | 7 | staged | pack, the capacity holds not one item | refused, usage error | `capacity CAP (B bytes) holds not one item; the smallest staged item is KIND ID, B bytes`, then `use a capacity of B bytes or more`. CAP is the `--capacity` value. KIND is `chunk`, `blob`, `tree`, or `snapshot`. | 2 | give a larger `--capacity` |
@@ -429,13 +453,13 @@ lists that last line where a row prints it.
 | 55 | packed, burned, or missing | gc | unchanged | `gc: freed 0 item(s), 0 bytes`, then `gc: disc SEQ: not verified; N item(s) held` (no disc line for a missing disc), then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 56 | lost | gc | unchanged | `gc: freed 0 item(s), 0 bytes` (no disc line for a lost disc), then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 57 | packed, burned, or verified | disc lost SEQ, answer yes (a terminal, or `--force-yes`) | lost. Its items return to staged. The directory `staging/plans/UUID/` is removed. The catalog data of the disc stays. | `warning: disc SEQ "LABEL" (UUID): STATE -> lost`, then `the tool stops trusting this disc`, then `Continue? [y/N]` (no question with `--force-yes`), then `disc SEQ "LABEL": marked lost; N item(s) returned to staged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
-| 58 | on disc only | disc lost SEQ, answer yes | lost. Its freed items are `lost`. | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; N item(s) need a new commit`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block gives `noahsark commit` until a commit makes a snapshot. The commit stages each lost item that the source still holds. |
+| 58 | on disc only | disc lost SEQ, answer yes | lost. Each snapshot, tree, and blob object of the disc that the catalog holds is `staged`. Each other item, a freed chunk, is `lost`. | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; I item(s) returned to staged; N item(s) need a new commit`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block gives `noahsark commit` until a commit makes a snapshot. The commit stages each lost item that the source still holds. While an item stays lost, `status` prints the `lost:` line (row 71e). |
 | 59 | missing | disc lost SEQ, answer yes | lost | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; its items are not known; a new commit stages what the source still holds`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block gives `noahsark commit` until a commit makes a snapshot |
 | 59a | packed, burned, verified, on disc only, or missing | disc lost SEQ, answer no | unchanged | the warning and the question of row 57, then `nothing changed` | 1 | `noahsark status` |
 | 59b | packed, burned, verified, on disc only, or missing | disc lost SEQ, no terminal on standard input, no answer flag | unchanged. Standard input is not read. | the warning, then `nothing changed` | 1 | the same line with `--force-yes` before the command name |
 | 60 | lost | disc lost SEQ | refused, no question | `disc SEQ is already marked lost` | 1 | nothing to do |
 | 61 | lost, `verified` when marked lost | disc lost --undo SEQ, answer yes | burned. The lost mark and the verified record are removed. The burn record stays. Each item of the disc that is `staged` and that no later pack took is `burned`. An item that a later pack took stays on its new disc. `gc` frees nothing of this disc until a good `verify`. | `warning: disc SEQ "LABEL" (UUID): lost -> burned`, then `the tool trusts this disc again only after a good check; you must run verify on it`, then `Continue? [y/N]` (no question with an answer flag), then `disc SEQ "LABEL": lost mark removed; N item(s) back on this disc; verify it now`, then the last line `next: noahsark status` | 0 | `noahsark status`: its `burned` block has the verify lines. A good verify acts as row 33. A failed verify acts as row 41, and the block for a disc with no disc root follows. |
-| 62 | lost, `on disc only` when marked lost | disc lost --undo SEQ, answer yes | on disc only. The lost mark is removed. Each `lost` item is `on-disc`. An item that a later `commit` staged again stays `staged`, and the next `pack` takes it. | the warning and the question of row 61, with `lost -> on disc only`, then `disc SEQ "LABEL": lost mark removed; N item(s) back on this disc; verify it now`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block verifies the disc, a check that changes no state. A good verify acts as row 35. A failed verify acts as row 43. |
+| 62 | lost, `on disc only` when marked lost | disc lost --undo SEQ, answer yes | on disc only. The lost mark is removed. Each `lost` item is `on-disc`. Each object that `disc lost` staged from the catalog, and that the catalog INDEX of the disc lists, is `on-disc` again in the same batch. An item that a later `commit` staged again stays `staged`, and the next `pack` takes it. | the warning and the question of row 61, with `lost -> on disc only`, then `disc SEQ "LABEL": lost mark removed; N item(s) back on this disc; verify it now`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block verifies the disc, a check that changes no state. A good verify acts as row 35. A failed verify acts as row 43. |
 | 63 | lost, `missing` when marked lost | disc lost --undo SEQ, answer yes | missing. The lost mark is removed. No item changes: the tool never knew the items of this disc. | the warning and the question of row 61, with `lost -> missing`, then `disc SEQ "LABEL": lost mark removed; give it to recover`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block gives the `recover` line. `recover` then acts as row 69. |
 | 64 | lost, `verified`, `on disc only`, or `missing` when marked lost | disc lost --undo SEQ, answer no | unchanged | the warning and the question of row 61, 62, or 63, then `nothing changed` | 1 | `noahsark status` |
 | 65 | lost, `packed` or `burned` when marked lost | disc lost --undo SEQ | refused, no question | `disc SEQ had no verified record when it was marked lost; its items are staged again; the lost mark stays` | 1 | discard the disc, then `noahsark status`: the next pack takes the items |
@@ -454,6 +478,7 @@ lists that last line where a row prints it.
 | 71b | the staging directory does not exist, and the state log holds a Staged or a Packed item: its volume is not mounted, or `staging.dir` names a wrong path | status | unchanged | `warning: staging directory DIR does not exist; staging.dir in config.yaml names it` on standard error, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the `next:` block of a missing staging directory. No `staged:` line and no snapshot line: the chunk files are not there. No block names `disc lost` for a disc root that is missing with the staging directory. | 1 | the `next:` block |
 | 71c | the staging directory does not exist, and the state log holds a Staged or a Packed item | a command that takes the lock, other than `recover`, for example `disc burned SEQ` or `commit` | refused. Nothing is written. | `staging directory DIR does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir` | 1 | `noahsark status`: its block names the directory |
 | 71d | the staging directory does not exist, and the state log holds no Staged and no Packed item, for example a clone of a repository whose data is all on discs | status | unchanged | as row 71. No warning: no file waits in the staging directory. A command that needs the directory creates it. | 0 | the `next:` block |
+| 71e | lost, `on disc only` when marked lost, and an item of the disc is still stored as Lost | status | unchanged | `staged: N items, B bytes`, then `lost: I items; only a lost disc holds them`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the full `next:` block for the whole repository. The `lost:` line stays after a `commit` that does not stage each lost item again. | 0 | the `next:` block. A `commit` of a source that still holds the data ends the `lost:` line. When the source no longer holds it, the data is gone, and `restore` names each file that it cannot restore (row 85). |
 | 72 | any | a global option after the command name, for example `noahsark status --repo=PATH` | refused, usage error | `--repo is a global option; give it before the command name: noahsark --repo=PATH status` | 2 | the same line with the option before the command name |
 | 73 | any | a command option before the command name, or between a group and its subcommand, for example `noahsark --undo disc burned 0` or `noahsark disc --undo burned 0` | refused, usage error | `--undo is an option of disc burned; give it after the last subcommand word: noahsark disc burned --undo 0; see: noahsark disc burned -h` | 2 | the same line with the option after the last subcommand word. `-h` is the one exception to the position rule: `noahsark COMMAND -h` is not a usage error. |
 | 74 | any | a group with no subcommand, for example `noahsark disc` | refused, usage error | `disc needs a subcommand:`, then one line for each subcommand: `burned`, `lost`, `verified` | 2 | the same line with a subcommand, or `noahsark disc -h` |
@@ -612,7 +637,10 @@ Step 5 compares seconds: a snapshot is as new as the `Lost` event when
 its time, in whole seconds, is not before the time of the event. A
 `commit` after `disc lost` makes such a snapshot, also when the source no
 longer holds the lost data (row 4). Thus the block of step 5 goes away
-after one `commit`.
+after one `commit`. A second `commit` cannot bring back data that the
+source no longer holds, thus the block does not stay. The `lost:` line
+("Item states") stays while an item is `lost`, and tells the operator
+that the data is gone.
 
 Step 6 gives an `on disc only` disc that `disc lost --undo` gave back
 (row 62) the verify lines, until the next event of the disc: a check by
@@ -636,7 +664,7 @@ its own.
 | `on disc only`, last check failed | `next: disc SEQ failed its last check. Copy it now, or use your second copy; see the guide, "A second copy". When no copy can be read, run:` then `noahsark disc lost SEQ && noahsark commit` |
 | `lost`, `packed`, `burned` or `verified` when marked lost | no block of its own. Its items are staged again, and the next `pack` takes them. |
 | `lost`, `on disc only` or `missing` when marked lost, and no snapshot is as new as the `Lost` event (step 5) | `next: disc SEQ is lost; a new commit stages what the source still holds; run:` then `noahsark commit` |
-| `lost`, `on disc only` or `missing` when marked lost, and a snapshot is as new as the `Lost` event | no block of its own. The data that the source no longer holds is gone. |
+| `lost`, `on disc only` or `missing` when marked lost, and a snapshot is as new as the `Lost` event | no block of its own. The data that the source no longer holds is gone. `status` prints the `lost:` line while an item is `lost`. |
 | `missing` | `next: load disc SEQ "LABEL", then run:` then `sudo mkdir -p /mnt/ark && sudo mount -o ro DEV /mnt/ark &&`, `noahsark recover --source=SOURCE --disc=/mnt/ark;`, `sudo umount /mnt/ark && eject DEV`, then `or, when disc SEQ is gone for good, run:` then `noahsark disc lost SEQ` |
 | staged data, no disc holds it | `next: load a blank disc, then run:` then `dvd+rw-mediainfo DEV \| grep -E 'Mounted Media\|Free Blocks'`, then `then paste this line, type the capacity, and press Enter:` then `noahsark pack --capacity=` |
 | nothing | `next: nothing to do` |

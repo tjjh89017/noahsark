@@ -176,7 +176,7 @@ func rollbackText(back []stage.Rollback, mark string) string {
 // completeItemRecords writes the item records that an earlier command
 // did not write after its disc event, and prints one note for each disc.
 func completeItemRecords(cmd string, layout repoLayout, logs *stage.Logs, stderr io.Writer) error {
-	done, err := logs.Complete(catalogIndexItems(layout.repo))
+	done, err := logs.Complete(catalogIndexItems(layout.repo), catalogHolds(layout.repo))
 	for _, r := range done {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s: an earlier %s stopped before it wrote the records of its items; %d item record(s) now written\n",
 			cmd, repairDiscName(layout, r.Disc), r.Command, r.Items)
@@ -185,9 +185,21 @@ func completeItemRecords(cmd string, layout repoLayout, logs *stage.Logs, stderr
 }
 
 // logRepairs returns each disc whose item records do not follow its
-// state. It writes nothing. status calls it.
+// state. It writes nothing. status calls it. status prints the command
+// of each repair and not its count, thus it reads no catalog object.
 func logRepairs(layout repoLayout, logs *stage.Logs) ([]stage.Repair, error) {
-	return logs.Repairs(catalogIndexItems(layout.repo))
+	return logs.Repairs(catalogIndexItems(layout.repo), nil)
+}
+
+// catalogHolds tells which items the catalog of the repository at repo
+// holds as a good snapshot, tree or blob object. A catalog that does not
+// open holds none.
+func catalogHolds(repo string) stage.CatalogHolds {
+	c, err := catalog.OpenReadOnly(repo)
+	if err != nil {
+		return func(object.ID) bool { return false }
+	}
+	return c.Holds
 }
 
 // catalogIndexItems reads the items of a disc from its INDEX in the
