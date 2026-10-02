@@ -150,7 +150,8 @@ sections. In summary:
   command by command, from the install to a restore.
 - The disc-root fixtures under `cmd/noahsark/testdata/format1/` are the frozen test
   data of format major 1. A Go test reads them. Regenerate them one time
-  before the first tag; never regenerate them after it.
+  before the first tag with the `make.sh` beside them; never regenerate
+  them after it.
 
 ## Git rules
 
@@ -191,7 +192,8 @@ internal/stage        item and disc state machines, state log and disc
 docs/                 guide.md (operator guide, not a specification),
                       states.md (state machines, part of the specification),
                       decisions.md
-reference/testdata    frozen disc-root fixtures of format major 1
+cmd/noahsark/testdata/format1
+                      frozen disc-root fixtures of format major 1
 .github/actions       composite actions: lint, unit, e2e
 ```
 

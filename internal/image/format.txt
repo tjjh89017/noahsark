@@ -2112,7 +2112,7 @@ examples of section 6.14 and the CRC-32C check value of section 2.1. A vector
 file is named by the structure and the version. A vector is never changed
 under a frozen version; a format change adds a vector.
 
-The disc roots under `reference/testdata/` of the NoahsArk source tree are
+The disc roots under `cmd/noahsark/testdata/format1/` of the NoahsArk source tree are
 the frozen test data of format major 1. After the first tag of the program,
 nobody regenerates them. Each later format major adds its own set, and keeps
 the sets of the earlier majors.

@@ -2210,11 +2210,15 @@ command must work as the guide states it. This is a manual release gate, not
 a CI step.
 
 **Frozen format-1 test data.** The disc-root fixtures under
-`reference/testdata/` are the frozen test data of format major 1. They are
-regenerated one time before the first tag. After the first tag, nobody
-regenerates them. A Go test reads them, and runs `verify`, `recover` and
-`restore` on each. Each later format major adds its own set of fixtures, and
-keeps the sets of the earlier majors.
+`cmd/noahsark/testdata/format1/` are the frozen test data of format major 1.
+`make.sh` in that directory makes them again; it runs only before the first
+tag. After the first tag, nobody makes them again. `TestFormat1Fixtures`
+reads each fixture: `verify` with no repository, `recover` of each disc into
+a new repository, a counted `verify`, and `restore` of each ref, compared
+with the `expected-REF.txt` beside the fixture.
+`TestFormat1FixturesUnchanged` compares each fixture file with the checked-in
+`SHA256SUMS`, and fails on a changed, missing or extra file. Each later format
+major adds its own set of fixtures, and keeps the sets of the earlier majors.
 
 ## 21. Manual physical checklist
 
