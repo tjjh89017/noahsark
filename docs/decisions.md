@@ -105,7 +105,7 @@ version 1.0.0 are not kept, because no compatibility promise covers them.
 is `v0.1`, and FORMAT.md goes to 1.0.0 at that tag. The document version, the
 program version and the `version_major` of each structure are independent.
 Until that tag, a format change needs no version bump. The disc-root
-fixtures under `reference/testdata/` are regenerated one time before that
+fixtures under `cmd/noahsark/testdata/format1/` are regenerated one time before that
 tag, and are frozen after it.
 
 **A later format may refer to objects on older discs.** The content id covers
@@ -839,7 +839,7 @@ a second job on a clean runner has only the images. It runs `recover` and
 on the first host is needed.
 
 **The format-1 disc-root fixtures are frozen at the first tag.** The fixtures
-under `reference/testdata/` stand for the discs in the field. A later tool
+under `cmd/noahsark/testdata/format1/` stand for the discs in the field. A later tool
 must read them, thus nobody regenerates them after the first tag. They are
 regenerated one time before the first tag, because the disc content changes:
 no decoder and no FEC data. A Go test reads them. Each later format major
