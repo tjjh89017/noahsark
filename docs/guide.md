@@ -612,6 +612,22 @@ disc 0 "2026-09-14 disc 0": found
 restored snapshot 1b03c7e2a9f4 into /srv/drill
 ```
 
+### A damaged disc
+
+When a disc is damaged, `restore` names each file that it cannot restore,
+writes no wrong data, and exits with code 1:
+
+```
+noahsark: restore: warning: /srv/restore/photos/a.jpg: 1220ca2c9582...: content id does not verify
+noahsark: restore: warning: not restored: 1 file(s) not restored; see the warning(s) above
+restored snapshot 5e9a02d41c7b into /srv/restore
+```
+
+Mount your second copy of the same disc at the same mount point, and run
+the same command again. `restore` skips the files that it already
+restored, completes the others from the second copy, and exits with
+code 0. See "A second copy".
+
 ### After a stop
 
 When `restore` stops, run the same command again. A kill, a power cut, or

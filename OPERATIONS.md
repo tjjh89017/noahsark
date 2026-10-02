@@ -1359,6 +1359,19 @@ not write.
 that does not verify fails the one file that needs it. `restore` writes no bad
 data, goes on, and reports at the end ("Failure policy").
 
+**A damaged copy.** An object of a disc that does not read or does not verify
+fails each file that needs it. `restore` writes no byte of that object. The
+part file of each such file stays, with the chunks that verified. `restore`
+restores every other file, reports each failed file as `file not restored`,
+and exits with code 1. The operator then mounts the second copy of the same
+disc at `DIR` and runs the same `restore` again. The two copies carry the
+same disc uuid, thus `restore` takes the second copy as the disc. The second
+run skips each file that the first run completed, and counts it on the
+`skipped:` line. It checks each part file, and reads from the disc only the
+chunks that the part files still need. When every file is complete, it exits
+with code 0. A copy whose `DISC.bin` does not read is not the disc: `restore`
+asks for the disc ("Disc detection") and reads nothing from that copy.
+
 ### 14.4 Output lines and exit codes
 
 `restore` writes the plan and the result to standard output, and every
