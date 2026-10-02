@@ -1324,7 +1324,10 @@ deepest directory first.
 
 `restore` writes the bytes of a file into a hidden part file in the directory
 of the file, named `.<name>.noahsark-part`. When the snapshot holds a file of
-that name itself, `restore` adds a number to the suffix. The final size is set
+that name itself, `restore` adds a number to the suffix. A part name must fit
+the name limit of 255 bytes of the destination filesystem. For a name longer
+than 232 bytes, the part name keeps the first 200 bytes of the name, then `~`
+and the first 16 hex digits of the SHA-256 of the whole name. The final size is set
 one time, so that a file with a hole keeps the hole.
 
 The final name appears one time, when the last chunk has landed: `restore`
@@ -2104,7 +2107,7 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   files that `DEST` holds, part files and resume, a file on two discs, `PATH`
   with and without a trailing slash, a `lost` disc and a chunk with no known
   disc in the plan, metadata as root and not as root, hardlinks, special
-  files, case-folded names, bounded memory.
+  files, case-folded names, the part name of a 255-byte name, bounded memory.
 - `cmd/noahsark`: each command: options and their positions, output, the `ls`
   and `log` line formats and escapes, the escapes of the `commit` path lines,
   the ref name rule, exit codes, the `DISC` argument, the
