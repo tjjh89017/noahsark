@@ -224,7 +224,6 @@ scenario_cli() {
 	image_build "$repo" "$uuid" "$image"
 
 	mount_ro "$image" "$mnt"
-	assert_listing_matches "$mnt" "$work"
 	items="$(run_tool ci-index-count "$mnt")"
 	verify_counted "$repo" "$mnt" "$uuid" "$items"
 	restore_loop "$repo" "$mnt" "$snap" "$restored"

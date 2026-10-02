@@ -1,6 +1,11 @@
 package format
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func fileHashN(n int) [32]byte {
 	var h [32]byte
@@ -164,5 +169,21 @@ func TestIndexDecodeRejectsBadObjectKind(t *testing.T) {
 	var idx Index
 	if _, err := idx.Decode(buf); err != ErrObjectKind {
 		t.Fatalf("decode bad kind: got %v, want %v", err, ErrObjectKind)
+	}
+}
+
+func TestIndexDecodeRejectsReservedFileRole(t *testing.T) {
+	golden := readGolden(t, "index.golden")
+	for _, role := range []uint8{0, 6, 9, 14, 255} {
+		buf := append([]byte(nil), golden...)
+		buf[IndexHeaderLen+2*IndexFileRecordLen+40] = role
+		var idx Index
+		_, err := idx.Decode(buf)
+		if !errors.Is(err, ErrFileRole) {
+			t.Fatalf("decode role %d: got %v, want %v", role, err, ErrFileRole)
+		}
+		if want := fmt.Sprintf("role %d", role); !strings.Contains(err.Error(), want) {
+			t.Fatalf("decode role %d: error %q does not name the role", role, err)
+		}
 	}
 }

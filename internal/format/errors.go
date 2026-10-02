@@ -21,5 +21,9 @@ var ErrBadField = errors.New("format: field has an invalid value")
 // ErrObjectKind reports an Objects row whose kind is outside 1 to 4.
 var ErrObjectKind = errors.New("format: object kind out of range")
 
+// ErrFileRole reports an INDEX Files row whose role is a reserved id of
+// the file role registry.
+var ErrFileRole = errors.New("format: reserved file role")
+
 // ErrHeaderLen reports a header_len below the fixed part this build knows.
 var ErrHeaderLen = errors.New("format: header_len below the known fixed part")

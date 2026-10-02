@@ -22,26 +22,6 @@ assert_empty_dir_restored() {
 	fi
 }
 
-# assert_listing_matches MOUNT WORK diffs the Go reader's snapshot
-# listing against reference/decoder.py's, over the newest snapshot on a
-# mounted disc tree at MOUNT.
-assert_listing_matches() {
-	local mnt="$1" work="$2" snap
-	run_tool ci-list "$mnt" >"$work/go-list.txt"
-	# ci-list names the snapshot it walked, by the digest alone; the
-	# decoder takes the multihash text form, which adds the 1220 prefix.
-	snap="1220$(awk '/^# snapshot /{print $3}' "$work/go-list.txt")"
-	python3 "$ROOT/reference/decoder.py" summary "$mnt"
-	python3 "$ROOT/reference/decoder.py" list "$mnt" --snapshot "$snap" >"$work/py-list.txt"
-	python3 "$ROOT/reference/decoder.py" verify "$mnt"
-
-	grep -v '^#' "$work/go-list.txt" | sort >"$work/go-paths.sorted.txt"
-	grep -v '^#' "$work/py-list.txt" | awk '{print $NF}' | sort >"$work/py-paths.sorted.txt"
-	if ! diff -u "$work/py-paths.sorted.txt" "$work/go-paths.sorted.txt"; then
-		fail "decoder.py and the Go reader disagree on the snapshot listing"
-	fi
-}
-
 # assert_refused LABEL CMD... runs CMD, expecting a nonzero exit and a
 # stderr message naming the capacity.
 assert_refused() {

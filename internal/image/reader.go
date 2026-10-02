@@ -102,8 +102,8 @@ type ReadOptions struct {
 	Progress *progress.Reporter
 
 	// KeepGoing continues the read after damage to an object, REFS.bin,
-	// DISCS.bin, README.txt, FORMAT.txt, decoder.py, one of the two run
-	// header copies or the FEC files, and lists each damaged item in
+	// DISCS.bin, README.txt, FORMAT.txt, one of the two run header
+	// copies or the FEC files, and lists each damaged item in
 	// ReadResult.Damaged. Damage to DISC.bin, to both run header copies
 	// or to INDEX.bin stops the read with an error also with KeepGoing.
 	KeepGoing bool
@@ -279,14 +279,13 @@ func readTable(path string, idx *format.Index, role uint8, decode func([]byte) (
 	return nil
 }
 
-// verifyTextFiles checks README.txt, FORMAT.txt and decoder.py against
-// the file_hash of their INDEX Files rows. It gives each damaged or
-// unreadable file to damage.
+// verifyTextFiles checks README.txt and FORMAT.txt against the file_hash
+// of their INDEX Files rows. It gives each damaged or unreadable file to
+// damage.
 func verifyTextFiles(base, runDir string, idx *format.Index, cache *NameCache, damage *damageLog) error {
 	names := map[uint8]string{
-		format.FileRoleReadme:    "README.txt",
-		format.FileRoleFormat:    "FORMAT.txt",
-		format.FileRoleReference: "REFERENCE/decoder.py",
+		format.FileRoleReadme: "README.txt",
+		format.FileRoleFormat: "FORMAT.txt",
 	}
 	for _, row := range idx.Files {
 		name, ok := names[row.Role]
@@ -553,7 +552,7 @@ func verifyOneObject(path string, id object.ID) (int64, error) {
 // them in and the order the stream concatenates them in.
 //
 // The Files table stores no file name. A fixed-name row (INDEX, DISC,
-// README.txt, FORMAT.txt, decoder.py, REFS, DISCS) is found by its role.
+// README.txt, FORMAT.txt, REFS, DISCS) is found by its role.
 // An object row (role 13) pairs by position with the Objects table: the
 // j-th role 13 row describes the file of Objects row j, whose id and
 // kind give the path.
@@ -777,8 +776,6 @@ func filesRowPath(base, runDir string, role uint8, cache *NameCache) (string, bo
 		return filepath.Join(base, cache.Resolve(base, "README.txt")), true
 	case format.FileRoleFormat:
 		return filepath.Join(base, cache.Resolve(base, "FORMAT.txt")), true
-	case format.FileRoleReference:
-		return cache.Join(base, "REFERENCE", "decoder.py"), true
 	case format.FileRoleRefs:
 		return cache.Join(runDir, "catalog", "REFS.bin"), true
 	case format.FileRoleDiscs:

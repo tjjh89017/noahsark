@@ -111,7 +111,7 @@ type PackResult struct {
 
 // ErrCapacityTooSmall reports a target capacity that cannot place even
 // one object: the run's own fixed files (INDEX, RUN, DISC, README,
-// FORMAT, decoder, REFS, DISCS and every snapshot object) already use
+// FORMAT, REFS, DISCS and every snapshot object) already use
 // the whole budget, or the smallest candidate object still does not
 // fit what is left. Pack returns this instead of an internal error
 // whenever selectRun places nothing. NeededSectors, when nonzero, is
@@ -338,7 +338,6 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 	readmeBuf := buildReadme(opts.asBuildOptions(), packTime, label[:labelLen], discSeq)
 	readmeHash := sha256.Sum256(readmeBuf)
 	formatHash := sha256.Sum256(FormatTxt)
-	decoderHash := sha256.Sum256(DecoderPy)
 
 	// Every snapshot object goes onto every disc. A snapshot an earlier
 	// disc already carries is placed whatever the budget allows, so it
@@ -354,11 +353,10 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 	fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
 		blockCount(uint64(len(readmeBuf))) +
 		blockCount(uint64(len(FormatTxt))) +
-		blockCount(uint64(len(DecoderPy))) +
 		blockCount(uint64(len(refsBuf))) +
 		blockCount(uint64(len(discsBuf))) +
 		carriedBlocks
-	fixedFileCount := 8 + len(carried) // INDEX,RUN,DISC,README,FORMAT,decoder,REFS,DISCS
+	fixedFileCount := 7 + len(carried) // INDEX,RUN,DISC,README,FORMAT,REFS,DISCS
 
 	selected, prereqIDs, err := selectRun(opts, candidates, fixedBlocksExclIndex, fixedFileCount)
 	if err != nil {
@@ -409,7 +407,6 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 	rows = append(rows, fileRow{role: format.FileRoleDisc, byteLen: uint64(len(discBuf)), hash: discHash, data: discBuf, path: "NOAHSARK/DISC.bin", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleReadme, byteLen: uint64(len(readmeBuf)), hash: readmeHash, data: readmeBuf, path: "NOAHSARK/README.txt", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleFormat, byteLen: uint64(len(FormatTxt)), hash: formatHash, data: FormatTxt, path: "NOAHSARK/FORMAT.txt", inStream: true})
-	rows = append(rows, fileRow{role: format.FileRoleReference, byteLen: uint64(len(DecoderPy)), hash: decoderHash, data: DecoderPy, path: "NOAHSARK/REFERENCE/decoder.py", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleRefs, byteLen: uint64(len(refsBuf)), hash: refsHash, data: refsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/REFS.bin", inStream: true})
 	rows = append(rows, fileRow{role: format.FileRoleDiscs, byteLen: uint64(len(discsBuf)), hash: discsHash, data: discsBuf, path: "NOAHSARK/runs/%RUNSEQ%/catalog/DISCS.bin", inStream: true})
 
@@ -641,7 +638,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 	for _, id := range carried {
 		carriedBlocks += blockCount(uint64(len(snapshotBytes[id])))
 	}
-	fixedFileCount := 8 + len(carried)
+	fixedFileCount := 7 + len(carried)
 
 	rows := append([]format.DiscsRow(nil), ledger.Rows...)
 	var discs []DryRunDisc
@@ -672,7 +669,6 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		fixedBlocksExclIndex := blockCount(uint64(len(discBuf))) +
 			blockCount(uint64(len(readmeBuf))) +
 			blockCount(uint64(len(FormatTxt))) +
-			blockCount(uint64(len(DecoderPy))) +
 			blockCount(uint64(len(refsBuf))) +
 			blockCount(uint64(len(discsBuf))) +
 			carriedBlocks

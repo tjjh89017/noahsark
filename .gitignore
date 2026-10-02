@@ -70,4 +70,3 @@ tmp/
 
 # Agent worktrees, never committed
 .claude/worktrees/
-__pycache__/

@@ -17,18 +17,15 @@ disc sequence: {disc_seq}
 label: {label}
 hash algorithm: {hash_algo}
 pack time: {created}
-{parity_identity}
 
 3. HOW TO FIND THINGS
 ---------------------
 /NOAHSARK/DISC.bin              disc superblock
 /NOAHSARK/README.txt            this file
 /NOAHSARK/FORMAT.txt            the full definition of the format
-/NOAHSARK/REFERENCE/decoder.py  a standalone Python 3 reference decoder
 /NOAHSARK/runs/<seq>/RUN.bin    run header, 512 bytes
 /NOAHSARK/runs/<seq>/INDEX.bin  file order and the object table
 /NOAHSARK/runs/<seq>/catalog/   REFS.bin and DISCS.bin
-{parity_files}
 /NOAHSARK/runs/<seq>/RUN2.bin   run header copy
 /NOAHSARK/objects/<ab>/<name>   chunks, blobs, trees
 /NOAHSARK/snapshots/<name>      snapshot objects
@@ -74,37 +71,33 @@ Concatenate the chunk payloads in order and the file is restored. An object
 that is not on this disc is on another disc of the repository; INDEX.bin
 names that disc by its uuid, and catalog/DISCS.bin gives its label.
 
-7. HOW TO REPAIR
-----------------
-{parity_repair}
+7. WHEN AN OBJECT IS DAMAGED
+----------------------------
+This disc carries no data for error correction. A damaged object on this
+disc cannot be repaired from this disc. Read the object from the second copy
+of this disc, or from another disc of the repository that holds the same
+object.
 
 8. WHERE THE BYTE LAYOUTS ARE
 -----------------------------
 FORMAT.txt in this directory is the full format document. It holds the
 offset, size, type, name and meaning of every field of every structure, the
-registries, the magic values, the chunking constants and the Reed-Solomon
-definition. It is enough to extract every file from this disc, and to repair
-a damaged disc that has parity, with no NoahsArk software.
-REFERENCE/decoder.py in this directory is a runnable Python 3 program that
-does the extraction in code: it parses DISC.bin, RUN.bin, INDEX.bin and
-every object header, verifies content ids, walks a snapshot and prints the
-listing. It verifies and it restores. It does not repair: the forward error
-correction part of FORMAT.txt is the full recipe for a repair. Its restore,
-verify and list commands take more than one disc root: mount every disc of
-the repository and name each root on the one command line, because a
-snapshot can span several discs.
+registries, the magic values and the chunking constants. The NoahsArk
+program is the normal way to restore from this disc. It needs only the discs
+of the repository. FORMAT.txt is enough to write a new reader that extracts
+every file from this disc.
 
 9. THE FORMAT RULES
 --------------------
 1. Every integer is little-endian. No big-endian field exists.
 2. Every type is fixed width: u8, u16, u32, u64, i32, i64.
 3. Every structure is packed, and every gap is a named reserved field. A
-   writer writes zero there, and a reader ignores it.
+   writer writes zero there, and a reader refuses a nonzero value.
 4. Every structure starts with an 8-byte project magic, an 8-byte kind name,
    then version_major and header_len.
 5. A reader refuses an unknown version_major. There is no minor version.
 6. header_len is the offset of the first byte after the fixed part of a
-   structure. A reader obeys it and skips fixed bytes it does not know.
+   structure. A reader refuses a value that it does not know.
 7. Checksums are CRC-32C, polynomial 0x1EDC6F41, reflected, init
    0xFFFFFFFF, final xor 0xFFFFFFFF. A checksum lies after the bytes it
    covers.

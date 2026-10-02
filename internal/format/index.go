@@ -1,6 +1,9 @@
 package format
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 const (
 	// IndexFixedBodyLen is the size of INDEX's fixed body, after the
@@ -18,19 +21,31 @@ const (
 
 // File role registry. A role names what a Files row describes.
 const (
-	FileRoleIndex     = 1
-	FileRoleRun       = 2
-	FileRoleDisc      = 3
-	FileRoleReadme    = 4
-	FileRoleFormat    = 5
-	FileRoleRefs      = 7
-	FileRoleDiscs     = 8
-	FileRoleChecksum  = 10
-	FileRoleParity    = 11
-	FileRoleRun2      = 12
-	FileRoleObject    = 13
-	FileRoleReference = 14
+	FileRoleIndex    = 1
+	FileRoleRun      = 2
+	FileRoleDisc     = 3
+	FileRoleReadme   = 4
+	FileRoleFormat   = 5
+	FileRoleRefs     = 7
+	FileRoleDiscs    = 8
+	FileRoleChecksum = 10
+	FileRoleParity   = 11
+	FileRoleRun2     = 12
+	FileRoleObject   = 13
 )
+
+// knownFileRole reports whether role is an assigned id of the file role
+// registry. Every other id is reserved, and a reader refuses it.
+func knownFileRole(role uint8) bool {
+	switch role {
+	case FileRoleIndex, FileRoleRun, FileRoleDisc, FileRoleReadme, FileRoleFormat,
+		FileRoleRefs, FileRoleDiscs, FileRoleChecksum, FileRoleParity,
+		FileRoleRun2, FileRoleObject:
+		return true
+	default:
+		return false
+	}
+}
 
 // IndexFileRecord is one row of the Files table, 48 bytes. FileHash is
 // set for the fixed-name files only; every other role carries zero.
@@ -158,7 +173,8 @@ func (idx *Index) Encode(buf []byte) (int, error) {
 // Decode reads an Index from buf and returns the number of bytes read.
 // It rejects a short buffer, a magic_kind mismatch, a header_len below
 // the fixed part this build knows, a file length that does not agree
-// with the row counts, and an Objects row whose kind is outside 1 to 4.
+// with the row counts, a Files row with a reserved role, and an Objects
+// row whose kind is outside 1 to 4.
 // It does not interpret a reserved field.
 func (idx *Index) Decode(buf []byte) (int, error) {
 	if len(buf) < IndexHeaderLen {
@@ -197,6 +213,9 @@ func (idx *Index) Decode(buf []byte) (int, error) {
 	files := make([]IndexFileRecord, fileCount)
 	for i := range files {
 		files[i].decode(buf[off : off+IndexFileRecordLen])
+		if !knownFileRole(files[i].Role) {
+			return 0, fmt.Errorf("%w: Files row %d has role %d", ErrFileRole, i, files[i].Role)
+		}
 		off += IndexFileRecordLen
 	}
 	objects := make([]IndexObjectRecord, objectCount)

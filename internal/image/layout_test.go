@@ -151,17 +151,11 @@ func TestBuildWritesReadmeAndFormatTxt(t *testing.T) {
 	if !strings.Contains(readme, "label: test-disc") {
 		t.Fatal("README.txt does not contain the disc label")
 	}
-	if !strings.Contains(readme, "k=231 data columns, m=23 parity columns") {
-		t.Fatal("README.txt does not contain the fec_k/fec_m substitution")
+	if strings.Contains(readme, "decoder") {
+		t.Fatal("README.txt names a decoder")
 	}
-	for _, want := range []string{
-		"/NOAHSARK/runs/<seq>/checksum.bin",
-		"/NOAHSARK/runs/<seq>/parity/",
-		"The run carries Reed-Solomon parity",
-	} {
-		if !strings.Contains(readme, want) {
-			t.Fatalf("README.txt of a disc with parity does not contain %q", want)
-		}
+	if _, err := os.Stat(filepath.Join(outDir, "NOAHSARK", "REFERENCE")); !os.IsNotExist(err) {
+		t.Fatalf("Build wrote a REFERENCE directory: %v", err)
 	}
 
 	rr, err := Read(outDir)
@@ -291,46 +285,5 @@ func compareTrees(t *testing.T, a, b string) {
 		if !bytes.Equal(wantData, gotData) {
 			t.Fatalf("%s: byte mismatch between two Build runs over the same input", rel)
 		}
-	}
-}
-
-// TestBuildReadmeWithoutParity checks README.txt on a disc whose run
-// carries no parity: it names no geometry, lists no checksum.bin and no
-// parity/ directory, and sends the reader to another copy for a repair.
-func TestBuildReadmeWithoutParity(t *testing.T) {
-	stagingDir, snapID := stageFixture(t)
-	outDir := t.TempDir()
-	opts := testOpts(t, stagingDir, snapID, outDir)
-	opts.FECEnabled = false
-	if _, err := Build(opts); err != nil {
-		t.Fatal(err)
-	}
-
-	readmeOnDisk, err := os.ReadFile(filepath.Join(outDir, "NOAHSARK", "README.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	readme := string(readmeOnDisk)
-	if bytes.ContainsRune(readmeOnDisk, '{') {
-		t.Fatal("README.txt still has an unsubstituted slot")
-	}
-	if !strings.Contains(readme, "\nparity: none\n") {
-		t.Fatal("README.txt of a disc with no parity does not print \"parity: none\"")
-	}
-	for _, unwanted := range []string{
-		"parity geometry",
-		"/NOAHSARK/runs/<seq>/checksum.bin",
-		"/NOAHSARK/runs/<seq>/parity/",
-		"k=231",
-	} {
-		if strings.Contains(readme, unwanted) {
-			t.Fatalf("README.txt of a disc with no parity names %q", unwanted)
-		}
-	}
-	if !strings.Contains(readme, "This disc carries no parity") {
-		t.Fatal("README.txt of a disc with no parity does not name the no-parity repair rule")
-	}
-	if strings.Contains(readme, "\n\n\n") {
-		t.Fatal("README.txt has a blank line where the {parity_files} line was removed")
 	}
 }
