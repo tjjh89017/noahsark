@@ -214,9 +214,14 @@ scenario_iso() {
 	log "iso: pack took $((t1 - t0))s"
 	df -h
 
+	# The folder burn gives the disc the volume label of its disc number.
+	local label
+	label="$(run_tool ci-disc-field "$tree" | awk '/^volume label /{print $3}')"
+	[ -n "$label" ] || fail "iso: no volume label for the disc root $tree"
+
 	t0=$(date +%s)
-	log "iso: $tool -R -iso-level 4 -V NOAHSARK-TEST -o $image $tree"
-	iso_build_image "$tool" "$flavor" "$image" "$tree" -R -iso-level 4 -V NOAHSARK-TEST
+	log "iso: $tool -R -iso-level 4 -V $label -o $image $tree"
+	iso_build_image "$tool" "$flavor" "$image" "$tree" -R -iso-level 4 -V "$label"
 	t1=$(date +%s)
 	log "iso: ISO build took $((t1 - t0))s"
 	df -h

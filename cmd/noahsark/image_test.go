@@ -51,12 +51,12 @@ func TestImageBuildWritesOnlyTheImage(t *testing.T) {
 	}
 	before := listFilesUnder(t, fx.repo)
 
-	var gotTree string
+	var gotTree, gotLabel string
 	var gotSectors uint64
 	old := imageHost.makeImage
-	imageHost.makeImage = func(plan *image.Plan, sectors uint64, prog *progress.Reporter) error {
-		gotTree, gotSectors = plan.TreePath, sectors
-		return fakeMakeImage(plan, sectors, prog)
+	imageHost.makeImage = func(plan *image.Plan, sectors uint64, label string, prog *progress.Reporter) error {
+		gotTree, gotSectors, gotLabel = plan.TreePath, sectors, label
+		return fakeMakeImage(plan, sectors, label, prog)
 	}
 	t.Cleanup(func() { imageHost.makeImage = old })
 
@@ -68,8 +68,8 @@ func TestImageBuildWritesOnlyTheImage(t *testing.T) {
 	if want := "built image " + img + " (67108864 bytes)\n"; stdout != want {
 		t.Errorf("stdout %q, want %q", stdout, want)
 	}
-	if gotTree != layout.planTree(fx.uuidBytes(t)) || gotSectors != 32768 {
-		t.Errorf("makeImage got tree %s and %d sectors", gotTree, gotSectors)
+	if gotTree != layout.planTree(fx.uuidBytes(t)) || gotSectors != 32768 || gotLabel != "NOAHSARK_0000" {
+		t.Errorf("makeImage got tree %s, %d sectors and the label %q", gotTree, gotSectors, gotLabel)
 	}
 
 	after := listFilesUnder(t, fx.repo)
