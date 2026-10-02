@@ -159,6 +159,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		return 1
 	}
 	defer a.Close()
+	prog := e.progress()
 	s := &discSwap{
 		e:        e,
 		mountDir: mountDir,
@@ -166,8 +167,8 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		names:    discs.names,
 		plan:     p,
 		input:    bufio.NewScanner(e.stdin),
+		prog:     prog,
 	}
-	prog := e.progress()
 	prog.Start("restore: bytes written", 0)
 	err = s.readDiscs(a, needed, prog)
 	prog.Done()
@@ -301,6 +302,7 @@ type discSwap struct {
 	names    map[[16]byte]plan.Disc
 	plan     *plan.Plan
 	input    *bufio.Scanner
+	prog     *progress.Reporter
 }
 
 // readDiscs reads each disc of discs that is not lost, in disc_seq
@@ -382,6 +384,7 @@ func (m *mountedDisc) Read(id object.ID) ([]byte, error) {
 func (s *discSwap) waitFor(d plan.Disc) error {
 	want := discName(d.DiscSeq, d.Label, d.DiscUUID)
 	stderr := s.e.stderr
+	s.prog.Clear()
 	unreadable := 0
 	for {
 		found, err := restore.ReadDiscIdentity(s.mountDir)

@@ -117,6 +117,19 @@ func (r *Reporter) Done() {
 	}
 }
 
+// Clear erases the rewritten line of a terminal, so that a message that
+// the command writes next starts on a clean line. The next Add prints the
+// progress line again at once. On a plain stream it does nothing.
+func (r *Reporter) Clear() {
+	if r == nil || !r.terminal {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, _ = fmt.Fprint(r.w, "\r\x1b[K")
+	r.lastAt = time.Time{}
+}
+
 // print writes one progress line. Caller holds r.mu.
 func (r *Reporter) print(now time.Time) {
 	elapsed := now.Sub(r.start).Seconds()
