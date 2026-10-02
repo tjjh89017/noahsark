@@ -37,7 +37,7 @@ func TestLockingCommandsFailWhileTheLockIsHeld(t *testing.T) {
 		{"disc verified", burned, []string{"--yes", "disc", "verified", burned.uuid}},
 		{"verify --undo", verified, []string{"--yes", "verify", "--undo", verified.uuid}},
 		{"disc lost", verified, []string{"--yes", "disc", "lost", verified.uuid}},
-		{"gc", verified, []string{"gc", "--force-after=0d"}},
+		{"gc", verified, []string{"gc"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

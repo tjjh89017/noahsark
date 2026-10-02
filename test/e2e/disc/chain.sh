@@ -163,7 +163,7 @@ chain_pack_one() {
 	# never frees the chunk file of a staged item, thus the rest of B
 	# stays for the next pack. The metadata objects stay in the catalog.
 	local gc_out
-	gc_out="$("$BIN" --repo="$repo" gc --force-after=0d)"
+	gc_out="$("$BIN" --repo="$repo" gc)"
 	echo "$gc_out"
 	grep -qE '^gc: freed [1-9][0-9]* item\(s\), ' <<<"$gc_out" ||
 		fail "chain: gc after disc $n freed nothing"

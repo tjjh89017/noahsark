@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -28,7 +27,6 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 
-	before := time.Now()
 	mounted := packBurnDisc(t, work, repo, src)
 	code, out := runCmd(t, "--repo="+repo, "verify", mounted)
 	if code != 0 {
@@ -38,7 +36,6 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 		t.Fatalf("verify output %q, want the verified line", out)
 	}
 
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
 	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
@@ -58,12 +55,10 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 	}
 }
 
-// TestGCRetentionGate runs gc with a fake clock before and after the
-// fixed 7-day retention has passed: gc must delete nothing before, and
-// delete the CLEAN run's objects after, in both --dry-run and a real
-// run.
-func TestGCRetentionGate(t *testing.T) {
-
+// TestGCFreesAVerifiedDiscAtOnce runs gc at once after the verify of a
+// disc: gc --dry-run reports what it would free and changes nothing, a
+// real run deletes the chunk files, and a second run finds nothing.
+func TestGCFreesAVerifiedDiscAtOnce(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -71,32 +66,18 @@ func TestGCRetentionGate(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
 
-	// Before the wait is over: gc --dry-run holds every item, names the
-	// end of the wait, exits 0 and prints no next line.
-	setFakeNow(t, func() time.Time { return before.Add(24 * time.Hour) })
+	// gc --dry-run reports what it would free, and changes nothing.
 	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
-		t.Fatalf("gc --dry-run (before retention): exit %d, want 0: %s", code, out)
+		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
 	}
-	if !strings.HasPrefix(out, "gc: would free 0 item(s), 0 bytes\ngc: disc 0: too soon; ") {
-		t.Fatalf("gc --dry-run (before retention) output %q, want 0 items and the too soon line", out)
+	if !strings.HasPrefix(out, "gc: would free ") || strings.HasPrefix(out, "gc: would free 0 ") {
+		t.Fatalf("gc --dry-run output %q, want more than 0 items", out)
 	}
 	if strings.Contains(out, "next:") {
 		t.Fatalf("gc --dry-run output %q holds a next line", out)
-	}
-
-	// After the wait: gc --dry-run reports what it would free, and
-	// changes nothing.
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
-	code, out = runCmd(t, "--repo="+repo, "gc", "--dry-run")
-	if code != 0 {
-		t.Fatalf("gc --dry-run (after retention): exit %d: %s", code, out)
-	}
-	if !strings.HasPrefix(out, "gc: would free ") || strings.HasPrefix(out, "gc: would free 0 ") {
-		t.Fatalf("gc --dry-run (after retention) output %q, want more than 0 items", out)
 	}
 	objDir := testLayout(t, repo).chunksDir()
 	before1, err := countFiles(objDir)
@@ -251,9 +232,7 @@ func TestGCWritesTheRecordBeforeTheUnlink(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
 
 	objDir := testLayout(t, repo).chunksDir()
 	staged, err := countFiles(objDir)
@@ -303,7 +282,7 @@ func TestGCAfterACrashAfterTheFreedEvent(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscVerified)
 	appendEventOnly(t, fx, stage.EventFreed)
 
-	out := fx.mustRun(t, "gc", "--force-after=0d")
+	out := fx.mustRun(t, "gc")
 	if !strings.Contains(out, "an earlier gc stopped before it wrote the records of its items") {
 		t.Fatalf("gc output %q, want the repair note", out)
 	}
@@ -334,7 +313,6 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	before := time.Now()
 	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
@@ -348,7 +326,6 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 
 	// A packed disc keeps its plan directory: the operator has not
 	// burned it yet.
-	setFakeNow(t, func() time.Time { return before.Add(8 * 24 * time.Hour) })
 	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc (packed): exit %d: %s", code, out)
 	}
@@ -364,7 +341,6 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	if code, out := runCmd(t, "--repo="+repo, "verify", mounted); code != 0 {
 		t.Fatalf("verify: exit %d: %s", code, out)
 	}
-	setFakeNow(t, func() time.Time { return before.Add(16 * 24 * time.Hour) })
 
 	// A sparse image, as image build leaves it, frees its allocated
 	// blocks only, never its apparent size.
@@ -421,10 +397,9 @@ func TestGCFreesThePlanDirectory(t *testing.T) {
 	}
 }
 
-// TestGCForceAfterShortensTheWait runs gc --force-after with a fake
-// clock 2 hours past the verified time: nowhere near the 7-day wait,
-// but past a 1-hour --force-after. gc frees the disc and asks nothing.
-func TestGCForceAfterShortensTheWait(t *testing.T) {
+// TestGCAsksNothing runs gc after the verify. gc frees the
+// disc and asks nothing.
+func TestGCAsksNothing(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -432,13 +407,11 @@ func TestGCForceAfterShortensTheWait(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	setFakeNow(t, func() time.Time { return before.Add(2 * time.Hour) })
 
-	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h")
+	code, out := runCmd(t, "--repo="+repo, "gc")
 	if code != 0 {
-		t.Fatalf("gc --force-after=1h: exit %d: %s", code, out)
+		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 	if strings.Contains(out, "?") {
 		t.Fatalf("gc output %q asks a question; gc asks no confirmation", out)
@@ -448,9 +421,9 @@ func TestGCForceAfterShortensTheWait(t *testing.T) {
 	}
 }
 
-// TestGCForceAfterDryRunChangesNothing checks that --dry-run with
-// --force-after reports what gc would free and changes nothing.
-func TestGCForceAfterDryRunChangesNothing(t *testing.T) {
+// TestGCDryRunChangesNothing checks that --dry-run after the
+// verify reports what gc would free and changes nothing.
+func TestGCDryRunChangesNothing(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
 	src := writeFixtureSource(t)
@@ -458,17 +431,15 @@ func TestGCForceAfterDryRunChangesNothing(t *testing.T) {
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	before := time.Now()
 	packAndVerifyDisc(t, work, repo, src)
-	setFakeNow(t, func() time.Time { return before.Add(2 * time.Hour) })
 	chunksBefore, err := countFiles(testLayout(t, repo).chunksDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=1h", "--dry-run")
+	code, out := runCmd(t, "--repo="+repo, "gc", "--dry-run")
 	if code != 0 {
-		t.Fatalf("gc --force-after=1h --dry-run: exit %d: %s", code, out)
+		t.Fatalf("gc --dry-run: exit %d: %s", code, out)
 	}
 	if strings.HasPrefix(out, "gc: would free 0 ") || strings.Contains(out, "next:") {
 		t.Fatalf("gc --dry-run output %q, want more than 0 items and no next line", out)
@@ -658,4 +629,16 @@ func gcLineBytes(t *testing.T, out string) uint64 {
 		t.Fatalf("gc freed line %q: %v", line, err)
 	}
 	return n
+}
+
+// TestGCHasNoWaitOption checks that gc knows no option for a wait time:
+// gc --force-after is a usage error.
+func TestGCHasNoWaitOption(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 2 {
+		t.Fatalf("gc --force-after=0d: exit %d, want 2: %s", code, out)
+	}
 }

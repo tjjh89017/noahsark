@@ -816,7 +816,7 @@ func repoWithDisc(t *testing.T, state stage.DiscState) *discFixture {
 		fx.mustRun(t, "verify", fx.root)
 		switch state {
 		case stage.DiscOnDiscOnly:
-			fx.mustRun(t, "gc", "--force-after=0d")
+			fx.mustRun(t, "gc")
 		case stage.DiscLost:
 			markDiscLostInLog(t, fx)
 		}

@@ -130,7 +130,7 @@ func TestSnapshotPackedInPartsReachesTheDiscs(t *testing.T) {
 	if len(before) == 0 {
 		t.Fatal("no staged chunk file after two packs; the capacity must leave a rest")
 	}
-	code, out = runCmd(t, "--repo="+repo, "gc", "--force-after=0d")
+	code, out = runCmd(t, "--repo="+repo, "gc")
 	if code != 0 || strings.HasPrefix(out, "gc: freed 0 item(s)") {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
@@ -306,7 +306,7 @@ func TestPackTakesTheItemsOfALostDiscAfterGC(t *testing.T) {
 			t.Fatalf("verify disc %d: exit %d: %s", i, code, out)
 		}
 	}
-	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 	if code, out := runCmd(t, "--repo="+repo, "--force-yes", "disc", "lost", "0"); code != 0 {

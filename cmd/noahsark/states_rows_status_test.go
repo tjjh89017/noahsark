@@ -99,8 +99,8 @@ func init() {
 			start: stage.DiscVerified, args: []string{"status"},
 			cells: map[string]string{"N": "0", "B": "0"},
 			also: []string{
-				"next: nothing to do; gc can free disc {SEQ} after ",
-				`advice: copy disc {SEQ} before gc; see the guide, "A second copy"`,
+				`advice: copy disc {SEQ} before gc; see the guide, "A second copy"` + "\n",
+				"next: noahsark gc\n",
 			},
 			end: stage.DiscVerified, word: stage.WordClean,
 		},
@@ -177,7 +177,7 @@ func init() {
 		stateCase{
 			row: "71c", name: "gc with no staging directory",
 			start: stage.DiscVerified, setup: stagingGoneSetup,
-			args:  []string{"gc", "--force-after=0d"},
+			args:  []string{"gc"},
 			exact: true, exactStderr: true, noEvent: true, sameCatalog: true,
 			end: stage.DiscVerified, word: stage.WordClean,
 		},

@@ -52,7 +52,7 @@ func TestGitRollbackRefused(t *testing.T) {
 	repo, src := initAndCommit(t)
 	saved := saveTracked(t, repo)
 	packAndVerifyDisc(t, work, repo, src)
-	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0s"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: %s", out)
 	}
 	after := saveTracked(t, repo)

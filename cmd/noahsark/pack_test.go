@@ -296,7 +296,7 @@ func TestPackAfterGCSaysNothingToPackNotNeverCommitted(t *testing.T) {
 	packAndVerifyDisc(t, work, repo, src)
 
 	setFakeStdin(t, strings.NewReader("y\n"))
-	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d, want 0: %s", code, out)
 	}
 	if files := listFilesUnder(t, testLayout(t, repo).chunksDir()); len(files) != 0 {

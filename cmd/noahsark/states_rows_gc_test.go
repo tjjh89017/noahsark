@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -24,50 +23,43 @@ const gcFreedNone = "gc: freed 0 item(s), 0 bytes\n"
 func init() {
 	registerStateCases(
 		stateCase{
-			row: "52", name: "verified disc, wait over",
-			start: stage.DiscVerified, args: []string{"gc", "--force-after=0d"},
+			row: "52", name: "verified disc",
+			start: stage.DiscVerified, args: []string{"gc"},
 			absent: []string{gcFreedNone, "held", "skipped"},
 			exact:  true, exactStderr: true,
 			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
 		},
 		stateCase{
-			row: "53", name: "verified disc, too soon",
-			start: stage.DiscVerified, args: []string{"gc"},
-			exact: true, exactStderr: true,
-			end: stage.DiscVerified, word: stage.WordClean,
-		},
-		stateCase{
 			row: "55", name: "packed disc",
-			start: stage.DiscPacked, args: []string{"gc", "--force-after=0d"},
+			start: stage.DiscPacked, args: []string{"gc"},
 			exact: true, exactStderr: true,
 			end: stage.DiscPacked, word: stage.WordPacked,
 		},
 		stateCase{
 			row: "55", name: "burned disc",
-			start: stage.DiscBurned, args: []string{"gc", "--force-after=0d"},
+			start: stage.DiscBurned, args: []string{"gc"},
 			exact: true, exactStderr: true,
 			end: stage.DiscBurned, word: stage.WordBurned,
 		},
 		stateCase{
 			row: "55", name: "missing disc",
-			start: stage.DiscMissing, args: []string{"gc", "--force-after=0d"},
+			start: stage.DiscMissing, args: []string{"gc"},
 			omit:  []string{"gc: disc SEQ: not verified; N item(s) held"},
 			exact: true, exactStderr: true,
 			end: stage.DiscMissing,
 		},
 		stateCase{
 			row: "56", name: "lost disc",
-			start: stage.DiscLost, args: []string{"gc", "--force-after=0d"},
+			start: stage.DiscLost, args: []string{"gc"},
 			absent: []string{"gc: disc"},
 			exact:  true, exactStderr: true,
 			end: stage.DiscLost,
 		},
-		// Row 52 with no --force-after: gc runs eight days after the
-		// verify, frees every item of the disc, and names the exact items
-		// and bytes.
+		// Row 52: gc frees every item of the disc, and names the exact
+		// items and bytes.
 		stateCase{
-			row: "52", name: "verified disc, eight days later",
-			start: stage.DiscVerified, setup: gcClockSetup(8 * 24 * time.Hour),
+			row: "52", name: "verified disc, exact items and bytes",
+			start: stage.DiscVerified, setup: gcFreeableSetup,
 			args:  []string{"gc"},
 			exact: true, exactStderr: true,
 			end: stage.DiscOnDiscOnly, word: stage.WordOnDisc,
@@ -81,21 +73,12 @@ func init() {
 				}
 			},
 		},
-		// Row 53: gc runs one day after the verify, holds every item, and
-		// names the local date at the end of the wait.
-		stateCase{
-			row: "53", name: "verified disc, one day later",
-			start: stage.DiscVerified, setup: gcClockSetup(24 * time.Hour),
-			args:  []string{"gc"},
-			exact: true, exactStderr: true,
-			end: stage.DiscVerified, word: stage.WordClean,
-		},
 		// Row 54: the catalog tables of the disc are removed. gc skips
 		// every item of the disc, keeps each chunk file, and exits 1.
 		stateCase{
 			row: "54", name: "no INDEX of the disc in the catalog",
 			start: stage.DiscVerified, setup: gcRemoveTablesSetup,
-			args:  []string{"gc", "--force-after=0d"},
+			args:  []string{"gc"},
 			exact: true, exactStderr: true,
 			end: stage.DiscVerified, word: stage.WordClean,
 			check: chunkFilesKept,
@@ -110,7 +93,7 @@ func init() {
 					t.Fatal(err)
 				}
 			},
-			args:  []string{"gc", "--force-after=0d"},
+			args:  []string{"gc"},
 			exact: true, exactStderr: true,
 			end: stage.DiscVerified, word: stage.WordClean,
 			check: func(t *testing.T, fx *discFixture, _, _ string) {
@@ -139,7 +122,7 @@ func init() {
 				}
 				gcCountChunks(t, fx)
 			},
-			args:  []string{"gc", "--force-after=0d"},
+			args:  []string{"gc"},
 			cells: map[string]string{"N": "1"},
 			exact: true, exactStderr: true,
 			end: stage.DiscVerified, word: stage.WordClean,
@@ -152,22 +135,16 @@ func init() {
 	)
 }
 
-// gcClockSetup sets the fake clock to the verified time of the disc of
-// fx plus after. It sets the placeholders N and B of the cells to what
-// gc can free, and DATE to the local date when the 7-day wait ends.
-func gcClockSetup(after time.Duration) func(*testing.T, *discFixture) {
-	return func(t *testing.T, fx *discFixture) {
-		t.Helper()
-		verified := discState(t, fx.repo, fx.uuid).VerifiedTime
-		items, bytes := gcFreeableBytes(t, fx)
-		if items == 0 || bytes == 0 {
-			t.Fatalf("the fixture has %d item(s), %d bytes to free; want more", items, bytes)
-		}
-		fx.cell("N", strconv.Itoa(items))
-		fx.cell("B", strconv.FormatUint(bytes, 10))
-		fx.cell("DATE", verified.Add(7*24*time.Hour).Local().Format("2006-01-02"))
-		setFakeNow(t, func() time.Time { return verified.Add(after) })
+// gcFreeableSetup sets the placeholders N and B of the cells to what gc
+// can free from the disc of fx.
+func gcFreeableSetup(t *testing.T, fx *discFixture) {
+	t.Helper()
+	items, bytes := gcFreeableBytes(t, fx)
+	if items == 0 || bytes == 0 {
+		t.Fatalf("the fixture has %d item(s), %d bytes to free; want more", items, bytes)
 	}
+	fx.cell("N", strconv.Itoa(items))
+	fx.cell("B", strconv.FormatUint(bytes, 10))
 }
 
 // gcRemoveTablesSetup removes the catalog tables of the disc of fx. It
@@ -252,7 +229,7 @@ func TestGCDryRunSkipped(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscVerified)
 	gcRemoveTablesSetup(t, fx)
 	te := newTestEnv(t.TempDir())
-	code, _ := te.run("--repo="+fx.repo, "gc", "--dry-run", "--force-after=0d")
+	code, _ := te.run("--repo="+fx.repo, "gc", "--dry-run")
 	want := "gc: would free 0 item(s), 0 bytes\n" +
 		"gc: " + fx.cells["N"] + " item(s) skipped: disc 0's table is not in the catalog\n"
 	if code != 1 || te.out.String() != want || te.errOut.String() != "" {
@@ -298,7 +275,7 @@ func TestStatesRow52PackOutRemovesTheSymlinkOnly(t *testing.T) {
 	}
 	outFiles := listFilesUnder(t, outDir)
 
-	if code, out := runCmd(t, "--repo="+repo, "gc", "--force-after=0d"); code != 0 {
+	if code, out := runCmd(t, "--repo="+repo, "gc"); code != 0 {
 		t.Fatalf("gc: exit %d: %s", code, out)
 	}
 	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
