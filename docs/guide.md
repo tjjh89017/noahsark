@@ -696,8 +696,10 @@ noahsark disc lost 0
 Load disc 0, and paste the first part of the block. The `;` after
 `recover` unmounts and ejects the disc also when `recover` exits with code
 1, as it does while another disc is still `missing`. Read the `recover`
-line above the unmount to see the result. When every disc is given,
-`recover` prints `recover: ok`, and `status` shows no `missing` disc.
+line above the unmount to see the result. A disc that you give a second
+time prints `already known`, and `recover` still exits with code 1 while
+another disc is `missing`. When every disc is given, the line starts with
+`recover: ok`, and `status` shows no `missing` disc.
 Then mount a disc, and restore as in "Restore".
 
 **A missing disc** is a disc that you cannot find now. `commit` and

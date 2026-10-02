@@ -217,24 +217,37 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 		_, _ = fmt.Fprintln(stdout, nextStatusLine)
 		return 1
 	}
-	if repairsFailedCheck(disc, known) {
+	// result is the text of the first line after "recover: ". The line
+	// starts with "ok" only when no disc is missing, thus only on exit 0.
+	result := ""
+	switch {
+	case repairsFailedCheck(disc, known):
 		if err := recordGoodCopy(e, logs, rr); err != nil {
 			return fail(err)
 		}
-		_, _ = fmt.Fprintf(stdout, "recover: ok; %s already known; check logged\n", name)
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
-		return 0
-	}
-	if !isNew {
-		_, _ = fmt.Fprintf(stdout, "recover: ok; %s already known\n", name)
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
-		return 0
+		result = name + " already known; check logged"
+	case !isNew:
+		result = name + " already known"
 	}
 	missing := logs.Discs.InState(stage.DiscMissing)
 	if len(missing) == 0 {
-		_, _ = fmt.Fprintln(stdout, "recover: ok")
+		if result == "" {
+			_, _ = fmt.Fprintln(stdout, "recover: ok")
+		} else {
+			_, _ = fmt.Fprintf(stdout, "recover: ok; %s\n", result)
+		}
 		_, _ = fmt.Fprintln(stdout, nextStatusLine)
 		return 0
+	}
+	if result != "" {
+		_, _ = fmt.Fprintf(stdout, "recover: %s\n", result)
+	}
+	if rows == nil {
+		ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), rr.Disc.RepoUUID)
+		if err != nil {
+			return fail(err)
+		}
+		rows = ledger.Rows
 	}
 	for _, row := range missingRows(missing, rows) {
 		_, _ = fmt.Fprintf(stdout, "recover: %s named by another disc, not yet given\n", discName(row.DiscSeq, discsRowLabel(row), row.DiscUUID))
