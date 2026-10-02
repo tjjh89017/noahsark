@@ -39,7 +39,8 @@ inputs:
       to prove the low-RAM rule against a real cell instead of only unit
       tests. Empty (the default) runs unconstrained. Tries systemd-run
       --scope first, falls back to prlimit --as if that is not usable on
-      the runner.
+      the runner. It also sets the dirty page limits of the kernel to
+      those of a host with this much RAM.
     required: false
     default: ''
   cell-name:
@@ -163,7 +164,25 @@ runs:
             mechanism="prlimit"
             echo "lowmem: capping at ${MEM_LIMIT_MB} MiB via prlimit --as=$((MEM_LIMIT_MB * 1024 * 1024))"
           fi
+          # The cgroup cap also counts the page cache, and the kernel
+          # cannot drop a dirty page until it writes the page back. The
+          # dirty limit of the kernel is 20 percent of the RAM of the
+          # runner, which is larger than the whole cap. Dirty pages can
+          # then fill the cap, and on a slow disk the kernel kills the
+          # scope. Set the dirty limits that a host with MEM_LIMIT_MB of
+          # RAM gets from the default ratios of 20 and 10 percent.
+          limit_bytes=$((MEM_LIMIT_MB * 1024 * 1024))
+          sudo sysctl -w "vm.dirty_bytes=$((limit_bytes / 5))" \
+            "vm.dirty_background_bytes=$((limit_bytes / 10))"
         fi
+
+        # oom_report prints the kernel lines about a memory kill, so that
+        # the log of a failed capped run shows what the cgroup held.
+        oom_report() {
+          [ "$mechanism" = "none" ] && return 0
+          echo "lowmem: kernel messages about memory kills:"
+          sudo dmesg | grep -i -B2 -A40 -E 'oom-kill|out of memory' | tail -n 120 || true
+        }
 
         # run_wrapped CMD... runs CMD under whichever memory-limiting
         # mechanism was picked above, or plain sudo -E when mem-limit-mb
@@ -211,6 +230,9 @@ runs:
           if ! run_wrapped "${UDFTEST_CMD[@]}" 2>&1 | tee --output-error=warn -a "$LOG"; then
             status=fail
           fi
+        fi
+        if [ "$status" = fail ]; then
+          oom_report 2>&1 | tee --output-error=warn -a "$LOG"
         fi
         end=$(date +%s)
         echo "$CELL_NAME $status $((end - start))s" | tee "$RESULT"
