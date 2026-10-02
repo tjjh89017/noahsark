@@ -16,6 +16,16 @@ A writer puts this document on every disc as `/NOAHSARK/FORMAT.txt`, byte for
 byte (section 8.5). The copy on a disc is the document version that wrote the
 disc, so it describes that disc exactly. This document is plain ASCII.
 
+How to read this document. A reader of a disc needs these sections: 2
+(binary format rules), 3 (identity and hashing), 5 (compression), 6
+(objects), 7 (disc and run model), 8 (filesystem and the volume tree), 9 (the
+run index and the catalog), and the reader rules of section 10: 10.1 (reader
+procedure), 10.3, 10.6 and 10.7. Only a writer needs section 4 (chunking,
+with the Gear table and the mask constants), the writer rules of section 10
+(10.2, 10.5 and the writer part of 10.4), and section 11 (golden vectors). A
+reader never needs the chunker: a cut point is a fact of the writer, and the
+blob of each file lists its chunks.
+
 ## Table of contents
 
 - [1. Scope and conventions](#1-scope-and-conventions)
@@ -310,6 +320,13 @@ every released `version_major` of every structure and every released
 registry id. A new version adds its layout. The layout of an older released
 version is never deleted and never changed. A layout from before document
 version 1.0.0 is not kept, because no compatibility promise covers it.
+
+An object file keeps the bytes that its first writer wrote. A later writer
+that puts the object on another disc, such as a snapshot that every disc
+carries (section 9.4), copies the file byte for byte, headers included, and
+never encodes the object again. Thus one disc can hold objects of different
+`version_major` values, and a reader checks the header of each object on its
+own.
 
 The promise to a disc in the field is this: a newer reader reads every older
 disc. An older reader refuses a structure with a newer `version_major`, and
@@ -1554,8 +1571,9 @@ FORMAT.txt in this directory is the full format document. It holds the
 offset, size, type, name and meaning of every field of every structure, the
 registries, the magic values and the chunking constants. The NoahsArk
 program is the normal way to restore from this disc. It needs only the discs
-of the repository. FORMAT.txt is enough to write a new reader that extracts
-every file from this disc.
+of the repository. FORMAT.txt is the minimum specification. Its purpose is
+to give a person who holds this disc a chance to write a new reader that
+extracts every file from this disc. Nothing proves that it is enough.
 
 9. THE FORMAT RULES
 --------------------

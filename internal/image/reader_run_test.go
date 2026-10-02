@@ -182,8 +182,9 @@ func TestReadReadsARunWithAnUnknownFECScheme(t *testing.T) {
 	if rr.ObjectsVerified != len(rr.Index.Objects) {
 		t.Fatalf("Read verified %d of %d objects", rr.ObjectsVerified, len(rr.Index.Objects))
 	}
-	if len(rr.Notices) != 1 || !strings.Contains(rr.Notices[0], "fec_scheme 1") {
-		t.Fatalf("notices %q: want one notice that names fec_scheme 1", rr.Notices)
+	want := "RUN.bin: fec_scheme 1: this reader cannot use the scheme; it read every object without it"
+	if len(rr.Notices) != 1 || rr.Notices[0] != want {
+		t.Fatalf("notices %q: want the one notice %q", rr.Notices, want)
 	}
 }
 

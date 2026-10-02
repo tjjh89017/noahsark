@@ -42,9 +42,10 @@ disc carries `FORMAT.txt`, the complete format description. The NoahsArk
 program is the normal way to restore, and the discs alone, with no
 repository, are enough for it. The reference decoder is deleted, from the
 disc and from the repository. Reasons: the program is open source; the
-`FORMAT.txt` on the disc is the full recipe for a new reader; a second reader
-is a second program that must stay right. The accepted cost: no independent
-implementation proves that `FORMAT.txt` alone is enough.
+`FORMAT.txt` on the disc is the minimum specification, and its purpose is to
+give a person who holds a disc a chance to write a new reader; a second
+reader is a second program that must stay right. The accepted cost: nothing
+proves that `FORMAT.txt` alone is enough.
 
 **The disc does not carry the source code.** This holds for the first
 release. A later version can add files to the disc without a format change.
@@ -129,6 +130,12 @@ is two identical discs.
 with independent implementations, and compression never enters the content
 id.
 
+**No encryption in format major 1.** The disc is readable by anyone who holds
+it. A later version can add encryption with a `version_major` bump of the
+object header and a new registry. The content id is computed over the plain
+payload, thus dedup and older discs are not affected. Reason: a lost key
+would make every disc unreadable, which is a larger risk for a long archive.
+
 **No more host-side feature cuts before the first release.** The host side is
 small enough to walk with the guide, and each further cut costs a new round
 of documents and tests. Two items are deferred: state log compaction, and
@@ -136,9 +143,13 @@ of documents and tests. Two items are deferred: state log compaction, and
 changes a disc byte.
 
 **The release gates.** The first tag needs these: CI is green, issue 45 is
-fixed, and the three tests of OPERATIONS.md's "Test list" pass: random damage
-detection, the cross-runner restore, and the frozen format-1 test data. A
-physical burn is not a gate: CI proves the image path, and the manual
+fixed, and the tests of OPERATIONS.md's "Test list" pass: random damage
+detection, the cross-runner restore, the frozen format-1 test data, and the
+hostile source tree. The hostile source tree is an e2e cell with odd file
+names, deep paths, many small files, symbolic links, permissions, a file
+larger than one disc, and extreme modification times. One more gate: a
+person walks `docs/guide.md` in a clean container, command by command, from
+the install to a restore. A physical burn is not a gate: CI proves the image path, and the manual
 physical checklist runs after a change to the burn path. No tag and no
 release come until the owner says so.
 
@@ -276,6 +287,11 @@ confirmation is critical. `status` never prints it in a `next:` block.
 and `disc verified` show the change and ask `Continue? [y/N]`. The owner chose
 one rule for every undo.
 
+**The manual marks and the undo commands stay.** `disc burned`, `disc
+verified`, `pack --undo`, `verify --undo`, `disc lost --undo` and `disc
+burned --undo` stay in the first release. Reason: the owner needs a way to
+correct a record when a burn did not happen, and a way to force a mark.
+
 **`pack --undo` removes the record of the disc.** The disc number is skipped
 and never used again. Reason: no later DISCS table names a disc that never
 existed.
@@ -333,6 +349,9 @@ recommended command, and the operator chooses. `status` prints only the
 recommended method in its `next:` block, and one line after the block that
 points to the guide section about the folder burn. The folder burn needs no
 `mkudffs`.
+
+**Both burn methods stay.** The image burn and the folder burn both stay in
+the first release. The image burn stays the recommended method.
 
 **`image build` takes a disc number.** It uses the repository, as the other
 disc commands do, and accepts the global `--repo`. Reasons: a disc belongs to

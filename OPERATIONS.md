@@ -787,8 +787,8 @@ A drive can report fewer sectors than the preset. The operator checks the
 blank disc with `dvd+rw-mediainfo` and gives the smaller size. A capacity
 below the real size of the medium is valid. `pack` records the value that it
 used as `capacity_sectors`, as FORMAT.md's "Disc superblock" states. The
-packer and the image length both use this one value. The media
-type in `DISC.bin` follows the preset, else `BD-R-SL-25`. It is informational.
+packer and the image length both use this one value. The preset name is
+not recorded: `DISC.bin` holds no media type.
 
 ### 9.2 The budget formula
 
@@ -1101,6 +1101,18 @@ wrote for the disc (`staging/plans/<disc-uuid>/tree`, or the target of its
 symlink), else `the disc root is damaged`. A failed counted check uses the
 `REASON` of `docs/states.md`, rows 40 to 43. `verify` prints the detail of
 the failure to standard error, as `noahsark: verify: DETAIL`.
+
+A run whose `fec_scheme` is not 0 is read in full: the reader cannot use the
+scheme, and it reads every object through the filesystem (FORMAT.md, "Run
+header"). `verify` then prints this line to standard error, with `FILE` the
+run header copy that it read, `RUN.bin` or `RUN2.bin`, and `N` the value:
+
+```
+noahsark: verify: FILE: fec_scheme N: this reader cannot use the scheme; it read every object without it
+```
+
+`recover` prints the same line with `recover` in place of `verify`. The line
+changes no state and no exit code.
 
 One line follows the ok line or the bad line, except after a failed counted
 check:
@@ -2078,6 +2090,7 @@ does not skip it.
 | `lifecycle` | `disc verified` then `gc` frees the data of the disc at once; `pack --undo`; `verify --undo`; `disc lost` and `disc lost --undo`; each with `--yes` or `--force-yes`. |
 | `damage` | Random damage detection ("Random damage detection"). |
 | `cross-runner` | Two jobs ("Cross-runner restore"). |
+| `hostile` | A hostile source tree ("Hostile source tree"). |
 
 **Random damage detection.** The test uses a fresh seed on each run and
 prints the seed. A seed given on the command line or in an environment
@@ -2091,6 +2104,18 @@ discs. It uploads the images as an artifact, with the checksums of the source
 tree. Job two runs on a clean runner. It downloads the images and has no
 repository. It runs `recover` for each disc, then `restore`. It compares the
 result with the checksums of the source tree, byte for byte.
+
+**Hostile source tree.** The cell commits a source tree that holds odd file
+names, deep paths, many small files, symbolic links, unusual permissions, a
+file larger than one disc, and extreme modification times. It packs the tree
+across discs, and verifies and restores each disc. The restore must give the
+tree back, with the names, the symlink targets, the permissions and the
+modification times that "Metadata restore policy" applies.
+
+**Guide walk.** Before the first tag, a person walks `docs/guide.md` in a
+clean container, command by command, from the install to a restore. Each
+command must work as the guide states it. This is a manual release gate, not
+a CI step.
 
 **Frozen format-1 test data.** The disc-root fixtures under
 `reference/testdata/` are the frozen test data of format major 1. They are
