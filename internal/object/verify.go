@@ -1,6 +1,7 @@
 package object
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -21,29 +22,39 @@ import (
 // stays within that bound; it never scales with the total data a disc
 // holds.
 func ReadVerified(path string, id ID) (raw, payload []byte, err error) {
-	data, err := os.ReadFile(path)
+	raw, payload, err = CheckFile(path, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
+	}
+	return raw, payload, nil
+}
+
+// CheckFile is ReadVerified for a caller that names the object itself:
+// its error does not start with the id.
+func CheckFile(path string, id ID) (raw, payload []byte, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
 	}
 	headerLen := format.CommonHeaderLen + format.ObjectHeaderLen
 	if len(data) < headerLen {
-		return nil, nil, fmt.Errorf("%s: file too short", id.TextForm())
+		return nil, nil, errors.New("file too short")
 	}
 	_, oh, err := format.DecodeObjectFileHeader(data[:headerLen])
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
+		return nil, nil, err
 	}
 	end := uint64(headerLen) + oh.StoredLen
 	if uint64(len(data)) < end {
-		return nil, nil, fmt.Errorf("%s: file too short", id.TextForm())
+		return nil, nil, errors.New("file too short")
 	}
 	stored := data[uint64(headerLen):end]
 	payload, err = Decompress(stored, oh.Compression, oh.PayloadLen)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", id.TextForm(), err)
+		return nil, nil, err
 	}
 	if ComputeID(oh.Kind, payload) != id {
-		return nil, nil, fmt.Errorf("%s: content id does not verify", id.TextForm())
+		return nil, nil, errors.New("content id does not verify")
 	}
 	return data, payload, nil
 }

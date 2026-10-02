@@ -204,6 +204,9 @@ func TestReadKeepGoingListsEachDamagedObject(t *testing.T) {
 		if d.Reason == "" {
 			t.Errorf("damage of %s has no reason", d.ID)
 		}
+		if n := strings.Count(d.Error(), d.ID); n != 1 {
+			t.Errorf("damage text %q names the id %d times, want 1", d.Error(), n)
+		}
 		got[d.ID] = d.Kind
 	}
 	if len(got) != len(want) {
