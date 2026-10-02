@@ -138,7 +138,12 @@ sections. In summary:
 - Manual physical checks need a real drive and real media. Follow
   OPERATIONS.md's manual checklist; do not attempt to automate it in CI.
 - CI must prove that `recover` builds the catalog again from the disc images
-  alone, and that a restore then works. One job restores on a clean runner
+  alone, and that a restore then works.
+- The e2e suite holds a hostile source tree cell: odd names, deep paths,
+  many small files, symbolic links, permissions, a file larger than one
+  disc, and extreme modification times.
+- Before the first tag, a person walks `docs/guide.md` in a clean container,
+  command by command, from the install to a restore. One job restores on a clean runner
   from the images of another job.
 - The disc-root fixtures under `reference/testdata/` are the frozen test
   data of format major 1. A Go test reads them. Regenerate them one time

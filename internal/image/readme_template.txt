@@ -84,8 +84,9 @@ FORMAT.txt in this directory is the full format document. It holds the
 offset, size, type, name and meaning of every field of every structure, the
 registries, the magic values and the chunking constants. The NoahsArk
 program is the normal way to restore from this disc. It needs only the discs
-of the repository. FORMAT.txt is enough to write a new reader that extracts
-every file from this disc.
+of the repository. FORMAT.txt is the minimum specification. Its purpose is
+to give a person who holds this disc a chance to write a new reader that
+extracts every file from this disc. Nothing proves that it is enough.
 
 9. THE FORMAT RULES
 --------------------
