@@ -2091,7 +2091,9 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   middle; a close error; the flag bits of each event; the item records of
   each disc state after a stop between an event and its item records; the
   sequence mark and a roll back.
-- `internal/image`: packing order, the capacity budget, the dry run, the ledgers, `README.txt` and `FORMAT.txt` against the golden text,
+- `internal/image`: packing order, the capacity budget, the selection of many
+  small objects whose filesystem overhead fills the disc, the staged total
+  with a missing file, the dry run, the ledgers, `README.txt` and `FORMAT.txt` against the golden text,
   bounded memory, the content id check of each staged tree, blob and snapshot
   object, the `mkudffs` version check, the UDF image build. The tests that
   need root and a real `mkudffs` run only with `NOAHSARK_CI=1`. Without it
