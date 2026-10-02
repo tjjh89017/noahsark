@@ -154,8 +154,10 @@ PACKED_UUID=""
 PACKED_SEQ=""
 
 # RESTORE_SWAPS is set by restore_loop: the number of discs that it
-# mounted before restore exited 0.
+# mounted before restore exited 0. RESTORE_OUT is the output of the
+# last restore.
 RESTORE_SWAPS=0
+RESTORE_OUT=""
 
 # pack_disc REPO PACK-OPTION... runs pack and prints its output. It
 # fails when pack exits nonzero or packs no disc. It sets PACKED_UUID
@@ -216,7 +218,7 @@ restore_asked_uuid() {
 # restore_loop REPO DIR SNAPSHOT [PATH...] DEST runs restore with the
 # disc at DIR. When restore asks for another disc, it mounts the image of
 # that disc at DIR and runs the same restore again, until restore exits
-# 0. It sets RESTORE_SWAPS.
+# 0. It sets RESTORE_SWAPS and RESTORE_OUT.
 restore_loop() {
 	local repo="$1" dir="$2" out code uuid
 	shift 2
@@ -227,6 +229,7 @@ restore_loop() {
 		code=$?
 		set -e
 		echo "$out"
+		RESTORE_OUT="$out"
 		if [ "$code" -eq 0 ]; then
 			return 0
 		fi

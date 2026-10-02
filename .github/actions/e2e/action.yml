@@ -48,6 +48,15 @@ inputs:
   artifact-name:
     description: 'Artifact name for this cell''s log and result, e.g. e2e-result-media-dvd-r; must not contain a slash'
     required: true
+  disc-set:
+    description: >
+      The disc set of the cross-runner restore. 'write': the scenario
+      writes the disc images and the SHA-256 list of the source tree,
+      and the action uploads them as the artifact e2e-disc-set. 'read':
+      the action downloads that artifact first, and builds only the
+      noahsark binary. Empty for every other cell.
+    required: false
+    default: ''
 runs:
   using: 'composite'
   steps:
@@ -85,6 +94,13 @@ runs:
           exit 1
         fi
 
+    - name: Download the disc set
+      if: inputs.disc-set == 'read'
+      uses: actions/download-artifact@v8
+      with:
+        name: e2e-disc-set
+        path: ${{ runner.temp }}/disc-set
+
     - name: Build the helper commands and the noahsark binary
       shell: bash
       run: |
@@ -93,10 +109,14 @@ runs:
         # writing into the normal user's cache would need an ownership
         # fix afterward) and picks up these prebuilt binaries instead of
         # `go run`, so it never has to compile anything itself.
+        # The reading job of the cross-runner restore builds the tool
+        # alone: it proves that the discs need nothing else.
         mkdir -p "$RUNNER_TEMP/e2e-tools"
-        for name in ci-fixture ci-chain-fixture ci-incremental-fixture ci-corrupt ci-disc-uuid ci-disc-field ci-state-count ci-index-count; do
-          go build -o "$RUNNER_TEMP/e2e-tools/$name" "./test/e2e/disc/cmd/$name"
-        done
+        if [ "${{ inputs.disc-set }}" != "read" ]; then
+          for name in ci-fixture ci-chain-fixture ci-incremental-fixture ci-corrupt ci-disc-uuid ci-disc-field ci-state-count ci-index-count ci-tree-compare; do
+            go build -o "$RUNNER_TEMP/e2e-tools/$name" "./test/e2e/disc/cmd/$name"
+          done
+        fi
         go build -o "$RUNNER_TEMP/e2e-tools/noahsark" ./cmd/noahsark
 
     - name: "Run scenario: ${{ inputs.cell-name }}"
@@ -107,6 +127,7 @@ runs:
         NOAHSARK_E2E_MEDIA: ${{ inputs.media }}
         NOAHSARK_E2E_ORDER: ${{ inputs.order }}
         NOAHSARK_E2E_EXTRAS: ${{ inputs.extras }}
+        NOAHSARK_E2E_DISC_SET: ${{ inputs.disc-set != '' && format('{0}/disc-set', runner.temp) || '' }}
         CELL_NAME: ${{ inputs.cell-name }}
       run: |
         mkdir -p "$RUNNER_TEMP/e2e-result"
@@ -120,6 +141,7 @@ runs:
             NOAHSARK_E2E_MEDIA="$NOAHSARK_E2E_MEDIA" \
             NOAHSARK_E2E_ORDER="$NOAHSARK_E2E_ORDER" \
             NOAHSARK_E2E_EXTRAS="$NOAHSARK_E2E_EXTRAS" \
+            NOAHSARK_E2E_DISC_SET="$NOAHSARK_E2E_DISC_SET" \
             NOAHSARK_E2E_TOOLDIR="$RUNNER_TEMP/e2e-tools" \
             NOAHSARK_E2E_BIN="$RUNNER_TEMP/e2e-tools/noahsark" \
             go test ./test/e2e/disc -v -count=1 -timeout "${{ inputs.go-test-timeout }}")
@@ -193,6 +215,15 @@ runs:
         end=$(date +%s)
         echo "$CELL_NAME $status $((end - start))s" | tee "$RESULT"
         [ "$status" = pass ]
+
+    - name: Upload the disc set
+      if: inputs.disc-set == 'write'
+      uses: actions/upload-artifact@v7
+      with:
+        name: e2e-disc-set
+        path: ${{ runner.temp }}/disc-set
+        retention-days: 1
+        if-no-files-found: error
 
     - name: Upload cell result
       if: always()
