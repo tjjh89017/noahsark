@@ -49,7 +49,7 @@ func TestRestoreRefusesAChunkHeaderCRCMismatch(t *testing.T) {
 	}
 	c := catalogOfTree(t, outDir)
 
-	runDir, err := image.NewestRunDir(filepath.Join(outDir, "NOAHSARK", "runs"))
+	runDir, err := image.RunDir(filepath.Join(outDir, "NOAHSARK", "runs"))
 	if err != nil {
 		t.Fatal(err)
 	}

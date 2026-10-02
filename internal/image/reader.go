@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -171,7 +171,7 @@ func ReadWithOptions(root string, opts ReadOptions) (*ReadResult, error) {
 	}
 
 	runsDir := filepath.Join(base, cache.Resolve(base, "runs"))
-	runDir, err := NewestRunDir(runsDir)
+	runDir, err := RunDir(runsDir)
 	if err != nil {
 		return nil, err
 	}
@@ -418,32 +418,45 @@ func readRunCopy(path string) (format.Run, []byte, error) {
 	return run, buf, nil
 }
 
-// NewestRunDir returns the run directory with the highest numeric
-// <seq>, comparing the ten-digit names as integers, never as plain
-// strings.
-func NewestRunDir(runsDir string) (string, error) {
+// RunDir returns the one run directory under runsDir. A disc holds one
+// run. RunDir refuses a runs directory that holds more than one entry
+// of any kind, and names every entry. It also refuses an entry that is
+// not a directory with a ten-digit decimal name.
+func RunDir(runsDir string) (string, error) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		return "", fmt.Errorf("runs directory: %w", err)
 	}
-	var seqs []int64
-	byName := make(map[int64]string)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		n, err := strconv.ParseInt(e.Name(), 10, 64)
-		if err != nil {
-			continue
-		}
-		seqs = append(seqs, n)
-		byName[n] = e.Name()
-	}
-	if len(seqs) == 0 {
+	switch len(entries) {
+	case 0:
 		return "", fmt.Errorf("no run directory under %s", runsDir)
+	case 1:
+	default:
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = strconv.Quote(e.Name())
+		}
+		return "", fmt.Errorf("%s holds %d entries, %s; a disc holds one run, thus this disc is damaged", runsDir, len(entries), strings.Join(names, ", "))
 	}
-	sort.Slice(seqs, func(i, j int) bool { return seqs[i] > seqs[j] })
-	return filepath.Join(runsDir, byName[seqs[0]]), nil
+	e := entries[0]
+	if !e.IsDir() || !isRunDirName(e.Name()) {
+		return "", fmt.Errorf("%s holds %q, which is not a run directory", runsDir, e.Name())
+	}
+	return filepath.Join(runsDir, e.Name()), nil
+}
+
+// isRunDirName reports whether name is a run sequence number: decimal
+// digits, zero-padded to at least ten.
+func isRunDirName(name string) bool {
+	if len(name) < 10 {
+		return false
+	}
+	for _, c := range name {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // verifyObjects checks every Objects row's header_crc32c and content id

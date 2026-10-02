@@ -30,7 +30,7 @@ func packOneOfEachKind(t *testing.T) (discRoot string, idx *format.Index) {
 		t.Fatalf("pack: %v", err)
 	}
 
-	runDir, err := NewestRunDir(filepath.Join(outDir, "NOAHSARK", "runs"))
+	runDir, err := RunDir(filepath.Join(outDir, "NOAHSARK", "runs"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestReadKeepGoingOfAGoodTree(t *testing.T) {
 // other files.
 func TestReadKeepGoingRefusesADamagedIndex(t *testing.T) {
 	discRoot, _ := packOneOfEachKind(t)
-	runDir, err := NewestRunDir(filepath.Join(discRoot, "NOAHSARK", "runs"))
+	runDir, err := RunDir(filepath.Join(discRoot, "NOAHSARK", "runs"))
 	if err != nil {
 		t.Fatal(err)
 	}

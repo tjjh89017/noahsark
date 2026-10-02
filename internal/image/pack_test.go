@@ -229,7 +229,7 @@ func TestPackSpansThreeDiscsWithRemainder(t *testing.T) {
 	// The last disc's INDEX must carry a Prereqs row for every object
 	// this disc's own metadata objects reference but do not store, and
 	// that row's run_seq must name an earlier, real run.
-	lastRunDir, err := NewestRunDir(filepath.Join(discRoots[len(discRoots)-1], "NOAHSARK", "runs"))
+	lastRunDir, err := RunDir(filepath.Join(discRoots[len(discRoots)-1], "NOAHSARK", "runs"))
 	if err != nil {
 		t.Fatal(err)
 	}

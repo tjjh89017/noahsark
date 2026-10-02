@@ -161,10 +161,10 @@ func WriteFromRead(c *Catalog, root string, rr *image.ReadResult) ([]object.ID, 
 	return ids, nil
 }
 
-// writeTablesOf copies the INDEX, REFS and DISCS files of the newest run
+// writeTablesOf copies the INDEX, REFS and DISCS files of the one run
 // under base into the catalog, as the tables of disc discUUID.
 func (c *Catalog) writeTablesOf(base string, names *image.NameCache, discUUID [16]byte) error {
-	runDir, err := image.NewestRunDir(names.Join(base, "runs"))
+	runDir, err := image.RunDir(names.Join(base, "runs"))
 	if err != nil {
 		return fmt.Errorf("catalog: %w", err)
 	}

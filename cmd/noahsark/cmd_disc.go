@@ -68,7 +68,7 @@ func resolveDisc(rows []format.DiscsRow, discs *stage.DiscLog, arg string) ([16]
 func discTargetOf(rows []format.DiscsRow, discs *stage.DiscLog, discUUID [16]byte) discTarget {
 	info, _ := discs.Disc(discUUID)
 	info.UUID = discUUID
-	row := newestDiscRow(rows, discUUID)
+	row := discRow(rows, discUUID)
 	return discTarget{info: info, seq: row.DiscSeq, label: labelText(row.Label[:row.LabelLen])}
 }
 
@@ -198,14 +198,14 @@ func undoDiscBurn(e *env, discs *stage.DiscLog, disc discTarget) int {
 	return 0
 }
 
-// newestDiscRow returns the last ledger row for discUUID, the row whose
-// seq and label the output prints.
-func newestDiscRow(rows []format.DiscsRow, discUUID [16]byte) format.DiscsRow {
-	var out format.DiscsRow
+// discRow returns the ledger row of discUUID, the row whose seq and
+// label the output prints. The ledger holds one row for each disc. It
+// returns a zero row when the ledger has no row of the disc.
+func discRow(rows []format.DiscsRow, discUUID [16]byte) format.DiscsRow {
 	for _, r := range rows {
 		if r.DiscUUID == discUUID {
-			out = r
+			return r
 		}
 	}
-	return out
+	return format.DiscsRow{}
 }

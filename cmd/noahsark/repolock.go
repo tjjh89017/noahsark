@@ -228,7 +228,7 @@ func repairDiscName(layout repoLayout, d stage.DiscInfo) string {
 	if err != nil {
 		return "disc " + uuidText(d.UUID)
 	}
-	row := newestDiscRow(ledger.Rows, d.UUID)
+	row := discRow(ledger.Rows, d.UUID)
 	if row.DiscUUID != d.UUID {
 		return "disc " + uuidText(d.UUID)
 	}

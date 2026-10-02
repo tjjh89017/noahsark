@@ -1,11 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"flag"
 	"fmt"
 	"os"
 	"slices"
-	"sort"
 	"strconv"
 	"time"
 
@@ -16,9 +16,8 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// discSummary is one disc's row in "status": the rows of the disc ledger
-// for one disc uuid, folded into a single line, and the record of the
-// disc in the disc state log.
+// discSummary is one disc's row in "status": the row of the disc ledger
+// for one disc uuid, and the record of the disc in the disc state log.
 type discSummary struct {
 	UUID          string
 	Seq           uint64
@@ -284,14 +283,14 @@ func nextDiscs(layout repoLayout, discs []discSummary) []nextDisc {
 }
 
 // nextRepairs gives the next block the discs of repairs. It takes the
-// number of a disc from its newest row in rows (the DISCS ledger). It
+// number of a disc from its row in rows (the DISCS ledger). It
 // names a disc by its number, or by its full uuid when another disc that
 // status shows has the same number, or when the ledger has no row of it.
 func nextRepairs(rows []format.DiscsRow, discs []discSummary, repairs []stage.Repair) []nextRepair {
 	out := make([]nextRepair, 0, len(repairs))
 	for _, rp := range repairs {
 		arg := uuidText(rp.Disc.UUID)
-		if row := newestDiscRow(rows, rp.Disc.UUID); row.DiscUUID == rp.Disc.UUID {
+		if row := discRow(rows, rp.Disc.UUID); row.DiscUUID == rp.Disc.UUID {
 			same := slices.ContainsFunc(discs, func(d discSummary) bool {
 				return d.Seq == row.DiscSeq && d.Info.UUID != rp.Disc.UUID
 			})
@@ -304,41 +303,29 @@ func nextRepairs(rows []format.DiscsRow, discs []discSummary, repairs []stage.Re
 	return out
 }
 
-// summarizeDiscs groups rows (a DISCS ledger's rows) by disc_uuid, in
-// ascending disc_seq order, and folds each disc's rows into one
-// discSummary: the label and forced capacity of its newest run, its
-// record in the disc state log, and the count of its items. An undone
-// disc gets no summary.
+// summarizeDiscs gives one discSummary for each row of rows, a DISCS
+// ledger's rows, in ascending disc_seq order: the label and the forced
+// capacity of the disc, its record in the disc state log, and the count
+// of its items. A disc holds one run, thus the ledger holds one row for
+// each disc. An undone disc gets no summary.
 func summarizeDiscs(rows []format.DiscsRow, logs *stage.Logs) []discSummary {
-	order := make([]string, 0)
-	byUUID := make(map[string][]format.DiscsRow)
-	for _, r := range rows {
-		key := uuidText(r.DiscUUID)
-		if _, ok := byUUID[key]; !ok {
-			order = append(order, key)
-		}
-		byUUID[key] = append(byUUID[key], r)
-	}
-	sort.SliceStable(order, func(i, j int) bool {
-		return byUUID[order[i]][0].DiscSeq < byUUID[order[j]][0].DiscSeq
-	})
+	sorted := slices.Clone(rows)
+	slices.SortStableFunc(sorted, func(a, b format.DiscsRow) int { return cmp.Compare(a.DiscSeq, b.DiscSeq) })
 
-	discs := make([]discSummary, 0, len(order))
-	for _, key := range order {
-		discRows := byUUID[key]
-		newest := discRows[len(discRows)-1]
-		info, _ := logs.Discs.Disc(newest.DiscUUID)
+	discs := make([]discSummary, 0, len(sorted))
+	for _, r := range sorted {
+		info, _ := logs.Discs.Disc(r.DiscUUID)
 		if info.State == stage.DiscUndone {
 			continue
 		}
-		info.UUID = newest.DiscUUID
+		info.UUID = r.DiscUUID
 		discs = append(discs, discSummary{
-			UUID:          key,
-			Seq:           newest.DiscSeq,
-			Label:         labelText(newest.Label[:newest.LabelLen]),
-			CapacityBytes: newest.CapacitySectors * image.SectorSize,
+			UUID:          uuidText(r.DiscUUID),
+			Seq:           r.DiscSeq,
+			Label:         labelText(r.Label[:r.LabelLen]),
+			CapacityBytes: r.CapacitySectors * image.SectorSize,
 			Info:          info,
-			Items:         len(logs.Items.ItemsOfDisc(newest.DiscUUID)),
+			Items:         len(logs.Items.ItemsOfDisc(r.DiscUUID)),
 		})
 	}
 	return discs

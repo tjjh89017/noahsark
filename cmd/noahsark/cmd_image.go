@@ -255,7 +255,7 @@ func openDiscLogData(data []byte, path string) (*stage.DiscLog, error) {
 func (o *imageBuildOptions) sudoLine(repoDir string, rows []format.DiscsRow, discs *stage.DiscLog, disc discTarget) string {
 	arg := strconv.FormatUint(disc.seq, 10)
 	same := 0
-	for _, c := range uniqueDiscCandidates(rows, func(u [16]byte) bool {
+	for _, c := range discCandidates(rows, func(u [16]byte) bool {
 		d, ok := discs.Disc(u)
 		return ok && d.State == stage.DiscUndone
 	}) {
