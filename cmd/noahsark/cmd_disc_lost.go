@@ -166,10 +166,13 @@ func (r *discLostRun) undo() int {
 		_, _ = fmt.Fprintf(e.stderr, "noahsark: %s: %s had no verified record when it was marked lost; its items are staged again; the lost mark stays\n", cmd, disc.short())
 		return 1
 	}
-	warning := []string{
-		disc.warning(after),
-		"the tool trusts this disc again only after a good check; you must run verify on it",
+	// A missing disc has no data in the repository, thus recover reads
+	// it and no verify can check it.
+	advice := "the tool trusts this disc again only after a good check; you must run verify on it"
+	if after == stage.DiscMissing {
+		advice = "the tool knows no data of this disc; give it to recover"
 	}
+	warning := []string{disc.warning(after), advice}
 	if !e.confirm(confirmOrdinary, "disc lost --undo", warning) {
 		return 1
 	}
