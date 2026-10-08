@@ -172,25 +172,11 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 // readRepoConfig reads config.yaml through the descriptor of the
 // repository directory repo, as readConfig reads it by path.
 func readRepoConfig(repo *image.Dir) (repoConfig, error) {
-	path := configPath(repo.Path)
 	data, err := repo.ReadFile(configFileName)
 	if err != nil {
 		return repoConfig{}, err
 	}
-	f, err := decodeConfig(data)
-	if err != nil {
-		return repoConfig{}, &configError{path: path, err: err}
-	}
-	stagingDir := f.Staging.Dir
-	if !filepath.IsAbs(stagingDir) {
-		stagingDir = filepath.Join(repo.Path, stagingDir)
-	}
-	return repoConfig{
-		RepoUUID:   f.Repo.UUID,
-		StagingDir: stagingDir,
-		SourceRoot: f.Sources.Root,
-		PackDevice: f.Pack.Device,
-	}, nil
+	return parseConfig(configPath(repo.Path), data)
 }
 
 // readRepoState reads the disc ledger and the disc state log through
