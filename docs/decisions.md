@@ -169,11 +169,6 @@ comes after the first tag.
 - **A quick check in `commit`.** After the first tag, and before the owner
   backs up real data: `commit` reuses the result for a file whose size and
   modification time did not change, and a flag forces a full read.
-- **More `ls` output formats (issue 68).** `ls` prints one fixed format now.
-- **`restore` reads local data (issue 70).** A `restore` could read chunks
-  from staging, or from the current source or destination files, so that a
-  small change does not ask for a disc that is years old. The owner wants to
-  design the two together.
 
 ## Redundancy and recovery
 
@@ -798,6 +793,13 @@ step needs the records durable, not each record on its own.
 **A failed verify of a root that is not counted removes no record.** The
 tool cannot tell that root from the disc, so it cannot lower the disc.
 
+**`pack` writes the item records before its `Packed` event.** The other
+commands that change a disc and its items write the disc event first, and
+one function writes the item records after it. `pack` keeps its own order.
+One call for both would move the `Packed` event first. A `pack` that stops
+between the two would then leave a different state behind, and the repair
+of a stopped `pack` would have to change with it.
+
 ## Locking
 
 **One non-blocking exclusive `flock` on `<repo>/lock`.** A command that writes
@@ -808,6 +810,22 @@ lock file is never removed, thus every `open` locks the same inode.
 `pack --dry-run`, `gc --dry-run`, `verify --no-mark` and `verify` with no
 repository take none. `status` opens the state log with the read-only
 replay, which never truncates the file.
+
+## Code structure
+
+**No shared helper opens the files of an untrusted tree.** Three readers
+open such a tree, and each has its own rule and its own message. `image
+build` opens each file through a file descriptor and checks the owner. The
+disc reader runs `CheckTree`, then the ISO 9660 name lookup. `restore`
+checks each part of a path with `Lstat` on the write side. One helper would
+blur the three rules: a change for one reader would change a check or a
+message of the others.
+
+**The snapshot walks stay separate.** `plan` and `restore` share
+`plan.Visitor`. `status` and `ls` walk a snapshot with their own rules: when
+the walk stops, what a damaged object does, and how much memory the walk
+holds. One walk for all of them would need an option for each difference,
+and the options would hide the rules.
 
 ## Testing
 
@@ -849,3 +867,7 @@ adds its own set.
 
 **A probe records an unknown answer; a test asserts a known one.** A probe
 moves into the test list when its answer is stable.
+
+**No fault-injection seam.** A seam that stops a command after its N-th log
+write is not built. No test needs it today. A test that needs it later
+builds it.
