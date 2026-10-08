@@ -194,13 +194,6 @@ func matchDigestPrefix(arg string, ids []object.ID) []object.ID {
 	return matches
 }
 
-// shortID gives the print form of a snapshot id: the first 12
-// hexadecimal characters of its digest, without the multihash prefix.
-// A file of state/ and a damaged line use the full text form.
-func shortID(id object.ID) string {
-	return hex.EncodeToString(id[:6])
-}
-
 // ambiguousSnapshotError reports a prefix that matches more than one
 // snapshot. It lists each candidate in its full text form.
 type ambiguousSnapshotError struct {
