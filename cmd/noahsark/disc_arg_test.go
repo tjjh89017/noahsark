@@ -71,7 +71,7 @@ func TestResolveDiscArgShortNumberIsNoPrefix(t *testing.T) {
 	rows := []format.DiscsRow{discArgRow(0, "disc-a", 0xaa), discArgRow(1, "disc-b", 0x12)}
 	for _, arg := range []string{"12", "1212121"} {
 		_, err := resolveDiscArg(rows, arg)
-		if err == nil || err.Error() != "no disc matches "+arg+"; noahsark status lists the discs" {
+		if err == nil || err.Error() != noDiscMatchText(arg) {
 			t.Fatalf("resolveDiscArg(%q) error = %v, want no match", arg, err)
 		}
 	}
@@ -122,7 +122,7 @@ func TestResolveDiscArgMoreThanOneDisc(t *testing.T) {
 			if err == nil {
 				t.Fatalf("resolveDiscArg(%q): no error, want a refusal", tt.arg)
 			}
-			lines := []string{tt.arg + " matches more than one disc:"}
+			lines := []string{manyDiscsMatchText(tt.arg)}
 			for _, r := range tt.rows {
 				lines = append(lines, discNameShort(r.DiscSeq, labelText(r.Label[:r.LabelLen]))+"  "+uuidText(r.DiscUUID))
 			}
@@ -140,7 +140,7 @@ func TestResolveDiscArgNoMatch(t *testing.T) {
 			if err == nil {
 				t.Fatalf("resolveDiscArg(%q): no error, want a refusal", arg)
 			}
-			if want := "no disc matches " + arg + "; noahsark status lists the discs"; err.Error() != want {
+			if want := noDiscMatchText(arg); err.Error() != want {
 				t.Fatalf("error = %q, want %q", err, want)
 			}
 		})
@@ -153,7 +153,7 @@ func TestResolveDiscArgHiddenDisc(t *testing.T) {
 	rows := twoDiscRows()
 	hidden := func(uuid [16]byte) bool { return uuid == rows[0].DiscUUID }
 	for _, arg := range []string{"0", uuidText(rows[0].DiscUUID), "aaaa"} {
-		if _, err := resolveDiscArgExcept(rows, arg, hidden); err == nil || err.Error() != "no disc matches "+arg+"; noahsark status lists the discs" {
+		if _, err := resolveDiscArgExcept(rows, arg, hidden); err == nil || err.Error() != noDiscMatchText(arg) {
 			t.Fatalf("resolveDiscArgExcept(%q) error = %v, want no match", arg, err)
 		}
 	}

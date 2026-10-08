@@ -38,7 +38,7 @@ func newLostRebuild(t *testing.T) *lostRebuild {
 	packOut := lr.mustRun(t, "pack", "--capacity=64MiB")
 	root := filepath.Join(work, "disc0")
 	copyTree(t, packedTreeDir(t, lr.repo, packOut), root)
-	if out := lr.mustRun(t, "verify", root); !strings.Contains(out, "\nburn recorded; verified\n") {
+	if out := lr.mustRun(t, "verify", root); !strings.Contains(out, "\n"+verifyOKText(stage.DiscPacked)+"\n") {
 		t.Fatalf("verify output %q, want a counted verify", out)
 	}
 	if out := lr.mustRun(t, "gc"); !strings.HasPrefix(out, "gc: freed ") || strings.HasPrefix(out, gcFreedNone) {

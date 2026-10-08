@@ -76,7 +76,7 @@ func discVerifiedRefusal(disc discTarget, arg string) string {
 	case stage.DiscPacked:
 		return fmt.Sprintf("%s has no burn record; run: noahsark disc burned %s, or verify the disc", disc.short(), arg)
 	case stage.DiscVerified, stage.DiscOnDiscOnly:
-		return disc.short() + " is already verified"
+		return alreadyVerifiedRefusal(disc)
 	}
 	return discStateRefusal(disc)
 }

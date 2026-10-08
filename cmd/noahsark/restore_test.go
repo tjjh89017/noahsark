@@ -325,7 +325,7 @@ func TestRestoreUsageErrorsExitTwo(t *testing.T) {
 	}{
 		{"unknown flag", []string{"--no-such-flag", disc, defaultRefName(), dest}, "flag provided but not defined"},
 		{"no --disc", []string{defaultRefName(), dest}, "--disc=DIR is required"},
-		{"--disc twice", []string{disc, disc, defaultRefName(), dest}, "the option takes one value only"},
+		{"--disc twice", []string{disc, disc, defaultRefName(), dest}, errOneValue.Error()},
 		{"no DEST", []string{disc, defaultRefName()}, "usage: noahsark restore"},
 		{"an option after a positional", []string{disc, defaultRefName(), dest, "--overwrite"}, "flags must come before positional arguments"},
 		{"--mount", []string{"--mount=" + t.TempDir(), defaultRefName(), dest}, "flag provided but not defined: -mount"},

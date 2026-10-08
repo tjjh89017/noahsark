@@ -32,7 +32,7 @@ func TestDiscBurnedThenVerifyReachesClean(t *testing.T) {
 	}
 
 	out = fx.mustRun(t, "verify", fx.root)
-	if !strings.Contains(out, "already verified; check logged") {
+	if !strings.Contains(out, verifyOKText(stage.DiscVerified)) {
 		t.Fatalf("verify (second pass) output %q, want the check-logged line", out)
 	}
 	if d := discState(t, fx.repo, fx.uuid); d.State != stage.DiscVerified {
@@ -55,7 +55,7 @@ func TestDiscBurnedUndo(t *testing.T) {
 	}
 
 	out = fx.mustRun(t, "verify", fx.root)
-	if !strings.Contains(out, "burn recorded; verified") {
+	if !strings.Contains(out, verifyOKText(stage.DiscPacked)) {
 		t.Fatalf("verify (after undo) output %q, want the burn-recorded line", out)
 	}
 }
@@ -192,7 +192,7 @@ func TestResolveDiscHidesAnUndoneDisc(t *testing.T) {
 	rows := []format.DiscsRow{{DiscSeq: 0, RunSeq: 1, DiscUUID: undone}, {DiscSeq: 1, RunSeq: 2, DiscUUID: kept}}
 
 	for _, arg := range []string{"0", "aa01"} {
-		if _, err := resolveDisc(rows, logs.Discs, arg); err == nil || err.Error() != "no disc matches "+arg+"; noahsark status lists the discs" {
+		if _, err := resolveDisc(rows, logs.Discs, arg); err == nil || err.Error() != noDiscMatchText(arg) {
 			t.Fatalf("resolveDisc(%q) error = %v, want no match", arg, err)
 		}
 	}

@@ -344,15 +344,9 @@ func parseMountLine(text string) (mountEntry, error) {
 // parseDevNum decodes a major:minor field.
 func parseDevNum(s string) (devNum, error) {
 	majText, minText, ok := strings.Cut(s, ":")
-	if !ok {
-		return devNum{}, fmt.Errorf("bad device number %q", s)
-	}
-	major, err := strconv.ParseUint(majText, 10, 32)
-	if err != nil {
-		return devNum{}, fmt.Errorf("bad device number %q", s)
-	}
-	minor, err := strconv.ParseUint(minText, 10, 32)
-	if err != nil {
+	major, majErr := strconv.ParseUint(majText, 10, 32)
+	minor, minErr := strconv.ParseUint(minText, 10, 32)
+	if !ok || majErr != nil || minErr != nil {
 		return devNum{}, fmt.Errorf("bad device number %q", s)
 	}
 	return devNum{major: uint32(major), minor: uint32(minor)}, nil

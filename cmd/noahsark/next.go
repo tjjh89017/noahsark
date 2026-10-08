@@ -14,6 +14,19 @@ import (
 // the command cannot read the repository for the next block.
 const nextStatusLine = "next: noahsark status"
 
+// nextLoadBlankLine starts the block of staged data and the block of a
+// packed disc.
+const nextLoadBlankLine = "next: load a blank disc, then run:"
+
+// nextGCLine is the block of a verified disc whose data gc can free.
+const nextGCLine = "next: noahsark gc"
+
+// nextCommitLine is the block of a repository with no snapshot.
+const nextCommitLine = "next: noahsark commit"
+
+// nextNothingLine is the block of a repository with nothing to do.
+const nextNothingLine = "next: nothing to do"
+
 // arkMount is the mount point that every block of status uses.
 const arkMount = "/mnt/ark"
 
@@ -153,20 +166,20 @@ func nextBlock(r nextRepo) []string {
 		return r.burnBlock(d)
 	}
 	if _, ok := r.first(func(d nextDisc) bool { return d.info.State == stage.DiscVerified }); ok {
-		return []string{"next: noahsark gc"}
+		return []string{nextGCLine}
 	}
 	if r.staged > 0 {
 		return []string{
-			"next: load a blank disc, then run:",
+			nextLoadBlankLine,
 			"dvd+rw-mediainfo " + quoteShellWord(r.device) + " | grep -E 'Mounted Media|Free Blocks'",
 			"then paste this line, type the capacity, and press Enter:",
 			"noahsark pack --capacity=",
 		}
 	}
 	if r.noSnapshot {
-		return []string{"next: noahsark commit"}
+		return []string{nextCommitLine}
 	}
-	return []string{"next: nothing to do"}
+	return []string{nextNothingLine}
 }
 
 // first returns the first disc for which match reports true.
@@ -213,9 +226,9 @@ func (r nextRepo) burnBlock(d nextDisc) []string {
 			"noahsark disc lost " + d.arg,
 		}
 	}
-	lines := []string{"next: load a blank disc, then run:"}
+	lines := []string{nextLoadBlankLine}
 	if !d.imageExists {
-		lines = append(lines, "sudo noahsark --repo="+quoteShellWord(r.repo)+" image build "+d.arg+" &&")
+		lines = append(lines, imageBuildCommand(r.repo, false, d.arg)+" &&")
 	}
 	burn := "growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z "
 	if d.info.Close {

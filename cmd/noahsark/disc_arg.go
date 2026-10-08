@@ -88,17 +88,28 @@ func uuidPrefix(s string) (string, bool) {
 	return p, true
 }
 
+// noDiscMatchText is the refusal of a disc argument that matches no disc.
+func noDiscMatchText(arg string) string {
+	return "no disc matches " + arg + "; noahsark status lists the discs"
+}
+
+// manyDiscsMatchText is the first line of the refusal of a disc argument
+// that matches more than one disc. A line for each match follows it.
+func manyDiscsMatchText(arg string) string {
+	return arg + " matches more than one disc:"
+}
+
 // oneDisc gives the uuid of the only match, or the refusal for no match
 // or for more than one match.
 func oneDisc(arg string, matches []discArgCandidate) ([16]byte, error) {
 	switch len(matches) {
 	case 0:
-		return [16]byte{}, errors.New("no disc matches " + arg + "; noahsark status lists the discs")
+		return [16]byte{}, errors.New(noDiscMatchText(arg))
 	case 1:
 		return matches[0].UUID, nil
 	}
 	var b strings.Builder
-	b.WriteString(arg + " matches more than one disc:")
+	b.WriteString(manyDiscsMatchText(arg))
 	for _, d := range matches {
 		b.WriteString("\n" + discNameShort(d.Seq, d.Label) + "  " + uuidText(d.UUID))
 	}

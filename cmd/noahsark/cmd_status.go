@@ -77,7 +77,7 @@ func cmdStatus(e *env, args []string) int {
 	if v.noStaging {
 		_, _ = fmt.Fprintf(stderr, "noahsark: status: warning: staging directory %s does not exist; staging.dir in config.yaml names it\n", v.next.staging)
 	} else {
-		_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", v.next.staged, v.stagedBytes)
+		_, _ = fmt.Fprintln(stdout, stagedLine(v.next.staged, v.stagedBytes))
 		for _, g := range v.groups {
 			if line := statusSnapshotLine(g); line != "" {
 				_, _ = fmt.Fprintln(stdout, line)
@@ -219,6 +219,12 @@ func printNext(e *env, repoDir string) {
 	for _, line := range lines {
 		_, _ = fmt.Fprintln(e.stdout, line)
 	}
+}
+
+// stagedLine is the line of commit and status with the count and the size
+// of the Staged items.
+func stagedLine(items int, bytes uint64) string {
+	return fmt.Sprintf("staged: %d items, %d bytes", items, bytes)
 }
 
 // missingFilesLine is the warning of commit and status about the Staged

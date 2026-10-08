@@ -110,7 +110,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 	switch disc.info.State {
 	case stage.DiscPacked, stage.DiscBurned, stage.DiscVerified:
 	case stage.DiscOnDiscOnly, stage.DiscLost, stage.DiscMissing:
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: no disc root at %s\n", cmd, treeDir)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, noDiscRootText(treeDir))
 		return 1
 	default:
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, discStateRefusal(disc))
@@ -129,7 +129,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 
 	plan, err := image.OpenPlan(layout.planDir(discUUID), planTreeName, planImageName)
 	if errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: no disc root at %s\n", cmd, treeDir)
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, noDiscRootText(treeDir))
 		return 1
 	} else if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
@@ -254,9 +254,21 @@ func (o *imageBuildOptions) sudoLine(repoDir string, rows []format.DiscsRow, dis
 	if same > 1 {
 		arg = uuidText(disc.info.UUID)
 	}
-	force := ""
-	if o.force {
-		force = "--force "
+	return imageBuildCommand(repoDir, o.force, arg)
+}
+
+// imageBuildCommand is the command line that builds the image of the disc
+// arg of the repository repoDir as root.
+func imageBuildCommand(repoDir string, force bool, arg string) string {
+	forceOpt := ""
+	if force {
+		forceOpt = "--force "
 	}
-	return "sudo noahsark --repo=" + quoteShellWord(repoDir) + " image build " + force + arg
+	return "sudo noahsark --repo=" + quoteShellWord(repoDir) + " image build " + forceOpt + arg
+}
+
+// noDiscRootText is the refusal of image build for a disc whose disc
+// root does not exist.
+func noDiscRootText(treeDir string) string {
+	return "no disc root at " + treeDir
 }

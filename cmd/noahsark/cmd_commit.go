@@ -217,7 +217,7 @@ func (o *commitOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: commit:", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
+	_, _ = fmt.Fprintln(stdout, stagedLine(stagedItems, stagedBytes))
 	if missingFiles > 0 {
 		_, _ = fmt.Fprintln(stderr, missingFilesLine("commit", missingFiles))
 	}
