@@ -2,17 +2,11 @@ package main
 
 import (
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
-
-// nextStatusLine ends the output of a command that changed state when
-// the command cannot read the repository for the next block.
-const nextStatusLine = "next: noahsark status"
 
 // nextLoadBlankLine starts the block of staged data and the block of a
 // packed disc.
@@ -290,21 +284,4 @@ func secondCopyAdvice(d nextDisc) string {
 		return fmt.Sprintf(`advice: burn a second copy of %s before gc; see the guide, "A second copy"`, d.image)
 	}
 	return fmt.Sprintf(`advice: copy disc %s before gc; see the guide, "A second copy"`, d.arg)
-}
-
-// statusDate is the DATE of status and gc: the local date, YYYY-MM-DD.
-func statusDate(t time.Time) string {
-	return t.Local().Format("2006-01-02")
-}
-
-// plainShellWordRe matches a word that the shell reads as it is.
-var plainShellWordRe = regexp.MustCompile(`^[A-Za-z0-9_./:=@%+,-]+$`)
-
-// quoteShellWord returns s as one shell word. It puts s in single quotes
-// when s holds a character that the shell would change.
-func quoteShellWord(s string) string {
-	if plainShellWordRe.MatchString(s) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

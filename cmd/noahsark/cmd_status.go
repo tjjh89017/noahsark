@@ -204,23 +204,6 @@ func readStatusView(cmd, repoDir string, cfg repoConfig, stderr io.Writer) (*sta
 	return v, nil
 }
 
-// printNext ends the output of a command that changed state: the advice
-// lines and the next block that status would print now. It reads the
-// repository at repoDir again, after the change. The notes of that read
-// were printed by the command already, thus they are dropped. When the
-// read fails, it points to status.
-func printNext(e *env, repoDir string) {
-	lines := []string{nextStatusLine}
-	if cfg, err := readConfig(configPath(repoDir)); err == nil {
-		if v, err := readStatusView("status", repoDir, cfg, io.Discard); err == nil {
-			lines = v.nextLines()
-		}
-	}
-	for _, line := range lines {
-		_, _ = fmt.Fprintln(e.stdout, line)
-	}
-}
-
 // stagedLine is the line of commit and status with the count and the size
 // of the Staged items.
 func stagedLine(items int, bytes uint64) string {
