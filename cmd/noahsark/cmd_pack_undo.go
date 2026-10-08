@@ -108,36 +108,61 @@ func packUndoRefusal(disc discTarget, rows []format.DiscsRow, discs *stage.DiscL
 	case stage.DiscBurned:
 		return fmt.Sprintf("%s has a burn record; pack cannot be undone; when no burn happened, run noahsark disc burned --undo %d first", disc.short(), disc.seq)
 	case stage.DiscVerified, stage.DiscOnDiscOnly, stage.DiscLost, stage.DiscMissing:
-		return disc.short() + " is no longer packed; pack cannot be undone"
+		refusal := disc.short() + " is no longer packed; pack cannot be undone"
+		if u, seq, ok := newestDisc(rows, discs); ok {
+			if d, known := discs.Disc(u); known && d.State == stage.DiscPacked {
+				refusal += fmt.Sprintf("; the newest packed disc is %d", seq)
+			}
+		}
+		return refusal
 	}
 	return disc.short() + " has no record in the disc state log; pack cannot be undone"
 }
 
 // isNewestDisc reports whether no other disc has a disc number as high
-// as the number of disc. The numbers come from the rows of the disc
-// ledger and from the Packed events. An undone disc does not count.
+// as the number of disc.
 func isNewestDisc(disc discTarget, rows []format.DiscsRow, discs *stage.DiscLog) bool {
-	other := func(u [16]byte) bool {
-		if u == disc.info.UUID {
-			return false
+	newest := true
+	eachDiscNumber(rows, discs, func(u [16]byte, seq uint64) {
+		if u != disc.info.UUID && seq >= disc.seq {
+			newest = false
 		}
+	})
+	return newest
+}
+
+// newestDisc returns the uuid and the number of the disc with the
+// highest disc number. ok is false when the repository has no disc.
+func newestDisc(rows []format.DiscsRow, discs *stage.DiscLog) (uuid [16]byte, seq uint64, ok bool) {
+	eachDiscNumber(rows, discs, func(u [16]byte, s uint64) {
+		if !ok || s > seq {
+			uuid, seq, ok = u, s, true
+		}
+	})
+	return uuid, seq, ok
+}
+
+// eachDiscNumber calls fn with the uuid and the disc number of each disc.
+// The numbers come from the rows of the disc ledger and from the Packed
+// events. An undone disc does not count. A disc can come more than once.
+func eachDiscNumber(rows []format.DiscsRow, discs *stage.DiscLog, fn func(u [16]byte, seq uint64)) {
+	undone := func(u [16]byte) bool {
 		d, ok := discs.Disc(u)
-		return !ok || d.State != stage.DiscUndone
+		return ok && d.State == stage.DiscUndone
 	}
 	for _, r := range rows {
-		if other(r.DiscUUID) && r.DiscSeq >= disc.seq {
-			return false
+		if !undone(r.DiscUUID) {
+			fn(r.DiscUUID, r.DiscSeq)
 		}
 	}
 	for _, d := range discs.Discs() {
 		// A Packed event always has a run_seq of 1 or more. A disc with
 		// a run_seq of 0 has no Packed event, and its number is in the
 		// ledger rows.
-		if d.RunSeq > 0 && other(d.UUID) && d.DiscSeq >= disc.seq {
-			return false
+		if d.RunSeq > 0 && d.State != stage.DiscUndone {
+			fn(d.UUID, d.DiscSeq)
 		}
 	}
-	return true
 }
 
 // removeUndoneDisc removes the files of the undone disc discUUID in this

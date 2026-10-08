@@ -62,6 +62,15 @@ func init() {
 		refused("14", "pack undo of an on disc only disc", stage.DiscOnDiscOnly, stage.WordOnDisc),
 		refused("14", "pack undo of a lost disc", stage.DiscLost, ""),
 		refused("14", "pack undo of a missing disc", stage.DiscMissing, ""),
+		// Row 14: a newer disc is packed, thus the refusal names it.
+		stateCase{
+			row: "14", name: "pack undo of a verified disc while a newer disc is packed",
+			start: stage.DiscVerified, setup: secondDiscSetup,
+			args:   []string{"--yes", "pack", "--undo", "{SEQ}"},
+			absent: []string{confirmQuestion, "warning:"},
+			also:   []string{"disc 0 is no longer packed; pack cannot be undone; the newest packed disc is 1\n"},
+			end:    stage.DiscVerified, word: stage.WordClean,
+		},
 		stateCase{
 			row: "80", name: "pack undo with --yes", like: "11",
 			start: stage.DiscPacked, args: []string{"--yes", "pack", "--undo", "{SEQ}"},

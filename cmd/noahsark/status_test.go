@@ -69,14 +69,14 @@ func TestStatusPackedBlock(t *testing.T) {
 		"eject /dev/sr0 && eject -t /dev/sr0 &&",
 		"sudo -v && " + statusMountLine + " &&",
 		"noahsark verify /mnt/ark;",
-		"sudo umount /mnt/ark && eject /dev/sr0",
+		"sudo umount /mnt/ark; eject /dev/sr0",
 		`or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:`,
 		"noahsark verify " + tree + " &&",
 		"growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 " + tree + " &&",
 		"eject /dev/sr0 && eject -t /dev/sr0 &&",
 		"sudo -v && " + statusMountLine + " &&",
 		"noahsark verify /mnt/ark;",
-		"sudo umount /mnt/ark && eject /dev/sr0",
+		"sudo umount /mnt/ark; eject /dev/sr0",
 	}
 	if got := statusLines(t, fx.repo); !slices.Equal(got, want) {
 		t.Fatalf("status:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -158,7 +158,7 @@ func TestStatusBurnedBlock(t *testing.T) {
 		"next: load disc 0, then run:",
 		statusMountLine + " &&",
 		"noahsark verify /mnt/ark;",
-		"sudo umount /mnt/ark && eject /dev/sr0",
+		"sudo umount /mnt/ark; eject /dev/sr0",
 	}
 	if got := statusLines(t, fx.repo); !slices.Equal(got, want) {
 		t.Fatalf("status:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -249,7 +249,7 @@ func TestStatusMissingBlock(t *testing.T) {
 		fmt.Sprintf("next: load disc 0 %q, then run:", fx.label),
 		statusMountLine + " &&",
 		"noahsark recover --source=" + quoteShellWord(cfg.SourceRoot) + " --disc=/mnt/ark;",
-		"sudo umount /mnt/ark && eject /dev/sr0",
+		"sudo umount /mnt/ark; eject /dev/sr0",
 		"or, when disc 0 is gone for good, run:",
 		"noahsark disc lost 0",
 	}

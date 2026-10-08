@@ -472,7 +472,7 @@ func (tb *stateTable) exitCode(id string) (int, error) {
 // placeholderPatterns match each placeholder of a Message cell by its
 // kind.
 var placeholderPatterns = map[string]string{
-	"SEQ": `\d+`, "N": `\d+`, "B": `\d+`, "I": `\d+`, "D": `\d+`,
+	"SEQ": `\d+`, "NEWEST": `\d+`, "N": `\d+`, "B": `\d+`, "I": `\d+`, "D": `\d+`,
 	"LABEL":        `[^"]*`,
 	"UUID":         uuidPattern,
 	"RUUID":        uuidPattern,

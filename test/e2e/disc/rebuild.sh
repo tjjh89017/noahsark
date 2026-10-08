@@ -87,7 +87,7 @@ scenario_rebuild() {
 	# recover with disc 1 alone: exit 0, and the state log's on-disc
 	# count must equal disc 1's own INDEX object count.
 	recover_disc "$repo" "$src" "$mnt1" 0
-	grep -qx 'recover: ok' <<<"$RECOVER_OUT" || fail "rebuild: recover of disc 1 did not print recover: ok"
+	grep -qx 'recover: ok; discs 0 to 0 known; give a newer disc if you hold one' <<<"$RECOVER_OUT" || fail "rebuild: recover of disc 1 did not print recover: ok with discs 0 to 0"
 	local ondisc_count1
 	ondisc_count1="$(run_tool ci-state-count "$repo/state")"
 	if [ "$ondisc_count1" != "$index_count1" ]; then
@@ -197,7 +197,7 @@ scenario_rebuild() {
 
 	# A repeat recover from the same two discs must be idempotent.
 	recover_disc "$repo" "$src" "$mnt1" 0
-	grep -q '^recover: ok; disc .* already known$' <<<"$RECOVER_OUT" ||
+	grep -q '^recover: ok; disc .* already known; discs 0 to 1 known; give a newer disc if you hold one$' <<<"$RECOVER_OUT" ||
 		fail "rebuild: a repeat recover of disc 1 did not report the disc as known"
 	recover_disc "$repo" "$src" "$mnt2" 0
 	local ondisc_count3
