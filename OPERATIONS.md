@@ -1588,7 +1588,7 @@ noahsark status
 noahsark gc      [--dry-run]
 noahsark restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST
 noahsark recover --source=PATH --disc=DIR
-noahsark ls      [-R | --recursive] SNAPSHOT [PATH]
+noahsark ls      [-R | --recursive] [--format=FORMAT] SNAPSHOT [PATH]
 noahsark log     [REF | SNAPSHOT]
 ```
 
@@ -1631,6 +1631,7 @@ wrong value.
 | `recover` | `--source` | The source root. Required. `recover` stores it as `sources.root`. |
 | `recover` | `--disc` | The mount point of the disc to read. One value. Required. |
 | `ls` | `-R`, `--recursive` | Descend into subdirectories. |
+| `ls` | `--format` | The output format: `default`, `names`, `json` or `human`. Default: `default`. |
 
 ### 16.4 Command notes
 
@@ -1974,6 +1975,30 @@ other byte prints as it is. `ls` sorts
 the entries in the canonical order of FORMAT.md's "Canonical ordering",
 depth first. A path that `ls` prints goes into a `restore` line unchanged,
 when it holds no escaped byte.
+
+`--format` selects the form of each line. Every format prints the same
+entries in the same order, and works with `-R` and with `PATH`:
+
+| `FORMAT` | Line |
+|---|---|
+| `default` | The five fields above, separated by one tab. |
+| `names` | The path field only. |
+| `json` | One JSON object, then a newline (JSON Lines). |
+| `human` | The five fields of `default`. The size field gives a size of 1024 bytes or more in units of 1024, with one decimal and the unit `K`, `M`, `G`, `T`, `P` or `E`, for example `4.2K`. A smaller size prints in bytes with no unit, for example `512`. |
+
+A `json` object has these members, in this order. A script must ignore a
+member that it does not know:
+
+| Member | JSON type | Value |
+|---|---|---|
+| `mode` | string | The mode field, for example `"0644"`. |
+| `type` | string | The type field, for example `"file"`. |
+| `size` | number | The size field in bytes, for example `1204`. |
+| `time` | string | The time field, RFC 3339 in UTC, for example `"2026-09-14T08:30:00Z"`. |
+| `path` | string | The path field, escaped as above. JSON escapes it again, thus a decoded value is the same text as the `default` path field. |
+
+Another `FORMAT` is a usage error: `ls` prints `invalid format "FORMAT";
+give default, names, json, human` and exits with code 2.
 
 `ls` splits `PATH` at each `/`. It ignores a leading `/`, a trailing `/` and
 an empty segment. A `PATH` with no segment lists the source root. It compares
