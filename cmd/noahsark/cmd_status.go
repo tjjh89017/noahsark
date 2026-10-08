@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"time"
@@ -41,8 +42,8 @@ func init() {
 
 // cmdStatus implements "noahsark status": the staged total, one line
 // for each snapshot that is not complete on discs, the count of the Lost
-// items while one exists, one line for each disc, and the one next block
-// of the repository. It prints a warning on
+// items while one exists, one line for each disc, one advice line for
+// each verified disc, and the one next block of the repository. It prints a warning on
 // standard error for each item that pack cannot take, and one warning
 // with the count of the Staged items that have no file, and then exits 1.
 // A staging directory that does not exist while a Staged or a Packed
@@ -107,6 +108,11 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
+	snapshots, err := c.ListSnapshots()
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
+		return 1
+	}
 
 	// The chunk files of the staged items are in the staging directory.
 	var stagedItems, missingFiles int
@@ -145,13 +151,14 @@ func cmdStatus(e *env, args []string) int {
 		staging:        layout.stagingDir(),
 		stagingMissing: noStaging,
 		newestSnapshot: newest,
+		noSnapshot:     len(snapshots) == 0,
 		device:         cfg.PackDevice,
 		source:         cfg.SourceRoot,
 		staged:         stagedItems,
 		discs:          nextDiscs(layout, discs),
 	}
 	r.repairs = nextRepairs(ledger.Rows, discs, repairs)
-	for _, line := range nextBlock(r) {
+	for _, line := range append(adviceLines(r), nextBlock(r)...) {
 		_, _ = fmt.Fprintln(stdout, line)
 	}
 	warned := noStaging
@@ -277,7 +284,8 @@ func newestSnapshotTime(c *catalog.Catalog, discs []discSummary) (time.Time, err
 // by its number, or by its full uuid when another disc has the same
 // number. It reads whether the disc root and the image exist. The stat
 // follows a symlink, so the tree of a pack --out disc exists only while
-// its target exists.
+// its target exists. The disc root of a pack --out disc is the target
+// of its symlink.
 func nextDiscs(layout repoLayout, discs []discSummary) []nextDisc {
 	seqCount := make(map[uint64]int)
 	for _, d := range discs {
@@ -290,12 +298,21 @@ func nextDiscs(layout repoLayout, discs []discSummary) []nextDisc {
 			arg = d.UUID
 		}
 		img := layout.planImage(d.Info.UUID)
-		_, treeErr := os.Stat(layout.planTree(d.Info.UUID))
+		tree := layout.planTree(d.Info.UUID)
+		if target, err := os.Readlink(tree); err == nil {
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(tree), target)
+			}
+			tree = target
+		}
+		_, treeErr := os.Stat(tree)
 		_, imgErr := os.Stat(img)
 		out = append(out, nextDisc{
 			arg:         arg,
+			seq:         d.Seq,
 			label:       d.Label,
 			info:        d.Info,
+			tree:        tree,
 			image:       img,
 			treeExists:  treeErr == nil,
 			imageExists: imgErr == nil,

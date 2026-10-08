@@ -976,12 +976,18 @@ filesystems and image building"); the example is for disc 7. For a `pack --out` 
 directory. Add `-dvd-compat` for a `pack --close` disc. Never pass `-J`: Joliet
 cuts long names. Never pass `-udf`: it adds a UDF 1.02 bridge. Never pass
 `-M`. The reading of an ISO 9660 level 4 disc on Windows and on macOS is not
-verified. `status` never prints this method in a `next:` block. It prints one
-line after the block that points to the guide section "Burn the folder
-directly".
+verified. `status` prints this method as an optional second part after the
+block of a `packed` disc, with the real `TREE`, the volume label of the disc,
+and `-dvd-compat` for a `pack --close` disc (`docs/states.md`, "State to
+`next:` block").
 
 Never use `-overburn`. Never pass `-M` on any disc. Eject and load the disc
-again before the verify, so that the read comes from the medium.
+again before the verify, so that the read comes from the medium. A drive
+needs some seconds to read a disc that it just loaded. Thus the mount line
+of `status` tries the mount again, up to 30 times, 2 seconds apart, in place
+of a fixed wait. The burn of a large disc can take longer than the `sudo`
+timeout. Thus the mount line after a burn starts with `sudo -v`, which asks
+for the password again when the ticket has run out.
 
 ### 11.2 Tool version check
 
@@ -1738,7 +1744,7 @@ texts and the count `N`.
 **`status`** prints `staged: N items, B bytes`, then one snapshot line for
 each snapshot that is not complete on discs, then the `lost:` line while an
 item is Lost, then one disc line for each disc that is not undone, then one
-`next:` block:
+advice line for each `verified` disc, then one `next:` block:
 
 ```
 snapshot ID: N items staged, not complete on discs; its snapshot object is not on a disc yet
@@ -1828,7 +1834,9 @@ symlink adds nothing. A held line appears only for a disc that still has a
 Packed item and is not `verified`: a `packed` or a `burned` disc.
 
 The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`.
-The last line is `next: noahsark status`. `--dry-run` prints no `next:`
+The last line is `next: noahsark status` when `gc` changed state: it freed
+an item, or it wrote an event or an item record. A `gc` that frees no item
+and writes no record prints no `next:` line. `--dry-run` prints no `next:`
 line. A
 `missing` or `lost` disc gets no line. It asks no confirmation. When `gc`
 cannot unlink a chunk file or remove a plan directory, it prints `noahsark:
@@ -2275,9 +2283,10 @@ dpkg-query -W dvd+rw-tools udftools    # Fedora: rpm -q; Arch: pacman -Q
 dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks|Track Size'
 # Build the image, then burn it with the growisofs line that status prints.
 sudo noahsark --repo=/srv/ark/repo image build <DISC>
-# After the burn: load the disc again, mount it read-only, verify.
-eject /dev/sr0 && eject -t /dev/sr0 && sleep 5
-sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
+# After the burn: load the disc again, wait for the drive, mount it
+# read-only, verify.
+eject /dev/sr0 && eject -t /dev/sr0
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark
 noahsark verify /mnt/ark; sudo umount /mnt/ark && eject /dev/sr0
 # Copy a good disc to an image, to burn a new copy.
 ddrescue -b 2048 -n -r1 /dev/sr0 copy.img copy.map

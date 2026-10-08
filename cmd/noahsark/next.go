@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -15,9 +16,9 @@ const nextStatusLine = "next: noahsark status"
 // arkMount is the mount point that every block of status uses.
 const arkMount = "/mnt/ark"
 
-// folderBurnPointer follows the packed block. It is not part of the
-// block: it points to the second burn method.
-const folderBurnPointer = `or burn the folder directly; see the guide, "Burn the folder directly"`
+// folderBurnHead starts the second part of the packed block: the
+// second burn method, a direct burn of the folder.
+const folderBurnHead = `or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:`
 
 // nextRepo is what the next block needs to know about a repository.
 type nextRepo struct {
@@ -30,6 +31,8 @@ type nextRepo struct {
 	stagingMissing bool
 	// newestSnapshot is the time of the newest snapshot of the catalog.
 	newestSnapshot time.Time
+	// noSnapshot tells that the catalog holds no snapshot.
+	noSnapshot bool
 	// device is pack.device, and source is sources.root.
 	device string
 	source string
@@ -56,10 +59,14 @@ type nextDisc struct {
 	// arg names the disc in a command line: the disc number, or the full
 	// uuid when the number matches more than one disc.
 	arg   string
+	seq   uint64
 	label string
 	info  stage.DiscInfo
-	// image is the path of the image of the disc. treeExists and
-	// imageExists tell whether the disc root and the image exist.
+	// tree is the disc root of the disc: the target of the symlink for a
+	// pack --out disc. image is the path of the image of the disc.
+	// treeExists and imageExists tell whether the disc root and the
+	// image exist.
+	tree        string
 	image       string
 	treeExists  bool
 	imageExists bool
@@ -83,15 +90,27 @@ func waitsForCommit(info stage.DiscInfo) bool {
 	return info.State == stage.DiscLost && (info.BeforeLost == stage.DiscOnDiscOnly || info.BeforeLost == stage.DiscMissing)
 }
 
-// nextBlock returns the lines that status prints after the disc lines:
-// the one next block of the repository, and the lines that go with it.
-// The first match in this order gives the block: a staging directory
-// that does not exist while an item needs it, a disc whose item records
-// do not follow its state, a missing disc, an on disc only disc whose
-// last check failed, a lost disc whose data waits for a commit, a disc
-// to burn or to verify, a verified disc whose data gc can free, staged
-// data, and nothing. Inside one step the disc with the lowest number
-// wins.
+// adviceLines returns one advice line for each verified disc, in the
+// order of the disc numbers. gc frees the data of each of them at one
+// time, thus status prints them before any block.
+func adviceLines(r nextRepo) []string {
+	var lines []string
+	for _, d := range r.discs {
+		if d.info.State == stage.DiscVerified {
+			lines = append(lines, secondCopyAdvice(d))
+		}
+	}
+	return lines
+}
+
+// nextBlock returns the one next block of the repository. The first
+// match in this order gives the block: a staging directory that does
+// not exist while an item needs it, a disc whose item records do not
+// follow its state, a missing disc, an on disc only disc whose last
+// check failed, a lost disc whose data waits for a commit, a disc to
+// burn or to verify, a verified disc whose data gc can free, staged
+// data, no snapshot, and nothing. Inside one step the disc with the
+// lowest number wins.
 func nextBlock(r nextRepo) []string {
 	if r.stagingMissing {
 		return []string{
@@ -132,8 +151,8 @@ func nextBlock(r nextRepo) []string {
 	}); ok {
 		return r.burnBlock(d)
 	}
-	if d, ok := r.first(func(d nextDisc) bool { return d.info.State == stage.DiscVerified }); ok {
-		return []string{secondCopyAdvice(d), "next: noahsark gc"}
+	if _, ok := r.first(func(d nextDisc) bool { return d.info.State == stage.DiscVerified }); ok {
+		return []string{"next: noahsark gc"}
 	}
 	if r.staged > 0 {
 		return []string{
@@ -142,6 +161,9 @@ func nextBlock(r nextRepo) []string {
 			"then paste this line, type the capacity, and press Enter:",
 			"noahsark pack --capacity=",
 		}
+	}
+	if r.noSnapshot {
+		return []string{"next: noahsark commit"}
 	}
 	return []string{"next: nothing to do"}
 }
@@ -161,7 +183,7 @@ func (r nextRepo) first(match func(nextDisc) bool) (nextDisc, bool) {
 func (r nextRepo) missingBlock(d nextDisc) []string {
 	return []string{
 		fmt.Sprintf("next: load disc %s %q, then run:", d.arg, d.label),
-		r.mountLine() + " &&",
+		r.driveMountLine() + " &&",
 		"noahsark recover --source=" + quoteShellWord(r.source) + " --disc=" + arkMount + ";",
 		r.unmountLine(),
 		fmt.Sprintf("or, when disc %s is gone for good, run:", d.arg),
@@ -173,12 +195,11 @@ func (r nextRepo) missingBlock(d nextDisc) []string {
 // found on disc only disc. A packed disc, and a burned disc whose last
 // check failed, need a new disc from the kept disc root. A disc with no
 // disc root can only be named lost. The unmount follows a ";", so that
-// a failed verify leaves no disc mounted.
+// a failed verify leaves no disc mounted. A burned disc is in the drive
+// already, thus its block does not eject it.
 func (r nextRepo) burnBlock(d nextDisc) []string {
-	dev := quoteShellWord(r.device)
 	verifyLines := []string{
-		"eject " + dev + " && eject -t " + dev + " && sleep 5 &&",
-		r.mountLine() + " &&",
+		r.driveMountLine() + " &&",
 		"noahsark verify " + arkMount + ";",
 		r.unmountLine(),
 	}
@@ -200,13 +221,47 @@ func (r nextRepo) burnBlock(d nextDisc) []string {
 		burn = "growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z "
 	}
 	lines = append(lines, burn+quoteShellWord(r.device+"="+d.image)+" &&")
-	lines = append(lines, verifyLines...)
-	return append(lines, folderBurnPointer)
+	lines = append(lines, r.afterBurnLines()...)
+	return append(lines, r.folderBurnLines(d)...)
 }
 
-// mountLine mounts the disc in the drive read-only on arkMount.
-func (r nextRepo) mountLine() string {
-	return "sudo mkdir -p " + arkMount + " && sudo mount -o ro " + quoteShellWord(r.device) + " " + arkMount
+// folderBurnLines is the second part of the packed block: a check of the
+// disc root, a direct burn of it as ISO 9660 with Rock Ridge, and the
+// lines after a burn. A disc packed with --close is sealed.
+func (r nextRepo) folderBurnLines(d nextDisc) []string {
+	tree := quoteShellWord(d.tree)
+	burn := "growisofs -Z "
+	if d.info.Close {
+		burn = "growisofs -dvd-compat -Z "
+	}
+	lines := []string{
+		folderBurnHead,
+		"noahsark verify " + tree + " &&",
+		burn + quoteShellWord(r.device) + " -R -iso-level 4 -V " + image.VolumeLabel(d.seq) + " " + tree + " &&",
+	}
+	return append(lines, r.afterBurnLines()...)
+}
+
+// afterBurnLines load the burned disc again, so that the read comes from
+// the disc, then mount it and verify it. sudo -v renews the sudo ticket:
+// a burn can take longer than the sudo timeout.
+func (r nextRepo) afterBurnLines() []string {
+	dev := quoteShellWord(r.device)
+	return []string{
+		"eject " + dev + " && eject -t " + dev + " &&",
+		"sudo -v && " + r.driveMountLine() + " &&",
+		"noahsark verify " + arkMount + ";",
+		r.unmountLine(),
+	}
+}
+
+// driveMountLine mounts the disc in the drive read-only on arkMount. A
+// drive needs some seconds to read a disc that it just loaded, thus the
+// line tries the mount up to 30 times, 2 seconds apart. The loop ends
+// with exit code 0, thus mountpoint fails when no try mounted the disc.
+func (r nextRepo) driveMountLine() string {
+	return "sudo mkdir -p " + arkMount + " && for i in $(seq 30); do sudo mount -o ro " + quoteShellWord(r.device) + " " + arkMount +
+		" 2>/dev/null && break; sleep 2; done && mountpoint " + arkMount
 }
 
 // unmountLine unmounts arkMount and ejects the disc.

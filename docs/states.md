@@ -380,7 +380,8 @@ commands are `init`, `commit`, `pack` (also `pack --undo`), `disc burned`,
 `disc verified`, `disc lost` (also with `--undo`), `disc burned --undo`,
 `verify` (also `verify --undo`), `gc` and `recover`. A command that
 changed nothing because it was refused, or because the operator answered
-no, prints no `next:` line. `restore`, `ls`, `log`, `image build`, and
+no, prints no `next:` line. A `gc` that frees no item and writes no record
+prints no `next:` line either. `restore`, `ls`, `log`, `image build`, and
 every `--dry-run` run print none. `verify --no-mark` and a `verify` that
 is not counted change no state, and print none. The `Message` column
 lists that last line where a row prints it.
@@ -452,10 +453,10 @@ lists that last line where a row prints it.
 | 50 | packed or burned | verify --undo SEQ | refused, no question | `disc SEQ has no verified record` | 1 | nothing to undo. For a `burned` disc, `noahsark disc burned --undo SEQ` removes the burn record. |
 | 51 | lost or missing | verify --undo SEQ | refused, no question | `disc SEQ is marked lost`, or `disc SEQ is missing` | 1 | `noahsark status` |
 | 52 | verified | gc | on disc only. The chunk files of the disc and its `staging/plans/UUID/` directory are removed. | `gc: freed N item(s), B bytes`, then the last line `next: noahsark status` | 0 | `noahsark status` |
-| 54 | verified, the catalog has no INDEX for the disc | gc | unchanged, the item skipped | `gc: freed 0 item(s), 0 bytes`, then `gc: N item(s) skipped: disc SEQ's table is not in the catalog`, then the last line `next: noahsark status` | 1 | `noahsark verify` of that disc, then `noahsark gc` |
-| 54a | verified, the catalog INDEX of the disc does not list some items of the disc | gc | unchanged. No item of the disc is freed and no `Freed` event is appended. | `gc: freed 0 item(s), 0 bytes`, then `gc: N item(s) skipped: disc SEQ's table does not list them`, then the last line `next: noahsark status` | 1 | `noahsark verify` of that disc, then `noahsark gc`. When the skip stays, the disc does not hold these items: `noahsark disc lost SEQ` returns them to staged. |
-| 55 | packed, burned, or missing | gc | unchanged | `gc: freed 0 item(s), 0 bytes`, then `gc: disc SEQ: not verified; N item(s) held` (no disc line for a missing disc), then the last line `next: noahsark status` | 0 | `noahsark status` |
-| 56 | lost | gc | unchanged | `gc: freed 0 item(s), 0 bytes` (no disc line for a lost disc), then the last line `next: noahsark status` | 0 | `noahsark status` |
+| 54 | verified, the catalog has no INDEX for the disc | gc | unchanged, the item skipped | `gc: freed 0 item(s), 0 bytes`, then `gc: N item(s) skipped: disc SEQ's table is not in the catalog`. No `next:` line. | 1 | `noahsark verify` of that disc, then `noahsark gc` |
+| 54a | verified, the catalog INDEX of the disc does not list some items of the disc | gc | unchanged. No item of the disc is freed and no `Freed` event is appended. | `gc: freed 0 item(s), 0 bytes`, then `gc: N item(s) skipped: disc SEQ's table does not list them`. No `next:` line. | 1 | `noahsark verify` of that disc, then `noahsark gc`. When the skip stays, the disc does not hold these items: `noahsark disc lost SEQ` returns them to staged. |
+| 55 | packed, burned, or missing | gc | unchanged | `gc: freed 0 item(s), 0 bytes`, then `gc: disc SEQ: not verified; N item(s) held` (no disc line for a missing disc). No `next:` line: `gc` changed nothing. | 0 | `noahsark status` |
+| 56 | lost | gc | unchanged | `gc: freed 0 item(s), 0 bytes` (no disc line for a lost disc). No `next:` line: `gc` changed nothing. | 0 | `noahsark status` |
 | 57 | packed, burned, or verified | disc lost SEQ, answer yes (a terminal, or `--force-yes`) | lost. Its items return to staged. The directory `staging/plans/UUID/` is removed. The catalog data of the disc stays. | `warning: disc SEQ "LABEL" (UUID): STATE -> lost`, then `the tool stops trusting this disc`, then `Continue? [y/N]` (no question with `--force-yes`), then `disc SEQ "LABEL": marked lost; N item(s) returned to staged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 58 | on disc only | disc lost SEQ, answer yes | lost. Each snapshot, tree, and blob object of the disc that the catalog holds is `staged`. Each other item, a freed chunk, is `lost`. | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; I item(s) returned to staged; N item(s) need a new commit`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block gives `noahsark commit` until a commit makes a snapshot. The commit stages each lost item that the source still holds. While an item stays lost, `status` prints the `lost:` line (row 71e). |
 | 59 | missing | disc lost SEQ, answer yes | lost | the warning and the question of row 57, then `disc SEQ "LABEL": marked lost; its items are not known; a new commit stages what the source still holds`, then the last line `next: noahsark status` | 0 | `noahsark status`: its block gives `noahsark commit` until a commit makes a snapshot |
@@ -478,7 +479,7 @@ lists that last line where a row prints it.
 | 70d | an existing repository | recover, a disc that the repository knows, and that is not `missing`, with damaged objects | unchanged. The catalog entries of the objects that pass are written. No event is written. | `recover: damaged: ID` for each damaged object, then `recover: N item(s) damaged on disc SEQ "LABEL"`, then the last line `next: noahsark status` | 1 | copy the disc now, or use the second copy, then `noahsark recover` with the copy |
 | 70e | on disc only, last check failed | recover, a copy of that disc with no damaged object, and no other disc is `missing` | unchanged, a verify log event added. Each item of the disc that has no record, or that is `lost`, becomes on-disc. | `recover: ok; disc SEQ "LABEL" already known; check logged`, then the last line `next: noahsark status` | 0 | `noahsark status` |
 | 70f | missing | recover, another disc that the repository knows, and that is not `missing`, with no damaged object | unchanged. The given disc acts as row 70c, or as row 70e when it is `on disc only` and its last check failed. The `missing` disc stays `missing`. | `recover: disc ... already known`, or `recover: disc ... already known; check logged`, then `recover: disc SEQ "LABEL" (UUID) named by another disc, not yet given` for each missing disc, then the last line `next: noahsark status` | 1 | `noahsark status`: its block gives the `recover` line of the `missing` disc |
-| 71 | any | status | unchanged | `staged: N items, B bytes`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the full `next:` block for the whole repository. STATE is the disc word, with the suffix that "Disc states" defines. | 0 | the `next:` block |
+| 71 | any | status | unchanged | `staged: N items, B bytes`, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then one advice line for each verified disc, then the full `next:` block for the whole repository. STATE is the disc word, with the suffix that "Disc states" defines. | 0 | the `next:` block |
 | 71a | (no repository) | a command other than `init`, `recover`, `verify`, `restore`, `ls`, and `log` | refused, usage error | `no repository; give --repo, or run noahsark init for a new repository, or noahsark recover for a lost one` | 2 | the same line with `--repo=PATH`; `noahsark init` in the directory of a new repository; after the loss of the repository, `noahsark --repo=PATH recover --source=SOURCE --disc=DIR`, never `init` |
 | 71b | the staging directory does not exist, and the state log holds a Staged or a Packed item: its volume is not mounted, or `staging.dir` names a wrong path | status | unchanged | `warning: staging directory DIR does not exist; staging.dir in config.yaml names it` on standard error, then one `disc SEQ "LABEL"  STATE  UUID` line for each disc, then the `next:` block of a missing staging directory. No `staged:` line and no snapshot line: the chunk files are not there. No block names `disc lost` for a disc root that is missing with the staging directory. | 1 | the `next:` block |
 | 71c | the staging directory does not exist, and the state log holds a Staged or a Packed item | a command that takes the lock, other than `recover`, for example `disc burned SEQ` or `commit` | refused. Nothing is written. | `staging directory DIR does not exist; mount its volume, or correct staging.dir in config.yaml; when the staging store is gone for good, create it with mkdir` | 1 | `noahsark status`: its block names the directory |
@@ -590,19 +591,36 @@ when it changed state. The block joins its lines with
 `&&`, so that a failed line stops the lines after it. The one exception is
 the line after `verify` or `recover`: it follows a `;`, so that the disc
 is always unmounted and ejected, also when `verify` or `recover` exits 1.
-`recover` exits 1 while another disc is still `missing`. Two blocks have a
+`recover` exits 1 while another disc is still `missing`. Three blocks have a
 second part that is not joined: the `pack` line that the operator
-completes, and the `disc lost` alternative of a `missing` disc. `DEV` is
+completes, the `disc lost` alternative of a `missing` disc, and the folder
+burn alternative of a `packed` disc. `DEV` is
 `pack.device` from the config. `REPO` is the absolute path of the
 repository. `TREE` and `IMG` are the disc root and the image under
 `staging/plans/UUID/`; for a `pack --out` disc, `TREE` is the target
 path of the symlink. `/mnt/ark` is the mount point that `status` always
 uses. `SOURCE` is `sources.root` from the config. `STAGING` is the
-absolute path of `staging.dir` from the config.
+absolute path of `staging.dir` from the config. `VOLUME` is the volume
+label of the disc that OPERATIONS.md, "Disc filesystems and image
+building", gives: `NOAHSARK_` and the disc number with at least 4
+digits.
+
+`MOUNT` is the line that waits for the drive and mounts the disc
+read-only:
+
+```
+sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro DEV /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark
+```
+
+A drive needs some seconds to read a disc that it just loaded, and a
+Blu-ray drive often needs more than 5. Thus the line tries the mount up
+to 30 times, 2 seconds apart. The loop itself always ends with exit code
+0. `mountpoint` then fails when no try mounted the disc, and the lines
+after it do not run.
 
 `SEQ` in a block is the disc number. It is the full uuid when two discs
 that are not undone have the same number. `DEV`, `REPO`, `SOURCE`,
-`STAGING`, and `DEV=IMG` each go into a command line as one shell word.
+`STAGING`, `TREE`, and `DEV=IMG` each go into a command line as one shell word.
 A word that holds a character other than a letter, a digit, or one of `_./:=@%+,-` goes in
 single quotes, and each `'` in it becomes `'\''`.
 
@@ -625,11 +643,18 @@ in this order, and inside one step the lowest number:
    newest event is `LostUndone`;
 7. data that `gc` can free now;
 8. staged data that no disc holds;
-9. nothing.
+9. no snapshot in the catalog;
+10. nothing.
 
-A repository with no commit and no disc matches step 9: `status` prints
-`next: nothing to do`. `status` never prints `next: nothing to do` while
+A repository with no commit matches step 9: `status` prints `next:
+noahsark commit`. `status` never prints `next: nothing to do` while
 step 1 or step 2 matches.
+
+Advice lines are not a block, and no step chooses them. Before the
+block, `status` prints one advice line for each `verified` disc, in the
+order of the disc numbers, whatever block follows. Each such disc has
+data that `gc` frees, and `gc` frees the data of each `verified` disc at
+one time.
 
 Step 1 comes first, because each command that takes the lock, other than
 `recover`, refuses while it matches (row 71c). A disc root under a
@@ -660,34 +685,38 @@ its own.
 |---|---|
 | the staging directory does not exist, and a Staged or a Packed item needs it (step 1) | `next: staging directory STAGING does not exist. Mount its volume, or correct staging.dir in config.yaml. When the staging store is gone for good, run:` then `mkdir -p STAGING`. `status` also prints the warning of row 71b. |
 | any state, the item records do not follow it (step 2) | `next: disc SEQ: an earlier COMMAND stopped before it wrote the records of its items; gc writes them, and also frees the data of each verified disc; run:` then `noahsark gc`. `COMMAND` is `disc lost`, `disc lost --undo`, `pack --undo`, or `gc`. `gc` takes the lock, thus it writes the item records first; any other command that takes the lock does the same. `gc --dry-run` takes no lock, and writes no record. |
-| `packed` | `next: load a blank disc, then run:` then `sudo noahsark --repo=REPO image build SEQ &&` (only when `IMG` does not exist), `growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z DEV=IMG &&`, `eject DEV && eject -t DEV && sleep 5 &&`, `sudo mkdir -p /mnt/ark && sudo mount -o ro DEV /mnt/ark &&`, `noahsark verify /mnt/ark;`, `sudo umount /mnt/ark && eject DEV`. For a disc packed with `--close`, the `growisofs` line is `growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z DEV=IMG &&`. The `close` flag of the `Packed` event holds that choice. After the block, one line that is not part of it: `or burn the folder directly; see the guide, "Burn the folder directly"`. |
+| `packed` | `next: load a blank disc, then run:` then `sudo noahsark --repo=REPO image build SEQ &&` (only when `IMG` does not exist), `growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z DEV=IMG &&`, `eject DEV && eject -t DEV &&`, `sudo -v && MOUNT &&`, `noahsark verify /mnt/ark;`, `sudo umount /mnt/ark && eject DEV`. For a disc packed with `--close`, the `growisofs` line is `growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z DEV=IMG &&`. The `close` flag of the `Packed` event holds that choice. `sudo -v` renews the `sudo` ticket after the burn: a burn can take longer than the `sudo` timeout. Then the folder burn alternative: `or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:` then `noahsark verify TREE &&`, `growisofs -Z DEV -R -iso-level 4 -V VOLUME TREE &&`, `eject DEV && eject -t DEV &&`, `sudo -v && MOUNT &&`, `noahsark verify /mnt/ark;`, `sudo umount /mnt/ark && eject DEV`. For a disc packed with `--close`, the `growisofs` line of the alternative is `growisofs -dvd-compat -Z DEV -R -iso-level 4 -V VOLUME TREE &&`. |
 | `burned`, last check failed | the `packed` block: the disc is bad, and a new disc gets the kept disc root |
 | `packed`, or `burned` with a failed last check, and `TREE` does not exist (a disc that `disc lost --undo` gave back) | `next: disc SEQ has no disc root; no new disc can be burned from it. Discard the disc, then run:` then `noahsark disc lost SEQ`. Its items return to staged, and the next `pack` takes them. |
-| `burned` | `next: load disc SEQ, then run:` then `eject DEV && eject -t DEV && sleep 5 &&`, `sudo mkdir -p /mnt/ark && sudo mount -o ro DEV /mnt/ark &&`, `noahsark verify /mnt/ark;`, `sudo umount /mnt/ark && eject DEV` |
-| `verified` (data that `gc` can free) | one advice line: `advice: burn a second copy of IMG before gc; see the guide, "A second copy"`. When `IMG` does not exist, the advice line is `advice: copy disc SEQ before gc; see the guide, "A second copy"`. Then `next: noahsark gc`. |
+| `burned` | `next: load disc SEQ, then run:` then `MOUNT &&`, `noahsark verify /mnt/ark;`, `sudo umount /mnt/ark && eject DEV`. The block does not eject the disc: the operator loads it, and a slot-load drive cannot load a disc by itself. |
+| `verified` (data that `gc` can free) | `next: noahsark gc`. Before each block, the advice line of each `verified` disc: `advice: burn a second copy of IMG before gc; see the guide, "A second copy"`. When `IMG` does not exist, the advice line is `advice: copy disc SEQ before gc; see the guide, "A second copy"`. |
 | `on disc only` | no block of its own |
 | `on disc only`, the newest event is `LostUndone` | the `burned` block: the found disc needs a check |
 | `on disc only`, last check failed | `next: disc SEQ failed its last check. Copy it now, or use your second copy; see the guide, "A second copy". When no copy can be read, run:` then `noahsark disc lost SEQ && noahsark commit` |
 | `lost`, `packed`, `burned` or `verified` when marked lost | no block of its own. Its items are staged again, and the next `pack` takes them. |
 | `lost`, `on disc only` or `missing` when marked lost, and no snapshot is as new as the `Lost` event (step 5) | `next: disc SEQ is lost; a new commit stages what the source still holds; run:` then `noahsark commit` |
 | `lost`, `on disc only` or `missing` when marked lost, and a snapshot is as new as the `Lost` event | no block of its own. The data that the source no longer holds is gone. `status` prints the `lost:` line while an item is `lost`. |
-| `missing` | `next: load disc SEQ "LABEL", then run:` then `sudo mkdir -p /mnt/ark && sudo mount -o ro DEV /mnt/ark &&`, `noahsark recover --source=SOURCE --disc=/mnt/ark;`, `sudo umount /mnt/ark && eject DEV`, then `or, when disc SEQ is gone for good, run:` then `noahsark disc lost SEQ` |
+| `missing` | `next: load disc SEQ "LABEL", then run:` then `MOUNT &&`, `noahsark recover --source=SOURCE --disc=/mnt/ark;`, `sudo umount /mnt/ark && eject DEV`, then `or, when disc SEQ is gone for good, run:` then `noahsark disc lost SEQ` |
 | staged data, no disc holds it | `next: load a blank disc, then run:` then `dvd+rw-mediainfo DEV \| grep -E 'Mounted Media\|Free Blocks'`, then `then paste this line, type the capacity, and press Enter:` then `noahsark pack --capacity=` |
+| no snapshot in the catalog, nothing staged (step 9) | `next: noahsark commit` |
 | nothing | `next: nothing to do` |
 
 The tool does not know the capacity of a blank disc. The `pack` line
 therefore ends at `--capacity=`, and the operator types the value.
 
-The `packed` block prints the recommended burn method only: `image
-build`, then a burn of the image. The line after the block points to
-the second method, a direct burn of the folder, which OPERATIONS.md,
-"Burning", defines.
+The `packed` block prints the recommended burn method first: `image
+build`, then a burn of the image. The folder burn alternative after it
+is the second method, a direct burn of the folder, which OPERATIONS.md,
+"Burning", defines. The operator pastes one of the two, not both. The
+alternative verifies the folder before the burn: no image exists to
+check. `noahsark verify TREE` counts nothing, and exits 1 when the
+folder is damaged.
 
 A `disc lost` line in a block carries no answer flag. `disc lost` asks
 a critical confirmation, and the operator answers it at the terminal.
 
 The `verified` block does not ask for a second copy as a required step.
-The second copy is the operator's choice, and the advice line is the
+The second copy is the operator's choice, and the advice lines are the
 only reminder.
 
 ## 7. The missing disc
