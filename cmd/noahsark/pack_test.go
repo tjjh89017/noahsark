@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -266,7 +267,7 @@ func TestPackWithNothingStagedSucceeds(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("second pack: exit %d, want 0: %s", code, out)
 	}
-	if want := "pack: nothing staged\nnext: noahsark status\n"; out != want {
+	if want := "pack: nothing staged\n" + strings.Join(statusNextLines(t, repo), "\n") + "\n"; out != want {
 		t.Fatalf("second pack: output %q, want %q", out, want)
 	}
 	if entries, err := os.ReadDir(secondTree); err == nil && len(entries) != 0 {
@@ -498,7 +499,7 @@ func TestPackOnANewRepositorySucceeds(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("pack: exit %d, want 0: %s", code, out)
 	}
-	if want := "pack: nothing staged\nnext: noahsark status\n"; out != want {
+	if want := "pack: nothing staged\nnext: noahsark commit\n"; out != want {
 		t.Fatalf("pack output %q, want %q", out, want)
 	}
 	if _, err := os.Stat(testLayout(t, repo).discLogFile()); !os.IsNotExist(err) {
@@ -507,8 +508,7 @@ func TestPackOnANewRepositorySucceeds(t *testing.T) {
 }
 
 // TestPackPrintsTheNewLines checks the exact lines of a pack: the
-// packed-disc line, the uuid line and the last line "next: noahsark
-// status".
+// packed-disc line, the uuid line and the block of the packed disc.
 func TestPackPrintsTheNewLines(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	code, out := runCmd(t, "--repo="+repo, "pack", "--capacity=64MiB")
@@ -516,8 +516,9 @@ func TestPackPrintsTheNewLines(t *testing.T) {
 		t.Fatalf("pack: exit %d: %s", code, out)
 	}
 	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("pack output %q, want 3 lines", out)
+	block := statusNextLines(t, repo)
+	if len(lines) != 2+len(block) {
+		t.Fatalf("pack output %q, want 2 lines and the next block", out)
 	}
 	m := packedDiscRe.FindStringSubmatch(lines[0])
 	if m == nil || m[1] != "0" || m[2] != defaultRefName()+" disc 0" {
@@ -527,8 +528,8 @@ func TestPackPrintsTheNewLines(t *testing.T) {
 	if want := "uuid: " + uuidText(disc.UUID); lines[1] != want {
 		t.Fatalf("second line %q, want %q", lines[1], want)
 	}
-	if lines[2] != "next: noahsark status" {
-		t.Fatalf("last line %q, want next: noahsark status", lines[2])
+	if !slices.Equal(lines[2:], block) || lines[2] != "next: load a blank disc, then run:" {
+		t.Fatalf("last lines %q, want the packed block %q", lines[2:], block)
 	}
 }
 

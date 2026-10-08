@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -134,8 +135,11 @@ func corruptDiscRoot(t *testing.T, root string) func() {
 // with a good disc root and once with a damaged one. A good check
 // records BurnRecorded then CheckOK for a packed disc, and CheckOK for
 // every other state. A failed check records CheckFailed, and the disc
-// goes one step down. A lost or a missing disc is refused.
+// goes one step down. A lost or a missing disc is refused. A check that
+// is recorded ends with the next block.
 func TestVerifyRecordsTheCheck(t *testing.T) {
+	// nextLinePrefix marks a case that ends with the next block.
+	const nextLinePrefix = "\nnext: "
 	cases := []struct {
 		name     string
 		start    stage.DiscState
@@ -145,14 +149,14 @@ func TestVerifyRecordsTheCheck(t *testing.T) {
 		want     stage.DiscState
 		wantLast stage.CheckResult
 	}{
-		{"packed, good", stage.DiscPacked, false, 0, []string{"burn recorded; verified", nextStatusLine}, stage.DiscVerified, stage.CheckResultOK},
-		{"burned, good", stage.DiscBurned, false, 0, []string{"verified", nextStatusLine}, stage.DiscVerified, stage.CheckResultOK},
-		{"verified, good", stage.DiscVerified, false, 0, []string{"already verified; check logged", nextStatusLine}, stage.DiscVerified, stage.CheckResultOK},
-		{"on disc only, good", stage.DiscOnDiscOnly, false, 0, []string{"check logged", nextStatusLine}, stage.DiscOnDiscOnly, stage.CheckResultOK},
-		{"packed, bad", stage.DiscPacked, true, 1, []string{": bad; this disc is bad; no record to remove", nextStatusLine}, stage.DiscPacked, stage.CheckResultFailed},
-		{"burned, bad", stage.DiscBurned, true, 1, []string{": bad; this disc is bad; burn record removed", nextStatusLine}, stage.DiscPacked, stage.CheckResultFailed},
-		{"verified, bad", stage.DiscVerified, true, 1, []string{": bad; this disc is bad; verified record removed; gc holds the data", nextStatusLine}, stage.DiscBurned, stage.CheckResultFailed},
-		{"on disc only, bad", stage.DiscOnDiscOnly, true, 1, []string{": bad; the staged copy is already freed; copy this disc now, or use your second copy, or run: noahsark disc lost 0", nextStatusLine}, stage.DiscOnDiscOnly, stage.CheckResultFailed},
+		{"packed, good", stage.DiscPacked, false, 0, []string{"burn recorded; verified", nextLinePrefix}, stage.DiscVerified, stage.CheckResultOK},
+		{"burned, good", stage.DiscBurned, false, 0, []string{"verified", nextLinePrefix}, stage.DiscVerified, stage.CheckResultOK},
+		{"verified, good", stage.DiscVerified, false, 0, []string{"already verified; check logged", nextLinePrefix}, stage.DiscVerified, stage.CheckResultOK},
+		{"on disc only, good", stage.DiscOnDiscOnly, false, 0, []string{"check logged", nextLinePrefix}, stage.DiscOnDiscOnly, stage.CheckResultOK},
+		{"packed, bad", stage.DiscPacked, true, 1, []string{": bad; this disc is bad; no record to remove", nextLinePrefix}, stage.DiscPacked, stage.CheckResultFailed},
+		{"burned, bad", stage.DiscBurned, true, 1, []string{": bad; this disc is bad; burn record removed", nextLinePrefix}, stage.DiscPacked, stage.CheckResultFailed},
+		{"verified, bad", stage.DiscVerified, true, 1, []string{": bad; this disc is bad; verified record removed; gc holds the data", nextLinePrefix}, stage.DiscBurned, stage.CheckResultFailed},
+		{"on disc only, bad", stage.DiscOnDiscOnly, true, 1, []string{": bad; the staged copy is already freed; copy this disc now, or use your second copy, or run: noahsark disc lost 0", nextLinePrefix}, stage.DiscOnDiscOnly, stage.CheckResultFailed},
 		{"lost", stage.DiscLost, false, 1, []string{"disc 0 is marked lost"}, stage.DiscLost, stage.CheckResultOK},
 		{"missing", stage.DiscMissing, false, 1, []string{"disc 0 is missing; give it to recover"}, stage.DiscMissing, stage.CheckResultNone},
 	}
@@ -170,6 +174,9 @@ func TestVerifyRecordsTheCheck(t *testing.T) {
 				if !strings.Contains(out, line) {
 					t.Fatalf("output %q, want %q", out, line)
 				}
+			}
+			if slices.Contains(c.lines, nextLinePrefix) {
+				wantNextBlock(t, fx.repo, out)
 			}
 			if c.exit == 0 && !strings.Contains(out, fx.name()+": ") {
 				t.Fatalf("output %q does not name %s", out, fx.name())

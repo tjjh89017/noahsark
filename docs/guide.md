@@ -64,6 +64,8 @@ You need these:
   the capacity of a blank disc.
 - `udftools` 2.3 or later. `image build` runs `mkudffs`.
 - `eject`. Each block that `status` prints uses it.
+- `mountpoint` (util-linux). Each block that mounts a disc uses it to check
+  the mount.
 - GNU `ddrescue` (the Debian package is `gddrescue`), to copy a disc to an
   image. You need it only for a second copy after `gc`.
 
@@ -96,7 +98,7 @@ $ noahsark init --source=/srv/data
 initialized repository /srv/ark/repo
 source: /srv/data
 device: /dev/sr0
-next: noahsark status
+next: noahsark commit
 ```
 
 `init` makes the current directory the repository. It writes the source
@@ -137,16 +139,8 @@ to an older version`. Then check out the newest commit again.
 
 ### Commit
 
-Make the first commit right after `init`. Before the first commit,
-`status` says the same:
-
-```
-$ noahsark status
-staged: 0 items, 0 bytes
-next: noahsark commit
-```
-
-Run `commit`:
+Make the first commit right after `init`, as its `next:` line says. Run
+`commit`:
 
 ```
 $ noahsark commit
@@ -155,7 +149,10 @@ ref 2026-09-14 -> 12201b03c7e2a9f483ca68be6227af2feb15f227485ed18aff8ecae99416a4
 new items: 8, existing items: 0
 unstable: 0, skipped: 0
 staged: 8 items, 3001350 bytes
-next: noahsark status
+next: load a blank disc, then run:
+dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
+then paste this line, type the capacity, and press Enter:
+noahsark pack --capacity=
 ```
 
 `commit` prints the full snapshot id, so that a script can read it. The
@@ -179,22 +176,25 @@ the source root. When the repository is inside the source, for example
 with the source `$HOME`, `commit` leaves the repository and the staging
 store out by itself and prints one `excluded` line for each.
 
-### Run status, and paste its block
+### Paste the next block
 
-Each command that changes state ends with the line `next: noahsark status`.
-That line is only a pointer. `status` is the one command that prints the
-lines to run next. A command that changed nothing, because it refused or
-because you answered no, prints no `next:` line. `restore`, `ls`, `log`,
+Each command that changes state ends with the `next:` block. The block
+holds the lines to run next, with real paths. The lines of a block are
+joined with `&&`, so a failed line stops the lines after it. The unmount
+line follows a `;`, so the disc never stays mounted. Paste the lines under
+`next:` as they are. A line that starts with `or` starts a second method:
+paste the lines before it, or the lines after it, not both. A line that
+starts with `advice:` comes before the block. It is a reminder, not a line
+to paste.
+
+A command that changed nothing, because it refused or because you
+answered no, prints no `next:` block. `restore`, `ls`, `log`,
 `image build`, `--dry-run`, `verify --no-mark`, and a `verify` that is not
 counted print none either.
 
-`status` prints the staged total, one line for each snapshot that is not
-complete on discs ("A snapshot packed in parts"), one line for each disc,
-and one `next:` block. The block holds the lines to run next, with real paths. The lines
-of a block are joined with `&&`, so a failed line stops the lines after
-it. The unmount line follows a `;`, so the disc never stays mounted. Paste
-the lines under `next:` as they are. A line that starts with `or` starts a
-second method: paste the lines before it, or the lines after it, not both.
+When you come back later, run `status`. It prints the staged total, one
+line for each snapshot that is not complete on discs ("A snapshot packed
+in parts"), one line for each disc, and the same `next:` block:
 
 ```
 $ noahsark status
@@ -242,13 +242,26 @@ unit is refused.
 $ noahsark pack --capacity=bd25
 packed disc 0 "2026-09-14 disc 0": 8 item(s), 3001350 bytes
 uuid: 4a060bd4-ca9f-2d06-263e-b907483b8230
-next: noahsark status
+next: load a blank disc, then run:
+sudo noahsark --repo=/srv/ark/repo image build 0 &&
+growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
+noahsark verify /mnt/ark;
+sudo umount /mnt/ark && eject /dev/sr0
+or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:
+noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree &&
+growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
+noahsark verify /mnt/ark;
+sudo umount /mnt/ark && eject /dev/sr0
 ```
 
 `pack` fills one disc. Data that does not fit stays staged for the next
 `pack`. The label of a disc is the newest ref, then the disc number.
-With nothing staged, `pack` prints `pack: nothing staged`, then
-`next: noahsark status`. To see how many discs the staged data needs, add
+With nothing staged, `pack` prints `pack: nothing staged`, then the
+`next:` block. To see how many discs the staged data needs, add
 `--dry-run` before the pack. It writes nothing and prints no `next:`
 line. Each line shows the number that the disc gets:
 
@@ -299,29 +312,8 @@ commit the same source again, then pack.
 
 ### Build the image, burn, and verify
 
-Run `status` again. It prints the block for the packed disc:
-
-```
-$ noahsark status
-staged: 0 items, 0 bytes
-disc 0 "2026-09-14 disc 0"  packed  4a060bd4-ca9f-2d06-263e-b907483b8230
-next: load a blank disc, then run:
-sudo noahsark --repo=/srv/ark/repo image build 0 &&
-growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img &&
-eject /dev/sr0 && eject -t /dev/sr0 &&
-sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
-noahsark verify /mnt/ark;
-sudo umount /mnt/ark && eject /dev/sr0
-or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:
-noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree &&
-growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree &&
-eject /dev/sr0 && eject -t /dev/sr0 &&
-sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
-noahsark verify /mnt/ark;
-sudo umount /mnt/ark && eject /dev/sr0
-```
-
-The block holds two methods. Paste one of them, not both. The lines
+`pack` ends with the block for the packed disc. The block holds two
+methods. Paste one of them, not both. The lines
 from `or burn the folder directly` on are the second method: see "Burn
 the folder directly". Load the blank disc, and paste the lines from
 `sudo noahsark` to the first `eject /dev/sr0`. They do these steps:
@@ -360,7 +352,8 @@ wrong".
 $ noahsark verify /mnt/ark
 disc 0 "2026-09-14 disc 0": 8 items, ok
 burn recorded; verified
-next: noahsark status
+advice: burn a second copy of /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img before gc; see the guide, "A second copy"
+next: noahsark gc
 ```
 
 The number counts the items on the disc. From the second disc on, it can
@@ -370,21 +363,13 @@ snapshots of the earlier discs.
 Write the disc number, the first 8 characters of the uuid, and the storage
 place on the sleeve of the disc. The tool keeps no shelf notes.
 
-`status` now shows the verified disc. `gc` can free its data now, thus
-`status` asks you to make the second copy first. It prints one `advice:`
-line for each `verified` disc, also when the `next:` block is for
-another disc:
-
-```
-$ noahsark status
-staged: 0 items, 0 bytes
-disc 0 "2026-09-14 disc 0"  verified, last check 2026-09-14  4a060bd4-ca9f-2d06-263e-b907483b8230
-advice: burn a second copy of /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img before gc; see the guide, "A second copy"
-next: noahsark gc
-```
+`gc` can free the data of a verified disc now, thus the tool asks you to
+make the second copy first. It prints one `advice:` line for each
+`verified` disc before the block, also when the `next:` block is for
+another disc. `status` prints the same lines.
 
 *... Days pass. You add, change and delete files in `/srv/data`. Each
-cycle is `commit`, then `status` and its `next:` block.*
+cycle is `commit`, then the `next:` block of each command.*
 
 ## Burn the folder directly
 
@@ -402,8 +387,8 @@ Read these warnings first:
 - There is no image to check before the burn. Verify the folder first.
 - The reading of this disc on Windows and on macOS is not verified.
 
-`status` prints the lines of this method after the block of a `packed`
-disc, from the line `or burn the folder directly` on. Load a blank disc,
+The block of a `packed` disc holds the lines of this method, from the
+line `or burn the folder directly` on. Load a blank disc,
 and paste them. They hold the real path, the volume label, and
 `-dvd-compat` for a disc that you packed with `--close`. This section
 explains each line.
@@ -444,8 +429,8 @@ sudo umount /mnt/ark && eject /dev/sr0
 ```
 
 `verify` records the burn and marks the disc `verified`, as for the image.
-The `advice:` line of `status` then says `copy disc 0 before gc`, because
-no image exists.
+The `advice:` line then says `copy disc 0 before gc`, because no image
+exists.
 
 ## A second copy
 
@@ -532,7 +517,7 @@ A good check changes no state. It logs the date:
 $ noahsark verify /mnt/ark
 disc 0 "2026-09-14 disc 0": 8 items, ok
 check logged
-next: noahsark status
+next: nothing to do
 ```
 
 For a disc that is still `verified`, the second line is `already
@@ -563,22 +548,25 @@ Then run `gc`. It asks no question.
 ```
 $ noahsark gc
 gc: freed 8 item(s), 9441280 bytes
-next: noahsark status
+next: nothing to do
 ```
 
 `gc` keeps the data of a disc that is `packed` or `burned`: that disc is
 not verified yet. `gc --dry-run` and `gc` print one line for each such
 disc, after the `freed` line. For example, while disc 1 waits for its
-burn:
+check:
 
 ```
 $ noahsark gc
 gc: freed 8 item(s), 9441280 bytes
 gc: disc 1: not verified; 4 item(s) held
-next: noahsark status
+next: load disc 1, then run:
+sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
+noahsark verify /mnt/ark;
+sudo umount /mnt/ark && eject /dev/sr0
 ```
 
-Verify disc 1, then run `gc` again.
+Paste the block: it verifies disc 1. Then run `gc` again.
 
 After `gc`, the disc is `on disc only`. When `gc` has nothing to free,
 it prints `gc: freed 0 item(s), 0 bytes` and no `next:` line: nothing
@@ -755,28 +743,24 @@ $ sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
 $ noahsark --repo=/srv/ark/repo recover --source=/srv/data --disc=/mnt/ark
 recover: read disc 1 "2026-10-12 disc 1"
 recover: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230) named by another disc, not yet given
-next: noahsark status
+next: load disc 0 "2026-09-14 disc 0", then run:
+sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
+noahsark recover --source=/srv/data --disc=/mnt/ark;
+sudo umount /mnt/ark && eject /dev/sr0
+or, when disc 0 is gone for good, run:
+noahsark disc lost 0
 $ sudo umount /mnt/ark && eject /dev/sr0
 ```
 
 The first line names the disc that `recover` read. Each disc names the
 discs before it. A disc that another disc names, and
 that you did not give yet, is `missing`. `recover` then exits with code 1.
-That is normal: give each disc one time, in any order. Go into the
-repository, and let `status` name the next disc:
+That is normal: give each disc one time, in any order. The `next:` block
+names the next disc. The `noahsark` lines of a block carry no `--repo`,
+thus go into the repository first:
 
 ```
 $ cd /srv/ark/repo
-$ noahsark status
-staged: 0 items, 0 bytes
-disc 0 "2026-09-14 disc 0"  missing  4a060bd4-ca9f-2d06-263e-b907483b8230
-disc 1 "2026-10-12 disc 1"  on disc only  cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11
-next: load disc 0 "2026-09-14 disc 0", then run:
-sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
-noahsark recover --source=/srv/data --disc=/mnt/ark;
-sudo umount /mnt/ark && eject /dev/sr0
-or, when disc 0 is gone for good, run:
-noahsark disc lost 0
 ```
 
 Load disc 0, and paste the first part of the block. The `;` after
@@ -785,7 +769,7 @@ Load disc 0, and paste the first part of the block. The `;` after
 line above the unmount to see the result. A disc that you give a second
 time prints `already known`, and `recover` still exits with code 1 while
 another disc is `missing`. When every disc is given, the line starts with
-`recover: ok`, and `status` shows no `missing` disc.
+`recover: ok`, and the block names no `missing` disc.
 Then mount a disc, and restore as in "Restore".
 
 **A missing disc** is a disc that you cannot find now. `commit` and
@@ -804,16 +788,16 @@ and the loop mount that gives the image to `recover`.
 
 | What you see | What to do |
 |---|---|
-| You packed with the wrong capacity, and nothing is burned | `noahsark pack --undo 0` for the newest disc, then `noahsark status`, and pack again. See "Undo a step". |
+| You packed with the wrong capacity, and nothing is burned | `noahsark pack --undo 0` for the newest disc. It ends with the block that gives the `pack` line. Pack again. See "Undo a step". |
 | A burn fails midway | Discard the disc. When `growisofs` says that the image does not fit, run `noahsark pack --undo 0` and pack again. Else run `noahsark status` and paste its block with a new blank disc. |
-| The disc does not mount: `mountpoint` prints `/mnt/ark is not a mountpoint` | The burn can still be good: some drives need more than a minute to read a new disc. Do not burn the disc again yet. When the burn finished with no error, run `noahsark disc burned 0`, wait a minute, then run `noahsark status` and paste its block: it mounts and verifies the disc. Discard the disc only when it still does not mount. Then, if you ran `disc burned` for it, run `noahsark disc burned --undo 0`, and `noahsark status`. |
-| `verify` of a new disc prints `bad; this disc is bad; burn record removed` or `bad; this disc is bad; no record to remove` | Discard the disc. `noahsark status` prints the block that burns a new disc from the kept disc root. |
-| `verify` of a `verified` disc prints `bad; this disc is bad; verified record removed; gc holds the data` | The disc is `burned` again, and `gc` holds its data. Discard it. `noahsark status` prints the block that burns a new disc. |
+| The disc does not mount: `mountpoint` prints `/mnt/ark is not a mountpoint` | The burn can still be good: some drives need more than a minute to read a new disc. Do not burn the disc again yet. When the burn finished with no error, run `noahsark disc burned 0`, wait a minute, then paste the block that it prints: it mounts and verifies the disc. Discard the disc only when it still does not mount. Then, if you ran `disc burned` for it, run `noahsark disc burned --undo 0`. It ends with the block that burns a new disc. |
+| `verify` of a new disc prints `bad; this disc is bad; burn record removed` or `bad; this disc is bad; no record to remove` | Discard the disc. `verify` ends with the block that burns a new disc from the kept disc root. |
+| `verify` of a `verified` disc prints `bad; this disc is bad; verified record removed; gc holds the data` | The disc is `burned` again, and `gc` holds its data. Discard it. `verify` ends with the block that burns a new disc. |
 | `verify` of an `on disc only` disc prints `bad; the staged copy is already freed; ...` | Copy the disc now, while it still reads, or use your second copy. See "A second copy". When no copy can be read, run `noahsark disc lost 0 && noahsark commit`. |
 | `cannot read the disc: no DISC.bin under ...; is the disc mounted at /mnt/ark?` | Nothing is mounted at `/mnt/ark`, or the wrong directory is given. Mount the disc read-only, and run the command again. For an image file, see the loop mount in "A second copy". |
 | `status` says that a disc has no disc root | No new disc can be burned from it. Discard the disc, and paste the `noahsark disc lost 0` line. The next `pack` takes its items. |
 | Every copy of a disc is destroyed | `noahsark disc lost 0`, and answer `y`. See "A lost disc". |
-| You find a disc that you marked lost | `noahsark disc lost --undo 0`, and answer `y`. Then run `noahsark status`, and paste its block. It verifies the disc, or it recovers a disc that was `missing`. |
+| You find a disc that you marked lost | `noahsark disc lost --undo 0`, and answer `y`. Then paste the block that it prints. It verifies the disc, or it recovers a disc that was `missing`. |
 | `status` prints `next: disc 0: an earlier disc lost stopped before it wrote the records of its items; ...` | A command stopped between its disc event and the records of its items. Paste the `noahsark gc` line. `gc` writes the records first. It also frees the data of each verified disc, as a normal `gc` does. |
 | `status` prints `warning: staging directory DIR does not exist` | The volume of the staging store is not mounted, or `staging.dir` in `config.yaml` names a wrong path. Mount the volume, or correct the path. Only when the staging store is gone for good, run `mkdir -p DIR`; `status` then names each `packed` disc with `disc lost`. The warning comes only while staged or packed data needs the directory. |
 | `restore` prints `expected disc 1 ... found disc 0 ...` | The wrong disc is in the drive. Mount the named disc, or its second copy, at the same mount point, and press Enter. |
@@ -845,7 +829,10 @@ warning: disc 1 "2026-10-12 disc 1" (cb3bebe8-5d21-4f07-9a6e-0c4d2b7f9e11): pack
 the items return to staged; the disc number 1 is not used again
 Continue? [y/N] y
 disc 1 "2026-10-12 disc 1": pack undone, 12 item(s) returned to staged
-next: noahsark status
+next: load a blank disc, then run:
+dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
+then paste this line, type the capacity, and press Enter:
+noahsark pack --capacity=
 ```
 
 The answers `y` and `yes` continue, in any letter case. Spaces around the
@@ -878,15 +865,16 @@ warning: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230): on d
 the tool stops trusting this disc
 Continue? [y/N] y
 disc 0 "2026-09-14 disc 0": marked lost; 5 item(s) returned to staged; 3 item(s) need a new commit
-next: noahsark status
+next: disc 0 is lost; a new commit stages what the source still holds; run:
+noahsark commit
 ```
 
 For a disc that `gc` did not free yet, the items return to staged at
 once, and the next `pack` takes them. For an `on disc only` disc, the
 repository still holds the snapshots, the trees and the file lists: they
 return to staged at once. The file data is gone with the disc. Run
-`commit`. It stages again the data that the source still holds. Until you
-commit, the `next:` block of `status` gives the line:
+`commit`, as the block says. It stages again the data that the source
+still holds. Until you commit, `status` gives the same block:
 
 ```
 $ noahsark status
@@ -910,8 +898,8 @@ for a disc that was `missing` when you marked it lost.
 ### Record a burn or a verified disc without a check
 
 `noahsark disc burned 0` records a burn and reads no disc. Use it when you
-cannot verify now. `status` then shows `burned`, and its block verifies
-the disc later.
+cannot verify now. It ends with the block that verifies the disc. Paste
+it when you can, or run `status` later: it prints the same block.
 
 `noahsark disc verified 0` marks a `burned` disc `verified` on your word,
 and reads no disc. `gc` can then free the repository copy at once.
@@ -921,7 +909,7 @@ question. `status` shows the disc as `verified, not checked` until a good
 
 ## Options
 
-**Close.** `pack --close` makes the `growisofs` line of `status` seal the
+**Close.** `pack --close` makes the `growisofs` line of the block seal the
 disc with `-dvd-compat`. A sealed disc can take no more data. The choice
 is permanent. The default burn leaves the disc open, and every reader
 reads an open disc.

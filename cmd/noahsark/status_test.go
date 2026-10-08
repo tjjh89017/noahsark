@@ -629,9 +629,8 @@ func TestStatusNamesARepair(t *testing.T) {
 					t.Fatalf("status:\n%s\nwant the last lines:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
 				}
 			}
-			if out := fx.mustRun(t, "gc"); !strings.Contains(out, "\n"+nextStatusLine+"\n") {
-				t.Fatalf("gc output %q, want the line %q: gc wrote the item records", out, nextStatusLine)
-			}
+			// gc wrote the item records, thus it ends with the next block.
+			wantNextBlock(t, fx.repo, fx.mustRun(t, "gc"))
 			for _, line := range statusLines(t, fx.repo) {
 				if strings.Contains(line, "stopped before it wrote") {
 					t.Fatalf("status after gc still names the repair: %s", line)
@@ -777,5 +776,15 @@ func TestStatusNamesEachStagedSnapshot(t *testing.T) {
 	}
 	if want := countByState(t, repo, stage.Staged); total != want {
 		t.Fatalf("the snapshot lines count %d items, want the %d staged items", total, want)
+	}
+}
+
+// TestPrintNextPointsToStatusWhenTheReadFails checks that a command
+// whose repository does not read for the next block points to status.
+func TestPrintNextPointsToStatusWhenTheReadFails(t *testing.T) {
+	te := newTestEnv(t.TempDir())
+	printNext(te.env, filepath.Join(t.TempDir(), "no-repo"))
+	if got, want := te.out.String(), nextStatusLine+"\n"; got != want {
+		t.Fatalf("stdout %q, want %q", got, want)
 	}
 }

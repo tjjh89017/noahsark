@@ -104,7 +104,8 @@ type cellMessage struct {
 	steps []cellStep
 	// noQuestion is true when the output must not hold the question.
 	noQuestion bool
-	// next is true when the cell names the next line as the last line.
+	// next is true when the cell names the next block of status as the
+	// last lines.
 	next bool
 }
 
@@ -125,7 +126,7 @@ const (
 var (
 	spanRe       = regexp.MustCompile("`([^`]*)`")
 	maskedSpanRe = regexp.MustCompile(spanOpen + `(\d+)` + spanClose)
-	nextMarkRe   = regexp.MustCompile(`(?:,?\s*then\s+|;\s*)?the last line(?: is)? ` + spanOpen + `(\d+)` + spanClose)
+	nextMarkRe   = regexp.MustCompile(`(?:,?\s*then\s+|;\s*)?the ` + spanOpen + `(\d+)` + spanClose + ` block of ` + spanOpen + `(\d+)` + spanClose)
 	parenNoteRe  = regexp.MustCompile(`\s*\(([^()]*)\)`)
 	noQuestionRe = regexp.MustCompile(`^no question with (?:an answer flag|` + spanOpen + `(\d+)` + spanClose + `)$`)
 	sentenceRe   = regexp.MustCompile(`\.(?:\s|$)`)
@@ -170,7 +171,7 @@ func (tb *stateTable) messageDepth(id, like string, depth int) (cellMessage, err
 	}
 
 	masked = nextMarkRe.ReplaceAllStringFunc(masked, func(s string) string {
-		if span(nextMarkRe.FindStringSubmatch(s)[1]) == nextStatusLine {
+		if m := nextMarkRe.FindStringSubmatch(s); span(m[1]) == "next:" && span(m[2]) == "status" {
 			msg.next = true
 			return ""
 		}

@@ -207,3 +207,31 @@ func writeFile(path, content string) error {
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }
+
+// statusNextLines returns the advice lines and the next block that
+// status prints now for the repository repo.
+func statusNextLines(t *testing.T, repo string) []string {
+	t.Helper()
+	te := newTestEnv(t.TempDir())
+	_, _ = te.run("--repo="+repo, "status")
+	lines := strings.Split(strings.TrimSuffix(te.out.String(), "\n"), "\n")
+	i := slices.IndexFunc(lines, func(l string) bool {
+		return strings.HasPrefix(l, "advice: ") || strings.HasPrefix(l, "next: ")
+	})
+	if i < 0 {
+		t.Fatalf("status of %s printed no next block: %q", repo, te.out.String())
+	}
+	return lines[i:]
+}
+
+// wantNextBlock checks that out holds, from the start of a line, the
+// advice lines and the next block that status prints now for repo, as
+// the last lines of standard output. Standard error can follow them in
+// out.
+func wantNextBlock(t *testing.T, repo, out string) {
+	t.Helper()
+	want := strings.Join(statusNextLines(t, repo), "\n") + "\n"
+	if !strings.HasPrefix(out, want) && !strings.Contains(out, "\n"+want) {
+		t.Errorf("output %q does not hold the next block of status %q", out, want)
+	}
+}

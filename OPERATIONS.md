@@ -9,7 +9,8 @@ layout of a local file only, because those bytes never reach a disc.
 
 This document and `docs/states.md` are the specification of host-side
 behaviour. `docs/states.md` holds the state machines, the state x event
-table, and the `next:` blocks of `status`. The code follows the
+table, and the `next:` blocks of `status` and of each command that changes
+state. The code follows the
 specification. `docs/guide.md` is the operator guide. It explains the use to
 a human. It is not the specification.
 
@@ -745,8 +746,8 @@ steps in this order:
 When a step after the `PackUndone` event fails, `pack --undo` prints
 `noahsark: pack: disc SEQ is undone, but its files stay: ERROR; the next pack
 removes them` to standard error. The disc is undone all the same, thus it
-prints the `next:` line as the last line of standard output, and exits with
-code 1.
+prints the `next:` block as the last lines of standard output, and exits
+with code 1.
 
 A `pack --undo` that stops after the `PackUndone` event and before the item
 records leaves item records that each command with the lock writes ("State
@@ -1511,18 +1512,23 @@ subcommands `burned`, `verified` and `lost`, and `image`, with the subcommand
 - The tool checks the syntax before it reads the repository. A usage error
   changes nothing.
 - `status` prints the full `next:` block. The block holds the exact command
-  lines for the next step. `status` is the one source of that step.
-- A command that changes state ends its output with one line: `next:
-  noahsark status`. These commands are `init`, `commit`, `pack`, `pack
-  --undo`, `disc burned`, `disc verified`, `disc lost`, `verify`, `verify
-  --undo`, `gc` and `recover`. `disc burned --undo` and `disc lost --undo`
-  also print it. A `verify` that is counted prints it, also when the check
-  fails. The line goes to standard output, and it is the last line.
+  lines for the next step. One rule chooses the block ("State to `next:`
+  block" in `docs/states.md`).
+- A command that changes state ends its output with the advice lines and the
+  `next:` block that `status` would print at that moment. The operator then
+  needs no `status` between two steps. These commands are `init`, `commit`,
+  `pack`, `pack --undo`, `disc burned`, `disc verified`, `disc lost`,
+  `verify`, `verify --undo`, `gc` and `recover`. `disc burned --undo` and
+  `disc lost --undo` also print them. A `verify` that is counted prints
+  them, also when the check fails. A `pack` that finds nothing staged
+  prints them too. The lines go to standard output, and they
+  are the last lines. When the command cannot read the repository for the
+  block, it prints the one line `next: noahsark status` in their place.
 - A command that changed nothing because it was refused, or because the
   operator answered no, prints no `next:` line. `restore`, `ls`, `log`,
-  `image build` and every `--dry-run` run print none. `verify --no-mark`
-  and a `verify` that is not counted change no state, and print none.
-  `docs/states.md`, "State x event table", gives the rule for each row.
+  `image build` and every `--dry-run` run print none. `verify --no-mark` and a `verify` that
+  is not counted change no state, and print none. `docs/states.md`, "State
+  x event table", gives the rule for each row.
 
 | Global option | Meaning |
 |---|---|
@@ -1641,13 +1647,15 @@ with a new `repo.uuid`, `staging.dir: staging`, `sources.root` from
 `staging/`, writes `.gitignore`, and writes `config.yaml` last. It syncs each
 of them. A crash before `config.yaml` thus leaves a directory that is not a
 repository, and `init` runs again. It prints `initialized repository PATH`,
-`source: PATH` (only when `--source` is given), `device: DEV`, and `next: noahsark status`. To use another device, the operator edits `pack.device` in
+`source: PATH` (only when `--source` is given), `device: DEV`, and the
+`next:` block, `next: noahsark commit`. To use another device, the operator edits `pack.device` in
 `config.yaml`. `init` exits with code 2 when the directory already is a
 repository. Do not run `init` to recover a lost repository.
 
 **`commit`** prints `snapshot ID`, `ref NAME -> ID`, `new items: N, existing
 items: N`, `unstable: N, skipped: N`, one line for each unstable, skipped,
-special or left-out path ("Source policy"), `staged: N items, B bytes`, and `next: noahsark status`. `ID`
+special or left-out path ("Source policy"), `staged: N items, B bytes`, and the
+`next:` block. `ID`
 is the full text form of the snapshot id ("Refs"). `B` is
 the sum of the stored file sizes of the Staged items: the chunk files in
 `staging/chunks/` and the metadata object files in `catalog/`. `N` and `B`
@@ -1656,7 +1664,7 @@ count only the Staged items whose file exists. When a Staged item has no file,
 the staging store; commit the same source again` on standard error after the
 `staged:` line; the warning does not change the exit code. Exit: 1
 when a file was skipped or unstable; the snapshot is committed all the same,
-and `commit` still prints the `next:` line. A special file never changes the
+and `commit` still prints the `next:` block. A special file never changes the
 exit code.
 
 The path lines are records on standard output, in this order:
@@ -1677,10 +1685,10 @@ The path lines are records on standard output, in this order:
 `noahsark: commit: MESSAGE` on standard error only for a failure.
 
 **`pack`** prints `packed disc SEQ "LABEL": N item(s), B bytes`, then `uuid:
-UUID`, then `next: noahsark status`. The label is the newest ref of the
+UUID`, then the `next:` block. The label is the newest ref of the
 repository and the text ` disc SEQ`, for example `2026-09-14 disc 0`. With no
 ref, the label is `disc SEQ`. With nothing staged, it prints `pack: nothing
-staged`, then `next: noahsark status`, and exits 0. With nothing staged and
+staged`, then the `next:` block, and exits 0. With nothing staged and
 `--dry-run`, it prints only `pack: nothing staged`. A dry run prints the lines
 of "Dry run" and no `next:` line. For each item that it cannot take
 ("Packing rules"), `pack` and `pack --dry-run` print one warning on standard
@@ -1705,8 +1713,8 @@ one item. 1 while a disc is `missing`, and after a warning.
 `next:` line.
 
 **`disc burned`**, **`disc verified`** and **`disc lost`** change the
-records of one disc, as `docs/states.md` gives. Each ends with `next:
-noahsark status` after it changed a record. `disc verified` and `disc
+records of one disc, as `docs/states.md` gives. Each ends with the `next:`
+block after it changed a record. `disc verified` and `disc
 lost` ask a critical confirmation. `disc burned --undo` and `disc lost
 --undo` ask an ordinary confirmation. `disc lost` removes
 `staging/plans/<disc-uuid>/` (for a `pack --out` disc, the symlink only), and
@@ -1733,9 +1741,9 @@ after a stop between the event and the item records.
 
 **`verify`** prints `disc SEQ "LABEL": N items, ok` or `disc SEQ "LABEL":
 bad; REASON`, then one line that names what changed, as `docs/states.md`,
-rows 31 to 46, gives. It ends with `next: noahsark status` when it wrote a
-record or a verify log event. `--no-mark` and a `verify` that is not counted
-print no `next:` line. A failed check of a root that is not counted prints
+rows 31 to 46, gives. It ends with the `next:` block when it wrote a record
+or a verify log event. `--no-mark` and a `verify` that is not counted print
+no `next:` line. A failed check of a root that is not counted prints
 `disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc
 (REASON)`, and exits with code 1. With no repository, it names the disc by uuid. Exit: 1
 when the check failed, or when the state refused the command. 2 for `--undo`
@@ -1835,14 +1843,14 @@ symlink adds nothing. A held line appears only for a disc that still has a
 Packed item and is not `verified`: a `packed` or a `burned` disc.
 
 The freed line is always present, also as `gc: freed 0 item(s), 0 bytes`.
-The last line is `next: noahsark status` when `gc` changed state: it freed
+The last lines are the `next:` block when `gc` changed state: it freed
 an item, or it wrote an event or an item record. A `gc` that frees no item
 and writes no record prints no `next:` line. `--dry-run` prints no `next:`
 line. A
 `missing` or `lost` disc gets no line. It asks no confirmation. When `gc`
 cannot unlink a chunk file or remove a plan directory, it prints `noahsark:
 gc: PATH: ERROR` to standard error for each one. It still prints the freed
-line and the `next:` line, and the records stay written. Exit: 0 when
+line and the `next:` block, and the records stay written. Exit: 0 when
 nothing was eligible. 1 when a chunk file could not be unlinked or a plan
 directory could not be removed, or when an item was skipped because its
 INDEX is not in the catalog or does not list it.
@@ -1907,7 +1915,7 @@ call, `recover` prints the `already known` line without `ok; `, then the
 `named by another disc` line of each `missing` disc, and exits with code 1
 (`docs/states.md`, row 70f). A line that starts with `recover: ok` thus
 always comes with exit code 0 and no `missing` disc. Each of these ends with
-`next: noahsark status`, unless `recover` refused the disc. Do not run `disc burned` or
+the `next:` block, unless `recover` refused the disc. Do not run `disc burned` or
 `verify` for a recovered disc to raise its state: it is `on disc only`.
 
 `recover` stores `--source` as an absolute path: a relative path is taken

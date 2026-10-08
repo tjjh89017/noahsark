@@ -224,7 +224,7 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, d.Error())
 		}
 		_, _ = fmt.Fprintf(stdout, "recover: %d item(s) damaged on %s\n", damagedItems, name)
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		printNext(e, repoDir)
 		return 1
 	}
 	// A new disc gets a line that names it, so that the operator sees
@@ -251,7 +251,7 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 		} else {
 			_, _ = fmt.Fprintf(stdout, "recover: ok; %s\n", result)
 		}
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		printNext(e, repoDir)
 		return 0
 	}
 	if result != "" {
@@ -267,7 +267,7 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 	for _, row := range missingRows(missing, rows) {
 		_, _ = fmt.Fprintf(stdout, "recover: %s named by another disc, not yet given\n", discName(row.DiscSeq, discsRowLabel(row), row.DiscUUID))
 	}
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, repoDir)
 	return 1
 }
 

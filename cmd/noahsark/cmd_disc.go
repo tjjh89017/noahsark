@@ -99,7 +99,7 @@ func (o *discBurnedOptions) run(e *env, args []string) int {
 	logs, discUUID := s.logs, disc.info.UUID
 
 	if o.undo {
-		return undoDiscBurn(e, logs.Discs, disc)
+		return undoDiscBurn(e, s.repoDir, logs.Discs, disc)
 	}
 	if refusal := discBurnedRefusal(disc); refusal != "" {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s\n", cmd, refusal)
@@ -110,7 +110,7 @@ func (o *discBurnedOptions) run(e *env, args []string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "%s: burn recorded\n", disc.name())
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, s.repoDir)
 	return 0
 }
 
@@ -142,7 +142,7 @@ func discStateRefusal(disc discTarget) string {
 
 // undoDiscBurn implements "disc burned --undo DISC": it removes the
 // burn record of a burned disc after an ordinary confirmation.
-func undoDiscBurn(e *env, discs *stage.DiscLog, disc discTarget) int {
+func undoDiscBurn(e *env, repoDir string, discs *stage.DiscLog, disc discTarget) int {
 	const cmd = "disc burned"
 	switch disc.info.State {
 	case stage.DiscBurned:
@@ -165,7 +165,7 @@ func undoDiscBurn(e *env, discs *stage.DiscLog, disc discTarget) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(e.stdout, "%s: burn record removed\n", disc.name())
-	_, _ = fmt.Fprintln(e.stdout, nextStatusLine)
+	printNext(e, repoDir)
 	return 0
 }
 

@@ -227,7 +227,7 @@ func (o *packOptions) run(e *env, args []string) int {
 				return 1
 			}
 			_, _ = fmt.Fprintln(stdout, packNothingStaged)
-			_, _ = fmt.Fprintln(stdout, nextStatusLine)
+			printNext(e, repoDir)
 			return 0
 		}
 		return packFailed(stderr, o.capacity, capacitySectors, err)
@@ -244,7 +244,7 @@ func (o *packOptions) run(e *env, args []string) int {
 	_, _ = fmt.Fprintf(stdout, "packed disc %d %q: %d item(s), %d bytes\n",
 		result.DiscSeq, label, result.ObjectCount, result.ObjectBytes)
 	_, _ = fmt.Fprintf(stdout, "uuid: %s\n", uuidText(discUUID))
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, repoDir)
 	if warned {
 		return 1
 	}

@@ -77,7 +77,7 @@ func init() {
 			end:  stage.DiscLost,
 			check: func(t *testing.T, fx *discFixture, stdout, stderr string) {
 				if out := stdout + stderr; !commitLinesRe.MatchString(out) {
-					t.Fatalf("commit output %q, want only the lines snapshot, ref, new items, unstable, staged, next", out)
+					t.Fatalf("commit output %q, want only the lines snapshot, ref, new items, unstable, staged, and the staged data block", out)
 				}
 				if n := countByState(t, fx.repo, stage.Lost); n != lostCount(t, fx) {
 					t.Fatalf("%d items lost, want %d", n, lostCount(t, fx))
@@ -98,7 +98,7 @@ var commitLinesRe = regexp.MustCompile(`^snapshot \S+\n` +
 	`new items: \d+, existing items: \d+\n` +
 	`unstable: 0, skipped: 0\n` +
 	`staged: \d+ items, \d+ bytes\n` +
-	`next: noahsark status\n$`)
+	regexp.QuoteMeta(strings.Join(nextBlock(nextRepo{device: "/dev/sr0", staged: 1}), "\n")) + `\n$`)
 
 // TestStatesRow1CommitLines checks every line of a first commit in a new
 // repository, where each item is new.
@@ -113,7 +113,7 @@ func TestStatesRow1CommitLines(t *testing.T) {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 	if !commitLinesRe.MatchString(out) {
-		t.Fatalf("commit output %q, want the lines snapshot, ref, new items, unstable, staged, next", out)
+		t.Fatalf("commit output %q, want the lines snapshot, ref, new items, unstable, staged, and the staged data block", out)
 	}
 	if n := countByState(t, repo, stage.Staged); n == 0 {
 		t.Fatal("no item is staged after the first commit")
@@ -121,7 +121,7 @@ func TestStatesRow1CommitLines(t *testing.T) {
 }
 
 // TestStatesRow1CommitSkippedPrintsNext checks that a commit that skips
-// a file exits 1 and still ends with the next line: the snapshot is
+// a file exits 1 and still ends with the next block: the snapshot is
 // committed all the same.
 func TestStatesRow1CommitSkippedPrintsNext(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -143,9 +143,7 @@ func TestStatesRow1CommitSkippedPrintsNext(t *testing.T) {
 	if !strings.Contains(out, "unstable: 0, skipped: 1\n") {
 		t.Fatalf("commit output %q, want the count line with one skipped path", out)
 	}
-	if !strings.HasSuffix(out, "\nnext: noahsark status\n") {
-		t.Fatalf("commit output %q, want the next line as the last line", out)
-	}
+	wantNextBlock(t, repo, out)
 }
 
 // lostItemsSetup marks the on disc only disc of fx lost, as disc lost

@@ -207,7 +207,7 @@ func TestInitWritesTheGitignore(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
-	wantOut := "initialized repository " + repo + "\nsource: " + src + "\ndevice: /dev/sr0\nnext: noahsark status\n"
+	wantOut := "initialized repository " + repo + "\nsource: " + src + "\ndevice: /dev/sr0\nnext: noahsark commit\n"
 	if out != wantOut {
 		t.Fatalf("init output = %q, want %q", out, wantOut)
 	}

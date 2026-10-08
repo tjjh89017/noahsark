@@ -32,7 +32,8 @@ diff -r <SOURCE> <RESTORE_DIR>
 ```
 
 `status` prints what is staged, the state of each disc, and one `next:`
-block with the lines to run next. Run it at any stage. `verify` of a
+block with the lines to run next. Run it at any stage. Each command that
+changes state ends with the same block. `verify` of a
 directory checks every byte, but it prints `not counted: this is not a
 disc`: only a read-only mount of a disc counts. `restore` writes the
 content of the source root into `<RESTORE_DIR>`, thus `diff` prints no

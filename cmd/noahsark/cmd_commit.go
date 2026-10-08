@@ -222,8 +222,8 @@ func (o *commitOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, missingFilesLine("commit", missingFiles))
 	}
 	// The snapshot is committed also when a file was skipped or unstable,
-	// so the next line comes before the exit code is chosen.
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	// so the next block comes before the exit code is chosen.
+	printNext(e, repoDir)
 
 	if len(sum.Unstable) > 0 || len(sum.Skipped) > 0 {
 		return 1

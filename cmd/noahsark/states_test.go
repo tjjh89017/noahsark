@@ -373,15 +373,21 @@ func compareWithCells(t *testing.T, tb *stateTable, c stateCase, fx *discFixture
 		}
 	}
 
-	// The document prints no next line for a --dry-run run.
+	// The document prints no next block for a --dry-run run. The next
+	// block of a command is the one that status prints after it. status
+	// prints a block of its own, which its cells name.
 	if msg.next && !slices.Contains(c.args, "--dry-run") {
-		if n := len(out.lines); n == 0 || out.lines[n-1] != nextStatusLine {
-			diff("Message: the last line of stdout is not %q", nextStatusLine)
+		block := statusNextLines(t, fx.repo)
+		n, k := len(out.lines), len(block)
+		if n < k || !slices.Equal(out.lines[n-k:], block) {
+			diff("Message: stdout does not end with the next block of status %q", block)
 		} else {
-			out.used[n-1] = true
+			for i := n - k; i < n; i++ {
+				out.used[i] = true
+			}
 		}
-	} else if strings.Contains(stdout+stderr, nextStatusLine) {
-		diff("Message: the output holds %q, and the cell does not name it", nextStatusLine)
+	} else if commandOf(c.args) != "status" && slices.ContainsFunc(out.lines, func(l string) bool { return strings.HasPrefix(l, "next: ") }) {
+		diff("Message: stdout holds a next: line, and the cell does not name the next block")
 	}
 	if c.exact {
 		for i, used := range out.used {
@@ -413,6 +419,17 @@ func compareWithCells(t *testing.T, tb *stateTable, c stateCase, fx *discFixture
 		diff("Result: disc state %s, the cell says %s", got, wantState)
 	}
 	return diffs
+}
+
+// commandOf returns the command name of args: the first argument that
+// is not an option.
+func commandOf(args []string) string {
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			return a
+		}
+	}
+	return ""
 }
 
 // discStateIfRepo returns the state of the disc uuidText in repo, or

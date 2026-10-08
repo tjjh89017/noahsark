@@ -154,7 +154,7 @@ func TestPackUndoRemovesTheDiscAndSkipsItsNumber(t *testing.T) {
 	packed := countByState(t, fx.repo, stage.Packed)
 
 	out := undoStdout(t, fx, fx.uuid)
-	want := fx.name() + ": pack undone, " + strconv.Itoa(packed) + " item(s) returned to staged\n" + nextStatusLine + "\n"
+	want := fx.name() + ": pack undone, " + strconv.Itoa(packed) + " item(s) returned to staged\n" + strings.Join(statusNextLines(t, fx.repo), "\n") + "\n"
 	if !strings.HasSuffix(out, want) {
 		t.Fatalf("pack --undo output %q, want the suffix %q", out, want)
 	}
@@ -201,7 +201,7 @@ func TestPackUndoKeepsTheOutDirectory(t *testing.T) {
 	u := fx.uuidBytes(t)
 
 	out := undoStdout(t, fx, "0")
-	want := "disc root " + outDir + " kept; delete it yourself\n" + nextStatusLine + "\n"
+	want := "disc root " + outDir + " kept; delete it yourself\n" + strings.Join(statusNextLines(t, fx.repo), "\n") + "\n"
 	if !strings.HasSuffix(out, want) {
 		t.Fatalf("pack --undo output %q, want the suffix %q", out, want)
 	}
@@ -211,10 +211,10 @@ func TestPackUndoKeepsTheOutDirectory(t *testing.T) {
 	}
 }
 
-// TestPackUndoPrintsTheNextLineWhenTheFilesStay makes the removal of the
-// plan directory fail after the PackUndone event. The disc is undone,
-// the command exits 1, and the next line is the last line of stdout.
-func TestPackUndoPrintsTheNextLineWhenTheFilesStay(t *testing.T) {
+// TestPackUndoPrintsTheNextBlockWhenTheFilesStay makes the removal of
+// the plan directory fail after the PackUndone event. The disc is
+// undone, the command exits 1, and the next block ends stdout.
+func TestPackUndoPrintsTheNextBlockWhenTheFilesStay(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root removes a file in a read-only directory")
 	}
@@ -233,8 +233,8 @@ func TestPackUndoPrintsTheNextLineWhenTheFilesStay(t *testing.T) {
 	if !strings.Contains(te.errOut.String(), "is undone, but its files stay") {
 		t.Errorf("stderr %q has no line that the files stay", te.errOut.String())
 	}
-	if !strings.HasSuffix(te.out.String(), nextStatusLine+"\n") {
-		t.Errorf("stdout %q does not end with the next line", te.out.String())
+	if want := strings.Join(statusNextLines(t, fx.repo), "\n") + "\n"; !strings.HasSuffix(te.out.String(), want) {
+		t.Errorf("stdout %q does not end with the next block %q", te.out.String(), want)
 	}
 	if got := discState(t, fx.repo, fx.uuid).State; got != stage.DiscUndone {
 		t.Errorf("disc 0 is %s, want undone", got)

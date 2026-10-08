@@ -10,7 +10,8 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
-// nextStatusLine is the last line of a command that changed state.
+// nextStatusLine ends the output of a command that changed state when
+// the command cannot read the repository for the next block.
 const nextStatusLine = "next: noahsark status"
 
 // arkMount is the mount point that every block of status uses.

@@ -49,7 +49,7 @@ func gcFlags(fs *flag.FlagSet) runFunc {
 // directory of a verified disc, and the chunk file of an item that is already OnDisc. It never
 // removes a file of the catalog or of the state directory. A dry run
 // takes no lock and writes no file. A gc that frees no item and writes
-// no record prints no next line. docs/states.md, rows 52 to 56, gives
+// no record prints no next block. docs/states.md, rows 52 to 56, gives
 // the lines.
 func (o *gcOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
@@ -120,7 +120,7 @@ func (o *gcOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stderr, "noahsark: gc: %s: %v\n", f.path, f.err)
 	}
 	if repaired > 0 || len(plan.discs) > 0 || items > 0 {
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		printNext(e, repoDir)
 	}
 	if len(failures) > 0 || len(plan.skipped) > 0 {
 		return 1

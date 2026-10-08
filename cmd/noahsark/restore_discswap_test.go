@@ -117,7 +117,7 @@ func TestRestoreDiscSwapTwoDiscChain(t *testing.T) {
 	if strings.Contains(out, "umount") || strings.Contains(out, "eject") || strings.Contains(out, "sudo") {
 		t.Fatalf("restore output %q mentions umount, eject or sudo", out)
 	}
-	if strings.Contains(out, nextStatusLine) {
+	if strings.Contains(out, "next: ") {
 		t.Fatalf("restore output %q holds the next line", out)
 	}
 	compareTrees(t, outDir, src)

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,86 +68,128 @@ func cmdStatus(e *env, args []string) int {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return configExitCode(err)
 	}
-
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	v, err := readStatusView(cmd, repoDir, cfg, stderr)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
 		return 1
 	}
 
-	layout := layoutOf(repoDir, cfg)
-	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-	logs, err := openLogs(cmd, layout, false, stderr)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-
-	noStaging, err := stagingLost(layout, logs.Items)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-	discs := summarizeDiscs(ledger.Rows, logs)
-	repairs, err := logRepairs(layout, logs)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-
-	c, err := catalog.OpenReadOnly(repoDir)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-	newest, err := newestSnapshotTime(c, discs)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-	snapshots, err := c.ListSnapshots()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-		return 1
-	}
-
-	// The chunk files of the staged items are in the staging directory.
-	var stagedItems, missingFiles int
-	var groups []image.SnapshotGroup
-	var orphans []image.UnreadableItem
-	if noStaging {
-		_, _ = fmt.Fprintf(stderr, "noahsark: status: warning: staging directory %s does not exist; staging.dir in config.yaml names it\n", layout.stagingDir())
+	if v.noStaging {
+		_, _ = fmt.Fprintf(stderr, "noahsark: status: warning: staging directory %s does not exist; staging.dir in config.yaml names it\n", v.next.staging)
 	} else {
-		var stagedBytes uint64
-		stagedItems, stagedBytes, missingFiles, err = image.StagedTotals(layout.objectPath(c), logs.Items)
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-			return 1
-		}
-		ids, err := packStore(layout, c, logs.Items).SnapshotIDs()
-		if err != nil {
-			_, _ = fmt.Fprintln(stderr, "noahsark: status:", err)
-			return 1
-		}
-		groups, orphans = image.PackGroups(layout.objectPath(c), ids, logs.Items)
-		_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", stagedItems, stagedBytes)
-		for _, g := range groups {
+		_, _ = fmt.Fprintf(stdout, "staged: %d items, %d bytes\n", v.next.staged, v.stagedBytes)
+		for _, g := range v.groups {
 			if line := statusSnapshotLine(g); line != "" {
 				_, _ = fmt.Fprintln(stdout, line)
 			}
 		}
 	}
-	if lost := logs.Items.CountState(stage.Lost); lost > 0 {
-		_, _ = fmt.Fprintln(stdout, statusLostLine(lost))
+	if v.lost > 0 {
+		_, _ = fmt.Fprintln(stdout, statusLostLine(v.lost))
 	}
-	for _, d := range discs {
+	for _, d := range v.discs {
 		_, _ = fmt.Fprintln(stdout, statusDiscLine(d))
 	}
-	r := nextRepo{
+	for _, line := range v.nextLines() {
+		_, _ = fmt.Fprintln(stdout, line)
+	}
+	warned := v.noStaging
+	if v.missingFiles > 0 {
+		_, _ = fmt.Fprintln(stderr, missingFilesLine(cmd, v.missingFiles))
+		warned = true
+	}
+	for _, g := range v.groups {
+		if g.Unreadable != nil {
+			_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, *g.Unreadable, g.OnDisc))
+			warned = true
+		}
+	}
+	for _, item := range v.orphans {
+		_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, item, false))
+		warned = true
+	}
+	if warned {
+		return 1
+	}
+	return 0
+}
+
+// statusView is what status reads from a repository: the lines before
+// the next block, and the input of the next block.
+type statusView struct {
+	// noStaging tells that the staging directory does not exist while a
+	// Staged or a Packed item needs it. The staged total and the
+	// snapshot groups are then not read.
+	noStaging    bool
+	stagedBytes  uint64
+	missingFiles int
+	groups       []image.SnapshotGroup
+	orphans      []image.UnreadableItem
+	// lost is the number of the Lost items.
+	lost  int
+	discs []discSummary
+	next  nextRepo
+}
+
+// nextLines returns the advice lines and the next block.
+func (v *statusView) nextLines() []string {
+	return append(adviceLines(v.next), nextBlock(v.next)...)
+}
+
+// readStatusView reads the repository at repoDir as status does. It
+// takes no lock and changes no file. The notes of the open of the logs
+// go to stderr.
+func readStatusView(cmd, repoDir string, cfg repoConfig, stderr io.Writer) (*statusView, error) {
+	repoUUID, err := decodeUUID(cfg.RepoUUID)
+	if err != nil {
+		return nil, err
+	}
+	layout := layoutOf(repoDir, cfg)
+	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
+	if err != nil {
+		return nil, err
+	}
+	logs, err := openLogs(cmd, layout, false, stderr)
+	if err != nil {
+		return nil, err
+	}
+	noStaging, err := stagingLost(layout, logs.Items)
+	if err != nil {
+		return nil, err
+	}
+	discs := summarizeDiscs(ledger.Rows, logs)
+	repairs, err := logRepairs(layout, logs)
+	if err != nil {
+		return nil, err
+	}
+	c, err := catalog.OpenReadOnly(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	newest, err := newestSnapshotTime(c, discs)
+	if err != nil {
+		return nil, err
+	}
+	snapshots, err := c.ListSnapshots()
+	if err != nil {
+		return nil, err
+	}
+
+	v := &statusView{noStaging: noStaging, lost: logs.Items.CountState(stage.Lost), discs: discs}
+	// The chunk files of the staged items are in the staging directory.
+	var stagedItems int
+	if !noStaging {
+		stagedItems, v.stagedBytes, v.missingFiles, err = image.StagedTotals(layout.objectPath(c), logs.Items)
+		if err != nil {
+			return nil, err
+		}
+		ids, err := packStore(layout, c, logs.Items).SnapshotIDs()
+		if err != nil {
+			return nil, err
+		}
+		v.groups, v.orphans = image.PackGroups(layout.objectPath(c), ids, logs.Items)
+	}
+	v.next = nextRepo{
 		repo:           repoDir,
 		staging:        layout.stagingDir(),
 		stagingMissing: noStaging,
@@ -156,30 +199,26 @@ func cmdStatus(e *env, args []string) int {
 		source:         cfg.SourceRoot,
 		staged:         stagedItems,
 		discs:          nextDiscs(layout, discs),
+		repairs:        nextRepairs(ledger.Rows, discs, repairs),
 	}
-	r.repairs = nextRepairs(ledger.Rows, discs, repairs)
-	for _, line := range append(adviceLines(r), nextBlock(r)...) {
-		_, _ = fmt.Fprintln(stdout, line)
-	}
-	warned := noStaging
-	if missingFiles > 0 {
-		_, _ = fmt.Fprintln(stderr, missingFilesLine(cmd, missingFiles))
-		warned = true
-	}
-	for _, g := range groups {
-		if g.Unreadable != nil {
-			_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, *g.Unreadable, g.OnDisc))
-			warned = true
+	return v, nil
+}
+
+// printNext ends the output of a command that changed state: the advice
+// lines and the next block that status would print now. It reads the
+// repository at repoDir again, after the change. The notes of that read
+// were printed by the command already, thus they are dropped. When the
+// read fails, it points to status.
+func printNext(e *env, repoDir string) {
+	lines := []string{nextStatusLine}
+	if cfg, err := readConfig(configPath(repoDir)); err == nil {
+		if v, err := readStatusView("status", repoDir, cfg, io.Discard); err == nil {
+			lines = v.nextLines()
 		}
 	}
-	for _, item := range orphans {
-		_, _ = fmt.Fprintln(stderr, unreadableLine(cmd, item, false))
-		warned = true
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(e.stdout, line)
 	}
-	if warned {
-		return 1
-	}
-	return 0
 }
 
 // missingFilesLine is the warning of commit and status about the Staged
