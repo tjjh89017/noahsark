@@ -133,7 +133,7 @@ func packUndoRefusal(disc discTarget, rows []format.DiscsRow, discs *stage.DiscL
 		}
 		return ""
 	case stage.DiscBurned:
-		return disc.short() + " has a burn record; pack cannot be undone"
+		return fmt.Sprintf("%s has a burn record; pack cannot be undone; when no burn happened, run noahsark disc burned --undo %d first", disc.short(), disc.seq)
 	case stage.DiscVerified, stage.DiscOnDiscOnly, stage.DiscLost, stage.DiscMissing:
 		return disc.short() + " is no longer packed; pack cannot be undone"
 	}

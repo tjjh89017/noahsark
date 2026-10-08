@@ -266,11 +266,12 @@ func TestVerifyNotDiscMountRecordsNothing(t *testing.T) {
 			logBefore := discLogBytes(t, fx.repo)
 			te := newTestEnv(t.TempDir())
 			code, _ := te.run("--repo="+fx.repo, "verify", dir)
-			if code != 0 || !strings.HasSuffix(te.out.String(), "\n"+notCountedDisc+"\n") {
-				t.Fatalf("exit %d, stdout %q, want 0 and %q", code, te.out.String(), notCountedDisc)
+			want := notCountedDisc + " (" + c.reason.String() + ")"
+			if code != 0 || !strings.HasSuffix(te.out.String(), "\n"+want+"\n") {
+				t.Fatalf("exit %d, stdout %q, want 0 and %q", code, te.out.String(), want)
 			}
-			if want := "is not counted: " + c.reason.String() + "\n"; !strings.Contains(te.errOut.String(), want) {
-				t.Errorf("stderr %q does not hold %q", te.errOut.String(), want)
+			if strings.Contains(te.errOut.String(), "not counted") {
+				t.Errorf("stderr %q repeats the not counted line", te.errOut.String())
 			}
 			if string(discLogBytes(t, fx.repo)) != string(logBefore) {
 				t.Error("verify wrote the disc state log")

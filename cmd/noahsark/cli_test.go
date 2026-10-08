@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -162,6 +163,63 @@ func TestTopHelp(t *testing.T) {
 	code, _ = te.run()
 	if code != 2 || te.out.Len() != 0 || !strings.Contains(te.errOut.String(), "usage:") {
 		t.Errorf("no argument: exit %d, stdout %q, stderr %q", code, te.out.String(), te.errOut.String())
+	}
+}
+
+// TestTopHelpWorkflowOrder checks that -h lists each command and group
+// one time, in the order of the work, and names status as the source of
+// the next step.
+func TestTopHelpWorkflowOrder(t *testing.T) {
+	te := newTestEnv(t.TempDir())
+	if code, _ := te.run("-h"); code != 0 {
+		t.Fatalf("-h: exit %d", code)
+	}
+	_, list, _ := strings.Cut(te.out.String(), "Commands, in the order of the work:\n")
+	list, tail, _ := strings.Cut(list, "\n\n")
+	var got []string
+	for line := range strings.SplitSeq(list, "\n") {
+		got = append(got, strings.Fields(line)[0])
+	}
+	want := []string{"init", "commit", "status", "pack", "image", "disc", "verify", "gc", "restore", "recover", "ls", "log"}
+	if !slices.Equal(got, want) {
+		t.Errorf("-h: command list %v, want %v", got, want)
+	}
+	for _, c := range subcommands("") {
+		if !slices.Contains(got, c.name) && !strings.HasPrefix(c.name, "probe-") {
+			t.Errorf("-h: the command list does not name %s", c.name)
+		}
+	}
+	if !strings.Contains(tail, "\"noahsark status\" prints the next step.") {
+		t.Errorf("-h: output %q, want the status line", te.out.String())
+	}
+}
+
+// TestCommandHelpOptionSpelling checks that the help of a command shows
+// each option in the form of the synopsis, not in the form of the Go
+// flag package.
+func TestCommandHelpOptionSpelling(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"recover", "-h"}, []string{"\n  --source=PATH\n", "\n  --disc=DIR\n"}},
+		{[]string{"pack", "-h"}, []string{"\n  --capacity=SIZE\n", "\n  --out=DIR\n", "\n  --dry-run\n"}},
+		{[]string{"commit", "-h"}, []string{"\n  -m MESSAGE\n", "\n  --ref=NAME\n", "\n  --exclude=PATTERN\n"}},
+		{[]string{"ls", "-h"}, []string{"\n  -R\n", "\n  --recursive\n"}},
+	} {
+		te := newTestEnv(t.TempDir())
+		if code, _ := te.run(c.args...); code != 0 {
+			t.Fatalf("%v: exit %d", c.args, code)
+		}
+		out := te.out.String()
+		for _, want := range c.want {
+			if !strings.Contains(out, want) {
+				t.Errorf("%v: output %q does not hold %q", c.args, out, want)
+			}
+		}
+		if strings.Contains(out, " string\n") {
+			t.Errorf("%v: output %q holds the Go flag form", c.args, out)
+		}
 	}
 }
 

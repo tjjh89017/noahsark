@@ -331,7 +331,7 @@ func FindNoahsark(root string, cache *NameCache) (string, error) {
 	if _, err := os.Stat(filepath.Join(nested, cache.Resolve(nested, "DISC.bin"))); err == nil {
 		return nested, nil
 	}
-	return "", fmt.Errorf("no DISC.bin under %s or %s", root, nested)
+	return "", fmt.Errorf("no DISC.bin under %s or %s; is the disc mounted at %s?", root, nested, root)
 }
 
 // CheckTree refuses a disc tree that holds an entry that is not a

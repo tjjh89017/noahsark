@@ -64,7 +64,17 @@ func (v *onceValue) Set(s string) error {
 func (o *recoverOptions) run(e *env, args []string) int {
 	stderr := e.stderr
 	const cmd = "recover"
-	if len(args) != 0 || o.source == "" || o.disc.value == "" {
+	missing := ""
+	switch {
+	case o.source == "":
+		missing = "--source=PATH"
+	case o.disc.value == "":
+		missing = "--disc=DIR"
+	}
+	if len(args) != 0 || missing != "" {
+		if missing != "" {
+			_, _ = fmt.Fprintf(stderr, "noahsark: recover needs %s\n", missing)
+		}
 		_, _ = fmt.Fprintln(stderr, "usage: noahsark "+recoverUsage)
 		return 2
 	}
@@ -217,7 +227,12 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 		_, _ = fmt.Fprintln(stdout, nextStatusLine)
 		return 1
 	}
-	// result is the text of the first line after "recover: ". The line
+	// A new disc gets a line that names it, so that the operator sees
+	// which disc this call read also when another disc is still missing.
+	if isNew {
+		_, _ = fmt.Fprintf(stdout, "recover: read %s\n", name)
+	}
+	// result is the text of the result line after "recover: ". The line
 	// starts with "ok" only when no disc is missing, thus only on exit 0.
 	result := ""
 	switch {

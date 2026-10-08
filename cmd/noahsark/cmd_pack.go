@@ -80,7 +80,7 @@ func (o *packOptions) run(e *env, args []string) int {
 		return configExitCode(err)
 	}
 	if o.capacity == "" {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack needs --capacity")
+		_, _ = fmt.Fprintln(stderr, "noahsark: pack needs --capacity; "+capacityHint())
 		return 2
 	}
 	capacitySectors, err := parseCapacity(o.capacity)

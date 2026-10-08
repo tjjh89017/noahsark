@@ -93,6 +93,35 @@ func TestRebuildCatalogRestoresCatalogContent(t *testing.T) {
 // whole repository directory, then rebuilds it from that disc alone: the
 // state log's packed count must match the disc's own INDEX object
 // count, and the ref must resolve again.
+// TestRecoverNamesMissingOption checks that recover without --source or
+// --disc names the missing option before the usage line.
+func TestRecoverNamesMissingOption(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"recover", "--disc=/mnt/ark"}, "noahsark: recover needs --source=PATH\n"},
+		{[]string{"recover", "--source=/srv/data"}, "noahsark: recover needs --disc=DIR\n"},
+		{[]string{"recover"}, "noahsark: recover needs --source=PATH\n"},
+	} {
+		code, out := runCmd(t, c.args...)
+		if code != 2 || !strings.Contains(out, c.want) || !strings.Contains(out, "usage: noahsark recover --source=PATH --disc=DIR") {
+			t.Errorf("%v: exit %d, output %q, want 2, %q and the usage line", c.args, code, out, c.want)
+		}
+	}
+}
+
+// TestVerifyAsksForTheMount checks that verify of a directory with no
+// DISC.bin asks whether the disc is mounted.
+func TestVerifyAsksForTheMount(t *testing.T) {
+	dir := t.TempDir()
+	code, out := runCmd(t, "verify", dir)
+	want := "cannot read the disc: no DISC.bin under " + dir + " or " + filepath.Join(dir, "NOAHSARK") + "; is the disc mounted at " + dir + "?"
+	if code != 1 || !strings.Contains(out, want) {
+		t.Fatalf("exit %d, output %q, want 1 and %q", code, out, want)
+	}
+}
+
 func TestRecoverFromDiscRestoresState(t *testing.T) {
 	work := t.TempDir()
 	repo := filepath.Join(work, "repo")
