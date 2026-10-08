@@ -3,9 +3,7 @@ package plan
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
-	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -63,7 +61,7 @@ func Select(c *catalog.Catalog, snap *format.Snapshot, paths []string) (*Selecti
 	rootID := object.ID(snap.RootTree)
 	root, err := c.ReadTree(rootID)
 	if err != nil {
-		return nil, treeError(rootID, err)
+		return nil, catalog.ReadError(format.ObjectKindTree, rootID, err)
 	}
 	var roots []rootDir
 	for _, e := range root.Entries {
@@ -126,7 +124,7 @@ func (s *Selection) resolve(roots []rootDir, path string) (target, error) {
 		id := object.ID(cur.ContentID)
 		t, err := s.c.ReadTree(id)
 		if err != nil {
-			return target{}, treeError(id, err)
+			return target{}, catalog.ReadError(format.ObjectKindTree, id, err)
 		}
 		found := false
 		for _, e := range t.Entries {
@@ -191,7 +189,7 @@ func (s *Selection) Walk(outDir string, v Visitor) error {
 func (s *Selection) walkTree(id object.ID, dir string, v Visitor) error {
 	t, err := s.c.ReadTree(id)
 	if err != nil {
-		return treeError(id, err)
+		return catalog.ReadError(format.ObjectKindTree, id, err)
 	}
 	taken := make(map[string]bool, len(t.Entries))
 	for _, e := range t.Entries {
@@ -232,18 +230,6 @@ func (s *Selection) visit(dir, name string, e format.TreeEntry, taken map[string
 	default:
 		return v.Other(dest, e)
 	}
-}
-
-// treeError reports a tree that the catalog cannot give. A damaged tree
-// already names the tree and the cause.
-func treeError(id object.ID, err error) error {
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("tree %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
-	}
-	if _, damaged := errors.AsType[*catalog.DamagedObjectError](err); damaged {
-		return err
-	}
-	return fmt.Errorf("tree %s: %w", id.TextForm(), err)
 }
 
 // nameMax is the longest file name in bytes that most filesystems

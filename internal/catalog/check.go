@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 
 	"github.com/tjjh89017/noahsark/internal/format"
@@ -167,6 +168,23 @@ func (e *FileSizeError) Error() string {
 	}
 	return fmt.Sprintf("catalog: blob %s: the chunk lengths give %d bytes, but the tree entry gives %d",
 		e.Blob.TextForm(), e.BlobSize, e.EntrySize)
+}
+
+// ReadError gives the error of a read of the tree or blob id that the
+// catalog cannot give. A *DamagedObjectError and a *FileSizeError
+// already name the object and the cause, and stay as they are. Any
+// other error gets the kind and the id of the object.
+func ReadError(kind format.ObjectKind, id object.ID, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s %s is not in the catalog; run recover with the disc that holds it: %w", kindWord(kind), id.TextForm(), err)
+	}
+	if _, damaged := errors.AsType[*DamagedObjectError](err); damaged {
+		return err
+	}
+	if _, size := errors.AsType[*FileSizeError](err); size {
+		return err
+	}
+	return fmt.Errorf("%s %s: %w", kindWord(kind), id.TextForm(), err)
 }
 
 // ReadFileBlob reads the blob of the regular file entry e and checks

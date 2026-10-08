@@ -185,22 +185,6 @@ func (w *discWalk) Other(dest string, e format.TreeEntry) error {
 	return nil
 }
 
-// blobError reports a blob that the catalog cannot give. A damaged blob
-// and a blob of another size than its tree entry already name the blob
-// and the cause.
-func blobError(id object.ID, err error) error {
-	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("blob %s is not in the catalog; run recover with the disc that holds it: %w", id.TextForm(), err)
-	}
-	if _, damaged := errors.AsType[*catalog.DamagedObjectError](err); damaged {
-		return err
-	}
-	if _, size := errors.AsType[*catalog.FileSizeError](err); size {
-		return err
-	}
-	return fmt.Errorf("blob %s: %w", id.TextForm(), err)
-}
-
 // file restores regular file no as far as d can take it. The first walk
 // decides an existing destination and registers the file; a later walk
 // works only on a file that is still pending.
@@ -216,7 +200,7 @@ func (a *Assembler) file(no int64, dest, part string, e format.TreeEntry, d Disc
 	}
 	blob, err := a.c.ReadFileBlob(e)
 	if err != nil {
-		a.wp.failed(dest, blobError(object.ID(e.ContentID), err))
+		a.wp.failed(dest, catalog.ReadError(format.ObjectKindBlob, object.ID(e.ContentID), err))
 		return a.states.clear(no, pending)
 	}
 	entries := placeChunks(blob.Entries)
