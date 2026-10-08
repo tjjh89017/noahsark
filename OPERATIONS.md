@@ -1934,13 +1934,13 @@ event. `Recovered` never carries the `close` flag: no disc byte records the clos
 choice. The flag changes only the burn line of `status`, and `status` never
 prints a burn line for an `on disc only` disc. For a disc that
 the repository already knows and that is not `missing`, it writes only the
-catalog entries, and prints `recover: ok; disc SEQ "LABEL" already known`.
+catalog entries, and prints `recover: ok; disc SEQ "LABEL" already known; discs 0 to NEWEST known; give a newer disc if you hold one`.
 It still checks every object of that disc. It writes no event. The one
 exception is an `on disc only` disc whose last check failed, as after a
 recover of a damaged copy: a copy with no damaged object records each item
 of the disc that has no record, or that is `Lost`, as OnDisc, appends
 `CheckOK`, and prints `recover: ok; disc SEQ "LABEL" already known; check
-logged` (`docs/states.md`, row 70e). When an object
+logged; discs 0 to NEWEST known; give a newer disc if you hold one` (`docs/states.md`, row 70e). When an object
 is damaged, it prints the `damaged:` lines below instead of `ok`, and exits
 with code 1. It treats an item that is `Lost` in the log as not known, and
 records it as OnDisc. After each call it computes the value of
@@ -1959,9 +1959,12 @@ then the count line.
 Then it exits with code 1. Else, for a disc that the repository did not
 know or that was `missing`, it first prints `recover: read disc SEQ
 "LABEL"`, so that each call names the disc that it read. Then it prints
-`recover: ok`, or one `recover:
+`recover: ok; discs 0 to NEWEST known; give a newer disc if you hold one`, or one `recover:
 disc SEQ "LABEL" (UUID) named by another disc, not yet given` line for each
-`missing` disc, and then exits with code 1. A disc that the repository
+`missing` disc, and then exits with code 1. NEWEST is the highest disc number
+that the repository knows after the call. A disc names only the discs that
+existed when it was packed, thus a disc newer than NEWEST can still be unknown.
+The operator gives the newest disc first: it names every older disc. A disc that the repository
 already knows follows the same rule. While a disc is `missing` after the
 call, `recover` prints the `already known` line without `ok; `, then the
 `named by another disc` line of each `missing` disc, and exits with code 1
@@ -2175,8 +2178,8 @@ Every command uses exactly these three codes.
 | 5 | A disc does not mount | The disc is bad. For a disc that is not yet `verified`: discard it, and run `disc burned --undo DISC` if `disc burned` ran. Then `status`. |
 | 6 | Every copy of a disc is lost | `disc lost DISC`. `restore` restores what the other discs hold and names each file that it cannot restore. |
 | 6a | `status`: `lost: N items; only a lost disc holds them` | `commit` the source. Each lost item that the source still holds is staged again, and the next `pack` takes it. The line stays while the source no longer holds an item: that data is gone. `restore` of an old snapshot then restores every other file, names each file that it cannot restore, and exits 1. When the disc turns up again, run `disc lost --undo DISC`. |
-| 7 | `no repository; run recover first, one time for each disc` | `recover --source=PATH --disc=DIR`, one time for each disc. Then `restore`. |
-| 8 | The repository directory is lost | `noahsark --repo=<new> recover --source=PATH --disc=DIR`, one time for each disc, in any order. Do not run `init` first. |
+| 7 | `no repository; run recover first, one time for each disc` | `recover --source=PATH --disc=DIR`, one time for each disc, the newest disc first. Then `restore`. |
+| 8 | The repository directory is lost | `noahsark --repo=<new> recover --source=PATH --disc=DIR`, one time for each disc, the newest disc first: it names every older disc. Do not run `init` first. |
 | 9 | `recover: disc SEQ "LABEL" (UUID) named by another disc, not yet given` | Run `recover` with that disc. When it is gone for good, run `disc lost DISC`. |
 | 10 | `recover: damaged: ID` | The disc is `on disc only` with a failed check. Copy it now, or use the second copy, and run `recover` with the copy. |
 | 11 | `the state log's tail was truncated; ...` | A crash left a torn tail. Run the interrupted command again. When it refuses because the disc already has the new state, its event was written, and the command with the lock wrote the rest (row 28). For a bad record in the middle of a log, run `recover` into a new repository. Do not put an old version of a log back (row 29). |
@@ -2207,6 +2210,8 @@ Every command uses exactly these three codes.
 | 33 | `no disc matches ARG; noahsark status lists the discs` | Run `status`, and give a disc number or a uuid prefix from its disc lines. |
 | 34 | `recover needs --source=PATH`, or `recover needs --disc=DIR` | Give the named option. |
 | 35 | `staging chunk ID: REASON; restore reads the chunk from a disc` | Nothing to do for the restore: it reads the chunk from a disc. The chunk file is damaged: when `pack` or `status` names it too, follow row 13a. |
+| 36 | `recover: ok; discs 0 to NEWEST known; give a newer disc if you hold one` | Give `recover` each disc newer than NEWEST that you hold. A disc names only the discs that existed when it was packed. |
+| 37 | `disc SEQ is no longer packed; pack cannot be undone`, or `...; the newest packed disc is NEWEST` | Only the newest disc can be undone, while it is `packed`. Run `pack --undo NEWEST` when the line names NEWEST. |
 
 ## 20. Test list
 
@@ -2378,7 +2383,7 @@ sudo noahsark --repo=/srv/ark/repo image build <DISC>
 # read-only, verify.
 eject /dev/sr0 && eject -t /dev/sr0
 sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark
-noahsark verify /mnt/ark; sudo umount /mnt/ark && eject /dev/sr0
+noahsark verify /mnt/ark; sudo umount /mnt/ark; eject /dev/sr0
 # Copy a good disc to an image, to burn a new copy.
-ddrescue -b 2048 -n -r1 /dev/sr0 copy.img copy.map
+ddrescue -S -b 2048 -n -r1 /dev/sr0 copy.img copy.map
 ```

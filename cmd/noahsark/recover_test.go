@@ -196,7 +196,7 @@ func TestRecoverIsIdempotent(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("recover #2: exit %d: %s", code, out)
 	}
-	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n")
+	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known; discs 0 to 0 known; give a newer disc if you hold one\n")
 	wantNextBlock(t, repo, out)
 	if count2 := countByState(t, repo, stage.OnDisc); count1 != count2 {
 		t.Fatalf("on-disc count changed across a repeat rebuild: %d then %d", count1, count2)
@@ -237,7 +237,7 @@ func TestRecoverOfVerifiedDiscWritesNoEvent(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
-	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n")
+	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known; discs 0 to 0 known; give a newer disc if you hold one\n")
 	wantNextBlock(t, repo, out)
 	if after := discState(t, repo, discUUID); after != before {
 		t.Fatalf("disc record %+v after recover, want %+v", after, before)
@@ -376,8 +376,49 @@ func TestRecoverPartialUntilEveryDiscFed(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("recover (remaining two): exit %d, want 0: %s", code, out)
 	}
-	if !strings.Contains(out, "recover: ok") {
-		t.Fatalf("output %q does not say ok once every disc is fed", out)
+	if !strings.Contains(out, "recover: ok; discs 0 to 2 known; give a newer disc if you hold one\n") {
+		t.Fatalf("output %q does not say ok with discs 0 to 2 once every disc is fed", out)
+	}
+}
+
+// TestRecoverOkNamesTheNewestKnownDisc packs two discs, deletes the
+// repository, and gives the older disc first. The older disc does not
+// name the newer one, thus recover says ok, and its ok line names the
+// highest disc number that it knows, so that the operator gives a newer
+// disc.
+func TestRecoverOkNamesTheNewestKnownDisc(t *testing.T) {
+	work := t.TempDir()
+	repo := filepath.Join(work, "repo")
+	src := writeMultiDiscFixtureSource(t)
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	var discRoots []string
+	for i, capacity := range []string{packSectors(6_000_000), packSectors(20_000_000)} {
+		treeDir := filepath.Join(work, "disc"+string(rune('0'+i)))
+		if code, out := runCmd(t, "--repo="+repo, "pack", "--capacity="+capacity, "--out="+treeDir); code != 0 {
+			t.Fatalf("pack %d: exit %d: %s", i, code, out)
+		}
+		discRoots = append(discRoots, treeDir)
+	}
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	for i, want := range []string{
+		"recover: ok; discs 0 to 0 known; give a newer disc if you hold one\n",
+		"recover: ok; discs 0 to 1 known; give a newer disc if you hold one\n",
+	} {
+		code, out := recoverDisc(t, repo, src, discRoots[i])
+		if code != 0 {
+			t.Fatalf("recover disc %d: exit %d, want 0: %s", i, code, out)
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("recover disc %d: output %q does not hold %q", i, out, want)
+		}
 	}
 }
 
@@ -916,7 +957,7 @@ func TestRecoverRepeatTwoDiscFeedIsAccepted(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("recover %s, round %d: exit %d: %s", tree, round, code, out)
 			}
-			if !strings.Contains(out, "recover: ok; disc ") || !strings.Contains(out, " already known\n") {
+			if !strings.Contains(out, "recover: ok; disc ") || !strings.Contains(out, " already known; discs 0 to 1 known; give a newer disc if you hold one\n") {
 				t.Fatalf("recover %s, round %d: output %q does not say that it knows the disc", tree, round, out)
 			}
 		}

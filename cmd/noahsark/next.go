@@ -265,9 +265,10 @@ func (r nextRepo) driveMountLine() string {
 		" 2>/dev/null && break; sleep 2; done && mountpoint " + arkMount
 }
 
-// unmountLine unmounts arkMount and ejects the disc.
+// unmountLine unmounts arkMount and ejects the disc. The eject runs also
+// when the umount fails, as when the disc did not mount.
 func (r nextRepo) unmountLine() string {
-	return "sudo umount " + arkMount + " && eject " + quoteShellWord(r.device)
+	return "sudo umount " + arkMount + "; eject " + quoteShellWord(r.device)
 }
 
 // secondCopyAdvice is the advice line of a verified disc.

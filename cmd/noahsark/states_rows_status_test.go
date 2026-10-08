@@ -22,7 +22,7 @@ const statusMountLine = "sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo m
 var statusVerifyLines = []string{
 	statusMountLine + " &&\n",
 	"noahsark verify /mnt/ark;\n",
-	"sudo umount /mnt/ark && eject /dev/sr0\n",
+	"sudo umount /mnt/ark; eject /dev/sr0\n",
 }
 
 // statusAfterBurnLines are the lines of a block after a burn: they load
@@ -31,7 +31,7 @@ var statusAfterBurnLines = []string{
 	"eject /dev/sr0 && eject -t /dev/sr0 &&\n",
 	"sudo -v && " + statusMountLine + " &&\n",
 	"noahsark verify /mnt/ark;\n",
-	"sudo umount /mnt/ark && eject /dev/sr0\n",
+	"sudo umount /mnt/ark; eject /dev/sr0\n",
 }
 
 // commitBlock is the block of a lost disc whose data waits for a commit.
@@ -151,7 +151,7 @@ func init() {
 				statusMountLine + " &&\n",
 				"noahsark recover --source=",
 				" --disc=/mnt/ark;\n",
-				"sudo umount /mnt/ark && eject /dev/sr0\n",
+				"sudo umount /mnt/ark; eject /dev/sr0\n",
 				"or, when disc {SEQ} is gone for good, run:\n",
 				"noahsark disc lost {SEQ}\n",
 			},

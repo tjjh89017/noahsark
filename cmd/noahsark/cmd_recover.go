@@ -244,25 +244,29 @@ func recoverLocked(e *env, repoDir, source, root string, rr *image.ReadResult) i
 	case !isNew:
 		result = name + " already known"
 	}
-	missing := logs.Discs.InState(stage.DiscMissing)
-	if len(missing) == 0 {
-		if result == "" {
-			_, _ = fmt.Fprintln(stdout, "recover: ok")
-		} else {
-			_, _ = fmt.Fprintf(stdout, "recover: ok; %s\n", result)
-		}
-		printNext(e, repoDir)
-		return 0
-	}
-	if result != "" {
-		_, _ = fmt.Fprintf(stdout, "recover: %s\n", result)
-	}
 	if rows == nil {
 		ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), rr.Disc.RepoUUID)
 		if err != nil {
 			return fail(err)
 		}
 		rows = ledger.Rows
+	}
+	missing := logs.Discs.InState(stage.DiscMissing)
+	if len(missing) == 0 {
+		// A disc names only the discs that existed when it was packed,
+		// thus a newer disc can still be unknown.
+		_, newest, _ := newestDisc(rows, logs.Discs)
+		known := fmt.Sprintf("discs 0 to %d known; give a newer disc if you hold one", newest)
+		if result == "" {
+			_, _ = fmt.Fprintf(stdout, "recover: ok; %s\n", known)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "recover: ok; %s; %s\n", result, known)
+		}
+		printNext(e, repoDir)
+		return 0
+	}
+	if result != "" {
+		_, _ = fmt.Fprintf(stdout, "recover: %s\n", result)
 	}
 	for _, row := range missingRows(missing, rows) {
 		_, _ = fmt.Fprintf(stdout, "recover: %s named by another disc, not yet given\n", discName(row.DiscSeq, discsRowLabel(row), row.DiscUUID))
