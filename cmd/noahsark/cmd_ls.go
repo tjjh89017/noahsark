@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +21,11 @@ import (
 func init() {
 	register(&command{
 		name:  "ls",
-		usage: "ls [-R | --recursive] SNAPSHOT [PATH]",
+		usage: "ls [-R | --recursive] [--format=FORMAT] SNAPSHOT [PATH]",
 		summary: "List the entries of a snapshot from the catalog. One entry on each line: " +
-			"mode, type, size, time and path, separated by a tab.",
+			"mode, type, size, time and path, separated by a tab. " +
+			"--format=names prints the path only, --format=json one JSON object, " +
+			"--format=human the size in units of 1024, for example 4.2K.",
 		flags: lsFlags,
 	})
 }
@@ -28,17 +33,35 @@ func init() {
 // lsOptions holds the command options of ls.
 type lsOptions struct {
 	recursive bool
+	format    string
 }
 
 func lsFlags(fs *flag.FlagSet) runFunc {
 	o := &lsOptions{}
 	fs.BoolVar(&o.recursive, "R", false, "descend into subdirectories")
 	fs.BoolVar(&o.recursive, "recursive", false, "descend into subdirectories")
+	fs.StringVar(&o.format, "format", lsFormatDefault, "output format: "+strings.Join(lsFormats, ", "))
 	return o.run
 }
 
+// The values of ls --format.
+const (
+	lsFormatDefault = "default"
+	lsFormatNames   = "names"
+	lsFormatJSON    = "json"
+	lsFormatHuman   = "human"
+)
+
+// lsFormats lists the values of ls --format, in the order of the help.
+var lsFormats = []string{lsFormatDefault, lsFormatNames, lsFormatJSON, lsFormatHuman}
+
+// lsFormatHint tells the operator which values ls --format accepts.
+func lsFormatHint() string {
+	return "give " + strings.Join(lsFormats, ", ")
+}
+
 // lsUsage is the usage line that ls prints for a wrong argument count.
-const lsUsage = "usage: noahsark ls [-R | --recursive] SNAPSHOT [PATH]"
+const lsUsage = "usage: noahsark ls [-R | --recursive] [--format=FORMAT] SNAPSHOT [PATH]"
 
 // run implements "noahsark ls". It reads the catalog only, takes no lock
 // and changes no file.
@@ -47,6 +70,10 @@ func (o *lsOptions) run(e *env, args []string) int {
 	stderr := e.stderr
 	if len(args) < 1 || len(args) > 2 {
 		_, _ = fmt.Fprintln(stderr, lsUsage)
+		return 2
+	}
+	if !slices.Contains(lsFormats, o.format) {
+		_, _ = fmt.Fprintf(stderr, "noahsark: %s: invalid format %q; %s\n", cmd, o.format, lsFormatHint())
 		return 2
 	}
 	var pathArg string
@@ -68,7 +95,7 @@ func (o *lsOptions) run(e *env, args []string) int {
 	}
 
 	out := bufio.NewWriter(e.stdout)
-	l := &lsLister{src: rc.src, out: out, recursive: o.recursive}
+	l := &lsLister{src: rc.src, out: out, recursive: o.recursive, format: o.format}
 	err := l.run(object.ID(snap.RootTree), pathArg)
 	_ = out.Flush()
 	var missing *notHeldError
@@ -104,6 +131,7 @@ type lsLister struct {
 	src       *catalogSource
 	out       io.Writer
 	recursive bool
+	format    string
 }
 
 // run lists the snapshot with the root tree rootID, below pathArg, or
@@ -215,13 +243,56 @@ func (l *lsLister) listDir(dir lsItem) error {
 	return l.listItems(items)
 }
 
-// emit prints one line: mode, type, size, time and path, separated by a
-// tab.
+// emit prints the line of one entry in the format of l.
 func (l *lsLister) emit(it lsItem) {
 	e := it.entry
-	_, _ = fmt.Fprintf(l.out, "%04o\t%s\t%d\t%s\t%s\n",
-		e.Mode&0o7777, entryTypeWord(e.EntryType), entrySize(e),
-		utcTime(e.MtimeSec), escapeField(it.path))
+	mode := fmt.Sprintf("%04o", e.Mode&0o7777)
+	path := escapeField(it.path)
+	switch l.format {
+	case lsFormatNames:
+		_, _ = fmt.Fprintln(l.out, path)
+	case lsFormatJSON:
+		enc := json.NewEncoder(l.out)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(lsJSONLine{
+			Mode: mode, Type: entryTypeWord(e.EntryType), Size: entrySize(e),
+			Time: utcTime(e.MtimeSec), Path: path,
+		})
+	case lsFormatHuman:
+		_, _ = fmt.Fprintf(l.out, "%s\t%s\t%s\t%s\t%s\n",
+			mode, entryTypeWord(e.EntryType), humanSize(entrySize(e)), utcTime(e.MtimeSec), path)
+	default:
+		_, _ = fmt.Fprintf(l.out, "%s\t%s\t%d\t%s\t%s\n",
+			mode, entryTypeWord(e.EntryType), entrySize(e), utcTime(e.MtimeSec), path)
+	}
+}
+
+// lsJSONLine is one line of ls --format=json. It holds the fields of the
+// default line under fixed names.
+type lsJSONLine struct {
+	Mode string `json:"mode"`
+	Type string `json:"type"`
+	Size uint64 `json:"size"`
+	Time string `json:"time"`
+	Path string `json:"path"`
+}
+
+// humanSize gives a byte count in units of 1024 for ls --format=human. A
+// count below 1024 prints in bytes with no unit, for example 512. A
+// larger count prints with one decimal and a unit K, M, G, T, P or E, for
+// example 4.2K.
+func humanSize(n uint64) string {
+	if n < 1024 {
+		return strconv.FormatUint(n, 10)
+	}
+	const units = "KMGTPE"
+	v := float64(n) / 1024
+	u := 0
+	for u < len(units)-1 && math.Round(v*10)/10 >= 1024 {
+		v /= 1024
+		u++
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64) + units[u:u+1]
 }
 
 // entryTypeWord gives the type field of an ls line.

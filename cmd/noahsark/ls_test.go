@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -257,6 +259,129 @@ func TestLsKeepsTheRootLevelOfSeveralRoots(t *testing.T) {
 	code, out, errOut = runLs(t, repo, "ls", defaultRefName(), rootPath(src)+"/sub")
 	if code != 0 || !strings.HasSuffix(out, "\t"+rootPath(src)+"/sub/b.txt\n") {
 		t.Fatalf("ls ROOT/sub: exit %d, output %q, stderr %q", code, out, errOut)
+	}
+}
+
+// TestLsFormatNames checks that --format=names prints the path only, in
+// the order of the default format, also with -R.
+func TestLsFormatNames(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	code, out, errOut := runLs(t, repo, "ls", "-R", "--format=names", defaultRefName())
+	if code != 0 {
+		t.Fatalf("ls: exit %d: %s", code, errOut)
+	}
+	if want := "a.txt\nsub\nsub/b.txt\n"; out != want {
+		t.Fatalf("ls --format=names output:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+// TestLsFormatJSON checks that --format=json prints one JSON object on
+// each line, with the fields of the default line.
+func TestLsFormatJSON(t *testing.T) {
+	repo, src := initAndCommit(t)
+	code, out, errOut := runLs(t, repo, "ls", "--recursive", "--format=json", defaultRefName())
+	if code != 0 {
+		t.Fatalf("ls: exit %d: %s", code, errOut)
+	}
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	want := []struct{ rel, typ string }{{"a.txt", "file"}, {"sub", "dir"}, {"sub/b.txt", "file"}}
+	if len(lines) != len(want) {
+		t.Fatalf("ls --format=json printed %d lines, want %d:\n%s", len(lines), len(want), out)
+	}
+	for i, w := range want {
+		var got struct {
+			Mode string `json:"mode"`
+			Type string `json:"type"`
+			Size uint64 `json:"size"`
+			Time string `json:"time"`
+			Path string `json:"path"`
+		}
+		dec := json.NewDecoder(strings.NewReader(lines[i]))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&got); err != nil {
+			t.Fatalf("line %q: %v", lines[i], err)
+		}
+		f := strings.Split(lsLine(t, src, w.rel, w.typ), "\t")
+		if gotLine := strings.Join([]string{got.Mode, got.Type, strconv.FormatUint(got.Size, 10), got.Time, got.Path}, "\t"); gotLine != strings.Join(f, "\t") {
+			t.Errorf("line %q gives %q, want %q", lines[i], gotLine, strings.Join(f, "\t"))
+		}
+	}
+}
+
+// TestLsFormatHuman checks that --format=human prints the default line
+// with the size in units of 1024, and a size below 1024 in bytes.
+func TestLsFormatHuman(t *testing.T) {
+	src := writeFixtureSource(t)
+	if err := os.WriteFile(filepath.Join(src, "big.bin"), make([]byte, 4300), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if code, out := runIn(t, repo, "init"); code != 0 {
+		t.Fatalf("init: exit %d: %s", code, out)
+	}
+	if code, out := runCmd(t, "--repo="+repo, "commit", src); code != 0 {
+		t.Fatalf("commit: exit %d: %s", code, out)
+	}
+	code, out, errOut := runLs(t, repo, "ls", "-R", "--format=human", defaultRefName())
+	if code != 0 {
+		t.Fatalf("ls: exit %d: %s", code, errOut)
+	}
+	var want strings.Builder
+	for _, w := range []struct{ rel, typ, size string }{
+		{"a.txt", "file", "12"}, {"big.bin", "file", "4.2K"}, {"sub", "dir", "0"}, {"sub/b.txt", "file", "33"},
+	} {
+		f := strings.Split(lsLine(t, src, w.rel, w.typ), "\t")
+		f[2] = w.size
+		want.WriteString(strings.Join(f, "\t") + "\n")
+	}
+	if out != want.String() {
+		t.Fatalf("ls --format=human output:\n%q\nwant:\n%q", out, want.String())
+	}
+}
+
+// TestHumanSize checks the unit and the rounding of a human size.
+func TestHumanSize(t *testing.T) {
+	for _, c := range []struct {
+		in   uint64
+		want string
+	}{
+		{0, "0"},
+		{1023, "1023"},
+		{1024, "1.0K"},
+		{4300, "4.2K"},
+		{1024*1024 - 1, "1.0M"},
+		{1363149, "1.3M"},
+		{2 << 30, "2.0G"},
+		{5 << 40, "5.0T"},
+		{1<<64 - 1, "16.0E"},
+	} {
+		if got := humanSize(c.in); got != c.want {
+			t.Errorf("humanSize(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestLsFormatDefaultIsTheDefault checks that --format=default prints
+// the same lines as no --format.
+func TestLsFormatDefaultIsTheDefault(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	_, want, _ := runLs(t, repo, "ls", "-R", defaultRefName())
+	code, out, errOut := runLs(t, repo, "ls", "-R", "--format=default", defaultRefName())
+	if code != 0 || out != want {
+		t.Fatalf("ls --format=default: exit %d, output %q, stderr %q; want %q", code, out, errOut, want)
+	}
+}
+
+// TestLsUnknownFormat checks that an unknown format is a usage error
+// that lists each value.
+func TestLsUnknownFormat(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	code, out, errOut := runLs(t, repo, "ls", "--format=long", defaultRefName())
+	if code != 2 || out != "" {
+		t.Fatalf("ls --format=long: exit %d, output %q; want 2 and no output", code, out)
+	}
+	if want := `noahsark: ls: invalid format "long"; give default, names, json, human` + "\n"; errOut != want {
+		t.Fatalf("ls --format=long: stderr %q, want %q", errOut, want)
 	}
 }
 

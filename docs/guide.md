@@ -616,6 +616,16 @@ start of an id. When a start of an id matches more than one snapshot, the
 tool lists each full id and exits with code 2. Give more characters. You
 can copy a path from `ls` into a `restore` line.
 
+`--format=names` prints the paths only. `--format=json` prints one JSON
+object on each line, for a script. `--format=human` prints the size as
+`4.2K` in place of `4300`:
+
+```
+$ noahsark ls --format=human 2026-09-14
+0644	file	1.2K	2026-09-10T17:02:11Z	notes.txt
+0755	dir	0	2026-09-12T08:00:00Z	photos
+```
+
 ## Restore
 
 Do a restore drill now, and again every few months. `restore` needs the
