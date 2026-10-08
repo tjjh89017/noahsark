@@ -18,13 +18,13 @@ import (
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
 
-// DiscChunks is one inserted disc, as the assembler reads it. Has
-// reports whether the restore takes the chunk from this disc, with no
-// disc access. One restore takes each chunk from one disc only, also
-// when several discs hold it: the assembler writes a chunk that Has
-// names at every position of every file that still needs it. Read
-// returns one verified chunk payload and may make the operator insert
-// the disc first.
+// DiscChunks is one chunk source, as the assembler reads it: an inserted
+// disc, or the staging store. Has reports whether the restore takes the
+// chunk from this source, with no disc access. One restore takes each
+// chunk from one source only, also when several hold it: the assembler
+// writes a chunk that Has names at every position of every file that
+// still needs it. Read returns one verified chunk payload and may make
+// the operator insert the disc first.
 type DiscChunks interface {
 	Has(id object.ID) bool
 	Read(id object.ID) ([]byte, error)

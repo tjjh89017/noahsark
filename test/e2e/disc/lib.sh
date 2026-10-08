@@ -215,6 +215,17 @@ restore_asked_uuid() {
 	sed -n 's/^restore: insert disc .*(\([0-9a-f-]*\)) into .* and run restore again$/\1/p' <<<"$1"
 }
 
+# staging_aside REPO moves the chunk files of the staging store of REPO
+# aside. restore then reads every chunk from a disc. staging_back REPO
+# puts them back.
+staging_aside() {
+	mv "$1/staging/chunks" "$1/staging/chunks.aside"
+}
+
+staging_back() {
+	mv "$1/staging/chunks.aside" "$1/staging/chunks"
+}
+
 # restore_loop REPO DIR SNAPSHOT [PATH...] DEST runs restore with the
 # disc at DIR. When restore asks for another disc, it mounts the image of
 # that disc at DIR and runs the same restore again, until restore exits

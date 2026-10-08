@@ -132,7 +132,9 @@ iso_plain_level4_check() {
 
 	verify_counted "$repo" "$plain_mnt" "$uuid"
 
+	staging_aside "$repo"
 	restore_loop "$repo" "$plain_mnt" "$snap" "$plain_restored"
+	staging_back "$repo"
 	assert_dirs_equal "$plain_restored" "$src"
 
 	umount_if_mounted "$plain_mnt"
@@ -234,9 +236,12 @@ scenario_iso() {
 
 	verify_counted "$repo" "$mnt" "$uuid"
 
+	# restore reads every chunk from the ISO image, not from staging.
+	staging_aside "$repo"
 	t0=$(date +%s)
 	restore_loop "$repo" "$mnt" "$snap" "$restored"
 	t1=$(date +%s)
+	staging_back "$repo"
 	log "iso: restore took $((t1 - t0))s"
 	assert_dirs_equal "$restored" "$src"
 

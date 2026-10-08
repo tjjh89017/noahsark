@@ -163,13 +163,6 @@ scenario_hostile() {
 	[ "${#uuids[@]}" -ge 2 ] || fail "hostile: the tree fits one disc; the large file must span discs"
 	log "hostile: packed ${#uuids[@]} discs"
 
-	# The file larger than a disc needs more than one disc.
-	out="$("$BIN" --repo="$repo" restore --dry-run --disc="$rmnt" "$snap" larger-than-a-disc "$work/dry")"
-	echo "$out"
-	local big_discs
-	big_discs="$(grep -c '^disc ' <<<"$out")"
-	[ "$big_discs" -ge 2 ] || fail "hostile: the file larger than a disc is on $big_discs disc(s)"
-
 	rm -rf "$repo"
 	log "hostile: deleted the repository"
 	local i
@@ -178,6 +171,14 @@ scenario_hostile() {
 		recover_disc "$repo" "$src" "$mnt" 0
 		umount_if_mounted "$mnt"
 	done
+
+	# The file larger than a disc needs more than one disc. The recovered
+	# repository has no chunk file in staging, thus the plan names discs.
+	out="$("$BIN" --repo="$repo" restore --dry-run --disc="$rmnt" "$snap" larger-than-a-disc "$work/dry")"
+	echo "$out"
+	local big_discs
+	big_discs="$(grep -c '^disc ' <<<"$out")"
+	[ "$big_discs" -ge 2 ] || fail "hostile: the file larger than a disc is on $big_discs disc(s)"
 
 	local restored="$work/restored"
 	restore_loop "$repo" "$rmnt" "$snap" "$restored"

@@ -1,7 +1,7 @@
-// Package restore writes a snapshot from the catalog and one mounted
-// disc at a time into an output directory. It reads every tree and blob
-// from the catalog, and every chunk from a disc. It never reads a
-// staging directory.
+// Package restore writes a snapshot from the catalog and one chunk
+// source at a time into an output directory. It reads every tree and
+// blob from the catalog, and every chunk from the source that the caller
+// gives to Disc: a mounted disc, or the staging store.
 package restore
 
 import (
