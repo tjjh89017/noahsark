@@ -1043,7 +1043,9 @@ repair a disc: the repair is the second copy of the disc.
 2. The repository and its config, as for every command.
 3. The `DISC.bin` of `DISC-ROOT`. When `verify` cannot read it, it prints
    `noahsark: verify: DISC-ROOT: cannot read the disc: ERROR` and exits
-   with code 1.
+   with code 1. When neither `DISC-ROOT` nor `DISC-ROOT/NOAHSARK` holds
+   `DISC.bin`, `ERROR` is `no DISC.bin under DISC-ROOT or
+   DISC-ROOT/NOAHSARK; is the disc mounted at DISC-ROOT?`.
 4. With a repository: whether `DISC-ROOT` is a
    counted mount. This check refuses nothing. It fails only when `verify`
    cannot resolve the path, read the mount table, or read the device of a
@@ -1083,9 +1085,9 @@ not given:
   `docs/states.md`, "Disc records", states.
 
 When `DISC-ROOT` is not a counted mount, `verify` checks every byte, records
-nothing, and prints `not counted: this is not a disc`. It prints `noahsark:
-verify: DISC-ROOT is not counted: REASON` to standard error, with the `REASON`
-of "Transition rules". With no repository, it
+nothing, and prints `not counted: this is not a disc (REASON)`, with the
+`REASON` of "Transition rules". It prints the line one time, on standard
+output. With no repository, it
 prints `not counted: no repository`. A failed check of such a root prints
 `disc SEQ "LABEL": bad; REASON` first, then the same `not counted` line, and
 exits with code 1. It removes no record and logs nothing. `--no-mark` writes
@@ -1122,7 +1124,7 @@ check:
 
 - a good counted check: the text of `docs/states.md`, rows 31 to 35;
 - a root that is not a counted mount, also with `--no-mark`: `not counted:
-  this is not a disc`;
+  this is not a disc (REASON)`;
 - no repository: `not counted: no repository`;
 - `--no-mark` of a counted mount: `not marked`. After a good check of a
   `packed` disc, the line is `not marked; to record this burn, run: noahsark
@@ -1492,9 +1494,14 @@ subcommands `burned`, `verified` and `lost`, and `image`, with the subcommand
 - A group has no options of its own, other than `-h`. A group with no
   subcommand, or with an unknown subcommand, is a usage error: the tool lists
   the subcommands and exits with code 2.
-- `noahsark -h` lists the commands and the groups. `noahsark COMMAND -h` and
+- `noahsark -h` lists the commands and the groups in the order of the work:
+  `init`, `commit`, `status`, `pack`, `image`, `disc`, `verify`, `gc`,
+  `restore`, `recover`, `ls`, `log`. A line after the list says that `status`
+  prints the next step. `noahsark COMMAND -h` and
   `noahsark -h COMMAND` print the help of the command, or the subcommands of a
-  group, and exit with code 0.
+  group, and exit with code 0. The help of a command shows each option as
+  the synopsis writes it: `--name` for a switch, `--name=VALUE` for an option
+  with a value, and `-m MESSAGE` for the one-letter option of `commit`.
 - The tool checks the syntax before it reads the repository. A usage error
   changes nothing.
 - `status` prints the full `next:` block. The block holds the exact command
@@ -1525,7 +1532,8 @@ decimal digits is a disc number and nothing else; a leading zero is allowed.
 Every other value is a uuid prefix: a value of 8 or more decimal digits, or a
 value that holds a hexadecimal letter or a hyphen. A uuid and a uuid prefix
 can have hyphens and can use any letter case. A value that matches no disc is
-a usage error: the tool prints `no disc matches ARG` and exits with code 2. A
+a usage error: the tool prints `no disc matches ARG; noahsark status lists
+the discs` and exits with code 2. A
 value that matches more than one disc is a usage error: the tool lists the
 candidates and exits with code 2. Each candidate line has the form
 `disc SEQ "LABEL"  UUID`, with two spaces before the uuid. The uuid is in
@@ -1582,7 +1590,14 @@ Each line takes the global options before the command name. A positional
 argument that a line does not have is a usage error: the tool prints the
 usage line of the command and exits with code 2. For example, `noahsark pack
 --capacity=bd25 extra` prints `usage: noahsark pack --capacity=SIZE
-[--close] [--out=DIR] [--dry-run]`.
+[--close] [--out=DIR] [--dry-run]`. A required option that a line does not
+get is a usage error: the tool names the option, then prints the usage line,
+and exits with code 2. For example, `noahsark recover --disc=/mnt/ark`
+prints `noahsark: recover needs --source=PATH`, then the usage line. `pack`
+with no `--capacity`, or with an empty value, prints `noahsark: pack needs
+--capacity; give a preset (NAMES) or a size with a unit, for example 25GB`.
+`NAMES` lists the presets of "Capacity", the same list as the refusal of a
+wrong value.
 
 ### 16.3 Options
 
@@ -1714,8 +1729,8 @@ bad; REASON`, then one line that names what changed, as `docs/states.md`,
 rows 31 to 46, gives. It ends with `next: noahsark status` when it wrote a
 record or a verify log event. `--no-mark` and a `verify` that is not counted
 print no `next:` line. A failed check of a root that is not counted prints
-`disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc`, and
-exits with code 1. With no repository, it names the disc by uuid. Exit: 1
+`disc SEQ "LABEL": bad; REASON`, then `not counted: this is not a disc
+(REASON)`, and exits with code 1. With no repository, it names the disc by uuid. Exit: 1
 when the check failed, or when the state refused the command. 2 for `--undo`
 with another option. "Verify" gives the order of the checks, the `REASON`
 texts and the count `N`.
@@ -1726,7 +1741,7 @@ item is Lost, then one disc line for each disc that is not undone, then one
 `next:` block:
 
 ```
-snapshot ID: N items staged, not complete on discs; recover cannot find it from the discs alone
+snapshot ID: N items staged, not complete on discs; its snapshot object is not on a disc yet
 snapshot ID: N items staged, not complete on discs; the discs alone cannot restore all of it
 lost: N items; only a lost disc holds them
 disc SEQ "LABEL"  STATE  UUID
@@ -1872,7 +1887,10 @@ recover: N item(s) damaged on disc SEQ "LABEL"
 
 There is one `damaged:` line for each damaged object, with its full text id,
 then the count line.
-Then it exits with code 1. Else it prints `recover: ok`, or one `recover:
+Then it exits with code 1. Else, for a disc that the repository did not
+know or that was `missing`, it first prints `recover: read disc SEQ
+"LABEL"`, so that each call names the disc that it read. Then it prints
+`recover: ok`, or one `recover:
 disc SEQ "LABEL" (UUID) named by another disc, not yet given` line for each
 `missing` disc, and then exits with code 1. A disc that the repository
 already knows follows the same rule. While a disc is `missing` after the
@@ -2075,7 +2093,7 @@ Every command uses exactly these three codes.
 | 13b | `pack`: `snapshot ID: ...; each disc carries it: run recover with a disc that holds it` | The catalog copy of a snapshot object that a disc holds is missing or damaged. Run `recover` with a disc that holds it; `recover` writes the object again. Then run `pack`. |
 | 13c | `status` or `commit`: `warning: N staged item(s) have no file in the staging store; commit the same source again` | `commit` the same source; `commit` writes each missing file again. Then `status` and `pack`. When the source no longer holds the data, `pack` names each item that it cannot take (row 13a). |
 | 14 | `pack`: `capacity ... holds not one item` | Give a larger `--capacity`. |
-| 15 | `pack needs --capacity` | Give `--capacity`. |
+| 15 | `pack needs --capacity; give a preset (...) or a size with a unit, for example 25GB` | Give `--capacity` with a preset or a size with a unit. |
 | 16 | `image build needs root for the loop mount; run: ...` | Run the printed `sudo` line. |
 | 17 | `image build`: `FILE exists; add --force to build it again` | Add `--force`. |
 | 18 | `gc: N item(s) skipped: disc SEQ's table is not in the catalog` | Run `verify` of that disc, then `gc`. |
@@ -2091,6 +2109,10 @@ Every command uses exactly these three codes.
 | 28 | `disc SEQ "LABEL": an earlier COMMAND stopped before it wrote the records of its items; N item record(s) now written` | Nothing to do. The command that printed the note wrote the records, then did its own work. When `status` names such a disc, run the command that its `next:` block gives. Do not run the stopped command again: its disc event is written. |
 | 29 | `state/ went back to an older version: ...` | `state/` is older than the staging directory, for example after a `git checkout` of an old commit. Put `state/` and `catalog/` forward again to the newest commit with git. When the newest version is gone, run `noahsark --repo=<new> recover --source=PATH --disc=DIR` with each disc, into a new repository. Commands that take no lock warn and go on. |
 | 30 | `staging directory DIR does not exist; ...`, or the `status` warning `staging directory DIR does not exist; staging.dir in config.yaml names it`. Only while the state log holds a Staged or a Packed item. | Mount the volume of the staging store, or correct `staging.dir` in `config.yaml`. Then run `status`. When the staging store is gone for good, run `mkdir -p DIR`: `status` then names each `packed` disc with `disc lost`, and a `commit` of the same source writes the chunk files of the Staged items again. |
+| 31 | `disc SEQ has a burn record; pack cannot be undone; when no burn happened, run noahsark disc burned --undo SEQ first` | When no burn happened, run `disc burned --undo SEQ`, then `pack --undo SEQ`. When the burn happened, do not undo the pack: verify the disc. |
+| 32 | `DISC-ROOT: cannot read the disc: no DISC.bin under DISC-ROOT or DISC-ROOT/NOAHSARK; is the disc mounted at DISC-ROOT?` | Mount the disc at `DISC-ROOT`, read-only, and run the command again. For an image file, mount it with `sudo mount -o loop,ro FILE DISC-ROOT`. |
+| 33 | `no disc matches ARG; noahsark status lists the discs` | Run `status`, and give a disc number or a uuid prefix from its disc lines. |
+| 34 | `recover needs --source=PATH`, or `recover needs --disc=DIR` | Give the named option. |
 
 ## 20. Test list
 

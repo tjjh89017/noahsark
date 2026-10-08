@@ -52,11 +52,14 @@ func parseCapacity(s string) (uint64, error) {
 		return (bytes + image.SectorSize - 1) / image.SectorSize, nil
 	}
 	if _, err := strconv.ParseUint(s, 10, 64); err == nil {
-		return 0, fmt.Errorf("capacity: %q has no unit; give a preset (%s) or a size with a unit, for example 25GB",
-			s, strings.Join(capacityPresetNames(), ", "))
+		return 0, fmt.Errorf("capacity: %q has no unit; %s", s, capacityHint())
 	}
-	return 0, fmt.Errorf("capacity: invalid value %q; give a preset (%s) or a size with a unit, for example 25GB",
-		s, strings.Join(capacityPresetNames(), ", "))
+	return 0, fmt.Errorf("capacity: invalid value %q; %s", s, capacityHint())
+}
+
+// capacityHint tells the operator which capacity values pack accepts.
+func capacityHint() string {
+	return "give a preset (" + strings.Join(capacityPresetNames(), ", ") + ") or a size with a unit, for example 25GB"
 }
 
 // byteSizeUnits lists the unit suffixes --capacity accepts on a size

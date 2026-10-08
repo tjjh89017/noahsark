@@ -191,7 +191,7 @@ func missingFilesLine(cmd string, n int) string {
 func statusSnapshotLine(g image.SnapshotGroup) string {
 	switch {
 	case !g.OnDisc:
-		return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; recover cannot find it from the discs alone", shortID(g.ID), g.StagedItems)
+		return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; its snapshot object is not on a disc yet", shortID(g.ID), g.StagedItems)
 	case g.StagedItems > 0:
 		return fmt.Sprintf("snapshot %s: %d items staged, not complete on discs; the discs alone cannot restore all of it", shortID(g.ID), g.StagedItems)
 	}

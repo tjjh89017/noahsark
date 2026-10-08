@@ -221,7 +221,7 @@ chain_assert_parts() {
 	out="$("$BIN" --repo="$repo" status)"
 	echo "$out"
 	if [ -n "$parts" ]; then
-		grep -qxE "snapshot ${parts:4:12}: [0-9]+ items staged, not complete on discs; recover cannot find it from the discs alone" <<<"$out" ||
+		grep -qxE "snapshot ${parts:4:12}: [0-9]+ items staged, not complete on discs; its snapshot object is not on a disc yet" <<<"$out" ||
 			fail "$label: status does not name snapshot ${parts:4:12} as not complete on discs"
 	elif grep -q '^snapshot ' <<<"$out"; then
 		fail "$label: status names a snapshot as not complete on discs, want none"

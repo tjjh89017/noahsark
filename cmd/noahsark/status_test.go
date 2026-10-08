@@ -615,7 +615,7 @@ func TestStatusUsageErrorsExitTwo(t *testing.T) {
 
 // statusSnapshotLineRe matches one snapshot line of "status": the short
 // snapshot id and the count of its staged items.
-var statusSnapshotLineRe = regexp.MustCompile(`^snapshot ([0-9a-f]{12}): (\d+) items staged, not complete on discs; recover cannot find it from the discs alone$`)
+var statusSnapshotLineRe = regexp.MustCompile(`^snapshot ([0-9a-f]{12}): (\d+) items staged, not complete on discs; its snapshot object is not on a disc yet$`)
 
 // TestStatusNamesASnapshotPackedInParts packs a part of a snapshot. status
 // prints its snapshot line after the staged line and before the disc

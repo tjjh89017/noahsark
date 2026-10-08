@@ -192,7 +192,7 @@ func TestResolveDiscHidesAnUndoneDisc(t *testing.T) {
 	rows := []format.DiscsRow{{DiscSeq: 0, RunSeq: 1, DiscUUID: undone}, {DiscSeq: 1, RunSeq: 2, DiscUUID: kept}}
 
 	for _, arg := range []string{"0", "aa01"} {
-		if _, err := resolveDisc(rows, logs.Discs, arg); err == nil || err.Error() != "no disc matches "+arg {
+		if _, err := resolveDisc(rows, logs.Discs, arg); err == nil || err.Error() != "no disc matches "+arg+"; noahsark status lists the discs" {
 			t.Fatalf("resolveDisc(%q) error = %v, want no match", arg, err)
 		}
 	}

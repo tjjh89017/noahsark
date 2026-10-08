@@ -93,7 +93,7 @@ func uuidPrefix(s string) (string, bool) {
 func oneDisc(arg string, matches []discArgCandidate) ([16]byte, error) {
 	switch len(matches) {
 	case 0:
-		return [16]byte{}, errors.New("no disc matches " + arg)
+		return [16]byte{}, errors.New("no disc matches " + arg + "; noahsark status lists the discs")
 	case 1:
 		return matches[0].UUID, nil
 	}

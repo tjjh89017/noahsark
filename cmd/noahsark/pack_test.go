@@ -898,12 +898,19 @@ func TestPackWithoutCapacityRefused(t *testing.T) {
 		t.Fatalf("commit: exit %d: %s", code, out)
 	}
 
-	code, out := runCmd(t, "--repo="+repo, "pack", "--out="+filepath.Join(work, "tree"))
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; output: %s", code, out)
-	}
-	if !strings.Contains(out, "pack needs --capacity") {
-		t.Fatalf("output = %q, want the pack needs --capacity line", out)
+	for _, args := range [][]string{
+		{"--repo=" + repo, "pack", "--out=" + filepath.Join(work, "tree")},
+		{"--repo=" + repo, "pack", "--capacity="},
+	} {
+		code, out := runCmd(t, args...)
+		if code != 2 {
+			t.Fatalf("%v: exit code = %d, want 2; output: %s", args, code, out)
+		}
+		for _, want := range []string{"pack needs --capacity; give a preset (", "bd25", "dvd+r", "25GB"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("%v: output = %q, want %q", args, out, want)
+			}
+		}
 	}
 }
 

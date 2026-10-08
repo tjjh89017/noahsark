@@ -161,8 +161,7 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 		}
 		switch {
 		case verdict != mountCounted:
-			c.note = notCountedDisc
-			_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s is not counted: %s\n", cmd, root, verdict)
+			c.note = fmt.Sprintf("%s (%s)", notCountedDisc, verdict)
 		case disc.State == stage.DiscPacked && checkErr == nil:
 			c.note = fmt.Sprintf("%s; to record this burn, run: noahsark disc burned %d", notMarked, ident.DiscSeq)
 		default:

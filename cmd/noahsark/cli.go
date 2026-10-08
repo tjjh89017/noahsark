@@ -41,8 +41,8 @@ func (c *command) path() string {
 // groups maps each command group to what it does. A group has no
 // options of its own, other than -h.
 var groups = map[string]string{
-	"disc":  "change the records of one disc",
-	"image": "build a disc image",
+	"disc":  "Change the records of one disc.",
+	"image": "Build a disc image.",
 }
 
 // commands is the command registry. Each command file adds its commands
@@ -387,22 +387,27 @@ func printTopHelp(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  -h, --help       print help and exit")
 	_, _ = fmt.Fprintln(w, "  --version        print the version and exit")
 	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "Commands:")
-	for _, c := range subcommands("") {
-		_, _ = fmt.Fprintf(w, "  %-15s  %s\n", c.name, c.summary)
+	_, _ = fmt.Fprintln(w, "Commands, in the order of the work:")
+	for _, name := range workflowOrder {
+		summary, ok := groups[name]
+		if ok {
+			var subs []string
+			for _, c := range subcommands(name) {
+				subs = append(subs, c.name)
+			}
+			summary += " Subcommands: " + strings.Join(subs, ", ") + "."
+		} else if c := lookupCommand("", name); c != nil {
+			summary = c.summary
+		}
+		_, _ = fmt.Fprintf(w, "  %-15s  %s\n", name, summary)
 	}
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "Command groups:")
-	names := make([]string, 0, len(groups))
-	for g := range groups {
-		names = append(names, g)
-	}
-	slices.Sort(names)
-	for _, g := range names {
-		_, _ = fmt.Fprintf(w, "  %-15s  %s\n", g, groups[g])
-	}
-	_, _ = fmt.Fprint(w, "\nRun \"noahsark COMMAND -h\" for the options of a command.\n")
+	_, _ = fmt.Fprint(w, "\n\"noahsark status\" prints the next step.\n")
+	_, _ = fmt.Fprint(w, "Run \"noahsark COMMAND -h\" for the options of a command.\n")
 }
+
+// workflowOrder lists the commands and the groups in the order that an
+// operator uses them, for the command list of the help.
+var workflowOrder = []string{"init", "commit", "status", "pack", "image", "disc", "verify", "gc", "restore", "recover", "ls", "log"}
 
 // printGroupHelp prints the subcommands of a group.
 func printGroupHelp(w io.Writer, group string) {
@@ -436,6 +441,34 @@ func printCommandHelp(w io.Writer, cmd *command) {
 		return
 	}
 	_, _ = fmt.Fprintln(w, "\nOptions:")
-	fs.SetOutput(w)
-	fs.PrintDefaults()
+	fs.VisitAll(func(f *flag.Flag) {
+		_, _ = fmt.Fprintf(w, "  %s\n        %s\n", optionSpelling(f, cmd.usage), f.Usage)
+	})
+}
+
+// optionSpelling gives the form of option f that the operator types, as
+// the synopsis writes it: --name for a switch, --name=VALUE for an option
+// with a value, and -n VALUE for a one-letter option with a value. VALUE
+// is the placeholder of the synopsis usage, else VALUE.
+func optionSpelling(f *flag.Flag, usage string) string {
+	dash := "--"
+	if len(f.Name) == 1 {
+		dash = "-"
+	}
+	if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+		return dash + f.Name
+	}
+	sep := "="
+	if dash == "-" {
+		sep = " "
+	}
+	value := "VALUE"
+	if _, after, ok := strings.Cut(usage, dash+f.Name+sep); ok {
+		if end := strings.IndexFunc(after, func(r rune) bool { return (r < 'A' || r > 'Z') && r != '-' }); end > 0 {
+			value = after[:end]
+		} else if end < 0 && after != "" {
+			value = after
+		}
+	}
+	return dash + f.Name + sep + value
 }

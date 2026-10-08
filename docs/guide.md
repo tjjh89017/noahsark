@@ -156,7 +156,7 @@ other commands print a short id: the 12 characters after `1220`, as
 `commit` reads every file of the source and stages the new data. With no
 `--ref`, it moves the ref named by the date of today. Give `--ref` for a
 name of your own, and `-m` for a message that `log` shows. A ref name is 1
-to 40 letters, digits and ASCII signs, with no space:
+to 40 bytes of printable ASCII, with no space:
 
 ```
 noahsark commit --ref=before-upgrade -m "before the OS upgrade"
@@ -189,12 +189,15 @@ the lines under `next:` as they are.
 ```
 $ noahsark status
 staged: 8 items, 3001350 bytes
-snapshot 1b03c7e2a9f4: 8 items staged, not complete on discs; recover cannot find it from the discs alone
+snapshot 1b03c7e2a9f4: 8 items staged, not complete on discs; its snapshot object is not on a disc yet
 next: load a blank disc, then run:
 dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
 then paste this line, type the capacity, and press Enter:
 noahsark pack --capacity=
 ```
+
+The `snapshot` line is information. A new commit is not on a disc until
+`pack` takes it, thus each commit gets this line until the next `pack`.
 
 ### Read the capacity, and pack
 
@@ -256,7 +259,7 @@ complete on discs on a line of its own, a new commit too:
 ```
 $ noahsark status
 staged: 412 items, 1830221824 bytes
-snapshot 1b03c7e2a9f4: 412 items staged, not complete on discs; recover cannot find it from the discs alone
+snapshot 1b03c7e2a9f4: 412 items staged, not complete on discs; its snapshot object is not on a disc yet
 disc 0 "2026-09-14 disc 0"  on disc only, last check 2026-09-14  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: load a blank disc, then run:
 dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'
@@ -378,9 +381,8 @@ nothing:
 
 ```
 $ noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
-noahsark: verify: /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree is not counted: inside the repository
 disc 0 "2026-09-14 disc 0": 8 items, ok
-not counted: this is not a disc
+not counted: this is not a disc (inside the repository)
 ```
 
 Then load a blank disc, and burn the folder:
@@ -443,6 +445,19 @@ fails a check, or a copy that is destroyed. Load the good disc, and paste:
 ```
 ddrescue -b 2048 -n -r1 /dev/sr0 ~/copy.img ~/copy.map && eject /dev/sr0
 ```
+
+To give the copy to `verify` or to `recover`, mount the image file
+read-only with a loop device. `--no-mark` keeps the check of an image
+out of the records:
+
+```
+sudo mkdir -p /mnt/ark && sudo mount -o loop,ro ~/copy.img /mnt/ark &&
+noahsark verify --no-mark /mnt/ark;
+sudo umount /mnt/ark
+```
+
+For `recover`, use the same mount, and replace the `verify` line with
+`noahsark recover --source=/srv/data --disc=/mnt/ark`.
 
 Then load a blank disc, and paste:
 
@@ -510,6 +525,20 @@ $ noahsark gc
 gc: freed 8 item(s), 9441280 bytes
 next: noahsark status
 ```
+
+`gc` keeps the data of a disc that is `packed` or `burned`: that disc is
+not verified yet. `gc --dry-run` and `gc` print one line for each such
+disc, after the `freed` line. For example, while disc 1 waits for its
+burn:
+
+```
+$ noahsark gc
+gc: freed 8 item(s), 9441280 bytes
+gc: disc 1: not verified; 4 item(s) held
+next: noahsark status
+```
+
+Verify disc 1, then run `gc` again.
 
 After `gc`, the disc is `on disc only`.
 
@@ -629,6 +658,9 @@ disc 0 "2026-09-14 disc 0": found
 restored snapshot 1b03c7e2a9f4 into /srv/drill
 ```
 
+The plan lines keep the plural form also for 1, as `1 items`, so that a
+script can read them.
+
 ### A damaged disc
 
 When a disc is damaged, `restore` names each file that it cannot restore,
@@ -669,12 +701,14 @@ root for your next commits.
 $ sudo mkdir -p /srv/ark/repo && sudo chown "$USER": /srv/ark/repo
 $ sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark
 $ noahsark --repo=/srv/ark/repo recover --source=/srv/data --disc=/mnt/ark
+recover: read disc 1 "2026-10-12 disc 1"
 recover: disc 0 "2026-09-14 disc 0" (4a060bd4-ca9f-2d06-263e-b907483b8230) named by another disc, not yet given
 next: noahsark status
 $ sudo umount /mnt/ark && eject /dev/sr0
 ```
 
-Each disc names the discs before it. A disc that another disc names, and
+The first line names the disc that `recover` read. Each disc names the
+discs before it. A disc that another disc names, and
 that you did not give yet, is `missing`. `recover` then exits with code 1.
 That is normal: give each disc one time, in any order. Go into the
 repository, and let `status` name the next disc:
@@ -711,7 +745,8 @@ gone. Your next `commit` stages again what the source still holds.
 **A damaged disc.** `recover` keeps each object that it can read. It
 prints `recover: damaged: ID` for each object that fails its check, and
 exits with code 1. Copy the disc now, or use your second copy, and give
-the copy to `recover`. See "A second copy".
+the copy to `recover`. "A second copy" shows the copy to an image file,
+and the loop mount that gives the image to `recover`.
 
 ## When something goes wrong
 
@@ -723,6 +758,7 @@ the copy to `recover`. See "A second copy".
 | `verify` of a new disc prints `bad; this disc is bad; burn record removed` or `bad; this disc is bad; no record to remove` | Discard the disc. `noahsark status` prints the block that burns a new disc from the kept disc root. |
 | `verify` of a `verified` disc prints `bad; this disc is bad; verified record removed; gc holds the data` | The disc is `burned` again, and `gc` holds its data. Discard it. `noahsark status` prints the block that burns a new disc. |
 | `verify` of an `on disc only` disc prints `bad; the staged copy is already freed; ...` | Copy the disc now, while it still reads, or use your second copy. See "A second copy". When no copy can be read, run `noahsark disc lost 0 && noahsark commit`. |
+| `cannot read the disc: no DISC.bin under ...; is the disc mounted at /mnt/ark?` | Nothing is mounted at `/mnt/ark`, or the wrong directory is given. Mount the disc read-only, and run the command again. For an image file, see the loop mount in "A second copy". |
 | `status` says that a disc has no disc root | No new disc can be burned from it. Discard the disc, and paste the `noahsark disc lost 0` line. The next `pack` takes its items. |
 | Every copy of a disc is destroyed | `noahsark disc lost 0`, and answer `y`. See "A lost disc". |
 | You find a disc that you marked lost | `noahsark disc lost --undo 0`, and answer `y`. Then run `noahsark status`, and paste its block. It verifies the disc, or it recovers a disc that was `missing`. |
@@ -739,7 +775,7 @@ the copy to `recover`. See "A second copy".
 | `repository lock ... is held` | Another `noahsark` command runs on this repository. Wait for it. |
 | `nothing changed` | You answered no to the question. Run the command again, and answer `y`. |
 | `commit` prints `unstable PATH` or `skipped PATH` | The snapshot is written. A file changed or could not be read: run `commit` again later. A name that holds `\` cannot be stored: rename the file, then run `commit` again. The line shows a `\` as `\\` and a newline as `\n`, as `ls` does. |
-| `commit`: `ref name "NAME" is not valid` | Nothing is written. Give a `--ref` of 1 to 40 letters, digits and ASCII signs, with no space. |
+| `commit`: `ref name "NAME" is not valid: a ref name is 1 to 40 bytes of printable ASCII, with no space` | Nothing is written. Give a `--ref` of 1 to 40 bytes of printable ASCII, with no space. |
 
 A failed `verify` removes one record: the verified record first, else the
 burn record. The state of the disc goes down one step, and `gc` holds the
@@ -803,7 +839,7 @@ commit, the `next:` block of `status` gives the line:
 ```
 $ noahsark status
 staged: 5 items, 1503 bytes
-snapshot 3f1c09ab2d77: 5 items staged, not complete on discs; recover cannot find it from the discs alone
+snapshot 3f1c09ab2d77: 5 items staged, not complete on discs; its snapshot object is not on a disc yet
 lost: 3 items; only a lost disc holds them
 disc 0 "2026-09-14 disc 0"  lost  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: disc 0 is lost; a new commit stages what the source still holds; run:
