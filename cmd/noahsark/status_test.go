@@ -56,20 +56,27 @@ func wantStatusDate(t time.Time) string { return t.Local().Format("2006-01-02") 
 
 // TestStatusPackedBlock checks the whole output for a packed disc: the
 // staged line, the disc line, the block with the image build line, and
-// the pointer to the folder burn after the block.
+// the folder burn alternative after it.
 func TestStatusPackedBlock(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscPacked)
+	tree := testLayout(t, fx.repo).planTree(fx.uuidBytes(t))
 	want := []string{
 		"staged: 0 items, 0 bytes",
 		fmt.Sprintf("%s  packed  %s", fx.name(), fx.uuid),
 		"next: load a blank disc, then run:",
 		"sudo noahsark --repo=" + fx.repo + " image build 0 &&",
 		"growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=" + statusImage(t, fx) + " &&",
-		"eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&",
-		"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&",
+		"eject /dev/sr0 && eject -t /dev/sr0 &&",
+		"sudo -v && " + statusMountLine + " &&",
 		"noahsark verify /mnt/ark;",
 		"sudo umount /mnt/ark && eject /dev/sr0",
-		`or burn the folder directly; see the guide, "Burn the folder directly"`,
+		`or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:`,
+		"noahsark verify " + tree + " &&",
+		"growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 " + tree + " &&",
+		"eject /dev/sr0 && eject -t /dev/sr0 &&",
+		"sudo -v && " + statusMountLine + " &&",
+		"noahsark verify /mnt/ark;",
+		"sudo umount /mnt/ark && eject /dev/sr0",
 	}
 	if got := statusLines(t, fx.repo); !slices.Equal(got, want) {
 		t.Fatalf("status:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -90,7 +97,8 @@ func TestStatusPackedBlockWithImage(t *testing.T) {
 }
 
 // TestStatusClosedDisc checks a disc packed with --close: the disc line
-// has the state and the uuid, and the block has the sealing burn line.
+// has the state and the uuid, and both burn lines of the block seal the
+// disc.
 func TestStatusClosedDisc(t *testing.T) {
 	repo, _ := initAndCommit(t)
 	out := statusMustRun(t, "--repo="+repo, "pack", "--capacity=64MiB", "--close")
@@ -100,14 +108,16 @@ func TestStatusClosedDisc(t *testing.T) {
 	if m == nil || m[3] != "packed" || m[4] != uuid {
 		t.Fatalf("disc line %q, want a packed disc %s", lines[1], uuid)
 	}
-	var burn string
+	var burns []string
 	for _, l := range lines {
 		if strings.HasPrefix(l, "growisofs ") {
-			burn = l
+			burns = append(burns, l)
 		}
 	}
-	if !strings.HasPrefix(burn, "growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z /dev/sr0=") {
-		t.Fatalf("burn line %q, want the sealing line", burn)
+	if len(burns) != 2 ||
+		!strings.HasPrefix(burns[0], "growisofs -dvd-compat -speed=4 -use-the-force-luke=spare:none,tty -Z /dev/sr0=") ||
+		!strings.HasPrefix(burns[1], "growisofs -dvd-compat -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 ") {
+		t.Fatalf("burn lines %q, want the two sealing lines", burns)
 	}
 }
 
@@ -146,8 +156,7 @@ func TestStatusBurnedBlock(t *testing.T) {
 		"staged: 0 items, 0 bytes",
 		fmt.Sprintf("%s  burned  %s", fx.name(), fx.uuid),
 		"next: load disc 0, then run:",
-		"eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&",
-		"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&",
+		statusMountLine + " &&",
 		"noahsark verify /mnt/ark;",
 		"sudo umount /mnt/ark && eject /dev/sr0",
 	}
@@ -167,7 +176,7 @@ func TestStatusBurnedLastCheckFailed(t *testing.T) {
 	if want := fmt.Sprintf("%s  burned, last check failed %s  %s", fx.name(), wantStatusDate(at), fx.uuid); lines[1] != want {
 		t.Fatalf("disc line %q, want %q", lines[1], want)
 	}
-	if lines[2] != "next: load a blank disc, then run:" || lines[len(lines)-1] != folderBurnPointer {
+	if lines[2] != "next: load a blank disc, then run:" || !slices.Contains(lines, folderBurnHead) {
 		t.Fatalf("status = %q, want the packed block", lines)
 	}
 }
@@ -238,7 +247,7 @@ func TestStatusMissingBlock(t *testing.T) {
 	i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "next:") })
 	want := []string{
 		fmt.Sprintf("next: load disc 0 %q, then run:", fx.label),
-		"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&",
+		statusMountLine + " &&",
 		"noahsark recover --source=" + quoteShellWord(cfg.SourceRoot) + " --disc=/mnt/ark;",
 		"sudo umount /mnt/ark && eject /dev/sr0",
 		"or, when disc 0 is gone for good, run:",
@@ -280,14 +289,14 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 }
 
 // TestStatusEmptyRepository checks status on a repository with no
-// commit: the staged line and nothing to do.
+// commit: the staged line and the commit line.
 func TestStatusEmptyRepository(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	if code, out := runIn(t, repo, "init"); code != 0 {
 		t.Fatalf("init: exit %d: %s", code, out)
 	}
 	code, out := runCmd(t, "--repo="+repo, "status")
-	if code != 0 || out != "staged: 0 items, 0 bytes\nnext: nothing to do\n" {
+	if code != 0 || out != "staged: 0 items, 0 bytes\nnext: noahsark commit\n" {
 		t.Fatalf("status: exit %d, output %q", code, out)
 	}
 }
@@ -473,9 +482,7 @@ func TestNextBlockOrder(t *testing.T) {
 		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)}, nil, false, time.Time{},
 			"next: load disc 2, then run:"},
 		{"gc before staged", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil, false, time.Time{},
-			"advice: burn a second copy of /img1 before gc"},
-		{"lowest number of verified", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscVerified), disc("3", stage.DiscVerified)}, nil, false, time.Time{},
-			"advice: burn a second copy of /img2 before gc"},
+			"next: noahsark gc"},
 		{"staged", 1, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
 			"next: load a blank disc, then run:"},
 		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
@@ -489,6 +496,76 @@ func TestNextBlockOrder(t *testing.T) {
 				t.Fatalf("block %q, want the first line %q", lines, c.first)
 			}
 		})
+	}
+}
+
+// TestNextBlockNoSnapshot checks that a repository with no snapshot and
+// nothing staged gets the commit line, and that a lost disc that waits
+// for a commit still comes first.
+func TestNextBlockNoSnapshot(t *testing.T) {
+	if got := nextBlock(nextRepo{noSnapshot: true}); !slices.Equal(got, []string{"next: noahsark commit"}) {
+		t.Fatalf("block %q, want the commit line", got)
+	}
+	lost := nextDisc{arg: "1", info: stage.DiscInfo{State: stage.DiscLost, BeforeLost: stage.DiscMissing, LastEvent: stage.EventLost, LastEventTime: time.Now()}}
+	if got := nextBlock(nextRepo{noSnapshot: true, discs: []nextDisc{lost}}); got[0] != "next: disc 1 is lost; a new commit stages what the source still holds; run:" {
+		t.Fatalf("block %q, want the block of the lost disc", got)
+	}
+}
+
+// TestAdviceLinesForEachVerifiedDisc checks that each verified disc gets
+// one advice line, in the order of the numbers, and that the advice
+// lines do not depend on the block: a packed disc wins the block.
+func TestAdviceLinesForEachVerifiedDisc(t *testing.T) {
+	r := nextRepo{device: "/dev/sr0", discs: []nextDisc{
+		{arg: "1", image: "/img1", imageExists: true, treeExists: true, info: stage.DiscInfo{State: stage.DiscVerified}},
+		{arg: "2", image: "/img2", imageExists: true, treeExists: true, info: stage.DiscInfo{State: stage.DiscPacked}},
+		{arg: "3", image: "/img3", treeExists: true, info: stage.DiscInfo{State: stage.DiscVerified}},
+		{arg: "4", info: stage.DiscInfo{State: stage.DiscOnDiscOnly}},
+	}}
+	want := []string{
+		`advice: burn a second copy of /img1 before gc; see the guide, "A second copy"`,
+		`advice: copy disc 3 before gc; see the guide, "A second copy"`,
+	}
+	if got := adviceLines(r); !slices.Equal(got, want) {
+		t.Fatalf("advice lines %q, want %q", got, want)
+	}
+	if got := nextBlock(r); got[0] != "next: load a blank disc, then run:" {
+		t.Fatalf("block %q, want the block of the packed disc", got)
+	}
+}
+
+// TestStatusAdviceBeforeAnotherBlock verifies one disc, then packs a
+// second disc. status prints the advice line of the verified disc before
+// the block of the packed disc.
+func TestStatusAdviceBeforeAnotherBlock(t *testing.T) {
+	fx := repoWithDisc(t, stage.DiscVerified)
+	if err := os.WriteFile(filepath.Join(fx.src, "new.txt"), []byte("a file of the next disc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.mustRun(t, "commit", fx.src)
+	fx.mustRun(t, "pack", "--capacity=64MiB")
+	lines := statusLines(t, fx.repo)
+	i := slices.Index(lines, `advice: copy disc 0 before gc; see the guide, "A second copy"`)
+	if i < 0 || lines[i+1] != "next: load a blank disc, then run:" {
+		t.Fatalf("status %q, want the advice line of disc 0 right before the block of disc 1", lines)
+	}
+}
+
+// TestStatusFolderBurnOfPackOut checks the folder burn alternative of a
+// pack --out disc: it names the --out directory, the target of the
+// symlink of the plan directory.
+func TestStatusFolderBurnOfPackOut(t *testing.T) {
+	repo, _ := initAndCommit(t)
+	outDir := filepath.Join(filepath.Dir(repo), "out dir")
+	statusMustRun(t, "--repo="+repo, "pack", "--capacity=64MiB", "--out="+outDir)
+	lines := statusLines(t, repo)
+	want := []string{
+		"noahsark verify '" + outDir + "' &&",
+		"growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 '" + outDir + "' &&",
+	}
+	i := slices.Index(lines, folderBurnHead)
+	if i < 0 || !slices.Equal(lines[i+1:i+3], want) {
+		t.Fatalf("status %q, want after the folder burn line %q", lines, want)
 	}
 }
 
@@ -552,7 +629,9 @@ func TestStatusNamesARepair(t *testing.T) {
 					t.Fatalf("status:\n%s\nwant the last lines:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
 				}
 			}
-			fx.mustRun(t, "gc")
+			if out := fx.mustRun(t, "gc"); !strings.Contains(out, "\n"+nextStatusLine+"\n") {
+				t.Fatalf("gc output %q, want the line %q: gc wrote the item records", out, nextStatusLine)
+			}
 			for _, line := range statusLines(t, fx.repo) {
 				if strings.Contains(line, "stopped before it wrote") {
 					t.Fatalf("status after gc still names the repair: %s", line)

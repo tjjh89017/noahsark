@@ -108,7 +108,7 @@ func TestGCFreesAVerifiedDiscAtOnce(t *testing.T) {
 	// A second gc run finds nothing left to do; nothing eligible is
 	// success, not a failure.
 	code, out = runCmd(t, "--repo="+repo, "gc")
-	if want := gcFreedNone + "next: noahsark status\n"; code != 0 || out != want {
+	if want := gcFreedNone; code != 0 || out != want {
 		t.Fatalf("gc (second run): exit %d, output %q; want exit 0, output %q", code, out, want)
 	}
 }

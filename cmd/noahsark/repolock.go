@@ -74,35 +74,44 @@ func markFile(layout repoLayout) string {
 // A holder of the lock refuses a lost staging directory before it writes
 // a file (see checkStaging).
 func openLogs(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (*stage.Logs, error) {
+	logs, _, err := openLogsRepaired(cmd, layout, holdsLock, stderr)
+	return logs, err
+}
+
+// openLogsRepaired is openLogs, and it also returns the number of discs
+// whose item records it wrote.
+func openLogsRepaired(cmd string, layout repoLayout, holdsLock bool, stderr io.Writer) (*stage.Logs, int, error) {
 	if holdsLock {
 		if err := checkStaging(layout); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if err := mkdirDurable(layout.stateDir()); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	logs, err := stage.OpenLogs(layout.stateDir(), holdsLock)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	warnTornTails(cmd, logs, holdsLock, stderr)
 	back, err := logs.UseMark(markFile(layout))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(back) > 0 {
 		if holdsLock {
-			return nil, errors.New(rollbackText(back, markFile(layout)))
+			return nil, 0, errors.New(rollbackText(back, markFile(layout)))
 		}
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: warning: %s; this command changes no file\n", cmd, rollbackText(back, markFile(layout)))
 	}
-	if holdsLock {
-		if err := completeItemRecords(cmd, layout, logs, stderr); err != nil {
-			return nil, err
-		}
+	if !holdsLock {
+		return logs, 0, nil
 	}
-	return logs, nil
+	repaired, err := completeItemRecords(cmd, layout, logs, stderr)
+	if err != nil {
+		return nil, 0, err
+	}
+	return logs, repaired, nil
 }
 
 // stagingMissing reports whether the staging directory of layout does
@@ -175,13 +184,14 @@ func rollbackText(back []stage.Rollback, mark string) string {
 
 // completeItemRecords writes the item records that an earlier command
 // did not write after its disc event, and prints one note for each disc.
-func completeItemRecords(cmd string, layout repoLayout, logs *stage.Logs, stderr io.Writer) error {
+// It returns the number of discs whose records it wrote.
+func completeItemRecords(cmd string, layout repoLayout, logs *stage.Logs, stderr io.Writer) (int, error) {
 	done, err := logs.Complete(catalogIndexItems(layout.repo), catalogHolds(layout.repo))
 	for _, r := range done {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %s: an earlier %s stopped before it wrote the records of its items; %d item record(s) now written\n",
 			cmd, repairDiscName(layout, r.Disc), r.Command, r.Items)
 	}
-	return err
+	return len(done), err
 }
 
 // logRepairs returns each disc whose item records do not follow its

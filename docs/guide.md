@@ -137,7 +137,16 @@ to an older version`. Then check out the newest commit again.
 
 ### Commit
 
-Make the first commit right after `init`:
+Make the first commit right after `init`. Before the first commit,
+`status` says the same:
+
+```
+$ noahsark status
+staged: 0 items, 0 bytes
+next: noahsark commit
+```
+
+Run `commit`:
 
 ```
 $ noahsark commit
@@ -184,7 +193,8 @@ complete on discs ("A snapshot packed in parts"), one line for each disc,
 and one `next:` block. The block holds the lines to run next, with real paths. The lines
 of a block are joined with `&&`, so a failed line stops the lines after
 it. The unmount line follows a `;`, so the disc never stays mounted. Paste
-the lines under `next:` as they are.
+the lines under `next:` as they are. A line that starts with `or` starts a
+second method: paste the lines before it, or the lines after it, not both.
 
 ```
 $ noahsark status
@@ -298,15 +308,23 @@ disc 0 "2026-09-14 disc 0"  packed  4a060bd4-ca9f-2d06-263e-b907483b8230
 next: load a blank disc, then run:
 sudo noahsark --repo=/srv/ark/repo image build 0 &&
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img &&
-eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&
-sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
 noahsark verify /mnt/ark;
 sudo umount /mnt/ark && eject /dev/sr0
-or burn the folder directly; see the guide, "Burn the folder directly"
+or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:
+noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree &&
+growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
+noahsark verify /mnt/ark;
+sudo umount /mnt/ark && eject /dev/sr0
 ```
 
-The last line is not part of the block. Load the blank disc, and paste
-the block. It does these steps:
+The block holds two methods. Paste one of them, not both. The lines
+from `or burn the folder directly` on are the second method: see "Burn
+the folder directly". Load the blank disc, and paste the lines from
+`sudo noahsark` to the first `eject /dev/sr0`. They do these steps:
 
 1. `image build` makes a UDF image of the disc root. It needs root for a
    loop mount of the image, thus the line starts with `sudo`. It prints
@@ -314,8 +332,13 @@ the block. It does these steps:
 2. `growisofs` burns the image. The disc stays open. For M-DISC media,
    change `-speed=4` to `-speed=2`.
 3. The drive ejects the disc and loads it again, so that the read comes
-   from the disc. The block waits 5 seconds for the drive, then mounts
-   the disc read-only.
+   from the disc. `sudo -v` asks for your password again when the burn
+   took longer than the `sudo` timeout. Thus the block can ask for the
+   password two times: at `image build`, and after the burn. Then the
+   block mounts the disc read-only. The drive needs some seconds to read
+   the disc, thus the mount line tries again, up to 30 times, 2 seconds
+   apart. `mountpoint` prints `/mnt/ark is a mountpoint` when the mount
+   worked.
 4. `verify` reads every item back and checks it. When the check is good,
    `verify` records the burn and marks the disc `verified`.
 5. The block unmounts the disc and ejects it. The `;` after `verify`
@@ -323,7 +346,13 @@ the block. It does these steps:
    mounted. `verify` prints its own result.
 
 A slot-load drive cannot load a disc by itself: `eject -t` fails and stops
-the block. Push the disc in by hand, then paste the lines after `sleep 5`.
+the block. Push the disc in by hand, then paste the lines from `sudo -v`
+to the end of the method.
+
+When the disc does not mount in 60 seconds, `mountpoint` prints
+`/mnt/ark is not a mountpoint`, and `verify` does not run. The burn can
+still be good. See "The disc does not mount" in "When something goes
+wrong".
 
 `verify` prints what changed in the repository:
 
@@ -342,7 +371,9 @@ Write the disc number, the first 8 characters of the uuid, and the storage
 place on the sleeve of the disc. The tool keeps no shelf notes.
 
 `status` now shows the verified disc. `gc` can free its data now, thus
-`status` asks you to make the second copy first:
+`status` asks you to make the second copy first. It prints one `advice:`
+line for each `verified` disc, also when the `next:` block is for
+another disc:
 
 ```
 $ noahsark status
@@ -371,13 +402,19 @@ Read these warnings first:
 - There is no image to check before the burn. Verify the folder first.
 - The reading of this disc on Windows and on macOS is not verified.
 
+`status` prints the lines of this method after the block of a `packed`
+disc, from the line `or burn the folder directly` on. Load a blank disc,
+and paste them. They hold the real path, the volume label, and
+`-dvd-compat` for a disc that you packed with `--close`. This section
+explains each line.
+
 The disc root of disc 0 is the folder
 `/srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree`.
 The path holds the uuid that `status` shows. For a `pack --out` disc, the
 disc root is the `--out` directory.
 
-First, verify the folder. A folder is not a disc, thus this check records
-nothing:
+First, the lines verify the folder. A folder is not a disc, thus this
+check records nothing:
 
 ```
 $ noahsark verify /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
@@ -385,7 +422,7 @@ disc 0 "2026-09-14 disc 0": 8 items, ok
 not counted: this is not a disc (inside the repository)
 ```
 
-Then load a blank disc, and burn the folder:
+Then they burn the folder:
 
 ```
 growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 /srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree
@@ -395,12 +432,13 @@ growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 /srv/ark/repo/staging/pla
 and the disc number with at least 4 digits. `image build` writes the same
 label. For disc 7, give `-V NOAHSARK_0007`.
 
-For a disc that you packed with `--close`, add `-dvd-compat`. After the
-burn, the steps are the same as for the image. Paste:
+For a disc that you packed with `--close`, the line starts with
+`growisofs -dvd-compat`. After the burn, the steps are the same as for
+the image:
 
 ```
-eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&
-sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
 noahsark verify /mnt/ark;
 sudo umount /mnt/ark && eject /dev/sr0
 ```
@@ -421,8 +459,8 @@ disc with `verify --no-mark`. Load a blank disc, and paste:
 
 ```
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=/srv/ark/repo/staging/plans/4a060bd4-ca9f-2d06-263e-b907483b8230/tree.img &&
-eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&
-sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
 noahsark verify --no-mark /mnt/ark;
 sudo umount /mnt/ark && eject /dev/sr0
 ```
@@ -465,8 +503,8 @@ Then load a blank disc, and paste:
 
 ```
 growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=$HOME/copy.img &&
-eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&
-sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&
+eject /dev/sr0 && eject -t /dev/sr0 &&
+sudo -v && sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark &&
 noahsark verify --no-mark /mnt/ark && rm ~/copy.img ~/copy.map;
 sudo umount /mnt/ark && eject /dev/sr0
 ```
@@ -542,7 +580,9 @@ next: noahsark status
 
 Verify disc 1, then run `gc` again.
 
-After `gc`, the disc is `on disc only`.
+After `gc`, the disc is `on disc only`. When `gc` has nothing to free,
+it prints `gc: freed 0 item(s), 0 bytes` and no `next:` line: nothing
+changed.
 
 ## Look at the history
 
@@ -629,7 +669,7 @@ sudo umount /mnt/ark && eject /dev/sr0
 Put the named disc in the drive. Then load it and mount it:
 
 ```
-eject -t /dev/sr0 && sleep 5 && sudo mount -o ro /dev/sr0 /mnt/ark
+eject -t /dev/sr0 && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark
 ```
 
 Press Enter in the first terminal. `restore` goes on:
@@ -756,7 +796,7 @@ and the loop mount that gives the image to `recover`.
 |---|---|
 | You packed with the wrong capacity, and nothing is burned | `noahsark pack --undo 0` for the newest disc, then `noahsark status`, and pack again. See "Undo a step". |
 | A burn fails midway | Discard the disc. When `growisofs` says that the image does not fit, run `noahsark pack --undo 0` and pack again. Else run `noahsark status` and paste its block with a new blank disc. |
-| The disc does not mount | The disc is bad. Discard it. If you ran `disc burned` for it, run `noahsark disc burned --undo 0`. Then `noahsark status`. |
+| The disc does not mount: `mountpoint` prints `/mnt/ark is not a mountpoint` | The burn can still be good: some drives need more than a minute to read a new disc. Do not burn the disc again yet. When the burn finished with no error, run `noahsark disc burned 0`, wait a minute, then run `noahsark status` and paste its block: it mounts and verifies the disc. Discard the disc only when it still does not mount. Then, if you ran `disc burned` for it, run `noahsark disc burned --undo 0`, and `noahsark status`. |
 | `verify` of a new disc prints `bad; this disc is bad; burn record removed` or `bad; this disc is bad; no record to remove` | Discard the disc. `noahsark status` prints the block that burns a new disc from the kept disc root. |
 | `verify` of a `verified` disc prints `bad; this disc is bad; verified record removed; gc holds the data` | The disc is `burned` again, and `gc` holds its data. Discard it. `noahsark status` prints the block that burns a new disc. |
 | `verify` of an `on disc only` disc prints `bad; the staged copy is already freed; ...` | Copy the disc now, while it still reads, or use your second copy. See "A second copy". When no copy can be read, run `noahsark disc lost 0 && noahsark commit`. |

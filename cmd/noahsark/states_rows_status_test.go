@@ -12,12 +12,24 @@ import (
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
+// statusMountLine is the line of a block that waits for the drive and
+// mounts the disc in it.
+const statusMountLine = "sudo mkdir -p /mnt/ark && for i in $(seq 30); do sudo mount -o ro /dev/sr0 /mnt/ark 2>/dev/null && break; sleep 2; done && mountpoint /mnt/ark"
+
 // statusVerifyLines are the lines of a block that verify a disc in the
 // drive. The unmount line follows a ";", so that it also runs after a
 // failed verify.
 var statusVerifyLines = []string{
-	"eject /dev/sr0 && eject -t /dev/sr0 && sleep 5 &&\n",
-	"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&\n",
+	statusMountLine + " &&\n",
+	"noahsark verify /mnt/ark;\n",
+	"sudo umount /mnt/ark && eject /dev/sr0\n",
+}
+
+// statusAfterBurnLines are the lines of a block after a burn: they load
+// the disc again, renew the sudo ticket, and verify the disc.
+var statusAfterBurnLines = []string{
+	"eject /dev/sr0 && eject -t /dev/sr0 &&\n",
+	"sudo -v && " + statusMountLine + " &&\n",
 	"noahsark verify /mnt/ark;\n",
 	"sudo umount /mnt/ark && eject /dev/sr0\n",
 }
@@ -79,12 +91,14 @@ func init() {
 			row: "71", name: "status of a packed disc",
 			start: stage.DiscPacked, args: []string{"status"},
 			cells: map[string]string{"N": "0", "B": "0"},
-			also: append(append([]string{
+			also: append(append(append([]string{
 				"next: load a blank disc, then run:\n",
 				"image build {SEQ} &&\n",
 				"growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=",
-			}, statusVerifyLines...), folderBurnPointer),
-			absent: []string{"noahsark verify /mnt/ark &&"},
+			}, statusAfterBurnLines...), folderBurnHead+"\n",
+				"growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 "),
+				statusAfterBurnLines...),
+			absent: []string{"noahsark verify /mnt/ark &&", "sleep 5"},
 			end:    stage.DiscPacked, word: stage.WordPacked,
 		},
 		stateCase{
@@ -94,7 +108,7 @@ func init() {
 			also: append([]string{
 				"next: load disc {SEQ}, then run:\n",
 			}, statusVerifyLines...),
-			absent: []string{"growisofs", folderBurnPointer},
+			absent: []string{"growisofs", folderBurnHead, "eject -t", "sudo -v"},
 			end:    stage.DiscBurned, word: stage.WordBurned,
 		},
 		stateCase{
@@ -134,7 +148,7 @@ func init() {
 			start: stage.DiscMissing, args: []string{"status"},
 			also: []string{
 				`next: load disc {SEQ} "{LABEL}", then run:` + "\n",
-				"sudo mkdir -p /mnt/ark && sudo mount -o ro /dev/sr0 /mnt/ark &&\n",
+				statusMountLine + " &&\n",
 				"noahsark recover --source=",
 				" --disc=/mnt/ark;\n",
 				"sudo umount /mnt/ark && eject /dev/sr0\n",
