@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
 
@@ -50,44 +49,16 @@ func (o *discLostOptions) run(e *env, args []string) int {
 		return 2
 	}
 
-	repoDir, err := e.findRepo()
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 2
-	}
-	cfg, err := readConfig(configPath(repoDir))
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return configExitCode(err)
-	}
-	lk, code, ok := lockRepo(cmd, repoDir, stderr)
+	s, code, ok := e.openLockedSession(cmd)
 	if !ok {
 		return code
 	}
-	defer releaseLock(lk)
-
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
+	defer s.close()
+	disc, code, ok := s.disc(args[0])
+	if !ok {
+		return code
 	}
-	layout := layoutOf(repoDir, cfg)
-	logs, err := openLogs(cmd, layout, true, stderr)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
-	}
-	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
-	}
-	discUUID, err := resolveDisc(ledger.Rows, logs.Discs, args[0])
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 2
-	}
-	r := &discLostRun{e: e, layout: layout, logs: logs, disc: discTargetOf(ledger.Rows, logs.Discs, discUUID)}
+	r := &discLostRun{e: e, layout: s.layout, logs: s.logs, disc: disc}
 	if o.undo {
 		return r.undo()
 	}

@@ -38,44 +38,17 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 		return 2
 	}
 
-	repoDir, err := e.findRepo()
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 2
-	}
-	cfg, err := readConfig(configPath(repoDir))
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return configExitCode(err)
-	}
-	lk, code, ok := lockRepo("pack", repoDir, stderr)
+	s, code, ok := e.openLockedSession("pack")
 	if !ok {
 		return code
 	}
-	defer releaseLock(lk)
-
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
+	defer s.close()
+	disc, code, ok := s.disc(args[0])
+	if !ok {
+		return code
 	}
-	layout := layoutOf(repoDir, cfg)
-	logs, err := openLogs("pack", layout, true, stderr)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
-	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 1
-	}
-	discUUID, err := resolveDisc(ledger.Rows, logs.Discs, args[0])
-	if err != nil {
-		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", err)
-		return 2
-	}
-	disc := discTargetOf(ledger.Rows, logs.Discs, discUUID)
+	repoDir, layout, repoUUID := s.repoDir, s.layout, s.repoUUID
+	logs, ledger, discUUID := s.logs, s.ledger, disc.info.UUID
 	if refusal := packUndoRefusal(disc, ledger.Rows, logs.Discs); refusal != "" {
 		_, _ = fmt.Fprintln(stderr, "noahsark: pack:", refusal)
 		return 1

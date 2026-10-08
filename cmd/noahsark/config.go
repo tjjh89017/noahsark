@@ -217,6 +217,12 @@ func readConfig(path string) (repoConfig, error) {
 	if err != nil {
 		return repoConfig{}, err
 	}
+	return parseConfig(path, data)
+}
+
+// parseConfig gives the config of the text data of the config file at
+// path, as readConfig describes.
+func parseConfig(path string, data []byte) (repoConfig, error) {
 	f, err := decodeConfig(data)
 	if err != nil {
 		return repoConfig{}, &configError{path: path, err: err}

@@ -287,44 +287,16 @@ func isPackedTree(e *env, layout repoLayout, root string, discUUID [16]byte) boo
 func undoVerify(e *env, arg string) int {
 	stdout, stderr := e.stdout, e.stderr
 	const cmd = "verify"
-	repoDir, err := e.findRepo()
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 2
-	}
-	cfg, err := readConfig(configPath(repoDir))
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return configExitCode(err)
-	}
-	lk, code, ok := lockRepo(cmd, repoDir, stderr)
+	s, code, ok := e.openLockedSession(cmd)
 	if !ok {
 		return code
 	}
-	defer releaseLock(lk)
-
-	repoUUID, err := decodeUUID(cfg.RepoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
+	defer s.close()
+	disc, code, ok := s.disc(arg)
+	if !ok {
+		return code
 	}
-	layout := layoutOf(repoDir, cfg)
-	logs, err := openLogs(cmd, layout, true, stderr)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
-	}
-	ledger, err := image.LoadDiscsLedger(layout.discsLedgerFile(), repoUUID)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 1
-	}
-	discUUID, err := resolveDisc(ledger.Rows, logs.Discs, arg)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
-		return 2
-	}
-	disc := discTargetOf(ledger.Rows, logs.Discs, discUUID)
+	logs, discUUID := s.logs, disc.info.UUID
 
 	switch disc.info.State {
 	case stage.DiscVerified:
