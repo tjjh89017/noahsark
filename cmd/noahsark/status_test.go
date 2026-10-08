@@ -63,14 +63,14 @@ func TestStatusPackedBlock(t *testing.T) {
 	want := []string{
 		"staged: 0 items, 0 bytes",
 		fmt.Sprintf("%s  packed  %s", fx.name(), fx.uuid),
-		"next: load a blank disc, then run:",
+		nextLoadBlankLine,
 		"sudo noahsark --repo=" + fx.repo + " image build 0 &&",
 		"growisofs -speed=4 -use-the-force-luke=spare:min,tty -Z /dev/sr0=" + statusImage(t, fx) + " &&",
 		"eject /dev/sr0 && eject -t /dev/sr0 &&",
 		"sudo -v && " + statusMountLine + " &&",
 		"noahsark verify /mnt/ark;",
 		"sudo umount /mnt/ark; eject /dev/sr0",
-		`or burn the folder directly; see the guide, "Burn the folder directly". Load a blank disc, then run:`,
+		folderBurnHead,
 		"noahsark verify " + tree + " &&",
 		"growisofs -Z /dev/sr0 -R -iso-level 4 -V NOAHSARK_0000 " + tree + " &&",
 		"eject /dev/sr0 && eject -t /dev/sr0 &&",
@@ -91,7 +91,7 @@ func TestStatusPackedBlockWithImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := statusLines(t, fx.repo)
-	if lines[2] != "next: load a blank disc, then run:" || !strings.HasPrefix(lines[3], "growisofs ") {
+	if lines[2] != nextLoadBlankLine || !strings.HasPrefix(lines[3], "growisofs ") {
 		t.Fatalf("status = %q, want the growisofs line right after the first block line", lines)
 	}
 }
@@ -176,7 +176,7 @@ func TestStatusBurnedLastCheckFailed(t *testing.T) {
 	if want := fmt.Sprintf("%s  burned, last check failed %s  %s", fx.name(), wantStatusDate(at), fx.uuid); lines[1] != want {
 		t.Fatalf("disc line %q, want %q", lines[1], want)
 	}
-	if lines[2] != "next: load a blank disc, then run:" || !slices.Contains(lines, folderBurnHead) {
+	if lines[2] != nextLoadBlankLine || !slices.Contains(lines, folderBurnHead) {
 		t.Fatalf("status = %q, want the packed block", lines)
 	}
 }
@@ -191,7 +191,7 @@ func TestStatusVerified(t *testing.T) {
 		"staged: 0 items, 0 bytes",
 		fmt.Sprintf("%s  verified, last check %s  %s", fx.name(), wantStatusDate(info.LastCheckTime), fx.uuid),
 		`advice: copy disc 0 before gc; see the guide, "A second copy"`,
-		"next: noahsark gc",
+		nextGCLine,
 	}
 	if got := statusLines(t, fx.repo); !slices.Equal(got, want) {
 		t.Fatalf("status:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -283,7 +283,7 @@ func TestStatusOnDiscOnlyAfterRecover(t *testing.T) {
 	if m == nil || m[3] != "on disc only" {
 		t.Fatalf("disc line %q, want the plain word on disc only", lines[1])
 	}
-	if lines[len(lines)-1] != "next: nothing to do" {
+	if lines[len(lines)-1] != nextNothingLine {
 		t.Fatalf("status %q, want next: nothing to do", lines)
 	}
 }
@@ -314,7 +314,7 @@ func TestStatusStagedBlock(t *testing.T) {
 		t.Fatalf("line %q, want the snapshot line", lines[1])
 	}
 	want := []string{
-		"next: load a blank disc, then run:",
+		nextLoadBlankLine,
 		"dvd+rw-mediainfo /dev/sr0 | grep -E 'Mounted Media|Free Blocks'",
 		"then paste this line, type the capacity, and press Enter:",
 		"noahsark pack --capacity=",
@@ -468,9 +468,9 @@ func TestNextBlockOrder(t *testing.T) {
 		{name: "a lost disc waits for a commit before packed", staged: 1, discs: []nextDisc{disc("1", stage.DiscPacked), lostFrom("2", stage.DiscMissing)}, snapshot: now.Add(-time.Hour),
 			first: "next: disc 2 is lost; a new commit stages what the source still holds; run:"},
 		{name: "a commit in the second of the lost event ends the wait", discs: []nextDisc{lostFrom("1", stage.DiscOnDiscOnly)}, snapshot: now.Add(-time.Minute),
-			first: "next: nothing to do"},
+			first: nextNothingLine},
 		{name: "a verified disc marked lost waits for no commit", discs: []nextDisc{lostFrom("1", stage.DiscVerified)}, snapshot: now.Add(-time.Hour),
-			first: "next: nothing to do"},
+			first: nextNothingLine},
 		{name: "a found on disc only disc before gc", staged: 1, discs: []nextDisc{disc("1", stage.DiscVerified), found(disc("2", stage.DiscOnDiscOnly))},
 			first: "next: load disc 2, then run:"},
 		{name: "a found on disc only disc after a failed check", discs: []nextDisc{failed(found(disc("1", stage.DiscOnDiscOnly)))},
@@ -482,11 +482,11 @@ func TestNextBlockOrder(t *testing.T) {
 		{"lowest number of packed and burned", 1, []nextDisc{disc("1", stage.DiscVerified), disc("2", stage.DiscBurned), disc("3", stage.DiscPacked)}, nil, false, time.Time{},
 			"next: load disc 2, then run:"},
 		{"gc before staged", 1, []nextDisc{disc("1", stage.DiscVerified)}, nil, false, time.Time{},
-			"next: noahsark gc"},
+			nextGCLine},
 		{"staged", 1, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
-			"next: load a blank disc, then run:"},
+			nextLoadBlankLine},
 		{"nothing", 0, []nextDisc{disc("1", stage.DiscOnDiscOnly), disc("2", stage.DiscLost)}, nil, false, time.Time{},
-			"next: nothing to do"},
+			nextNothingLine},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -503,7 +503,7 @@ func TestNextBlockOrder(t *testing.T) {
 // nothing staged gets the commit line, and that a lost disc that waits
 // for a commit still comes first.
 func TestNextBlockNoSnapshot(t *testing.T) {
-	if got := nextBlock(nextRepo{noSnapshot: true}); !slices.Equal(got, []string{"next: noahsark commit"}) {
+	if got := nextBlock(nextRepo{noSnapshot: true}); !slices.Equal(got, []string{nextCommitLine}) {
 		t.Fatalf("block %q, want the commit line", got)
 	}
 	lost := nextDisc{arg: "1", info: stage.DiscInfo{State: stage.DiscLost, BeforeLost: stage.DiscMissing, LastEvent: stage.EventLost, LastEventTime: time.Now()}}
@@ -529,7 +529,7 @@ func TestAdviceLinesForEachVerifiedDisc(t *testing.T) {
 	if got := adviceLines(r); !slices.Equal(got, want) {
 		t.Fatalf("advice lines %q, want %q", got, want)
 	}
-	if got := nextBlock(r); got[0] != "next: load a blank disc, then run:" {
+	if got := nextBlock(r); got[0] != nextLoadBlankLine {
 		t.Fatalf("block %q, want the block of the packed disc", got)
 	}
 }
@@ -546,7 +546,7 @@ func TestStatusAdviceBeforeAnotherBlock(t *testing.T) {
 	fx.mustRun(t, "pack", "--capacity=64MiB")
 	lines := statusLines(t, fx.repo)
 	i := slices.Index(lines, `advice: copy disc 0 before gc; see the guide, "A second copy"`)
-	if i < 0 || lines[i+1] != "next: load a blank disc, then run:" {
+	if i < 0 || lines[i+1] != nextLoadBlankLine {
 		t.Fatalf("status %q, want the advice line of disc 0 right before the block of disc 1", lines)
 	}
 }
@@ -726,7 +726,7 @@ func TestStatusNamesASnapshotPackedInParts(t *testing.T) {
 	if want := fmt.Sprint(countByState(t, repo, stage.Staged)); m[2] != want {
 		t.Fatalf("snapshot line counts %s items, want %s", m[2], want)
 	}
-	if lines[3] != "next: load a blank disc, then run:" || !strings.HasPrefix(lines[4], "sudo noahsark ") {
+	if lines[3] != nextLoadBlankLine || !strings.HasPrefix(lines[4], "sudo noahsark ") {
 		t.Fatalf("status lines %q, want the block of the packed disc", lines)
 	}
 

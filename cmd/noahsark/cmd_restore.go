@@ -44,6 +44,9 @@ func restoreFlags(fs *flag.FlagSet) runFunc {
 	return o.run
 }
 
+// errOneValue refuses a second value of a oneValue option.
+var errOneValue = errors.New("the option takes one value only")
+
 // oneValue is a string option that takes one value only.
 type oneValue struct {
 	value string
@@ -54,7 +57,7 @@ func (v *oneValue) String() string { return v.value }
 
 func (v *oneValue) Set(s string) error {
 	if v.set {
-		return errors.New("the option takes one value only")
+		return errOneValue
 	}
 	v.value, v.set = s, true
 	return nil

@@ -159,7 +159,7 @@ func checkConfigKeys(doc *yaml.Node) error {
 		section, value := top.Content[i], top.Content[i+1]
 		if value.Kind != yaml.MappingNode {
 			if !known[section.Value] {
-				return fmt.Errorf("line %d: unknown key %s", section.Line, section.Value)
+				return unknownKeyError(section.Line, section.Value)
 			}
 			continue
 		}
@@ -167,11 +167,16 @@ func checkConfigKeys(doc *yaml.Node) error {
 			key := value.Content[j]
 			name := section.Value + "." + key.Value
 			if !known[name] {
-				return fmt.Errorf("line %d: unknown key %s", key.Line, name)
+				return unknownKeyError(key.Line, name)
 			}
 		}
 	}
 	return nil
+}
+
+// unknownKeyError names an unknown key of the config file and its line.
+func unknownKeyError(line int, name string) error {
+	return fmt.Errorf("line %d: unknown key %s", line, name)
 }
 
 // knownConfigKeys returns the name of each section of configFile, and
@@ -200,14 +205,12 @@ func parseRepoUUID(s string) ([16]byte, error) {
 	if s == "" {
 		return [16]byte{}, errors.New("repo.uuid: missing")
 	}
-	if len(s) != 32 {
-		return [16]byte{}, fmt.Errorf("repo.uuid: %q is not 32 hex digits", s)
+	if len(s) == 32 {
+		if u, err := decodeUUID(s); err == nil {
+			return u, nil
+		}
 	}
-	u, err := decodeUUID(s)
-	if err != nil {
-		return [16]byte{}, fmt.Errorf("repo.uuid: %q is not 32 hex digits", s)
-	}
-	return u, nil
+	return [16]byte{}, fmt.Errorf("repo.uuid: %q is not 32 hex digits", s)
 }
 
 // readConfig reads the config file at path. A relative staging.dir is

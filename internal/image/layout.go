@@ -86,7 +86,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		return nil, fmt.Errorf("at least one snapshot is required")
 	}
 	if opts.TargetCapacitySectors == 0 {
-		return nil, fmt.Errorf("target capacity is required and must not be zero")
+		return nil, errNoCapacity
 	}
 	now := opts.Now
 	if now == nil {
@@ -189,7 +189,7 @@ func Build(opts BuildOptions) (*Result, error) {
 		return nil, err
 	}
 	if len(indexBuf) != indexLen {
-		return nil, fmt.Errorf("internal error: index length mismatch, predicted %d, actual %d", indexLen, len(indexBuf))
+		return nil, indexLengthError(indexLen, len(indexBuf))
 	}
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)

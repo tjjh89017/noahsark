@@ -528,7 +528,7 @@ func TestPackPrintsTheNewLines(t *testing.T) {
 	if want := "uuid: " + uuidText(disc.UUID); lines[1] != want {
 		t.Fatalf("second line %q, want %q", lines[1], want)
 	}
-	if !slices.Equal(lines[2:], block) || lines[2] != "next: load a blank disc, then run:" {
+	if !slices.Equal(lines[2:], block) || lines[2] != nextLoadBlankLine {
 		t.Fatalf("last lines %q, want the packed block %q", lines[2:], block)
 	}
 }

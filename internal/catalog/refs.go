@@ -10,8 +10,12 @@ import (
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
+// noDiscText is the text of the error of a catalog that holds the tables
+// of no disc.
+const noDiscText = "catalog: no disc is in the catalog yet; run pack, or recover, first"
+
 // ErrNoDisc reports a catalog that holds the tables of no disc.
-var ErrNoDisc = errors.New("catalog: no disc is in the catalog yet; run pack, or recover, first")
+var ErrNoDisc = errors.New(noDiscText)
 
 // RefName returns the name of a ref record.
 func RefName(r format.RefRecord) string {

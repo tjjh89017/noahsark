@@ -154,7 +154,7 @@ func (s *Logs) plan(only *[16]byte, index IndexItems, holds CatalogHolds) ([]rep
 		}
 		ids, runSeq, err := index(disc.UUID)
 		if err != nil {
-			return nil, fmt.Errorf("stage: disc lost --undo of disc %d: %w", disc.DiscSeq, err)
+			return nil, lostUndoError(disc.DiscSeq, err)
 		}
 		var recs []Record
 		for _, id := range ids {
@@ -190,7 +190,7 @@ func (s *Logs) catalogObjectsBack(disc DiscInfo, index IndexItems, holds Catalog
 	}
 	ids, runSeq, err := index(disc.UUID)
 	if err != nil {
-		return nil, fmt.Errorf("stage: disc lost --undo of disc %d: %w", disc.DiscSeq, err)
+		return nil, lostUndoError(disc.DiscSeq, err)
 	}
 	var recs []Record
 	for _, id := range ids {
@@ -219,4 +219,10 @@ func itemRepair(state DiscState, rec Record, inCatalog bool) (next Record, cmd s
 		return Record{State: OnDisc, RunSeq: rec.RunSeq, DiscUUID: rec.DiscUUID, Reason: ReasonLostUndone}, "disc lost --undo", true
 	}
 	return Record{}, "", false
+}
+
+// lostUndoError names the disc of disc lost --undo whose INDEX did not
+// read.
+func lostUndoError(discSeq uint64, err error) error {
+	return fmt.Errorf("stage: disc lost --undo of disc %d: %w", discSeq, err)
 }

@@ -78,6 +78,9 @@ func subcommands(group string) []*command {
 // globalOptionNames lists the global options for a usage message.
 const globalOptionNames = "--repo=PATH, -q, --quiet, --yes, --force-yes, -h, --version"
 
+// repoNeedsPathLine refuses a --repo option with no path.
+const repoNeedsPathLine = "noahsark: --repo needs a path: --repo=PATH"
+
 // isHelp reports whether arg asks for help.
 func isHelp(arg string) bool {
 	return arg == "-h" || arg == "--help"
@@ -121,12 +124,12 @@ parseGlobals:
 		case strings.HasPrefix(arg, "--repo="):
 			e.global.repo = strings.TrimPrefix(arg, "--repo=")
 			if e.global.repo == "" {
-				_, _ = fmt.Fprintln(e.stderr, "noahsark: --repo needs a path: --repo=PATH")
+				_, _ = fmt.Fprintln(e.stderr, repoNeedsPathLine)
 				return 2
 			}
 		case arg == "--repo":
 			if i+1 >= len(args) || args[i+1] == "" {
-				_, _ = fmt.Fprintln(e.stderr, "noahsark: --repo needs a path: --repo=PATH")
+				_, _ = fmt.Fprintln(e.stderr, repoNeedsPathLine)
 				return 2
 			}
 			i++

@@ -107,7 +107,7 @@ func DataBudgetSectors(targetSectors uint64, fileCount int) uint64 {
 // for fileCount files is added. targetSectors of zero is always refused.
 func CheckCapacity(fileBytes, runHeaderCopyBytes uint64, fileCount int, targetSectors uint64) error {
 	if targetSectors == 0 {
-		return fmt.Errorf("target capacity is required and must not be zero")
+		return errNoCapacity
 	}
 	overhead := EstimateFilesystemOverhead(fileCount, targetSectors)
 	total := fileBytes + runHeaderCopyBytes + overhead

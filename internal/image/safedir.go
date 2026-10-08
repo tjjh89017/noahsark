@@ -188,7 +188,7 @@ func newDir(fd int, path string) (*Dir, error) {
 // symlink at the last element of path.
 func openError(path string, err error) error {
 	if errors.Is(err, syscall.ELOOP) {
-		return fmt.Errorf("%s is a symbolic link; image build does not follow it", path)
+		return symlinkRefusal(path)
 	}
 	if errors.Is(err, syscall.ENXIO) {
 		return fmt.Errorf("%s is a socket, not a regular file; image build refuses it", path)
@@ -202,7 +202,7 @@ func openError(path string, err error) error {
 func openDirError(path string, err error) error {
 	if errors.Is(err, syscall.ENOTDIR) {
 		if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symbolic link; image build does not follow it", path)
+			return symlinkRefusal(path)
 		}
 	}
 	return openError(path, err)
@@ -226,4 +226,10 @@ func fileKind(mode uint32) string {
 	default:
 		return "a special file"
 	}
+}
+
+// symlinkRefusal refuses a symbolic link in a tree that image build
+// reads.
+func symlinkRefusal(path string) error {
+	return fmt.Errorf("%s is a symbolic link; image build does not follow it", path)
 }

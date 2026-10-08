@@ -43,7 +43,7 @@ func TestGCFreesAfterOneVerify(t *testing.T) {
 	if !strings.HasPrefix(out, "gc: freed ") || strings.HasPrefix(out, gcFreedNone) {
 		t.Fatalf("gc output %q, want more than 0 items freed", out)
 	}
-	if !strings.HasSuffix(out, "\nnext: nothing to do\n") {
+	if !strings.HasSuffix(out, "\n"+nextNothingLine+"\n") {
 		t.Fatalf("gc output %q, want the next block last", out)
 	}
 	discs := readDiscLog(t, repo).Discs()

@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func (c *Catalog) newestDisc() ([16]byte, error) {
 		return [16]byte{}, err
 	}
 	if len(uuids) == 0 {
-		return [16]byte{}, fmt.Errorf("catalog: no disc is in the catalog yet; run pack, or recover, first")
+		return [16]byte{}, errors.New(noDiscText)
 	}
 	var newest [16]byte
 	var newestCreated int64

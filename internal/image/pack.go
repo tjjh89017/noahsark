@@ -23,6 +23,22 @@ import (
 // failure, so pack prints the reason and exits with success.
 var ErrNothingToPack = errors.New("nothing to pack")
 
+// errNoSnapshot is the ErrNothingToPack of a repository that has never
+// had a commit.
+var errNoSnapshot = fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
+
+// errNoCapacity refuses a run with a target capacity of zero.
+var errNoCapacity = errors.New("target capacity is required and must not be zero")
+
+// errNoStageLog refuses a pack or a dry run with no staging state log.
+var errNoStageLog = errors.New("a staging state log is required")
+
+// indexLengthError reports an encoded INDEX whose length differs from
+// the length that the layout predicted.
+func indexLengthError(predicted, actual int) error {
+	return fmt.Errorf("internal error: index length mismatch, predicted %d, actual %d", predicted, actual)
+}
+
 // Store names the repository files that Pack and DryRun read and
 // write. The caller gives every path: the image package has no layout
 // of its own.
@@ -185,10 +201,10 @@ func Pack(opts PackOptions) (*PackResult, error) {
 		return nil, fmt.Errorf("an output directory is required")
 	}
 	if opts.TargetCapacitySectors == 0 {
-		return nil, fmt.Errorf("target capacity is required and must not be zero")
+		return nil, errNoCapacity
 	}
 	if opts.StageLog == nil {
-		return nil, fmt.Errorf("a staging state log is required")
+		return nil, errNoStageLog
 	}
 	now := opts.Now
 	if now == nil {
@@ -203,7 +219,7 @@ func Pack(opts PackOptions) (*PackResult, error) {
 	if len(allSnapshotIDs) == 0 && len(opts.Snapshots) == 0 {
 		// No snapshot and no ref: this repository has never had a
 		// commit.
-		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
+		return nil, errNoSnapshot
 	}
 
 	// A chunk that fails its check while the run copies it goes into
@@ -458,7 +474,7 @@ func (opts PackOptions) packRun(order *packPlan, candidates []packUnit, allSnaps
 		return nil, err
 	}
 	if len(indexBuf) != indexLen {
-		return nil, fmt.Errorf("internal error: index length mismatch, predicted %d, actual %d", indexLen, len(indexBuf))
+		return nil, indexLengthError(indexLen, len(indexBuf))
 	}
 	rows[indexRowIdx].data = indexBuf
 	indexHash := sha256.Sum256(indexBuf)
@@ -580,10 +596,10 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		return nil, err
 	}
 	if opts.TargetCapacitySectors == 0 {
-		return nil, fmt.Errorf("target capacity is required and must not be zero")
+		return nil, errNoCapacity
 	}
 	if opts.StageLog == nil {
-		return nil, fmt.Errorf("a staging state log is required")
+		return nil, errNoStageLog
 	}
 	now := opts.Now
 	if now == nil {
@@ -596,7 +612,7 @@ func DryRun(opts PackOptions, labelFor func(discSeq uint64) string) ([]DryRunDis
 		return nil, err
 	}
 	if len(allSnapshotIDs) == 0 && len(opts.Snapshots) == 0 {
-		return nil, fmt.Errorf("%w: no snapshot has been committed", ErrNothingToPack)
+		return nil, errNoSnapshot
 	}
 
 	// An object with no state log record at all is a candidate here

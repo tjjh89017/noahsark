@@ -123,9 +123,15 @@ func discBurnedRefusal(disc discTarget) string {
 	case stage.DiscBurned:
 		return disc.short() + " already has a burn record"
 	case stage.DiscVerified, stage.DiscOnDiscOnly:
-		return disc.short() + " is already verified"
+		return alreadyVerifiedRefusal(disc)
 	}
 	return discStateRefusal(disc)
+}
+
+// alreadyVerifiedRefusal is the refusal of disc burned and disc verified
+// for a disc that is verified or on disc only.
+func alreadyVerifiedRefusal(disc discTarget) string {
+	return disc.short() + " is already verified"
 }
 
 // discStateRefusal is the refusal for a disc that is lost, missing, or

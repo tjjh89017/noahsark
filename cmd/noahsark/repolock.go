@@ -102,7 +102,7 @@ func openLogsRepaired(cmd string, layout repoLayout, holdsLock bool, stderr io.W
 		if holdsLock {
 			return nil, 0, errors.New(rollbackText(back, markFile(layout)))
 		}
-		_, _ = fmt.Fprintf(stderr, "noahsark: %s: warning: %s; this command changes no file\n", cmd, rollbackText(back, markFile(layout)))
+		printRollbackWarning(cmd, back, layout, stderr)
 	}
 	if !holdsLock {
 		return logs, 0, nil
@@ -169,6 +169,12 @@ func warnRollback(cmd string, layout repoLayout, stderr io.Writer) {
 	if err != nil || len(back) == 0 {
 		return
 	}
+	printRollbackWarning(cmd, back, layout, stderr)
+}
+
+// printRollbackWarning prints the warning of a command without the lock
+// that finds a log that went back.
+func printRollbackWarning(cmd string, back []stage.Rollback, layout repoLayout, stderr io.Writer) {
 	_, _ = fmt.Fprintf(stderr, "noahsark: %s: warning: %s; this command changes no file\n", cmd, rollbackText(back, markFile(layout)))
 }
 
