@@ -136,7 +136,7 @@ func TestDiscBurnedAlreadyBurnedIsRefused(t *testing.T) {
 	if !strings.Contains(out, "disc 0 already has a burn record") {
 		t.Fatalf("disc burned (again) output %q, want the already-burned refusal", out)
 	}
-	if strings.Contains(out, nextStatusLine) {
+	if strings.Contains(out, "next: ") {
 		t.Fatalf("disc burned (again) output %q, want no next line after a refusal", out)
 	}
 	if string(discLogBytes(t, fx.repo)) != string(before) {

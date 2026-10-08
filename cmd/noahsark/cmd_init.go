@@ -103,7 +103,7 @@ func (o *initOptions) run(e *env, args []string) int {
 		_, _ = fmt.Fprintf(stdout, "source: %s\n", absSourcePath)
 	}
 	_, _ = fmt.Fprintf(stdout, "device: %s\n", cfg.PackDevice)
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, absRepoPath)
 	return 0
 }
 

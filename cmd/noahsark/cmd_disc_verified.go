@@ -62,7 +62,7 @@ func runDiscVerified(e *env, args []string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "%s: verified record added; not checked\n", disc.name())
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, s.repoDir)
 	return 0
 }
 

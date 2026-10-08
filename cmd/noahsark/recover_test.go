@@ -196,7 +196,8 @@ func TestRecoverIsIdempotent(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("recover #2: exit %d: %s", code, out)
 	}
-	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n", nextStatusLine)
+	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n")
+	wantNextBlock(t, repo, out)
 	if count2 := countByState(t, repo, stage.OnDisc); count1 != count2 {
 		t.Fatalf("on-disc count changed across a repeat rebuild: %d then %d", count1, count2)
 	}
@@ -236,7 +237,8 @@ func TestRecoverOfVerifiedDiscWritesNoEvent(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("recover: exit %d: %s", code, out)
 	}
-	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n", nextStatusLine)
+	wantLines(t, out, "recover: ok; disc 0 \"", "\" already known\n")
+	wantNextBlock(t, repo, out)
 	if after := discState(t, repo, discUUID); after != before {
 		t.Fatalf("disc record %+v after recover, want %+v", after, before)
 	}
@@ -287,7 +289,8 @@ func TestRecoverPartialNamesMissingDisc(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("recover: exit %d, want 1: %s", code, out)
 	}
-	wantLines(t, out, "recover: disc 0 \"", "\" ("+uuid1+") named by another disc, not yet given\n", nextStatusLine)
+	wantLines(t, out, "recover: disc 0 \"", "\" ("+uuid1+") named by another disc, not yet given\n")
+	wantNextBlock(t, repo, out)
 	if strings.Contains(out, "config:") {
 		t.Fatalf("output %q names config keys to complete; recover prints no such hint", out)
 	}
@@ -392,7 +395,7 @@ func TestRecoverNoUsableDisc(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit %d, want 1: %s", code, out)
 	}
-	if !strings.Contains(out, "cannot read the disc") || strings.Contains(out, nextStatusLine) {
+	if !strings.Contains(out, "cannot read the disc") || strings.Contains(out, "next: ") {
 		t.Fatalf("output %q, want the read failure and no next line", out)
 	}
 	if _, err := os.Stat(repo); !os.IsNotExist(err) {

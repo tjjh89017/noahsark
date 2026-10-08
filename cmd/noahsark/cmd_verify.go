@@ -178,7 +178,7 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 		}
 		_, _ = fmt.Fprintf(stdout, "%s: bad; %s\n", c.name, verifyFailedText(disc.State, ident.DiscSeq))
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, checkErr)
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		printNext(e, repoDir)
 		return 1
 	}
 
@@ -201,7 +201,7 @@ func (o *verifyOptions) verifyInRepo(e *env, repoDir string, layout repoLayout, 
 	}
 	_, _ = fmt.Fprintf(stdout, "%s: %d items, ok\n", c.name, rr.ObjectsVerified)
 	_, _ = fmt.Fprintln(stdout, verifyOKText(disc.State))
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, repoDir)
 	return 0
 }
 
@@ -322,7 +322,7 @@ func undoVerify(e *env, arg string) int {
 		return 1
 	}
 	_, _ = fmt.Fprintf(stdout, "%s: verified record removed; burn record kept\n", disc.name())
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, s.repoDir)
 	return 0
 }
 

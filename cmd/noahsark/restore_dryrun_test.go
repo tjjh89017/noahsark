@@ -57,7 +57,7 @@ func TestRestoreDryRunSingleDisc(t *testing.T) {
 	if discs, items, bytes := planTotals(t, out); discs != 1 || items == 0 || bytes == 0 {
 		t.Fatalf("totals %d discs, %d items, %d bytes, want one disc with items", discs, items, bytes)
 	}
-	if strings.Contains(out, "no disc known") || strings.Contains(out, nextStatusLine) || strings.Contains(out, "objects") {
+	if strings.Contains(out, "no disc known") || strings.Contains(out, "next: ") || strings.Contains(out, "objects") {
 		t.Fatalf("restore --dry-run output = %q", out)
 	}
 	if _, err := os.Lstat(dest); !os.IsNotExist(err) {

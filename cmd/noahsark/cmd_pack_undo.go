@@ -83,8 +83,8 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 	keptRoot, err := removeUndoneDisc(layout, c, repoUUID, discUUID)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: pack: %s is undone, but its files stay: %v; the next pack removes them\n", disc.short(), err)
-		// The disc state changed, thus the next line comes before the exit.
-		_, _ = fmt.Fprintln(stdout, nextStatusLine)
+		// The disc state changed, thus the next block comes before the exit.
+		printNext(e, repoDir)
 		return 1
 	}
 
@@ -92,7 +92,7 @@ func (o *packOptions) runUndo(e *env, args []string) int {
 	if keptRoot != "" {
 		_, _ = fmt.Fprintf(stdout, "disc root %s kept; delete it yourself\n", keptRoot)
 	}
-	_, _ = fmt.Fprintln(stdout, nextStatusLine)
+	printNext(e, repoDir)
 	return 0
 }
 

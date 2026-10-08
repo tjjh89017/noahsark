@@ -48,7 +48,7 @@ func TestRestoreSnapshotForms(t *testing.T) {
 		if !strings.Contains(out, "restored snapshot "+snapID[4:16]+" into "+dest+"\n") {
 			t.Fatalf("restore %s: output %q, want the restored line with the 12-character id", arg, out)
 		}
-		if strings.Contains(out, nextStatusLine) {
+		if strings.Contains(out, "next: ") {
 			t.Fatalf("restore %s: output %q holds the next line", arg, out)
 		}
 		compareTrees(t, dest, src)
