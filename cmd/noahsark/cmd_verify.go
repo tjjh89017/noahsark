@@ -44,8 +44,8 @@ const (
 	reasonPackedTreeDamaged = "the packed tree is damaged"
 )
 
-// run implements "noahsark verify". docs/states.md, rows 31 to 51, gives
-// the lines.
+// run implements "noahsark verify". The verify rows of the state x event
+// table in docs/states.md give the lines.
 func (o *verifyOptions) run(e *env, args []string) int {
 	stderr := e.stderr
 	if len(args) != 1 {
