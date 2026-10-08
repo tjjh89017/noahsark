@@ -286,7 +286,7 @@ header. A bump to one never implies a bump to another.
 
 Every structure's `version_major` is 1 as this document stands. There is no
 minor version. The format freezes when this document reaches version 1.0.0.
-The document goes to 1.0.0 at the first tag of the program, `v0.1`. Until
+The document goes to 1.0.0 at the first tag of the program, `v0.1.0`. Until
 then the on-disc format is not frozen: a structure's layout may change
 without a version bump, and a disc burned under a pre-1.0.0 document version
 carries no compatibility promise to a later one. Such a disc carries its own

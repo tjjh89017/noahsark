@@ -102,7 +102,7 @@ tool upgrade. A person who holds a mixed set of discs needs only one
 version 1.0.0 are not kept, because no compatibility promise covers them.
 
 **The format freezes at FORMAT.md document version 1.0.0.** The first tool tag
-is `v0.1`, and FORMAT.md goes to 1.0.0 at that tag. The document version, the
+is `v0.1.0`, and FORMAT.md goes to 1.0.0 at that tag. The tag is a semver tag, so `go build` stamps the version into the binary, and `--version` then prints it with no build flag. The document version, the
 program version and the `version_major` of each structure are independent.
 Until that tag, a format change needs no version bump. The disc-root
 fixtures under `cmd/noahsark/testdata/format1/` are regenerated one time before that
@@ -165,7 +165,6 @@ follows the data size. `commit`, `pack`, `verify` and `restore` stream. The
 Each item is recorded in a GitHub issue and is not part of the redesign. Each
 comes after the first tag.
 
-- **A refactor after the operator layer redesign (issue 71).**
 - **A quick check in `commit`.** After the first tag, and before the owner
   backs up real data: `commit` reuses the result for a file whose size and
   modification time did not change, and a flag forces a full read.

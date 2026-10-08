@@ -12,6 +12,13 @@ method is `image build`, which makes a UDF image, and then a burn of the
 image. The second method burns the disc root folder directly as ISO 9660
 with `growisofs`.
 
+## Status
+
+This is a pre-release. There is no tag yet. The on-disc format freezes at
+FORMAT.md 1.0.0, at the first tag `v0.1.0`. Until then a breaking change
+needs no migration. The tool has not yet been checked on a real disc: the
+manual physical checklist in OPERATIONS.md has not been run.
+
 ## Quick start
 
 This runs the full cycle on a directory. It needs no drive and no root.
@@ -30,6 +37,8 @@ noahsark status
 noahsark restore --disc=<DISC_DIR> <REF> <RESTORE_DIR>
 diff -r <SOURCE> <RESTORE_DIR>
 ```
+
+`noahsark --version` prints the version that `go build` stamps from the git tag. It adds `+dirty` when the tree has changes.
 
 `status` prints what is staged, the state of each disc, and one `next:`
 block with the lines to run next. Run it at any stage. Each command that
