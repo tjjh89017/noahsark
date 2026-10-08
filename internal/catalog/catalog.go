@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -136,60 +137,11 @@ func parseUUIDText(s string) ([16]byte, bool) {
 	return u, true
 }
 
-// atomicWriteFile writes data to path through a temporary file and a
-// rename, so a crash or a concurrent reader never sees a partial file.
-// It does nothing when path already holds exactly data.
+// atomicWriteFile writes data to path with durable.WriteFile and the
+// rule KeepEqual. It creates the directory when it is absent.
 func atomicWriteFile(path string, data []byte) error {
-	existing, err := os.ReadFile(path)
-	if err == nil && string(existing) == string(data) {
-		return nil
-	}
-	if err != nil && !os.IsNotExist(err) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return replaceFile(path, data)
-}
-
-// replaceFile writes data to path through a temporary file in the same
-// directory and a rename. It creates the directory when it is absent. It
-// syncs the file before the rename and the directory after it, thus a
-// crash leaves the old file or the new file, never an empty one.
-func replaceFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(tmpName, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return syncDir(dir)
-}
-
-// syncDir syncs the directory dir, so that a rename in it is durable.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if closeErr := d.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return durable.WriteFile(path, data, 0o600, durable.KeepEqual)
 }

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
@@ -47,7 +48,7 @@ func recordFSEvents(t *testing.T, w *Writer) *[]fsEvent {
 	}
 	w.SyncDir = func(dir string) error {
 		record(fsEvent{op: "dirsync", path: dir})
-		return SyncDir(dir)
+		return durable.SyncDir(dir)
 	}
 	return &events
 }

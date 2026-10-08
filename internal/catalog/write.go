@@ -52,14 +52,7 @@ func (c *Catalog) WriteObject(kind format.ObjectKind, id object.ID, raw []byte) 
 	if err := checkObject(kind, id, raw); err != nil {
 		return fmt.Errorf("catalog: %s %s: the copy to write is damaged: %w", kindWord(kind), id.TextForm(), err)
 	}
-	existing, err := os.ReadFile(path)
-	if err == nil && bytes.Equal(existing, raw) {
-		return nil
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
-	}
-	if err := replaceFile(path, raw); err != nil {
+	if err := atomicWriteFile(path, raw); err != nil {
 		return fmt.Errorf("catalog: object %s: %w", id.TextForm(), err)
 	}
 	return nil

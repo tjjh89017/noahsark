@@ -7,36 +7,12 @@ import (
 	"sync"
 )
 
-// syncFile and renameFile are the steps of writeSyncRename and of
-// fileBatch.flush that a test replaces to record their order.
+// syncFile and renameFile are the steps of fileBatch.flush that a test
+// replaces to record their order.
 var (
 	syncFile   = (*os.File).Sync
 	renameFile = os.Rename
 )
-
-// ReplaceFile writes data to path with mode 0644 through a temporary file
-// in the same directory: it syncs the file, renames it over path, and
-// syncs the directory. A crash leaves the old file or the new file, never
-// a part of one.
-func ReplaceFile(path string, data []byte) error {
-	if err := writeSyncRename(path, data); err != nil {
-		return err
-	}
-	return SyncDir(filepath.Dir(path))
-}
-
-// SyncDir syncs the directory dir, so that a new name in it is durable.
-func SyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if closeErr := d.Close(); err == nil {
-		err = closeErr
-	}
-	return err
-}
 
 // batchMaxFiles and batchMaxBytes bound one batch of the object writer.
 // The batch holds an open file for each temporary file.
@@ -52,7 +28,7 @@ type pendingFile struct {
 	path string
 }
 
-// fileBatch writes files through temporary files, as writeSyncRename
+// fileBatch writes files through temporary files, as durable.WriteFile
 // does, but it syncs and renames them in groups. A flush syncs every
 // temporary file of a group at the same time, and then renames each one.
 // Thus each file is synced before its rename, and the file system can
@@ -192,33 +168,4 @@ func removeTemps(files []pendingFile) {
 	for _, f := range files {
 		_ = os.Remove(f.tmp.Name())
 	}
-}
-
-// writeSyncRename writes data to a temporary file in the directory of
-// path with mode 0644, syncs it, and renames it over path. The caller
-// syncs the directory.
-func writeSyncRename(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Chmod(0o644)
-	}
-	if err == nil {
-		err = syncFile(tmp)
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = renameFile(tmpName, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return nil
 }

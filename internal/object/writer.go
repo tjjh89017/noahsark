@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/chunker"
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/progress"
 )
@@ -255,7 +256,7 @@ func NewWriter(chunkPath, metaPath PathFunc) *Writer {
 		Stat:            os.Lstat,
 		Open:            func(path string) (io.ReadCloser, error) { return os.Open(path) },
 		DeviceID:        deviceID,
-		SyncDir:         SyncDir,
+		SyncDir:         durable.SyncDir,
 	}
 }
 
@@ -905,7 +906,7 @@ func (w *Writer) ensureDir(dir string) error {
 func (w *Writer) syncDirtyDirs() error {
 	syncDir := w.SyncDir
 	if syncDir == nil {
-		syncDir = SyncDir
+		syncDir = durable.SyncDir
 	}
 	dirs := make([]string, 0, len(w.dirtyDirs))
 	for dir := range w.dirtyDirs {

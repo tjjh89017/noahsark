@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tjjh89017/noahsark/internal/object"
+	"github.com/tjjh89017/noahsark/internal/durable"
 )
 
 func init() {
@@ -154,7 +154,7 @@ func mkdirDurable(dir string) error {
 	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
 		return err
 	}
-	return object.SyncDir(parent)
+	return durable.SyncDir(parent)
 }
 
 // ensureGitignore writes the file at path with the lines of
@@ -198,5 +198,5 @@ func ensureGitignore(path string) error {
 	if err != nil || len(data) > 0 {
 		return err
 	}
-	return object.SyncDir(filepath.Dir(path))
+	return durable.SyncDir(filepath.Dir(path))
 }
