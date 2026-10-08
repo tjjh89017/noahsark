@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -140,20 +141,6 @@ func syncTree(root string) error {
 		if !d.IsDir() && !d.Type().IsRegular() {
 			return nil
 		}
-		return syncPath(path)
+		return durable.Sync(path)
 	})
-}
-
-// syncPath flushes one file or directory to stable storage.
-func syncPath(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
 }

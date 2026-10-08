@@ -3,8 +3,8 @@ package image
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 )
 
@@ -49,7 +49,7 @@ func SaveDiscsLedger(path string, repoUUID [16]byte, rows []format.DiscsRow) err
 	if _, err := t.Encode(buf); err != nil {
 		return err
 	}
-	return replaceFile(path, buf)
+	return durable.WriteFile(path, buf, 0o644, durable.Replace)
 }
 
 // LoadRefsLedger reads the ref ledger at path. A missing file gives an
@@ -75,40 +75,5 @@ func SaveRefsLedger(path string, repoUUID [16]byte, recs []format.RefRecord) err
 	if err != nil {
 		return err
 	}
-	return replaceFile(path, buf)
-}
-
-// replaceFile writes data to a temporary file in the directory of path,
-// syncs it, and renames it over path. A crash leaves the old file or
-// the new file, never a part of one.
-func replaceFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	fail := func(err error) error {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return err
-	}
-	return syncPath(dir)
+	return durable.WriteFile(path, buf, 0o644, durable.Replace)
 }

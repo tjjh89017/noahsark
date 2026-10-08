@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -91,47 +92,14 @@ func encodeConfig(f configFile) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// writeConfig replaces the config file at path with f. It writes a
-// temporary file in the same directory, syncs it, and renames it over
-// path, so a crash leaves the old file or the new file, never a part.
+// writeConfig replaces the config file at path with f, with
+// durable.WriteFile.
 func writeConfig(path string, f configFile) error {
 	data, err := encodeConfig(f)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".config.yaml.*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	syncErr := d.Sync()
-	if err := d.Close(); err != nil {
-		return err
-	}
-	return syncErr
+	return durable.WriteFile(path, data, 0o644, durable.Replace)
 }
 
 // decodeConfig parses the text of a config file. Each key must be a

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/object"
 	"github.com/tjjh89017/noahsark/internal/stage"
 )
@@ -804,7 +805,7 @@ func TestCommitSyncsEveryDirectoryBeforeTheStateLog(t *testing.T) {
 				t.Errorf("directory %s synced after the state log grew from %d to %d bytes", dir, before, n)
 			}
 			synced[dir] = true
-			return object.SyncDir(dir)
+			return durable.SyncDir(dir)
 		}
 		return w
 	}

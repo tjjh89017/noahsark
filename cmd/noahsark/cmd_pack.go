@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/image"
 	"github.com/tjjh89017/noahsark/internal/object"
@@ -377,7 +378,7 @@ func makePackRoot(layout repoLayout, discUUID [16]byte, absOut string, closeDisc
 		return "", err
 	}
 	if closeDisc {
-		if err := writeSyncedFile(filepath.Join(planDir, planCloseName)); err != nil {
+		if err := durable.WriteFile(filepath.Join(planDir, planCloseName), nil, 0o644, durable.Replace); err != nil {
 			return "", err
 		}
 	}
@@ -393,35 +394,15 @@ func makePackRoot(layout repoLayout, discUUID [16]byte, absOut string, closeDisc
 		}
 		root = absOut
 	}
-	if err := syncDir(planDir); err != nil {
+	if err := durable.SyncDir(planDir); err != nil {
 		return "", err
 	}
-	return root, syncDir(filepath.Dir(planDir))
+	return root, durable.SyncDir(filepath.Dir(planDir))
 }
 
 // planCloseName is the file of a plan directory that marks a disc
 // packed with --close.
 const planCloseName = "close"
-
-// writeSyncedFile creates the empty file path and syncs it.
-func writeSyncedFile(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	return errors.Join(f.Sync(), f.Close())
-}
-
-// syncDir flushes the entries of the directory dir to stable storage.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	syncErr := d.Sync()
-	closeErr := d.Close()
-	return errors.Join(syncErr, closeErr)
-}
 
 // packFailed prints the refusal or the error of a failed pack and
 // returns its exit code.

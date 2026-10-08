@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
+	"github.com/tjjh89017/noahsark/internal/durable"
 	"github.com/tjjh89017/noahsark/internal/format"
 	"github.com/tjjh89017/noahsark/internal/object"
 )
@@ -65,7 +66,7 @@ func writeRefs(path string, refs map[string]string) error {
 	for _, n := range names {
 		_, _ = fmt.Fprintf(&b, "%s %s\n", n, refs[n])
 	}
-	return object.ReplaceFile(path, []byte(b.String()))
+	return durable.WriteFile(path, []byte(b.String()), 0o644, durable.Replace)
 }
 
 // resolveRef returns the snapshot id name points at in the ref file at
