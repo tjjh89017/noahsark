@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -13,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/tjjh89017/noahsark/internal/stage"
+	"github.com/tjjh89017/noahsark/internal/statedoc"
 )
 
 // statesDoc is the document that holds the state x event table. A run
@@ -43,83 +42,37 @@ type stateTable struct {
 	ids  []string
 }
 
-// stateRowRe matches a row of the state x event table and captures the
-// row number.
-var stateRowRe = regexp.MustCompile(`^\| (\d+[a-z]?) \|`)
-
-// splitTableLine returns the cells of a markdown table line. A `\|`
-// is a literal bar.
-func splitTableLine(line string) []string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "|")
-	line = strings.TrimSuffix(line, "|")
-	var cells []string
-	var cell strings.Builder
-	for i := 0; i < len(line); i++ {
-		switch {
-		case line[i] == '\\' && i+1 < len(line) && line[i+1] == '|':
-			cell.WriteByte('|')
-			i++
-		case line[i] == '|':
-			cells = append(cells, strings.TrimSpace(cell.String()))
-			cell.Reset()
-		default:
-			cell.WriteByte(line[i])
-		}
-	}
-	return append(cells, strings.TrimSpace(cell.String()))
-}
+// stateRowID matches the row number in the first cell of a row of the
+// state x event table.
+var stateRowID = regexp.MustCompile(`^\d+[a-z]?$`)
 
 // loadStateTable reads the state x event table of statesDoc. It finds
 // each column by the name in the header line of the table.
 func loadStateTable(t *testing.T) *stateTable {
 	t.Helper()
-	f, err := os.Open(*statesDoc)
+	doc, err := statedoc.Find(*statesDoc, "#", "State", "Event", "Result", "Message", "Exit", "Next")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = f.Close() }()
+	col := func(name string) int { return doc.Column(name) }
 	tb := &stateTable{rows: map[string]*stateRow{}}
-	var col map[string]int
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "| # |") {
-			col = map[string]int{}
-			for i, name := range splitTableLine(line) {
-				col[name] = i
-			}
-			for _, name := range []string{"#", "State", "Event", "Result", "Message", "Exit", "Next"} {
-				if _, ok := col[name]; !ok {
-					t.Fatalf("%s: the state x event table has no column %s", *statesDoc, name)
-				}
-			}
+	for _, cells := range doc.Rows {
+		if len(cells) == 0 || !stateRowID.MatchString(cells[col("#")]) {
 			continue
 		}
-		m := stateRowRe.FindStringSubmatch(line)
-		if m == nil {
-			continue
+		id := cells[col("#")]
+		if len(cells) != len(doc.Header) {
+			t.Fatalf("%s: row %s has %d cells, want %d", *statesDoc, id, len(cells), len(doc.Header))
 		}
-		if col == nil {
-			t.Fatalf("%s: row %s comes before the header of the table", *statesDoc, m[1])
+		if _, dup := tb.rows[id]; dup {
+			t.Fatalf("%s: row %s is in the table twice", *statesDoc, id)
 		}
-		cells := splitTableLine(line)
-		if len(cells) != len(col) {
-			t.Fatalf("%s: row %s has %d cells, want %d", *statesDoc, m[1], len(cells), len(col))
+		tb.rows[id] = &stateRow{
+			id: id, state: cells[col("State")], event: cells[col("Event")],
+			result: cells[col("Result")], message: cells[col("Message")],
+			exit: cells[col("Exit")], next: cells[col("Next")],
 		}
-		if _, dup := tb.rows[m[1]]; dup {
-			t.Fatalf("%s: row %s is in the table twice", *statesDoc, m[1])
-		}
-		tb.rows[m[1]] = &stateRow{
-			id: m[1], state: cells[col["State"]], event: cells[col["Event"]],
-			result: cells[col["Result"]], message: cells[col["Message"]],
-			exit: cells[col["Exit"]], next: cells[col["Next"]],
-		}
-		tb.ids = append(tb.ids, m[1])
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
+		tb.ids = append(tb.ids, id)
 	}
 	if len(tb.rows) == 0 {
 		t.Fatalf("%s holds no row of the state x event table", *statesDoc)

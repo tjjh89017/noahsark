@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tjjh89017/noahsark/internal/statedoc"
 )
 
 // discStart is one start state of the transition tests. A lost start
@@ -45,48 +48,128 @@ var allDiscEvents = []DiscEvent{
 	EventFreed, EventLost, EventLostUndone, EventRecovered, EventNamedMissing,
 }
 
-// replayTable is the table "Replay of the disc state log" of
-// docs/states.md: for each event, the permitted start states and the
-// result. A start that the table does not list is refused.
-var replayTable = map[DiscEvent]map[discStart]DiscState{
-	EventPacked:       {{DiscUnknown, DiscUnknown}: DiscPacked},
-	EventPackUndone:   {{DiscPacked, DiscUnknown}: DiscUndone},
-	EventBurnRecorded: {{DiscPacked, DiscUnknown}: DiscBurned},
-	EventBurnRemoved:  {{DiscBurned, DiscUnknown}: DiscPacked},
-	EventCheckOK: {
-		{DiscBurned, DiscUnknown}:     DiscVerified,
-		{DiscVerified, DiscUnknown}:   DiscVerified,
-		{DiscOnDiscOnly, DiscUnknown}: DiscOnDiscOnly,
-	},
-	EventCheckFailed: {
-		{DiscVerified, DiscUnknown}:   DiscBurned,
-		{DiscBurned, DiscUnknown}:     DiscPacked,
-		{DiscPacked, DiscUnknown}:     DiscPacked,
-		{DiscOnDiscOnly, DiscUnknown}: DiscOnDiscOnly,
-	},
-	EventMarkedVerified: {{DiscBurned, DiscUnknown}: DiscVerified},
-	EventVerifyUndone:   {{DiscVerified, DiscUnknown}: DiscBurned},
-	EventFreed:          {{DiscVerified, DiscUnknown}: DiscOnDiscOnly},
-	EventLost: {
-		{DiscPacked, DiscUnknown}:     DiscLost,
-		{DiscBurned, DiscUnknown}:     DiscLost,
-		{DiscVerified, DiscUnknown}:   DiscLost,
-		{DiscOnDiscOnly, DiscUnknown}: DiscLost,
-		{DiscMissing, DiscUnknown}:    DiscLost,
-	},
-	EventLostUndone: {
-		{DiscLost, DiscVerified}:   DiscBurned,
-		{DiscLost, DiscOnDiscOnly}: DiscOnDiscOnly,
-		{DiscLost, DiscMissing}:    DiscMissing,
-	},
-	EventRecovered: {
-		{DiscUnknown, DiscUnknown}: DiscOnDiscOnly,
-		{DiscMissing, DiscUnknown}: DiscOnDiscOnly,
-	},
-	EventNamedMissing: {{DiscUnknown, DiscUnknown}: DiscMissing},
+// statesDoc is the document that holds the table "Replay of the disc
+// state log".
+const statesDoc = "../../docs/states.md"
+
+// replayRule is the replay table: for each event, the permitted start
+// states and the result. A start that the table does not list is refused.
+type replayRule map[DiscEvent]map[discStart]DiscState
+
+// backtickRe captures each code span of an Effect cell.
+var backtickRe = regexp.MustCompile("`([^`]+)`")
+
+// loadReplayTable reads the table "Replay of the disc state log" of
+// docs/states.md. It reads the transitions from the Effect cell of each
+// event. A clause "`a` or `b` -> `c`" permits a and b and gives c. A
+// clause "`a` and `b` do not change" permits a and b and keeps them. A
+// clause that starts with "->" continues the start of the clause before
+// it. A start `lost` needs a "when" part: "when the state before `Lost`
+// was `x`" names one state before Lost, and "when it was that state"
+// names each result as the state before Lost.
+func loadReplayTable(t *testing.T) replayRule {
+	t.Helper()
+	doc, err := statedoc.Find(statesDoc, "Event", "Written by", "Effect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]DiscState{}
+	for s, name := range discStateNames {
+		states[name] = s
+	}
+	events := map[string]DiscEvent{}
+	for e, name := range discEventNames {
+		events[name] = e
+	}
+	stateList := func(text string) []DiscState {
+		var out []DiscState
+		for _, m := range backtickRe.FindAllStringSubmatch(text, -1) {
+			s, ok := states[m[1]]
+			if !ok {
+				t.Fatalf("%s: %q names no disc state", statesDoc, m[1])
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+
+	table := replayRule{}
+	for _, cells := range doc.Rows {
+		name := strings.Trim(cells[doc.Column("Event")], "`")
+		e, ok := events[name]
+		if !ok {
+			t.Fatalf("%s: the replay table names the unknown event %q", statesDoc, name)
+		}
+		if table[e] != nil {
+			t.Fatalf("%s: the replay table holds event %s twice", statesDoc, e)
+		}
+		rule := map[discStart]DiscState{}
+		add := func(start discStart, to DiscState) {
+			if old, dup := rule[start]; dup && old != to {
+				t.Fatalf("%s: event %s gives two results in %s", statesDoc, e, start)
+			}
+			rule[start] = to
+		}
+		var from []DiscState
+		effect := strings.ReplaceAll(cells[doc.Column("Effect")], ";", ".")
+		for clause := range strings.SplitSeq(effect, ". ") {
+			clause = strings.TrimSpace(strings.TrimSuffix(clause, "."))
+			if left, ok := strings.CutSuffix(clause, " do not change"); ok {
+				for _, s := range stateList(left) {
+					add(discStart{s, DiscUnknown}, s)
+				}
+				continue
+			}
+			left, right, ok := strings.Cut(clause, "->")
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(left) != "" {
+				from = stateList(left)
+			}
+			right, when, _ := strings.Cut(right, " when ")
+			to := stateList(right)
+			for _, f := range from {
+				if f != DiscLost {
+					for _, r := range to {
+						add(discStart{f, DiscUnknown}, r)
+					}
+					continue
+				}
+				switch {
+				case when == "it was that state":
+					for _, r := range to {
+						add(discStart{DiscLost, r}, r)
+					}
+				case strings.HasPrefix(when, "the state before `Lost` was "):
+					before := stateList(strings.TrimPrefix(when, "the state before `Lost` was "))
+					if len(before) != 1 || len(to) != 1 {
+						t.Fatalf("%s: event %s: clause %q needs one state before Lost and one result", statesDoc, e, clause)
+					}
+					add(discStart{DiscLost, before[0]}, to[0])
+				default:
+					t.Fatalf("%s: event %s: clause %q starts in lost and names no state before Lost", statesDoc, e, clause)
+				}
+			}
+			if len(from) == 0 || len(to) == 0 {
+				t.Fatalf("%s: event %s: clause %q names no start or no result", statesDoc, e, clause)
+			}
+		}
+		if len(rule) == 0 {
+			t.Fatalf("%s: event %s permits no start state", statesDoc, e)
+		}
+		table[e] = rule
+	}
+	for _, e := range allDiscEvents {
+		if table[e] == nil {
+			t.Fatalf("%s: the replay table has no row for event %s", statesDoc, e)
+		}
+	}
+	return table
 }
 
 func TestDiscTransitionTable(t *testing.T) {
+	replayTable := loadReplayTable(t)
 	for _, e := range allDiscEvents {
 		for _, s := range discStarts {
 			want, wantOK := replayTable[e][s]
@@ -148,6 +231,7 @@ func appendEvents(t *testing.T, l *DiscLog, id [16]byte, sec int64, events ...Di
 // new open. A refused event returns ErrDiscEventRefused and writes
 // nothing.
 func TestDiscLogEachEventInEachState(t *testing.T) {
+	replayTable := loadReplayTable(t)
 	for _, s := range discStarts {
 		for _, e := range allDiscEvents {
 			t.Run(fmt.Sprintf("%s/%s", s, e), func(t *testing.T) {

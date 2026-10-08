@@ -114,7 +114,7 @@ runs:
         # alone: it proves that the discs need nothing else.
         mkdir -p "$RUNNER_TEMP/e2e-tools"
         if [ "${{ inputs.disc-set }}" != "read" ]; then
-          for name in ci-fixture ci-chain-fixture ci-incremental-fixture ci-corrupt ci-disc-uuid ci-disc-field ci-state-count ci-index-count ci-tree-compare; do
+          for name in ci-fixture ci-chain-fixture ci-incremental-fixture ci-corrupt ci-disc-uuid ci-disc-field ci-state-count ci-index-count ci-tree-compare ci-peak-rss; do
             go build -o "$RUNNER_TEMP/e2e-tools/$name" "./test/e2e/disc/cmd/$name"
           done
         fi

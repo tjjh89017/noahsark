@@ -189,6 +189,8 @@ internal/restore      restore a snapshot one mounted disc at a time, write
                       files; verify
 internal/stage        item and disc state machines, state log and disc
                       state log records
+internal/statedoc     markdown table reader of docs/states.md, for the
+                      tests that check the code against its tables
 docs/                 guide.md (operator guide, not a specification),
                       states.md (state machines, part of the specification),
                       decisions.md

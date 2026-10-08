@@ -2160,7 +2160,7 @@ does not skip it.
 | `media/dvd+r` | The full cycle on a DVD+R size image. Then the command-line cycle, and a disc root burned as ISO 9660 with the folder burn options (`-R -iso-level 4 -V NOAHSARK_0000` for disc 0) that `verify` counts and `restore` reads. |
 | `media/bd25-forced-10g` | A 25 GB medium, packed at a 10 GB `--capacity`. |
 | `chain/dvd-bd25-bd10` | Two snapshots of about 22.5 GB each across three discs. `pack` takes the older snapshot first. Data that does not fit stays Staged, and `status` names the snapshot that is not complete on discs. A fourth disc takes the rest. The repository is deleted, and `recover` runs one time for each of the four discs. Both snapshots then restore; restore swaps the discs at one mount point. A missing disc is named. |
-| `lowmem` | The 25 GB flow under a memory limit: peak memory does not grow with the data size. |
+| `lowmem` | The 25 GB flow at two data sizes under a memory limit. The peak resident set of `commit`, `pack`, `verify` and `restore` at the larger size stays within 20 percent plus 64 MiB of the peak at the smaller size: peak memory does not grow with the data size. |
 | `incremental` | A second commit packs only the change. Both snapshots restore. The cell also runs the `internal/image` tests that need root and a real `mkudffs`. |
 | `rebuild` | The repository is deleted. `recover` runs one time for each disc. `log`, `ls` and `restore` then work, and a later `pack` deduplicates against the discs. This proves that the discs alone hold the backup. |
 | `lifecycle` | `disc verified` then `gc` frees the data of the disc at once; `pack --undo`; `verify --undo`; `disc lost` and `disc lost --undo`; each with `--yes` or `--force-yes`. |
