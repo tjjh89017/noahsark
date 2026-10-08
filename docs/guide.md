@@ -446,8 +446,10 @@ fails a check, or a copy that is destroyed. Load the good disc, and paste:
 ddrescue -b 2048 -n -r1 /dev/sr0 ~/copy.img ~/copy.map && eject /dev/sr0
 ```
 
-To give the copy to `verify` or to `recover`, mount the image file
-read-only with a loop device. `--no-mark` keeps the check of an image
+A host with no optical drive cannot mount a disc. A loop mount gives a
+disc image, such as a ddrescue copy or a test image, to `verify`,
+`recover` or `restore`. With a real disc, mount the disc, not an image.
+Mount the image file read-only. `--no-mark` keeps the check of an image
 out of the records:
 
 ```
