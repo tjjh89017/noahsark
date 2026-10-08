@@ -11,8 +11,9 @@
 #   MEDIA     dvd+r | bd25 | bd25-forced-10g; required for media, unused
 #             (and ignored) by every other scenario, which fixes its own
 #             fixture at dvd+r's real sector counts. lowmem ignores it
-#             too: it always runs the media/bd25 flow, under whatever
-#             process memory limit the caller (the e2e action) applied.
+#             too: it runs the media/bd25 flow at two sizes, under
+#             whatever process memory limit the caller (the e2e action)
+#             applied, and compares the peak memory of the two runs.
 #   ORDER     dvd-bd25-bd10 | bd25-bd10-dvd; required for chain and
 #             chain-small, unused by every other scenario
 #   EXTRAS    a comma-separated list of extra scenarios to run, in
@@ -99,14 +100,16 @@ scenario_cli() {
 	log "cli PASS"
 }
 
-# scenario_media packs, images, mounts, verifies and restores a sample at
-# MEDIA's real capacity, and, for a forced media, checks DISC's forced
-# capacity fields through ci-disc-field. An over-capacity commit does
-# not refuse to pack outright: pack takes what fits onto this disc and
-# leaves the remainder staged for the next one; the chain scenario
-# covers that.
+# scenario_media MEDIA [SIZE_MB] [NAME] packs, images, mounts, verifies
+# and restores a sample at MEDIA's real capacity, and, for a forced
+# media, checks DISC's forced capacity fields through ci-disc-field.
+# SIZE_MB replaces the sample size of MEDIA. NAME replaces the name of
+# the work directory. An over-capacity commit does not refuse to pack
+# outright: pack takes what fits onto this disc and leaves the remainder
+# staged for the next one; the chain scenario covers that.
 scenario_media() {
-	local media="$1" work="$WORK/media"
+	local media="$1" size_override="${2:-}" name="${3:-media}"
+	local work="$WORK/$name"
 	local repo small_src tree image mnt restored uuid
 	local capflag small_mb apparent
 	repo="$work/repo"
@@ -117,7 +120,7 @@ scenario_media() {
 	restored="$work/restored"
 
 	build_binary
-	small_mb="$(media_small_mb "$media")"
+	small_mb="${size_override:-$(media_small_mb "$media")}"
 	apparent="$(media_apparent_bytes "$media")"
 
 	gen_fixture "$small_src/data.bin" "$((small_mb * 1024 * 1024))"
@@ -167,6 +170,64 @@ scenario_media() {
 	log "media/$media PASS"
 }
 
+# LOWMEM_SIZES_MB are the two sample sizes of the lowmem scenario. The
+# larger one is the bd25 sample of the media scenario.
+LOWMEM_SIZES_MB=(300 1200)
+
+# LOWMEM_MEASURED are the subcommands whose peak resident set the lowmem
+# scenario compares. image build is not one: its peak is the peak of
+# mkudffs.
+LOWMEM_MEASURED=(commit pack verify restore)
+
+# lowmem_peak LOG SUB prints the largest peak in KiB that LOG records for
+# the subcommand SUB, or 0.
+lowmem_peak() {
+	awk -v s="$2" '$1 == s && $2 > m { m = $2 } END { print m + 0 }' "$1"
+}
+
+# scenario_lowmem runs the bd25 media flow at each size of
+# LOWMEM_SIZES_MB, under the memory limit that the caller applied. It
+# records the peak resident set of each noahsark call with ci-peak-rss.
+# It fails when the peak of a LOWMEM_MEASURED subcommand at the larger
+# size exceeds the peak at the smaller size by more than 20 percent plus
+# 64 MiB. Peak memory follows the chunk size, not the data size.
+scenario_lowmem() {
+	build_binary
+	local real="$BIN" tool size wrapper sub small large limit
+	local small_mb="${LOWMEM_SIZES_MB[0]}" large_mb="${LOWMEM_SIZES_MB[1]}"
+	tool="${NOAHSARK_E2E_TOOLDIR:-}/ci-peak-rss"
+	if [ ! -x "$tool" ]; then
+		tool="$WORK/ci-peak-rss"
+		(cd "$ROOT" && go build -o "$tool" ./test/e2e/disc/cmd/ci-peak-rss)
+	fi
+
+	local saved_bin="${NOAHSARK_E2E_BIN:-}"
+	for size in "${LOWMEM_SIZES_MB[@]}"; do
+		wrapper="$WORK/noahsark-rss-$size"
+		: >"$WORK/rss-$size.txt"
+		printf '#!/bin/sh\nexec "%s" "%s" "%s" "$@"\n' \
+			"$tool" "$WORK/rss-$size.txt" "$real" >"$wrapper"
+		chmod +x "$wrapper"
+		NOAHSARK_E2E_BIN="$wrapper"
+		scenario_media bd25 "$size" "lowmem-$size"
+	done
+	NOAHSARK_E2E_BIN="$saved_bin"
+	BIN="$real"
+
+	for sub in "${LOWMEM_MEASURED[@]}"; do
+		small="$(lowmem_peak "$WORK/rss-$small_mb.txt" "$sub")"
+		large="$(lowmem_peak "$WORK/rss-$large_mb.txt" "$sub")"
+		require_number "lowmem: $sub peak at $small_mb MiB" "$small"
+		require_number "lowmem: $sub peak at $large_mb MiB" "$large"
+		[ "$small" -gt 0 ] || fail "lowmem: no $sub call was measured"
+		limit=$((small * 120 / 100 + 64 * 1024))
+		log "lowmem: $sub peak RSS $small KiB at $small_mb MiB, $large KiB at $large_mb MiB, limit $limit KiB"
+		[ "$large" -le "$limit" ] ||
+			fail "lowmem: $sub peak RSS grows with the data size: $large KiB > $limit KiB"
+	done
+	log "lowmem PASS"
+}
+
 # run_extras EXTRAS runs a comma-separated list of extra scenarios, in
 # order, after the cell's primary scenario. See this file's usage
 # comment for which scenario names are valid extras.
@@ -206,11 +267,9 @@ main() {
 		scenario_chain_small "$order"
 		;;
 	lowmem)
-		# The memory bound is enforced on the process from outside (the
-		# e2e action wraps this whole script), not by anything in here;
-		# this scenario just picks a real, non-trivial flow to run under
-		# that limit.
-		scenario_media "bd25"
+		# The e2e action applies the memory limit to this whole script.
+		# The scenario also compares the peak memory at two data sizes.
+		scenario_lowmem
 		;;
 	incremental) scenario_incremental ;;
 	rebuild) scenario_rebuild ;;
