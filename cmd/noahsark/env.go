@@ -30,6 +30,8 @@ type env struct {
 	mountinfo func() (io.ReadCloser, error)
 	// deviceOf returns the device of the file at path, after symlinks.
 	deviceOf func(path string) (devNum, error)
+	// imageHost holds the host programs that image build runs.
+	imageHost imageHost
 
 	global globalOptions
 }
@@ -56,6 +58,7 @@ func realEnv() *env {
 		euid:      os.Geteuid,
 		mountinfo: func() (io.ReadCloser, error) { return os.Open("/proc/self/mountinfo") },
 		deviceOf:  statDevice,
+		imageHost: realImageHost(),
 	}
 }
 
