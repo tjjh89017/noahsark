@@ -29,16 +29,18 @@ func init() {
 }
 
 // imageHost holds the host programs that image build runs. A test
-// replaces them, so that it needs no mkudffs and no loop mount.
-var imageHost = struct {
+// gives fakes, so that it needs no mkudffs and no loop mount.
+type imageHost struct {
 	// mkudffsVersion returns the udftools version, or an error when
 	// mkudffs is missing or too old.
 	mkudffsVersion func() (string, error)
 	// makeImage builds and populates the image file of the plan.
 	makeImage func(plan *image.Plan, sectors uint64, label string, prog *progress.Reporter) error
-}{
-	mkudffsVersion: image.CheckTools,
-	makeImage:      image.BuildImage,
+}
+
+// realImageHost is the imageHost of the running process.
+func realImageHost() imageHost {
+	return imageHost{mkudffsVersion: image.CheckTools, makeImage: image.BuildImage}
 }
 
 // imageBuildOptions holds the command options of image build.
@@ -115,7 +117,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		return 1
 	}
 
-	if _, err := imageHost.mkudffsVersion(); err != nil {
+	if _, err := e.imageHost.mkudffsVersion(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}
@@ -160,7 +162,7 @@ func (o *imageBuildOptions) run(e *env, args []string) int {
 		return 1
 	}
 	sectors := discBin.CapacitySectors
-	if err := imageHost.makeImage(plan, sectors, image.VolumeLabel(discBin.DiscSeq), e.progress()); err != nil {
+	if err := e.imageHost.makeImage(plan, sectors, image.VolumeLabel(discBin.DiscSeq), e.progress()); err != nil {
 		_, _ = fmt.Fprintf(stderr, "noahsark: %s: %v\n", cmd, err)
 		return 1
 	}

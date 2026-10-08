@@ -61,9 +61,6 @@ func noTreeSetup(t *testing.T, fx *discFixture) {
 }
 
 func init() {
-	imageHost.mkudffsVersion = fakeMkudffsVersion
-	imageHost.makeImage = fakeMakeImage
-
 	registerStateCases(
 		stateCase{
 			row: "15", name: "image build of a packed disc",

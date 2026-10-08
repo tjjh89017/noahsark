@@ -17,8 +17,18 @@ import (
 // runImageBuildAs runs image build in a fake env with the user id uid.
 func runImageBuildAs(t *testing.T, uid int, args ...string) (int, string, string) {
 	t.Helper()
+	return runImageBuildWith(t, uid, nil, args...)
+}
+
+// runImageBuildWith is runImageBuildAs, and change, when it is not nil,
+// changes the fake image build programs of the env first.
+func runImageBuildWith(t *testing.T, uid int, change func(*imageHost), args ...string) (int, string, string) {
+	t.Helper()
 	te := newTestEnv(t.TempDir())
 	te.euid = func() int { return uid }
+	if change != nil {
+		change(&te.imageHost)
+	}
 	code, _ := te.run(args...)
 	return code, te.out.String(), te.errOut.String()
 }
@@ -53,14 +63,14 @@ func TestImageBuildWritesOnlyTheImage(t *testing.T) {
 
 	var gotTree, gotLabel string
 	var gotSectors uint64
-	old := imageHost.makeImage
-	imageHost.makeImage = func(plan *image.Plan, sectors uint64, label string, prog *progress.Reporter) error {
-		gotTree, gotSectors, gotLabel = plan.TreePath, sectors, label
-		return fakeMakeImage(plan, sectors, label, prog)
+	record := func(h *imageHost) {
+		h.makeImage = func(plan *image.Plan, sectors uint64, label string, prog *progress.Reporter) error {
+			gotTree, gotSectors, gotLabel = plan.TreePath, sectors, label
+			return fakeMakeImage(plan, sectors, label, prog)
+		}
 	}
-	t.Cleanup(func() { imageHost.makeImage = old })
 
-	code, stdout, stderr := runImageBuildAs(t, 0, "--repo="+fx.repo, "image", "build", "0")
+	code, stdout, stderr := runImageBuildWith(t, 0, record, "--repo="+fx.repo, "image", "build", "0")
 	if code != 0 {
 		t.Fatalf("image build: exit %d: %s", code, stderr)
 	}
@@ -151,20 +161,20 @@ func TestImageBuildForceReplacesTheImage(t *testing.T) {
 // TestImageBuildChecksMkudffsAfterTheState checks the order of the
 // checks: the state, then the mkudffs version, then root.
 func TestImageBuildChecksMkudffsAfterTheState(t *testing.T) {
-	old := imageHost.mkudffsVersion
-	imageHost.mkudffsVersion = func() (string, error) {
-		return "udftools 2.2", errors.New("mkudffs is from udftools 2.2; image build needs udftools 2.3 or newer")
+	oldMkudffs := func(h *imageHost) {
+		h.mkudffsVersion = func() (string, error) {
+			return "udftools 2.2", errors.New("mkudffs is from udftools 2.2; image build needs udftools 2.3 or newer")
+		}
 	}
-	t.Cleanup(func() { imageHost.mkudffsVersion = old })
 
 	fx := repoWithDisc(t, stage.DiscPacked)
-	code, _, stderr := runImageBuildAs(t, 1000, "--repo="+fx.repo, "image", "build", "0")
+	code, _, stderr := runImageBuildWith(t, 1000, oldMkudffs, "--repo="+fx.repo, "image", "build", "0")
 	if code != 1 || !strings.Contains(stderr, "image build needs udftools 2.3 or newer") || strings.Contains(stderr, "needs root") {
 		t.Errorf("old mkudffs, not root: exit %d: %s", code, stderr)
 	}
 
 	lost := repoWithDisc(t, stage.DiscLost)
-	code, _, stderr = runImageBuildAs(t, 1000, "--repo="+lost.repo, "image", "build", "0")
+	code, _, stderr = runImageBuildWith(t, 1000, oldMkudffs, "--repo="+lost.repo, "image", "build", "0")
 	if code != 1 || !strings.Contains(stderr, "no disc root at ") || strings.Contains(stderr, "udftools") {
 		t.Errorf("lost disc, old mkudffs: exit %d: %s", code, stderr)
 	}
