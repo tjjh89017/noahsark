@@ -73,6 +73,12 @@ You need these:
 - GNU `ddrescue` (the Debian package is `gddrescue`), to copy a disc to an
   image. You need it only for a second copy after `gc`.
 
+On Debian, install every package of the list, except Go, with one line:
+
+```
+$ sudo apt-get install curl ca-certificates git sudo dvd+rw-tools udftools eject util-linux gddrescue
+```
+
 Check the versions of the burn tools one time. `growisofs -version` does
 not show the package revision, thus ask the package manager. On Fedora,
 use `rpm -q`. On Arch, use `pacman -Q`.
@@ -84,13 +90,14 @@ udftools	2.3-2
 ```
 
 Install Go from go.dev. On an `arm64` host, change `amd64` to `arm64`.
-Add the `export` line to `~/.profile` also, so that a new shell finds
-`go`:
+Add the same `export` line to `~/.profile` also, so that a new shell
+finds `go`. The last line below does this:
 
 ```
 $ curl -fLO https://go.dev/dl/go1.27.0.linux-amd64.tar.gz
 $ sudo tar -C /usr/local -xzf go1.27.0.linux-amd64.tar.gz
 $ export PATH=$PATH:/usr/local/go/bin
+$ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
 ```
 
 Get the source, build the tool, and install it in `/usr/local/bin`.
@@ -451,8 +458,13 @@ sudo umount /mnt/ark; eject /dev/sr0
 `verify` records the burn and marks the disc `verified`, as for the image.
 The `advice:` line then says `copy disc 0 before gc`, because no image
 exists. For a folder burn, that copy is a second folder burn of the same
-folder, before `gc`: paste the folder burn lines again with a second blank
-disc. See "A second copy".
+folder, before `gc`. Run the `growisofs` line of the folder burn with a
+second blank disc, then run `verify --no-mark`. A plain `verify` on the
+copy is also fine: it prints `already verified; check logged`. The folder
+burn lines are in the output of `pack` and of `status`. Run `status` to see
+them again. The `advice:` line `copy disc N before gc` stays until `gc`,
+because the tool records nothing about the second copy. See "A second
+copy".
 
 ## A second copy
 
@@ -852,11 +864,11 @@ and the loop mount that gives the image to `recover`.
 | `cannot read the disc: no DISC.bin under ...; is the disc mounted at /mnt/ark?` | Nothing is mounted at `/mnt/ark`, or the wrong directory is given. Mount the disc read-only, and run the command again. For an image file, see the loop mount in "A second copy". |
 | `status` says that a disc has no disc root | No new disc can be burned from it. Discard the disc, and paste the `noahsark disc lost 0` line. The next `pack` takes its items. |
 | Every copy of a disc is destroyed | `noahsark disc lost 0`, and answer `y`. See "A lost disc". |
-| You find a disc that you marked lost | `noahsark disc lost --undo 0`, and answer `y`. Then paste the block that it prints. It verifies the disc, or it recovers a disc that was `missing`. For a disc that was `on disc only`, `status` then shows `on disc only, last check DATE`, and the printed block asks for a `verify` of the disc. |
+| You find a disc that you marked lost | `noahsark disc lost --undo 0`, and answer `y`. Then paste the block that it prints. It verifies the disc, or it goes on with the recovery of the missing discs. For a disc that was `on disc only`, `status` then shows `on disc only`, with `last check DATE` when the disc had a check in this repository. The printed block asks for a `verify` of the disc. For a disc that was `missing`, the block names the first missing disc, which can be another disc. The command line names the found disc: `disc N "LABEL": lost mark removed; give it to recover`. Give the found disc to `recover` in turn. |
 | `status` prints `next: disc 0: an earlier disc lost stopped before it wrote the records of its items; ...` | A command stopped between its disc event and the records of its items. Paste the `noahsark gc` line. `gc` writes the records first. It also frees the data of each verified disc, as a normal `gc` does. |
 | `status` prints `noahsark: status: warning: staging directory DIR does not exist; staging.dir in config.yaml names it`, and the first `next:` block gives `mkdir -p DIR` | The volume of the staging store is not mounted, or `staging.dir` in `config.yaml` names a wrong path. Mount the volume, or correct the path. Only when the staging store is gone for good, run `mkdir -p DIR`; `status` then names each `packed` disc with `disc lost`. The warning comes only while staged or packed data needs the directory. |
 | `restore` prints `expected disc 1 ... found disc 0 ...` | The wrong disc is in the drive. Mount the named disc, or its second copy, at the same mount point, and press Enter. |
-| `restore: no snapshot matches NAME`, exit code 2, from `restore` or `ls` | The snapshot or ref name is wrong. Run `noahsark log`: it lists the snapshots and the refs. Give a name from it. |
+| `no snapshot matches NAME`, exit code 2, from `restore` or `ls` | The snapshot or ref name is wrong. Run `noahsark log`: it lists the snapshots and the refs. Give a name from it. |
 | `restore` stops between two discs | Mount the named disc, and run the same `restore` again. It resumes. |
 | `restore` reports that a path is already there | Add `--overwrite`, or restore into an empty directory. |
 | `restore` prints `restore: N item(s) have no disc known to the catalog; run recover with more discs` | The repository does not know which disc holds some data. `restore` restores every other file, names each file that it cannot restore, and exits with code 1. Give each disc that you still hold to `recover`, then run the same `restore` again. |
