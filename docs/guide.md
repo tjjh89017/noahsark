@@ -620,6 +620,12 @@ Do a restore drill now, and again every few months. `restore` needs the
 repository. It plans from the repository, and reads the data from the
 discs, one disc at a time, at one mount point.
 
+`restore` first takes the data that the staging store still holds, after
+it checks each chunk against its content id. That data needs no disc, and
+the plan shows it on a `staging: N items, B bytes` line. Thus a snapshot
+that is not yet on a disc restores too. To drill the discs themselves, run
+the drill after `gc`, or on another computer after `recover`.
+
 The syntax is `restore [OPTIONS] --disc=DIR SNAPSHOT [PATH...] DEST`. With
 no `PATH`, `restore` writes the content of the source root into `DEST`:
 `/srv/restore/notes.txt`, not `/srv/restore/srv/data/notes.txt`.

@@ -152,6 +152,9 @@ damage_one_seed() {
 	done <<<"$DAMAGE_HIT"
 	[ "$named" -eq 1 ] || fail "damage: seed $seed: verify named no damaged file"
 
+	# The staging store holds every chunk. Move it aside, thus restore
+	# reads every chunk from the damaged copy.
+	staging_aside "$repo"
 	set +e
 	out="$("$BIN" --repo="$repo" restore --disc="$mnt" "$snap" "$dest" 2>&1 </dev/null)"
 	code=$?
@@ -176,6 +179,7 @@ damage_one_seed() {
 	code=$?
 	set -e
 	echo "$out"
+	staging_back "$repo"
 	[ "$code" -eq 0 ] || fail "damage: seed $seed: restore from the second copy exited $code, want 0"
 	assert_dirs_equal "$dest" "$src"
 	verify_counted "$repo" "$mnt" "$uuid"

@@ -152,3 +152,106 @@ func TestPlanWithNoDisc(t *testing.T) {
 		t.Fatalf("%d disc(s), %d item(s) with no disc; want 0 and 2", len(p.Discs()), p.NoDisc())
 	}
 }
+
+// localSet is a LocalStore that holds the items of a set, each with an
+// object file of size bytes.
+type localSet struct {
+	held map[object.ID]bool
+	size uint64
+}
+
+func (s localSet) Check(id object.ID) (uint64, bool) { return s.size, s.held[id] }
+
+// TestPlanLocalStoreFirst gives the items that the local store holds to
+// the store, before any disc. A disc whose items the store holds all is
+// not in the plan, and an item with no disc that the store holds counts
+// as local.
+func TestPlanLocalStoreFirst(t *testing.T) {
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := [16]byte{1}, [16]byte{2}
+	writeIndex(t, c, a, span(0, 10), 10)
+	writeIndex(t, c, b, span(10, 20), 20)
+	p, err := New(c, nil, []Disc{{DiscUUID: a, DiscSeq: 0}, {DiscUUID: b, DiscSeq: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	held := map[object.ID]bool{}
+	for _, i := range append(span(5, 20), 25) {
+		held[testID(i)] = true
+	}
+	p.UseLocal(localSet{held: held, size: 7})
+	for i := range 30 {
+		p.Add(testID(i))
+	}
+	if err := p.Count(); err != nil {
+		t.Fatal(err)
+	}
+	if items, bytes := p.Local(); items != 16 || bytes != 16*7 {
+		t.Fatalf("local: %d items, %d bytes; want 16 and %d", items, bytes, 16*7)
+	}
+	discs := p.Discs()
+	if len(discs) != 1 || discs[0].DiscUUID != a || discs[0].Items != 5 || discs[0].Bytes != 50 {
+		t.Fatalf("discs %+v, want disc a alone with 5 items of 10 bytes", discs)
+	}
+	if p.NoDisc() != 9 {
+		t.Errorf("%d item(s) with no disc, want 9", p.NoDisc())
+	}
+	if !p.Owns(a, testID(4)) || p.Owns(a, testID(5)) || p.Owns(b, testID(15)) {
+		t.Error("Owns gives a disc an item that the local store supplies, or misses an item of the disc")
+	}
+	if !p.OwnsLocal(0, testID(5)) || !p.OwnsLocal(0, testID(25)) || p.OwnsLocal(0, testID(4)) || p.OwnsLocal(0, testID(26)) || p.OwnsLocal(1, testID(5)) {
+		t.Error("OwnsLocal does not follow the local store")
+	}
+}
+
+// TestPlanLocalBatches splits the items of the local store into batches
+// of one sort run each. Each item belongs to one batch only.
+func TestPlanLocalBatches(t *testing.T) {
+	c, err := catalog.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(c, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	const n = localBatch + localBatch/2
+	p.UseLocal(localAll{})
+	for i := range n {
+		p.Add(testID(i))
+	}
+	if p.LocalBatches() != 2 {
+		t.Fatalf("%d local batch(es), want 2", p.LocalBatches())
+	}
+	// Ask one batch for every item before the next batch: Owns keeps the
+	// owned ids of the last batch only.
+	in0 := make([]bool, n)
+	for i := range n {
+		in0[i] = p.OwnsLocal(0, testID(i))
+	}
+	counts := [2]int{}
+	for i := range n {
+		in1 := p.OwnsLocal(1, testID(i))
+		if in0[i] == in1 {
+			t.Fatalf("item %d: batch 0 %v, batch 1 %v; want exactly one", i, in0[i], in1)
+		}
+		if in0[i] {
+			counts[0]++
+		} else {
+			counts[1]++
+		}
+	}
+	if counts[0] != localBatch || counts[1] != n-localBatch {
+		t.Fatalf("batches hold %v items, want [%d %d]", counts, localBatch, n-localBatch)
+	}
+}
+
+// localAll is a LocalStore that holds every item.
+type localAll struct{}
+
+func (localAll) Check(object.ID) (uint64, bool) { return 1, true }

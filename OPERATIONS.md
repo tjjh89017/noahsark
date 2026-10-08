@@ -187,7 +187,8 @@ staging/
 uuid in the hyphenated form, in lower case: `8-4-4-4-12` hex digits. Staging holds chunk
 data and the sequence mark only. It holds no state and no metadata object: the loss of `staging/`
 loses the chunk data of the items that no disc holds yet, and nothing else.
-Keep staging on a local filesystem.
+Keep staging on a local filesystem. `restore` uses a chunk file of `chunks/`
+only after its content id verifies ("Chunks from the staging store").
 
 ### 2.4 Catalog layout
 
@@ -1153,9 +1154,11 @@ When `verify` finds damage, the operator uses these sources, in this order:
 
 `restore [--overwrite] [--dry-run] --disc=DIR SNAPSHOT [PATH...] DEST` reads
 one disc at a time from the mount point `DIR`. It needs a repository. It plans
-from the catalog and reads chunk data from discs only. It never reads
-`staging/` and never builds a repository. After the loss of the repository,
-the operator runs `recover` for each disc first, then `restore`.
+from the catalog. It takes each chunk that the staging store holds and that
+verifies from the staging store ("Chunks from the staging store"), and every
+other chunk from a disc. It never reads the source directory and never builds
+a repository. After the loss of the repository, the operator runs `recover`
+for each disc first, then `restore`.
 
 ### 14.1 Paths and the destination
 
@@ -1224,14 +1227,18 @@ one catalog INDEX in memory at a time:
 
 1. The walk writes the content id of each needed chunk to a temporary file,
    and sorts the ids on disk.
-2. For each disc, in the order of the plan, `restore` reads the catalog INDEX
+2. `restore` reads the id file one time and checks the staging store for each
+   id ("Chunks from the staging store"). It keeps the ids that the staging
+   store does not supply for the discs.
+3. For each disc, in the order of the plan, `restore` reads the catalog INDEX
    of the disc, counts the ids that it lists, and keeps the other ids for the
    next disc.
-3. The ids that no disc lists are the items with no known disc.
+4. The ids that no disc lists are the items with no known disc.
 
-The cost is one walk of the selection, a sort of the ids on disk, and one
-read of the id file for each disc. The temporary files are in the system
-temporary directory (`TMPDIR`). `restore` unlinks each one when it creates
+The cost is one walk of the selection, a sort of the ids on disk, one read
+of each chunk file of the staging store that holds a needed chunk, and one
+read of the id file for each disc and for the staging store. The temporary
+files are in the system temporary directory (`TMPDIR`). `restore` unlinks each one when it creates
 it. `restore` changes no file of the repository.
 
 While `restore` reads a disc, it decides for each chunk of the walk whether
@@ -1240,20 +1247,62 @@ to the disc one time for each disc. It writes such a chunk at each position
 of each file that still needs it. Thus `restore` writes each position of a
 file one time, also when several discs hold the chunk.
 
+**Chunks from the staging store.** Before the plan gives a chunk to a disc,
+`restore` looks for the chunk file of the chunk in `staging/chunks/`
+("Staging store layout"). When the file is there, `restore` reads it,
+decompresses it as FORMAT.md states, and computes its content id. On a match
+with the id that the blob names, the plan gives the chunk to the staging
+store and to no disc. On a mismatch, or when the file does not read, the plan
+gives the chunk to a disc as usual, and `restore` prints one line on standard
+error:
+
+```
+noahsark: restore: staging chunk ID: REASON; restore reads the chunk from a disc
+```
+
+`ID` is the content id of the chunk in text form. A chunk file that is not
+there prints no line. `restore` reads one chunk file at a time. It splits the
+items of the staging store into batches of 65536 items at most, and holds the
+ids of one batch in memory at a time, as it holds the ids of one disc. Thus
+the memory of `restore` does not grow with the size of the staging store.
+
+1. `restore` reads each chunk file that it uses two times: one time for the
+   plan, and one time when it writes the chunk. It checks the content id at
+   each read.
+2. `restore` takes no lock. When a chunk file changes or goes away between
+   the two reads, for example because `gc` runs, the file that needs the
+   chunk fails, as for a damaged object of a disc ("A damaged copy"). The
+   next run of the same `restore` takes the chunk from a disc.
+3. A chunk of a `lost` disc, or a chunk with no known disc, that the staging
+   store holds is restored from the staging store.
+4. A disc whose needed chunks the staging store holds all is not in the
+   plan. `restore` does not ask for it.
+5. When `staging/chunks/` does not exist, or holds no needed chunk, the plan
+   and the output are the same as with no staging store.
+
+`restore` never reads the source directory. The source tree is not content
+addressed, and it can change while `restore` reads it.
+
 `restore` prints the plan first, in this form:
 
 ```
+staging: N items, B bytes
 disc SEQ "LABEL" (UUID): N items, B bytes
 restore: N item(s) have no disc known to the catalog; run recover with more discs
 totals: D discs, N items, B bytes
 ```
 
-There is one `disc` line for each disc that the plan needs. A `lost` disc that
-the plan still needs has ` (lost)` at the end of its line. The `restore:` line
-is present only when a needed chunk has no known disc. The `totals:` line is
+The `staging:` line is present only when the staging store supplies at least
+one item. Its `N` is the number of items that the staging store supplies, and
+its `B` is the sum of the byte lengths of their chunk files. Its form is
+fixed: it uses `items` also for the value 1. There is one `disc` line for
+each disc that the plan needs. A `lost` disc that the plan still needs has
+` (lost)` at the end of its line. The `restore:` line is present only when a
+needed chunk has no known disc. The `totals:` line is
 always the last line of the plan: `D` is the number of `disc` lines, and `N`
 and `B` are the sums of their counts. Its form is fixed: it uses `discs` and
-`items` also for the value 1, because a program parses it. `--dry-run` prints the plan and stops.
+`items` also for the value 1, because a program parses it. The `totals:` line
+does not count the `staging:` line. `--dry-run` prints the plan and stops.
 
 `restore` does not ask for a `lost` disc, and it cannot ask for a chunk that
 has no known disc. It handles the two cases in the same way: it does not stop
@@ -1265,8 +1314,10 @@ The line of such a file is:
 noahsark: restore: warning: PATH: file not restored: a chunk of this file is on a lost disc or on no disc known to the catalog; the part file stays
 ```
 
-The loop takes the discs in `disc_seq` order. Before each disc, `restore`
-reads `DISC.bin` below `DIR`. When the disc at `DIR` is a disc that the plan
+When the staging store supplies an item, `restore` first walks the snapshot
+one time for each batch, and writes each chunk that the plan gives to the
+staging store. These walks ask for no disc. Then the loop takes the discs in
+`disc_seq` order. Before each disc, `restore` reads `DISC.bin` below `DIR`. When the disc at `DIR` is a disc that the plan
 still needs, `restore` reads it next. When the plan needs no disc that is not
 `lost`, `restore` still walks the snapshot one time, and writes what needs no
 disc.
@@ -1390,7 +1441,8 @@ absolute path below `DEST`.
 
 | Line | Stream | When |
 |---|---|---|
-| the plan: the `disc` lines, the `restore: N item(s) have no disc known to the catalog; run recover with more discs` line, the `totals:` line | standard output | first, before any disc |
+| `noahsark: restore: staging chunk ID: REASON; restore reads the chunk from a disc` | standard error | a chunk file of the staging store does not read or does not verify, before the plan |
+| the plan: the `staging:` line, the `disc` lines, the `restore: N item(s) have no disc known to the catalog; run recover with more discs` line, the `totals:` line | standard output | first, before any disc |
 | `disc SEQ "LABEL": found` | standard output | the expected disc is at `DIR` |
 | `expected disc SEQ "LABEL" (UUID), found ...` | standard error | a wrong disc is at `DIR` |
 | `insert disc SEQ "LABEL" (UUID) into DIR and press Enter` | standard error | the prompt |
@@ -2154,6 +2206,7 @@ Every command uses exactly these three codes.
 | 32 | `DISC-ROOT: cannot read the disc: no DISC.bin under DISC-ROOT or DISC-ROOT/NOAHSARK; is the disc mounted at DISC-ROOT?` | Mount the disc at `DISC-ROOT`, read-only, and run the command again. For an image file, mount it with `sudo mount -o loop,ro FILE DISC-ROOT`. |
 | 33 | `no disc matches ARG; noahsark status lists the discs` | Run `status`, and give a disc number or a uuid prefix from its disc lines. |
 | 34 | `recover needs --source=PATH`, or `recover needs --disc=DIR` | Give the named option. |
+| 35 | `staging chunk ID: REASON; restore reads the chunk from a disc` | Nothing to do for the restore: it reads the chunk from a disc. The chunk file is damaged: when `pack` or `status` names it too, follow row 13a. |
 
 ## 20. Test list
 
@@ -2189,6 +2242,11 @@ composite actions `lint`, `unit` and `e2e` under `.github/actions/`.
   with and without a trailing slash, a `lost` disc and a chunk with no known
   disc in the plan, metadata as root and not as root, hardlinks, special
   files, case-folded names, the part name of a 255-byte name, bounded memory.
+- `internal/plan`, `cmd/noahsark`: chunks from the staging store. A
+  snapshot that no disc holds restores from the staging store with no disc.
+  A damaged chunk file is named, and its chunk comes from the disc. A
+  staging store that holds the chunks of one disc takes that disc out of the
+  plan of `--dry-run`.
 - `cmd/noahsark`: each command: options and their positions, output, the `ls`
   and `log` line formats and escapes, the escapes of the `commit` path lines,
   the ref name rule, exit codes, the `DISC` argument, the

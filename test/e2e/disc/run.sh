@@ -93,7 +93,9 @@ scenario_cli() {
 	mount_ro "$image" "$mnt"
 	items="$(run_tool ci-index-count "$mnt")"
 	verify_counted "$repo" "$mnt" "$uuid" "$items"
+	staging_aside "$repo"
 	restore_loop "$repo" "$mnt" "$snap" "$restored"
+	staging_back "$repo"
 	assert_dirs_equal "$restored" "$src"
 	assert_empty_dir_restored "$restored" ""
 	umount_if_mounted "$mnt"
@@ -164,7 +166,9 @@ scenario_media() {
 		grep -qE 'capacity 5242880 sectors' <<<"$field_out" \
 			|| fail "media/$media: DISC.bin did not report the packed-for capacity"
 	fi
+	staging_aside "$repo"
 	restore_loop "$repo" "$mnt" "$snap" "$restored"
+	staging_back "$repo"
 	assert_dirs_equal "$restored" "$small_src"
 	umount_if_mounted "$mnt"
 	log "media/$media PASS"

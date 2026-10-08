@@ -13,7 +13,8 @@ import (
 // discSwapFixture packs writeMultiDiscFixtureSource's tree across two
 // small forced capacities, into two disc-root trees, and also returns
 // the committed source directory so a restore can be checked byte for
-// byte.
+// byte. It empties the staging store, thus a restore reads every chunk
+// from a disc.
 func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string) {
 	t.Helper()
 	work := t.TempDir()
@@ -37,6 +38,7 @@ func discSwapFixture(t *testing.T) (repo, snapID, src string, discRoots []string
 		}
 		discRoots = append(discRoots, treeDir)
 	}
+	emptyStagingChunks(t, repo)
 	return repo, snapID, src, discRoots
 }
 

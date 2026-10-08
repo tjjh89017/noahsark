@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 	"time"
 
 	"github.com/tjjh89017/noahsark/internal/catalog"
@@ -61,8 +63,10 @@ func (v *oneValue) Set(s string) error {
 // errNoRepoForRestore is the refusal of restore with no repository.
 var errNoRepoForRestore = errors.New("no repository; run recover first, one time for each disc")
 
-// run implements "noahsark restore". It plans from the catalog and reads
-// one disc at a time from --disc. It changes no file of the repository.
+// run implements "noahsark restore". It plans from the catalog, takes
+// each chunk that the staging store holds and that verifies from the
+// store, and reads the other chunks one disc at a time from --disc. It
+// changes no file of the repository.
 func (o *restoreOptions) run(e *env, args []string) int {
 	stdout, stderr := e.stdout, e.stderr
 	if o.disc.value == "" || len(args) < 2 {
@@ -139,6 +143,10 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		return 1
 	}
 	defer p.Close()
+	store := openStagingStore(layout, stderr)
+	if store != nil {
+		p.UseLocal(store)
+	}
 	if err := restore.Scan(c, sel, dest, o.overwrite, p.Add); err != nil {
 		_, _ = fmt.Fprintln(stderr, "noahsark: restore:", err)
 		return 1
@@ -148,7 +156,8 @@ func (o *restoreOptions) run(e *env, args []string) int {
 		return 1
 	}
 	needed := p.Discs()
-	printRestorePlan(stdout, needed, p.NoDisc())
+	localItems, localBytes := p.Local()
+	printRestorePlan(stdout, localItems, localBytes, needed, p.NoDisc())
 	if o.dryRun {
 		return 0
 	}
@@ -162,6 +171,7 @@ func (o *restoreOptions) run(e *env, args []string) int {
 	prog := e.progress()
 	s := &discSwap{
 		e:        e,
+		store:    store,
 		mountDir: mountDir,
 		dirArg:   o.disc.value,
 		names:    discs.names,
@@ -197,9 +207,13 @@ func (o *restoreOptions) run(e *env, args []string) int {
 	return 0
 }
 
-// printRestorePlan prints the plan: one line for each needed disc, the
-// line of the items with no known disc, and the totals line.
-func printRestorePlan(w io.Writer, discs []plan.DiscEntry, noDisc int) {
+// printRestorePlan prints the plan: the line of the items that the
+// staging store supplies, one line for each needed disc, the line of the
+// items with no known disc, and the totals line of the discs.
+func printRestorePlan(w io.Writer, localItems int, localBytes uint64, discs []plan.DiscEntry, noDisc int) {
+	if localItems > 0 {
+		_, _ = fmt.Fprintf(w, "staging: %d items, %d bytes\n", localItems, localBytes)
+	}
 	items, bytes := 0, uint64(0)
 	for _, d := range discs {
 		lost := ""
@@ -292,9 +306,63 @@ const discSwapRetries = 3
 
 var discSwapRetryPause = 300 * time.Millisecond
 
+// stagingStore is the chunk files of the staging store, as restore
+// reads them. restore uses a chunk file only after its content id
+// verifies.
+type stagingStore struct {
+	layout repoLayout
+	stderr io.Writer
+}
+
+// openStagingStore returns the staging store of layout, or nil when the
+// staging store holds no chunk directory.
+func openStagingStore(layout repoLayout, stderr io.Writer) *stagingStore {
+	if fi, err := os.Stat(layout.chunksDir()); err != nil || !fi.IsDir() {
+		return nil
+	}
+	return &stagingStore{layout: layout, stderr: stderr}
+}
+
+// Check reads the chunk file of id and checks it against id. A chunk
+// file that is there and does not verify gets one line on standard
+// error; the plan then takes the chunk from a disc.
+func (s *stagingStore) Check(id object.ID) (uint64, bool) {
+	raw, _, err := object.CheckFile(s.layout.chunkFile(id), id)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, false
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(s.stderr, "noahsark: restore: staging chunk %s: %v; restore reads the chunk from a disc\n", id.TextForm(), err)
+		return 0, false
+	}
+	return uint64(len(raw)), true
+}
+
+// stagingChunks is the staging store as the assembler reads it: the
+// chunks of one local batch that the plan gives to the store.
+type stagingChunks struct {
+	store *stagingStore
+	plan  *plan.Plan
+	batch int
+}
+
+func (s stagingChunks) Has(id object.ID) bool { return s.plan.OwnsLocal(s.batch, id) }
+
+// Read returns one verified chunk payload from the staging store. A
+// chunk file that changed after the plan fails its own file only.
+func (s stagingChunks) Read(id object.ID) ([]byte, error) {
+	_, payload, err := object.ReadVerified(s.store.layout.chunkFile(id), id)
+	if err != nil {
+		return nil, fmt.Errorf("staging chunk %w", err)
+	}
+	return payload, nil
+}
+
 // discSwap reads the discs of a plan one at a time from one mount point.
 type discSwap struct {
 	e *env
+	// store is the staging store, or nil.
+	store *stagingStore
 	// mountDir is the absolute mount point; dirArg is the text the
 	// operator gave for it.
 	mountDir string
@@ -305,11 +373,19 @@ type discSwap struct {
 	prog     *progress.Reporter
 }
 
-// readDiscs reads each disc of discs that is not lost, in disc_seq
+// readDiscs first writes the chunks that the plan gives to the staging
+// store, one walk for each local batch. Then it reads each disc of discs that is not lost, in disc_seq
 // order. A disc that is already at the mount point and still needed
 // comes first. With no disc to read, it still walks the selection one
 // time, to write what needs no disc.
 func (s *discSwap) readDiscs(a *restore.Assembler, discs []plan.DiscEntry, prog *progress.Reporter) error {
+	walked := false
+	for batch := range s.plan.LocalBatches() {
+		if err := a.Disc(stagingChunks{store: s.store, plan: s.plan, batch: batch}, prog); err != nil {
+			return err
+		}
+		walked = true
+	}
 	var todo []plan.DiscEntry
 	for _, d := range discs {
 		if !d.Lost {
@@ -317,6 +393,9 @@ func (s *discSwap) readDiscs(a *restore.Assembler, discs []plan.DiscEntry, prog 
 		}
 	}
 	if len(todo) == 0 {
+		if walked {
+			return nil
+		}
 		return a.Disc(noDisc{}, prog)
 	}
 	for len(todo) > 0 {

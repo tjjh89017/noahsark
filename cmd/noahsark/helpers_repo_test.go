@@ -31,6 +31,19 @@ func testLayout(t *testing.T, repo string) repoLayout {
 	return layoutOf(repo, cfg)
 }
 
+// emptyStagingChunks removes each chunk file of the staging store of the
+// repository at repo. A restore then reads every chunk from a disc.
+func emptyStagingChunks(t *testing.T, repo string) {
+	t.Helper()
+	dir := testLayout(t, repo).chunksDir()
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // openTestLog opens the state log of the repository at repo.
 func openTestLog(t *testing.T, repo string) *stage.Log {
 	t.Helper()

@@ -44,6 +44,7 @@ func planTotals(t *testing.T, out string) (discs, items, bytes int) {
 func TestRestoreDryRunSingleDisc(t *testing.T) {
 	treeDir, snapID, _ := lsFixture(t)
 	repo := repoDirFromTreeDir(t, treeDir)
+	emptyStagingChunks(t, repo)
 	before := treeDigest(t, repo)
 
 	dest := filepath.Join(t.TempDir(), "out")
@@ -155,10 +156,12 @@ func catalogDiscUUID(t *testing.T, repo string, seq uint64) string {
 	return ""
 }
 
-// TestRestoreDryRunNothingPacked plans a snapshot that no disc holds yet:
-// every item has no known disc, and the totals name no disc.
+// TestRestoreDryRunNothingPacked plans a snapshot that no disc holds yet,
+// with an empty staging store: every item has no known disc, and the
+// totals name no disc.
 func TestRestoreDryRunNothingPacked(t *testing.T) {
 	repo, _ := initAndCommit(t)
+	emptyStagingChunks(t, repo)
 	code, out := runRestoreDryRun(t, repo, defaultRefName())
 	if code != 0 {
 		t.Fatalf("restore --dry-run: exit %d: %s", code, out)

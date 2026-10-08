@@ -77,7 +77,8 @@ func largestStagedObject(t *testing.T, repo string) uint64 {
 // it across discs small enough to cut the big file in two. It returns
 // the repository, the snapshot id, the committed source directory, the
 // disc roots in disc_seq order, and the big file's path below the
-// source.
+// source. It empties the staging store, thus a restore reads every chunk
+// from a disc.
 func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []string, crossRel string) {
 	t.Helper()
 	work := t.TempDir()
@@ -123,6 +124,7 @@ func crossDiscFixture(t *testing.T) (repo, snapID, src string, discRoots []strin
 		t.Fatalf("the fixture packed %d disc(s), want at least 2", len(discRoots))
 	}
 
+	emptyStagingChunks(t, repo)
 	crossRel = filepath.Join("big", "cross.bin")
 	include := "big"
 	if seqs := chunkDiscSeqs(t, repo, snapID, include); len(seqs) < 2 {

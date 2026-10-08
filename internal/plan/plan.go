@@ -1,6 +1,7 @@
 // Package plan plans a restore from the catalog alone. Select resolves
 // the PATH arguments of restore to the entries that they name. New and
 // Count count, for each disc, the items that restore must read from it.
+// A local store can take items before any disc.
 //
 // The plan holds one catalog INDEX in memory at a time. It keeps the ids
 // of the needed items in temporary files, never in memory.
@@ -13,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"slices"
 
@@ -42,31 +44,54 @@ type table struct {
 // little-endian uint64.
 const ownerLen = idLen + 4 + 8
 
+// localIndex is the disc index of the owners file for an item of the
+// first local batch. Batch b has the index localIndex - b. A batch holds
+// localBatch items at most, as many ids as one sort run, thus the owned
+// ids of one batch fit the memory bound of a sort run.
+const (
+	localIndex = math.MaxUint32
+	localBatch = sortRunIDs
+)
+
+// LocalStore is chunk data that the host holds outside the discs, such
+// as the staging store.
+type LocalStore interface {
+	// Check reads the copy of id and checks it against id. It returns
+	// the byte length of the object file. ok is false when the store
+	// holds no copy, or a copy that does not verify.
+	Check(id object.ID) (bytes uint64, ok bool)
+}
+
 // Plan counts the items that a restore reads from each disc. For each
 // item it takes the first disc in this order that holds it: a disc that
 // is not lost before a lost disc, then the lowest disc_seq, then the
 // lowest uuid. It counts an item one time for each disc.
 //
-// Add collects the ids in a sorted temporary file. Count then reads the
-// catalog INDEX of each disc in that order, one at a time, and takes out
-// of the file each id that the disc holds.
+// Add collects the ids in a sorted temporary file. Count then gives to
+// the local store each id that it holds and that verifies. Then it reads
+// the catalog INDEX of each disc in that order, one at a time, and takes
+// out of the file each id that the disc holds.
 type Plan struct {
-	c       *catalog.Catalog
-	sel     *Selection
-	discs   []Disc
-	items   []int
-	bytes   []uint64
-	needed  idSorter
-	counted bool
-	err     error
-	noDisc  int64
+	c     *catalog.Catalog
+	sel   *Selection
+	discs []Disc
+	items []int
+	bytes []uint64
+	local LocalStore
+	// localItems and localBytes count the items that local supplies.
+	localItems int
+	localBytes uint64
+	needed     idSorter
+	counted    bool
+	err        error
+	noDisc     int64
 	// owners holds one ownerLen record for each counted item.
 	owners  *os.File
 	ownersN int64
-	// owned is the ids that the plan gives to the disc ownedUUID, in
-	// ascending order, for Owns.
-	owned     []object.ID
-	ownedUUID [16]byte
+	// owned is the ids that the plan gives to the disc index
+	// ownedIndex, in ascending order, for Owns and OwnsLocal.
+	owned      []object.ID
+	ownedIndex uint32
 }
 
 // New prepares an empty plan for sel over discs. It reads nothing yet.
@@ -95,6 +120,10 @@ func New(c *catalog.Catalog, sel *Selection, discs []Disc) (*Plan, error) {
 		bytes: make([]uint64, len(ordered)),
 	}, nil
 }
+
+// UseLocal makes the plan take each item that s holds from s, before
+// any disc. Call it before Count.
+func (p *Plan) UseLocal(s LocalStore) { p.local = s }
 
 // readTable reads the Objects table of the catalog INDEX of one disc. A
 // disc whose INDEX is not in the catalog holds no item.
@@ -159,6 +188,15 @@ func (p *Plan) count() error {
 		return err
 	}
 	ow := bufio.NewWriterSize(owners, readBufLen)
+	if p.local != nil {
+		next, err := p.countLocal(left, ow)
+		if err != nil {
+			_ = owners.Close()
+			return err
+		}
+		left.close()
+		left = next
+	}
 	for i, d := range p.discs {
 		t, err := readTable(p.c, d.DiscUUID)
 		if err != nil {
@@ -182,6 +220,42 @@ func (p *Plan) count() error {
 	return nil
 }
 
+// countLocal gives to the local store each id of in that it holds and
+// that verifies, and writes its owner record. It returns the other ids.
+// The store reads one chunk at a time.
+func (p *Plan) countLocal(in idFile, owners *bufio.Writer) (idFile, error) {
+	w, err := newIDWriter()
+	if err != nil {
+		return idFile{}, err
+	}
+	r := in.reader()
+	for {
+		id, ok, err := readID(r)
+		if err != nil {
+			w.discard()
+			return idFile{}, err
+		}
+		if !ok {
+			return w.done()
+		}
+		n, ok := p.local.Check(id)
+		if !ok {
+			if err := w.write(id); err != nil {
+				w.discard()
+				return idFile{}, err
+			}
+			continue
+		}
+		index := localIndex - uint32(p.localItems/localBatch)
+		p.localItems++
+		p.localBytes += n
+		if err := p.writeOwner(owners, id, index, n); err != nil {
+			w.discard()
+			return idFile{}, err
+		}
+	}
+}
+
 // countDisc counts each id of in that the disc i holds, and writes its
 // owner record. It returns the ids that the disc does not hold. in and
 // t are both in ascending order, so one pass over each is enough.
@@ -192,7 +266,6 @@ func (p *Plan) countDisc(i int, t *table, in idFile, owners *bufio.Writer) (idFi
 	}
 	r := in.reader()
 	row := 0
-	var rec [ownerLen]byte
 	for {
 		id, ok, err := readID(r)
 		if err != nil {
@@ -214,15 +287,25 @@ func (p *Plan) countDisc(i int, t *table, in idFile, owners *bufio.Writer) (idFi
 		}
 		p.items[i]++
 		p.bytes[i] += t.bytes[row]
-		copy(rec[:idLen], id[:])
-		binary.LittleEndian.PutUint32(rec[idLen:idLen+4], uint32(i))
-		binary.LittleEndian.PutUint64(rec[idLen+4:], t.bytes[row])
-		if _, err := owners.Write(rec[:]); err != nil {
+		if err := p.writeOwner(owners, id, uint32(i), t.bytes[row]); err != nil {
 			w.discard()
 			return idFile{}, err
 		}
-		p.ownersN++
 	}
+}
+
+// writeOwner writes the owner record of id: the plan gives it to the
+// disc index, with an object file of n bytes.
+func (p *Plan) writeOwner(owners *bufio.Writer, id object.ID, index uint32, n uint64) error {
+	var rec [ownerLen]byte
+	copy(rec[:idLen], id[:])
+	binary.LittleEndian.PutUint32(rec[idLen:idLen+4], index)
+	binary.LittleEndian.PutUint64(rec[idLen+4:], n)
+	if _, err := owners.Write(rec[:]); err != nil {
+		return err
+	}
+	p.ownersN++
+	return nil
 }
 
 // Close frees the temporary file of the plan.
@@ -244,19 +327,50 @@ func (p *Plan) Owns(uuid [16]byte, id object.ID) bool {
 	if p.Count() != nil {
 		return false
 	}
-	if p.owned == nil || p.ownedUUID != uuid {
-		i := slices.IndexFunc(p.discs, func(d Disc) bool { return d.DiscUUID == uuid })
-		if i < 0 {
-			return false
-		}
+	i := slices.IndexFunc(p.discs, func(d Disc) bool { return d.DiscUUID == uuid })
+	if i < 0 {
+		return false
+	}
+	return p.owns(uint32(i), id)
+}
+
+// OwnsLocal reports whether the plan gives the item id to the local
+// store, in the local batch batch. An item that the local store supplies
+// belongs to no disc.
+func (p *Plan) OwnsLocal(batch int, id object.ID) bool {
+	if p.Count() != nil || batch < 0 || batch >= p.LocalBatches() {
+		return false
+	}
+	return p.owns(localIndex-uint32(batch), id)
+}
+
+// LocalBatches is the number of local batches. A restore walks the
+// selection one time for each batch, and holds the owned ids of one
+// batch in memory at a time.
+func (p *Plan) LocalBatches() int {
+	_ = p.Count()
+	return (p.localItems + localBatch - 1) / localBatch
+}
+
+// owns reports whether the plan gives id to the disc index. It keeps the
+// owned ids of the last index that it was asked about.
+func (p *Plan) owns(index uint32, id object.ID) bool {
+	if p.owned == nil || p.ownedIndex != index {
 		owned := []object.ID{}
-		for _, o := range (DiscEntry{plan: p, index: i}).Objects {
+		for _, o := range p.objects(index) {
 			owned = append(owned, o.ID)
 		}
-		p.owned, p.ownedUUID = owned, uuid
+		p.owned, p.ownedIndex = owned, index
 	}
 	_, found := slices.BinarySearchFunc(p.owned, id, compareID)
 	return found
+}
+
+// Local returns the number of items and the sum of the object file
+// lengths that the local store supplies. It counts the plan first.
+func (p *Plan) Local() (items int, bytes uint64) {
+	_ = p.Count()
+	return p.localItems, p.localBytes
 }
 
 // NoDisc is the number of needed items that no catalog INDEX lists. It
@@ -310,26 +424,36 @@ type ObjectEntry struct {
 // order of the content ids. It reads the owners file of the plan. A read
 // error ends the sequence early.
 func (d DiscEntry) Objects(yield func(int, ObjectEntry) bool) {
-	p := d.plan
-	if p == nil || p.owners == nil {
+	if d.plan == nil {
 		return
 	}
-	r := bufio.NewReaderSize(io.NewSectionReader(p.owners, 0, p.ownersN*int64(ownerLen)), readBufLen)
-	var rec [ownerLen]byte
-	n := 0
-	for {
-		if _, err := io.ReadFull(r, rec[:]); err != nil {
+	d.plan.objects(uint32(d.index))(yield)
+}
+
+// objects yields each item that the plan gives to the disc index, one
+// time, in the order of the content ids.
+func (p *Plan) objects(index uint32) func(yield func(int, ObjectEntry) bool) {
+	return func(yield func(int, ObjectEntry) bool) {
+		if p.owners == nil {
 			return
 		}
-		if binary.LittleEndian.Uint32(rec[idLen:idLen+4]) != uint32(d.index) {
-			continue
+		r := bufio.NewReaderSize(io.NewSectionReader(p.owners, 0, p.ownersN*int64(ownerLen)), readBufLen)
+		var rec [ownerLen]byte
+		n := 0
+		for {
+			if _, err := io.ReadFull(r, rec[:]); err != nil {
+				return
+			}
+			if binary.LittleEndian.Uint32(rec[idLen:idLen+4]) != index {
+				continue
+			}
+			var id object.ID
+			copy(id[:], rec[:idLen])
+			if !yield(n, ObjectEntry{ID: id, Kind: format.ObjectKindChunk, Bytes: binary.LittleEndian.Uint64(rec[idLen+4:])}) {
+				return
+			}
+			n++
 		}
-		var id object.ID
-		copy(id[:], rec[:idLen])
-		if !yield(n, ObjectEntry{ID: id, Kind: format.ObjectKindChunk, Bytes: binary.LittleEndian.Uint64(rec[idLen+4:])}) {
-			return
-		}
-		n++
 	}
 }
 

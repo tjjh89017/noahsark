@@ -21,7 +21,7 @@ func init() {
 	// Row 85: the plan names a lost disc, and restore does not ask for it.
 	registerStateCases(stateCase{
 		row: "85", name: "the plan names a lost disc",
-		start: stage.DiscLost, args: restoreArgs("r85", "--disc={ROOT}"),
+		start: stage.DiscLost, setup: emptyStaging, args: restoreArgs("r85", "--disc={ROOT}"),
 		also:   []string{"noahsark: restore: warning: ", "on a lost disc"},
 		absent: []string{": found", "insert disc"},
 		end:    stage.DiscLost,
@@ -30,7 +30,7 @@ func init() {
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscBurned, stage.DiscVerified, stage.DiscOnDiscOnly} {
 		registerStateCases(stateCase{
 			row: "86", name: "restore from a " + s.String() + " disc",
-			start: s, args: restoreArgs("r86", "--disc={ROOT}"),
+			start: s, setup: emptyStaging, args: restoreArgs("r86", "--disc={ROOT}"),
 			absent: []string{"warning:", "insert disc", "(lost)"},
 			end:    s,
 		})
@@ -39,8 +39,11 @@ func init() {
 		// Row 87: no terminal, and no disc at --disc.
 		stateCase{
 			row: "87", name: "no terminal and not the expected disc",
-			start:  stage.DiscVerified,
-			setup:  func(_ *testing.T, fx *discFixture) { fx.cell("DIR", fx.root+"-none") },
+			start: stage.DiscVerified,
+			setup: func(t *testing.T, fx *discFixture) {
+				emptyStaging(t, fx)
+				fx.cell("DIR", fx.root+"-none")
+			},
 			args:   restoreArgs("r87", "--disc={ROOT}-none"),
 			absent: []string{"restored snapshot", "press Enter"},
 			end:    stage.DiscVerified,
@@ -49,7 +52,7 @@ func init() {
 		// cell gives the lost suffix in prose, thus also names it.
 		stateCase{
 			row: "88", name: "dry run with a lost disc",
-			start: stage.DiscLost, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
+			start: stage.DiscLost, setup: emptyStaging, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
 			cells:  map[string]string{"D": "1"},
 			also:   []string{` bytes (lost)` + "\n"},
 			absent: []string{"restored snapshot", "found"},
@@ -73,6 +76,7 @@ func init() {
 			row: "85a", name: "no disc known to the catalog",
 			start: stage.DiscVerified,
 			setup: func(t *testing.T, fx *discFixture) {
+				emptyStaging(t, fx)
 				if err := os.RemoveAll(filepath.Join(repoCatalogDir(t, fx.repo), "discs", fx.uuid)); err != nil {
 					t.Fatal(err)
 				}
@@ -110,7 +114,7 @@ func init() {
 	for _, s := range []stage.DiscState{stage.DiscPacked, stage.DiscVerified, stage.DiscOnDiscOnly} {
 		registerStateCases(stateCase{
 			row: "88", name: "dry run with a " + s.String() + " disc",
-			start: s, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
+			start: s, setup: emptyStaging, args: restoreArgs("r88", "--dry-run", "--disc={ROOT}"),
 			cells:  map[string]string{"D": "1"},
 			absent: []string{"restored snapshot", "(lost)", "found"},
 			end:    s,
@@ -118,11 +122,16 @@ func init() {
 	}
 }
 
+// emptyStaging empties the staging store of the fixture. The rows of
+// restore then read every chunk from the disc.
+func emptyStaging(t *testing.T, fx *discFixture) { emptyStagingChunks(t, fx.repo) }
+
 // TestRestoreRow86ChangesNoFile checks that a restore and a dry run
 // change no file of the repository, and that the restored tree matches
 // the source.
 func TestRestoreRow86ChangesNoFile(t *testing.T) {
 	fx := repoWithDisc(t, stage.DiscVerified)
+	emptyStaging(t, fx)
 	before := treeDigest(t, fx.repo)
 	dest := filepath.Join(t.TempDir(), "out")
 	fx.mustRun(t, "restore", "--dry-run", "--disc="+fx.root, defaultRefName(), dest)
